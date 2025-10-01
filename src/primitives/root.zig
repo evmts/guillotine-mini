@@ -33,13 +33,11 @@
 //! ### Ethereum Standards
 //! - **EventLog**: Contract event log structures
 //! - **ENS**: Ethereum Name Service utilities
-//! - **SIWE**: Sign-In with Ethereum message handling
 //! - **EIP712**: Typed data signing standard
 //!
 //! ### State & Storage
 //! - **State**: Account state and storage key definitions
 //! - **GasConstants**: EVM gas cost constants
-//! - **FeeMarket**: EIP-1559 fee market calculations
 //!
 //! ## Usage Examples
 //!
@@ -124,8 +122,6 @@ pub const EventLog = @import("event_log.zig");
 // Logging
 pub const logs = @import("logs.zig");
 
-// Standards
-pub const Siwe = @import("siwe.zig");
 
 // Export common constants
 pub const ZERO_ADDRESS = Address.ZERO_ADDRESS;
