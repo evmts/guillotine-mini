@@ -17,22 +17,6 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
         return;
     }
 
-    // Check for Yul assembly tests that we can't run yet
-    if (test_case.object.get("pre")) |pre| {
-        if (pre == .object) {
-            var it = pre.object.iterator();
-            while (it.next()) |kv| {
-                if (kv.value_ptr.*.object.get("code")) |code| {
-                    if (code == .string) {
-                        const code_str = code.string;
-                        if (std.mem.startsWith(u8, code_str, ":yul ")) {
-                            return TestTodo;
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     // Create test host
     var test_host = try TestHost.init(allocator);
@@ -64,18 +48,15 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                     if (code == .string) {
                         const code_str = code.string;
                         if (!std.mem.eql(u8, code_str, "") and !std.mem.eql(u8, code_str, "0x")) {
-                            // Skip assembly for now
-                            if (std.mem.startsWith(u8, code_str, ":yul ") or
-                                std.mem.startsWith(u8, code_str, "(asm ") or
-                                std.mem.startsWith(u8, code_str, ":asm ") or
-                                std.mem.startsWith(u8, code_str, "{")) {
-                                continue;
-                            }
-
                             // Handle :raw format
                             var hex_str = code_str;
                             if (std.mem.startsWith(u8, code_str, ":raw ")) {
                                 hex_str = std.mem.trim(u8, code_str[5..], " \t\n\r");
+                            } else if (std.mem.startsWith(u8, code_str, ":yul ") or
+                                std.mem.startsWith(u8, code_str, "(asm ") or
+                                std.mem.startsWith(u8, code_str, ":asm ") or
+                                std.mem.startsWith(u8, code_str, "{")) {
+                                return error.AssemblyNotImplemented;
                             }
 
                             // Parse hex and handle placeholders
