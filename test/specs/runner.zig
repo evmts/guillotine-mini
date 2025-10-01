@@ -6,6 +6,7 @@ const Address = primitives.Address.Address;
 const test_host_mod = @import("test_host.zig");
 const TestHost = test_host_mod.TestHost;
 const StorageSlotKey = test_host_mod.StorageSlotKey;
+const assembler = @import("assembler.zig");
 
 // Error type for tests that are not yet implemented
 pub const TestTodo = error.TestTodo;
@@ -48,25 +49,32 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                     if (code == .string) {
                         const code_str = code.string;
                         if (!std.mem.eql(u8, code_str, "") and !std.mem.eql(u8, code_str, "0x")) {
-                            // Handle :raw format
-                            var hex_str = code_str;
-                            if (std.mem.startsWith(u8, code_str, ":raw ")) {
-                                hex_str = std.mem.trim(u8, code_str[5..], " \t\n\r");
-                            } else if (std.mem.startsWith(u8, code_str, ":yul ") or
+                            // Check if this is assembly code that needs compilation
+                            if (std.mem.startsWith(u8, code_str, ":yul ") or
                                 std.mem.startsWith(u8, code_str, "(asm ") or
                                 std.mem.startsWith(u8, code_str, ":asm ") or
-                                std.mem.startsWith(u8, code_str, "{")) {
-                                return error.AssemblyNotImplemented;
-                            }
+                                std.mem.startsWith(u8, code_str, "{"))
+                            {
+                                // Compile assembly to bytecode
+                                const compiled_bytes = try assembler.compileAssembly(allocator, code_str);
+                                defer allocator.free(compiled_bytes);
+                                try test_host.setCode(address, compiled_bytes);
+                            } else {
+                                // Handle :raw format or direct hex
+                                var hex_str = code_str;
+                                if (std.mem.startsWith(u8, code_str, ":raw ")) {
+                                    hex_str = std.mem.trim(u8, code_str[5..], " \t\n\r");
+                                }
 
-                            // Parse hex and handle placeholders
-                            const hex_data = try parseHexData(allocator, hex_str);
-                            defer allocator.free(hex_data);
+                                // Parse hex and handle placeholders
+                                const hex_data = try parseHexData(allocator, hex_str);
+                                defer allocator.free(hex_data);
 
-                            if (hex_data.len > 2) {
-                                const code_bytes = try primitives.Hex.hex_to_bytes(allocator, hex_data);
-                                defer allocator.free(code_bytes);
-                                try test_host.setCode(address, code_bytes);
+                                if (hex_data.len > 2) {
+                                    const code_bytes = try primitives.Hex.hex_to_bytes(allocator, hex_data);
+                                    defer allocator.free(code_bytes);
+                                    try test_host.setCode(address, code_bytes);
+                                }
                             }
                         }
                     }
