@@ -170,17 +170,14 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
             const bytecode = test_host.code.get(target_addr) orelse &[_]u8{};
 
             // Execute
-            const result = evm_instance.call(
+            const result = try evm_instance.call(
                 bytecode,
                 @intCast(gas_limit),
                 sender,
                 target_addr,
                 value,
                 tx_data,
-            ) catch {
-                // Many tests expect failures, continue
-                continue;
-            };
+            );
 
             // Result is automatically cleaned up by arena
             _ = result;
