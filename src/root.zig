@@ -1,10 +1,10 @@
-//! Guillotine Mini - Minimal EVM implementation
+//! Guillotine Mini - EVM implementation
 const std = @import("std");
 
-// Export the minimal EVM components
-pub const MinimalEvm = @import("minimal_evm.zig").MinimalEvm;
-pub const MinimalFrame = @import("minimal_frame.zig").MinimalFrame;
-pub const MinimalHost = @import("minimal_host.zig");
+// Export the EVM components
+pub const Evm = @import("evm.zig").Evm;
+pub const Frame = @import("frame.zig").Frame;
+pub const Host = @import("host.zig");
 pub const Hardfork = @import("hardfork.zig").Hardfork;
 
 // Re-export primitives for convenience
