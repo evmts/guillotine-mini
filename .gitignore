@@ -1,0 +1,15 @@
+# Zig
+zig-cache/
+zig-out/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Bun
+node_modules/
+.bun/
+bun.lockb
+*.bun
