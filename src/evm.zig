@@ -7,6 +7,7 @@ const GasConstants = primitives.GasConstants;
 const Frame = @import("frame.zig").Frame;
 const Hardfork = @import("hardfork.zig").Hardfork;
 const host = @import("host.zig");
+const errors = @import("errors.zig");
 
 const Address = primitives.Address.Address;
 
@@ -51,40 +52,6 @@ const StorageSlotKeyContext = struct {
 
 /// EVM - Orchestrates execution like evm.zig
 pub const Evm = struct {
-    /// Error set for Evm operations
-    pub const Error = error{
-        InvalidJump,
-        OutOfGas,
-        StackUnderflow,
-        StackOverflow,
-        ContractNotFound,
-        PrecompileError,
-        MemoryError,
-        StorageError,
-        CallDepthExceeded,
-        InsufficientBalance,
-        ContractCollision,
-        InvalidBytecode,
-        StaticCallViolation,
-        InvalidOpcode,
-        RevertExecution,
-        OutOfMemory,
-        AllocationError,
-        AccountNotFound,
-        InvalidJumpDestination,
-        MissingJumpDestMetadata,
-        InitcodeTooLarge, // this one is never used anywhere
-        TruncatedPush,
-        OutOfBounds,
-        WriteProtection,
-        BytecodeTooLarge, // we use CreateInitCodeSizeLimit instead for conventions
-        InvalidPush,
-        // EIP-3860: Init code exceeds size limit
-        CreateInitCodeSizeLimit,
-        // EIP-170: Deployed contract code exceeds size limit
-        CreateContractSizeLimit,
-    };
-
     const Self = @This();
 
     frames: std.ArrayList(*Frame),
@@ -197,9 +164,9 @@ pub const Evm = struct {
     }
 
     /// Initialize with a host interface
-    pub fn initWithHost(allocator: std.mem.Allocator, host: HostInterface) !Self {
+    pub fn initWithHost(allocator: std.mem.Allocator, h: HostInterface) !Self {
         var self = try init(allocator);
-        self.host = host;
+        self.host = h;
         return self;
     }
 
@@ -291,12 +258,12 @@ pub const Evm = struct {
     fn pre_warm_addresses(self: *Self, addresses: []const Address) !void {
         for (addresses) |address| {
             _ = self.warm_addresses.getOrPut(address) catch {
-                return Error.StorageError;
+                return errors.CallError.StorageError;
             };
         }
     }
 
-    fn pre_warm_transaction(self: *Self, target: Address) Error!void {
+    fn pre_warm_transaction(self: *Self, target: Address) errors.CallError!void {
         var warm: [3]Address = undefined;
         var count: usize = 0;
 
@@ -331,7 +298,7 @@ pub const Evm = struct {
         address: Address,
         value: u256,
         calldata: []const u8,
-    ) Error!CallResult {        
+    ) errors.CallError!CallResult {
         // Pre-warm transaction, including precompiles depending on hardfork
         try self.pre_warm_transaction(address);
 
@@ -386,7 +353,7 @@ pub const Evm = struct {
             // The refund cap should be based on total gas used, not just execution gas
             const execution_gas_used = if (execution_gas_limit > gas_left) execution_gas_limit - gas_left else 0;
             const total_gas_used = GasConstants.TxGas + execution_gas_used;
-            
+
             // Pre-London: refund up to half of gas used; post-London: refund up to one fifth of gas used
             const capped_refund = if (self.hardfork.isBefore(.LONDON)) blk: {
                 @branchHint(.cold);
@@ -395,7 +362,7 @@ pub const Evm = struct {
                 @branchHint(.likely);
                 break :blk @min(self.gas_refund, total_gas_used / 5);
             };
-            
+
             // Apply the refund
             gas_left = gas_left + capped_refund;
             self.gas_refund = 0;
@@ -423,7 +390,7 @@ pub const Evm = struct {
         value: u256,
         input: []const u8,
         gas: u64,
-    ) Error!CallResult {
+    ) errors.CallError!CallResult {
         if (self.frames.items.len >= 1024) {
             return CallResult{
                 .success = false,
@@ -436,7 +403,7 @@ pub const Evm = struct {
         const code = self.get_code(address);
         if (code.len == 0) {
             // TODO: Implement precompiles
-            
+
             // Empty account - just return success
             return CallResult{
                 .success = true,
@@ -497,24 +464,24 @@ pub const Evm = struct {
 
     /// Get balance of an address (called by frame)
     pub fn get_balance(self: *Self, address: Address) u256 {
-        if (self.host) |host| {
-            return host.getBalance(address);
+        if (self.host) |h| {
+            return h.getBalance(address);
         }
         return self.balances.get(address) orelse 0;
     }
 
     /// Get code for an address
     pub fn get_code(self: *Self, address: Address) []const u8 {
-        if (self.host) |host| {
-            return host.getCode(address);
+        if (self.host) |h| {
+            return h.getCode(address);
         }
         return self.code.get(address) orelse &[_]u8{};
     }
 
     /// Get storage value (called by frame)
     pub fn get_storage(self: *Self, address: Address, slot: u256) u256 {
-        if (self.host) |host| {
-            return host.getStorage(address, slot);
+        if (self.host) |h| {
+            return h.getStorage(address, slot);
         }
         const key = StorageSlotKey{ .address = address, .slot = slot };
         return self.storage.get(key) orelse 0;
@@ -522,8 +489,8 @@ pub const Evm = struct {
 
     /// Set storage value (called by frame)
     pub fn set_storage(self: *Self, address: Address, slot: u256, value: u256) !void {
-        if (self.host) |host| {
-            host.setStorage(address, slot, value);
+        if (self.host) |h| {
+            h.setStorage(address, slot, value);
             return;
         }
         const key = StorageSlotKey{ .address = address, .slot = slot };
