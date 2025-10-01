@@ -31,19 +31,19 @@ const ExecutionContext = struct {
 export fn evm_create() ?*EvmHandle {
     const ctx = allocator.create(ExecutionContext) catch return null;
 
-    const evm = allocator.create(Evm) catch {
+    const evm_ptr = allocator.create(Evm) catch {
         allocator.destroy(ctx);
         return null;
     };
 
-    evm.* = Evm.init(allocator) catch {
-        allocator.destroy(evm);
+    evm_ptr.* = Evm.init(allocator, null, null, null) catch {
+        allocator.destroy(evm_ptr);
         allocator.destroy(ctx);
         return null;
     };
 
     ctx.* = ExecutionContext{
-        .evm = evm,
+        .evm = evm_ptr,
         .bytecode = &[_]u8{},
         .gas = 0,
         .caller = ZERO_ADDRESS,
@@ -147,17 +147,17 @@ export fn evm_set_blockchain_context(
         var block_coinbase: Address = undefined;
         @memcpy(&block_coinbase.bytes, block_coinbase_bytes[0..20]);
 
-        ctx.evm.setBlockchainContext(
-            chain_id,
-            block_number,
-            block_timestamp,
-            0, // block_difficulty
-            0, // block_prevrandao
-            block_coinbase,
-            block_gas_limit,
-            0, // block_base_fee
-            0, // blob_base_fee
-        );
+        ctx.evm.block_context = .{
+            .chain_id = chain_id,
+            .block_number = block_number,
+            .block_timestamp = block_timestamp,
+            .block_difficulty = 0,
+            .block_prevrandao = 0,
+            .block_coinbase = block_coinbase,
+            .block_gas_limit = block_gas_limit,
+            .block_base_fee = 0,
+            .blob_base_fee = 0,
+        };
     }
 }
 
@@ -330,7 +330,7 @@ export fn evm_set_balance(
             balance = (balance << 8) | balance_bytes[i];
         }
 
-        ctx.evm.setBalance(address, balance) catch return false;
+        ctx.evm.balances.put(address, balance) catch return false;
         return true;
     }
     return false;
@@ -350,7 +350,9 @@ export fn evm_set_code(
         @memcpy(&address.bytes, address_bytes[0..20]);
 
         const code_slice = if (code_len > 0) code[0..code_len] else &[_]u8{};
-        ctx.evm.setCode(address, code_slice) catch return false;
+        const code_copy = ctx.evm.allocator.alloc(u8, code_slice.len) catch return false;
+        @memcpy(code_copy, code_slice);
+        ctx.evm.code.put(address, code_copy) catch return false;
         return true;
     }
     return false;

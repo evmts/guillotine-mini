@@ -6,7 +6,7 @@ const evm_mod = @import("evm.zig");
 const GasConstants = primitives.GasConstants;
 const Address = primitives.Address.Address;
 const Evm = evm_mod.Evm;
-const EvmError = Evm.Error;
+const EvmError = @import("errors.zig").CallError;
 const Hardfork = @import("hardfork.zig").Hardfork;
 
 pub const Frame = struct {
@@ -244,7 +244,7 @@ pub const Frame = struct {
         if (self.hardfork.isAtLeast(.BERLIN)) {
             // Post-Berlin: Cold/warm access pattern
             @branchHint(.likely);
-            return try evm.access_address(address);
+            return try evm.accessAddress(address);
         } else if (self.hardfork.isAtLeast(.TANGERINE_WHISTLE)) {
             // Post-EIP-150, Pre-Berlin: Fixed higher cost
             return GasConstants.GasExtStep;
@@ -867,7 +867,7 @@ pub const Frame = struct {
                 try self.consumeGas(GasConstants.GasExtStep);
                 const block_number = try self.popStack();
                 // Simple mock: return a hash based on block number
-                const current_block = evm.block_number;
+                const current_block = evm.block_context.block_number;
                 if (block_number >= current_block or current_block > block_number + 256) {
                     try self.pushStack(0);
                 } else {
@@ -880,7 +880,7 @@ pub const Frame = struct {
             // COINBASE
             0x41 => {
                 try self.consumeGas(GasConstants.GasQuickStep);
-                const coinbase_u256 = primitives.Address.to_u256(evm.block_coinbase);
+                const coinbase_u256 = primitives.Address.to_u256(evm.block_context.block_coinbase);
                 try self.pushStack(coinbase_u256);
                 self.pc += 1;
             },
@@ -888,14 +888,14 @@ pub const Frame = struct {
             // TIMESTAMP
             0x42 => {
                 try self.consumeGas(GasConstants.GasQuickStep);
-                try self.pushStack(evm.block_timestamp);
+                try self.pushStack(evm.block_context.block_timestamp);
                 self.pc += 1;
             },
 
             // NUMBER
             0x43 => {
                 try self.consumeGas(GasConstants.GasQuickStep);
-                try self.pushStack(evm.block_number);
+                try self.pushStack(evm.block_context.block_number);
                 self.pc += 1;
             },
 
@@ -903,9 +903,9 @@ pub const Frame = struct {
             0x44 => {
                 try self.consumeGas(GasConstants.GasQuickStep);
                 if (evm.hardfork.isAtLeast(.MERGE)) {
-                    try self.pushStack(evm.block_prevrandao);
+                    try self.pushStack(evm.block_context.block_prevrandao);
                 } else {
-                    try self.pushStack(evm.block_difficulty);
+                    try self.pushStack(evm.block_context.block_difficulty);
                 }
                 self.pc += 1;
             },
@@ -913,7 +913,7 @@ pub const Frame = struct {
             // GASLIMIT
             0x45 => {
                 try self.consumeGas(GasConstants.GasQuickStep);
-                try self.pushStack(@as(u256, evm.block_gas_limit));
+                try self.pushStack(@as(u256, evm.block_context.block_gas_limit));
                 self.pc += 1;
             },
 
@@ -923,7 +923,7 @@ pub const Frame = struct {
                 if (evm.hardfork.isBefore(.ISTANBUL)) return error.InvalidOpcode;
 
                 try self.consumeGas(GasConstants.GasQuickStep);
-                try self.pushStack(@as(u256, evm.chain_id));
+                try self.pushStack(@as(u256, evm.block_context.chain_id));
                 self.pc += 1;
             },
 
@@ -944,7 +944,7 @@ pub const Frame = struct {
                 if (evm.hardfork.isBefore(.LONDON)) return error.InvalidOpcode;
 
                 try self.consumeGas(GasConstants.GasQuickStep);
-                try self.pushStack(evm.block_base_fee);
+                try self.pushStack(evm.block_context.block_base_fee);
                 self.pc += 1;
             },
 
@@ -967,7 +967,7 @@ pub const Frame = struct {
                 if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;
 
                 try self.consumeGas(GasConstants.GasQuickStep);
-                try self.pushStack(evm.blob_base_fee);
+                try self.pushStack(evm.block_context.blob_base_fee);
                 self.pc += 1;
             },
 
@@ -1041,7 +1041,7 @@ pub const Frame = struct {
                 const key = try self.popStack();
 
                 // EIP-2929: charge warm/cold storage access cost and warm the slot
-                const access_cost = try evm.access_storage_slot(self.address, key);
+                const access_cost = try evm.accessStorageSlot(self.address, key);
                 // Access cost already includes the full SLOAD gas cost (100 for warm, 2100 for cold)
                 try self.consumeGas(access_cost);
 
@@ -1060,7 +1060,7 @@ pub const Frame = struct {
                 const original_value = evm.get_original_storage(self.address, key);
 
                 // EIP-2929: Check if storage slot is cold and warm it
-                const access_cost = try evm.access_storage_slot(self.address, key);
+                const access_cost = try evm.accessStorageSlot(self.address, key);
                 const is_cold = access_cost == GasConstants.ColdSloadCost;
 
                 // Calculate SSTORE gas cost using proper EIP-2200/EIP-3529 logic
@@ -1284,7 +1284,7 @@ pub const Frame = struct {
                     gas_cost += GasConstants.CallValueTransferGas;
                 }
                 // EIP-2929: access target account (warm/cold)
-                const access_cost = try evm.access_address(call_address);
+                const access_cost = try evm.accessAddress(call_address);
                 gas_cost += access_cost;
                 try self.consumeGas(gas_cost);
 
@@ -1366,7 +1366,7 @@ pub const Frame = struct {
                     gas_cost += GasConstants.CallValueTransferGas;
                 }
                 // EIP-2929: access target account (warm/cold)
-                const access_cost = try evm.access_address(call_address);
+                const access_cost = try evm.accessAddress(call_address);
                 gas_cost += access_cost;
                 try self.consumeGas(gas_cost);
 
@@ -1567,7 +1567,7 @@ pub const Frame = struct {
 
                 // Base gas cost + EIP-2929 account access
                 var call_gas_cost: u64 = GasConstants.CallGas;
-                const access_cost = try evm.access_address(call_address);
+                const access_cost = try evm.accessAddress(call_address);
                 call_gas_cost += access_cost;
                 try self.consumeGas(call_gas_cost);
 

@@ -50,26 +50,7 @@ const StorageSlotKeyContext = struct {
     }
 };
 
-/// EVM - Orchestrates execution like evm.zig
-pub const Evm = struct {
-    const Self = @This();
-
-    frames: std.ArrayList(*Frame),
-    storage: std.AutoHashMap(StorageSlotKey, u256),
-    original_storage: std.AutoHashMap(StorageSlotKey, u256),
-    balances: std.AutoHashMap(Address, u256),
-    code: std.AutoHashMap(Address, []const u8),
-    // EIP-2929 warm/cold tracking (minimal)
-    warm_addresses: std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false),
-    warm_storage_slots: std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false),
-
-    // Transaction-scoped gas refund counter
-    gas_refund: u64,
-
-    // Active hardfork configuration for gas rules
-    hardfork: Hardfork,
-
-    // Blockchain context
+const BlockContext = struct {
     chain_id: u64,
     block_number: u64,
     block_timestamp: u64,
@@ -79,95 +60,66 @@ pub const Evm = struct {
     block_gas_limit: u64,
     block_base_fee: u256,
     blob_base_fee: u256,
+};
+
+/// EVM - Orchestrates execution like evm.zig
+pub const Evm = struct {
+    const Self = @This();
+
+    frames: std.ArrayList(*Frame),
+    storage: std.AutoHashMap(StorageSlotKey, u256),
+    original_storage: std.AutoHashMap(StorageSlotKey, u256),
+    balances: std.AutoHashMap(Address, u256),
+    code: std.AutoHashMap(Address, []const u8),
+    warm_addresses: std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false),
+    warm_storage_slots: std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false),
+    gas_refund: u64,
+    hardfork: Hardfork = Hardfork.DEFAULT,
     origin: Address,
     gas_price: u256,
     host: ?HostInterface,
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
+    block_context: BlockContext = .{
+        .chain_id = 1,
+        .block_number = 0,
+        .block_timestamp = 0,
+        .block_difficulty = 0,
+        .block_prevrandao = 0,
+        .block_coinbase = primitives.ZERO_ADDRESS,
+        .block_gas_limit = 30_000_000,
+        .block_base_fee = 0,
+        .blob_base_fee = 0,
+    },
 
-    pub fn init(allocator: std.mem.Allocator) !Self {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer arena.deinit();
-        const arena_allocator = arena.allocator();
-        const storage_map = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
-        const balances_map = std.AutoHashMap(Address, u256).init(arena_allocator);
-        const code_map = std.AutoHashMap(Address, []const u8).init(arena_allocator);
-        const warm_addresses = std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false).init(arena_allocator);
-        const warm_storage_slots = std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false).init(arena_allocator);
-        var frames_list = std.ArrayList(*Frame){};
-        try frames_list.ensureTotalCapacity(arena_allocator, 16);
-
-        const original_storage_map = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
-
+    pub fn init(allocator: std.mem.Allocator, h: ?HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext) !Self {
         return Self{
-            .frames = frames_list,
-            .storage = storage_map,
-            .original_storage = original_storage_map,
-            .balances = balances_map,
-            .code = code_map,
-            .warm_addresses = warm_addresses,
-            .warm_storage_slots = warm_storage_slots,
+            .frames = undefined,
+            .storage = undefined,
+            .original_storage = undefined,
+            .balances = undefined,
+            .code = undefined,
+            .warm_addresses = undefined,
+            .warm_storage_slots = undefined,
             .gas_refund = 0,
-            .hardfork = Hardfork.DEFAULT,
-            .chain_id = 1,
-            .block_number = 0,
-            .block_timestamp = 0,
-            .block_difficulty = 0,
-            .block_prevrandao = 0,
-            .block_coinbase = primitives.ZERO_ADDRESS,
-            .block_gas_limit = 30_000_000,
-            .block_base_fee = 0,
-            .blob_base_fee = 0,
+            .hardfork = hardfork orelse Hardfork.DEFAULT,
+            .block_context = block_context orelse .{
+                .chain_id = 1,
+                .block_number = 0,
+                .block_timestamp = 0,
+                .block_difficulty = 0,
+                .block_prevrandao = 0,
+                .block_coinbase = primitives.ZERO_ADDRESS,
+                .block_gas_limit = 30_000_000,
+                .block_base_fee = 0,
+                .blob_base_fee = 0,
+            },
             .origin = primitives.ZERO_ADDRESS,
             .gas_price = 0,
-            .host = null,
-            .arena = arena,
-            .allocator = arena_allocator,
+            .host = h,
+            .arena = std.heap.ArenaAllocator.init(allocator),
+            .allocator = allocator,
         };
-    }
-
-    /// Initialize as a pointer to avoid arena corruption from struct copies
-    /// @deprecated Use init() with proper lifetime management instead
-    pub fn initPtr(allocator: std.mem.Allocator) !*Self {
-        const self = try allocator.create(Self);
-        errdefer allocator.destroy(self);
-
-        self.arena = std.heap.ArenaAllocator.init(allocator);
-        errdefer self.arena.deinit();
-
-        const arena_allocator = self.arena.allocator();
-
-        self.frames = std.ArrayList(*Frame){}; // Unmanaged ArrayList, default init
-        self.storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
-        self.original_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
-        self.balances = std.AutoHashMap(Address, u256).init(arena_allocator);
-        self.code = std.AutoHashMap(Address, []const u8).init(arena_allocator);
-        self.warm_addresses = std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false).init(arena_allocator);
-        self.warm_storage_slots = std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false).init(arena_allocator);
-        self.gas_refund = 0;
-        self.hardfork = Hardfork.DEFAULT;
-        self.chain_id = 1;
-        self.block_number = 0;
-        self.block_timestamp = 0;
-        self.block_difficulty = 0;
-        self.block_prevrandao = 0;
-        self.block_coinbase = primitives.ZERO_ADDRESS;
-        self.block_gas_limit = 30_000_000;
-        self.block_base_fee = 0;
-        self.blob_base_fee = 0;
-        self.origin = primitives.ZERO_ADDRESS;
-        self.gas_price = 0;
-        self.host = null;
-        self.allocator = arena_allocator;
-
-        return self;
-    }
-
-    /// Initialize with a host interface
-    pub fn initWithHost(allocator: std.mem.Allocator, h: HostInterface) !Self {
-        var self = try init(allocator);
-        self.host = h;
-        return self;
     }
 
     /// Clean up resources
@@ -175,58 +127,7 @@ pub const Evm = struct {
         self.arena.deinit();
     }
 
-    /// Clean up pointer-allocated Evm
-    pub fn deinitPtr(self: *Self, allocator: std.mem.Allocator) void {
-        self.deinit();
-        allocator.destroy(self);
-    }
-
-    /// Set blockchain context
-    pub fn setBlockchainContext(
-        self: *Self,
-        chain_id: u64,
-        block_number: u64,
-        block_timestamp: u64,
-        block_difficulty: u256,
-        block_prevrandao: u256,
-        block_coinbase: Address,
-        block_gas_limit: u64,
-        block_base_fee: u256,
-        blob_base_fee: u256,
-    ) void {
-        self.chain_id = chain_id;
-        self.block_number = block_number;
-        self.block_timestamp = block_timestamp;
-        self.block_difficulty = block_difficulty;
-        self.block_prevrandao = block_prevrandao;
-        self.block_coinbase = block_coinbase;
-        self.block_gas_limit = block_gas_limit;
-        self.block_base_fee = block_base_fee;
-        self.blob_base_fee = blob_base_fee;
-    }
-
-    pub fn setTransactionContext(self: *Self, origin: Address, gas_price: u256) void {
-        self.origin = origin;
-        self.gas_price = gas_price;
-    }
-
-    /// Configure hardfork for gas and access list rules
-    pub fn setHardfork(self: *Self, hardfork: Hardfork) void {
-        self.hardfork = hardfork;
-    }
-
-    /// Set account code
-    pub fn setCode(self: *Self, address: Address, code: []const u8) !void {
-        const code_copy = try self.allocator.alloc(u8, code.len);
-        @memcpy(code_copy, code);
-        try self.code.put(address, code_copy);
-    }
-
-    pub fn setBalance(self: *Self, address: Address, balance: u256) !void {
-        try self.balances.put(address, balance);
-    }
-
-    pub fn access_address(self: *Self, address: Address) !u64 {
+    pub fn accessAddress(self: *Self, address: Address) !u64 {
         if (self.hardfork.isBefore(.BERLIN)) {
             @branchHint(.cold);
             return GasConstants.CallCodeCost;
@@ -240,7 +141,7 @@ pub const Evm = struct {
     }
 
     /// Access a storage slot and return the gas cost (EIP-2929 warm/cold)
-    pub fn access_storage_slot(self: *Self, contract_address: Address, slot: u256) !u64 {
+    pub fn accessStorageSlot(self: *Self, contract_address: Address, slot: u256) !u64 {
         if (self.hardfork.isBefore(.BERLIN)) {
             @branchHint(.cold);
             return GasConstants.SloadGas;
@@ -255,15 +156,15 @@ pub const Evm = struct {
     }
 
     /// Pre-warm addresses for transaction initialization
-    fn pre_warm_addresses(self: *Self, addresses: []const Address) !void {
-        for (addresses) |address| {
-            _ = self.warm_addresses.getOrPut(address) catch {
+    fn preWarmAddresses(self: *Self, addresses: []const Address) !void {
+        for (addresses) |addr| {
+            _ = self.warm_addresses.getOrPut(addr) catch {
                 return errors.CallError.StorageError;
             };
         }
     }
 
-    fn pre_warm_transaction(self: *Self, target: Address) errors.CallError!void {
+    fn preWarmTransaction(self: *Self, target: Address) errors.CallError!void {
         var warm: [3]Address = undefined;
         var count: usize = 0;
 
@@ -277,12 +178,12 @@ pub const Evm = struct {
 
         if (self.hardfork.isAtLeast(.SHANGHAI)) {
             @branchHint(.likely);
-            warm[count] = self.block_coinbase;
+            warm[count] = self.block_context.block_coinbase;
             count += 1;
         }
 
         // Pre-warm origin, target, and coinbase
-        try self.pre_warm_addresses(warm[0..count]);
+        try self.preWarmAddresses(warm[0..count]);
 
         // Pre-warm precompiles if Berlin+
         if (!self.hardfork.isAtLeast(.BERLIN)) return;
@@ -290,7 +191,7 @@ pub const Evm = struct {
     }
 
     /// Execute bytecode (main entry point like evm.execute)
-    pub fn execute(
+    pub fn call(
         self: *Self,
         bytecode: []const u8,
         gas: i64,
@@ -299,8 +200,17 @@ pub const Evm = struct {
         value: u256,
         calldata: []const u8,
     ) errors.CallError!CallResult {
-        // Pre-warm transaction, including precompiles depending on hardfork
-        try self.pre_warm_transaction(address);
+        const arena_allocator = self.arena.allocator();
+        self.storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
+        self.balances = std.AutoHashMap(Address, u256).init(arena_allocator);
+        self.code = std.AutoHashMap(Address, []const u8).init(arena_allocator);
+        self.warm_addresses = std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false).init(arena_allocator);
+        self.warm_storage_slots = std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false).init(arena_allocator);
+        self.frames = std.ArrayList(*Frame){};
+        try self.frames.ensureTotalCapacity(arena_allocator, 16);
+        self.original_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
+
+        try self.preWarmTransaction(address);
 
         const intrinsic_gas: i64 = @intCast(GasConstants.TxGas);
         if (gas < intrinsic_gas) {
@@ -462,11 +372,14 @@ pub const Evm = struct {
         return result;
     }
 
+    /// Add gas refund (called by frame)
+    pub fn add_refund(self: *Self, amount: u64) void {
+        self.gas_refund += amount;
+    }
+
     /// Get balance of an address (called by frame)
     pub fn get_balance(self: *Self, address: Address) u256 {
-        if (self.host) |h| {
-            return h.getBalance(address);
-        }
+        if (self.host) |h| return h.getBalance(address);
         return self.balances.get(address) orelse 0;
     }
 
@@ -515,24 +428,9 @@ pub const Evm = struct {
         return self.storage.get(key) orelse 0;
     }
 
-    /// Add gas refund
-    pub fn add_refund(self: *Self, amount: u64) void {
-        self.gas_refund +%= amount;
-    }
-
-    /// Check if an address is a precompile
-    /// TODO: implement this
-    pub fn is_precompile(self: *const Self, address: Address) bool {
-        _ = self;
-        _ = address;
-        return false;
-    }
-
     /// Get current frame (top of the frame stack)
     pub fn getCurrentFrame(self: *const Self) ?*Frame {
-        if (self.frames.items.len > 0) {
-            return self.frames.items[self.frames.items.len - 1];
-        }
+        if (self.frames.items.len > 0) return self.frames.items[self.frames.items.len - 1];
         return null;
     }
 

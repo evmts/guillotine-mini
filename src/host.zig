@@ -9,11 +9,11 @@ pub const HostInterface = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        inner_call: *const fn (ptr: *anyopaque, gas: u64, address: Address, value: u256, input: []const u8, call_type: CallType) CallResult,
-        get_balance: *const fn (ptr: *anyopaque, address: Address) u256,
-        get_code: *const fn (ptr: *anyopaque, address: Address) []const u8,
-        get_storage: *const fn (ptr: *anyopaque, address: Address, slot: u256) u256,
-        set_storage: *const fn (ptr: *anyopaque, address: Address, slot: u256, value: u256) void,
+        innerCall: *const fn (ptr: *anyopaque, gas: u64, address: Address, value: u256, input: []const u8, call_type: CallType) CallResult,
+        getBalance: *const fn (ptr: *anyopaque, address: Address) u256,
+        getCode: *const fn (ptr: *anyopaque, address: Address) []const u8,
+        getStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256) u256,
+        setStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256, value: u256) void,
     };
 
     pub const CallType = enum {
@@ -26,23 +26,23 @@ pub const HostInterface = struct {
     };
 
     pub fn innerCall(self: HostInterface, gas: u64, address: Address, value: u256, input: []const u8, call_type: CallType) CallResult {
-        return self.vtable.inner_call(self.ptr, gas, address, value, input, call_type);
+        return self.vtable.innerCall(self.ptr, gas, address, value, input, call_type);
     }
 
     pub fn getBalance(self: HostInterface, address: Address) u256 {
-        return self.vtable.get_balance(self.ptr, address);
+        return self.vtable.getBalance(self.ptr, address);
     }
 
     pub fn getCode(self: HostInterface, address: Address) []const u8 {
-        return self.vtable.get_code(self.ptr, address);
+        return self.vtable.getCode(self.ptr, address);
     }
 
     pub fn getStorage(self: HostInterface, address: Address, slot: u256) u256 {
-        return self.vtable.get_storage(self.ptr, address, slot);
+        return self.vtable.getStorage(self.ptr, address, slot);
     }
 
     pub fn setStorage(self: HostInterface, address: Address, slot: u256, value: u256) void {
-        self.vtable.set_storage(self.ptr, address, slot, value);
+        self.vtable.setStorage(self.ptr, address, slot, value);
     }
 };
 
@@ -66,10 +66,10 @@ pub const Host = struct {
         return .{
             .ptr = self,
             .vtable = &.{
-                .inner_call = innerCall,
-                .get_balance = getBalance,
-                .get_code = getCode,
-                .get_storage = getStorage,
+                .innerCall = innerCall,
+                .getBalance = getBalance,
+                .getCode = getCode,
+                .getStorage = getStorage,
                 .set_storage = setStorage,
             },
         };
