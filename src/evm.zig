@@ -66,7 +66,7 @@ const BlockContext = struct {
 pub const Evm = struct {
     const Self = @This();
 
-    frames: std.ArrayList(*Frame),
+    frames: std.ArrayList(Frame),
     storage: std.AutoHashMap(StorageSlotKey, u256),
     original_storage: std.AutoHashMap(StorageSlotKey, u256),
     balances: std.AutoHashMap(Address, u256),
@@ -206,7 +206,7 @@ pub const Evm = struct {
         self.code = std.AutoHashMap(Address, []const u8).init(arena_allocator);
         self.warm_addresses = std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false).init(arena_allocator);
         self.warm_storage_slots = std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false).init(arena_allocator);
-        self.frames = std.ArrayList(*Frame){};
+        self.frames = std.ArrayList(Frame){};
         try self.frames.ensureTotalCapacity(arena_allocator, 16);
         self.original_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
 
@@ -224,9 +224,9 @@ pub const Evm = struct {
         const execution_gas = gas - intrinsic_gas;
         const execution_gas_limit: u64 = @as(u64, @intCast(execution_gas));
 
-        const frame = try self.allocator.create(Frame);
-        frame.* = try Frame.init(
-            self.allocator,
+        // Create and push frame onto stack
+        try self.frames.append(self.arena.allocator(), try Frame.init(
+            self.arena.allocator(),
             bytecode,
             execution_gas,
             caller,
@@ -235,14 +235,11 @@ pub const Evm = struct {
             calldata,
             @as(*anyopaque, @ptrCast(self)),
             self.hardfork,
-        );
-
-        // Push frame onto stack
-        try self.frames.append(self.allocator, frame);
+        ));
         defer _ = self.frames.pop();
 
-        // Execute the frame
-        frame.execute() catch {
+        // Execute the frame (don't cache pointer - it may become invalid during nested calls)
+        self.frames.items[self.frames.items.len - 1].execute() catch {
             // Error case - return failure (arena will clean up)
             return CallResult{
                 .success = false,
@@ -251,9 +248,9 @@ pub const Evm = struct {
             };
         };
 
-        // Frame was popped, current frame is automatically updated via getCurrentFrame()
-
-        const output = try self.allocator.alloc(u8, frame.output.len);
+        // Get frame results (refetch pointer after execution)
+        const frame = &self.frames.items[self.frames.items.len - 1];
+        const output = try self.arena.allocator().alloc(u8, frame.output.len);
         @memcpy(output, frame.output);
 
         var gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
@@ -325,10 +322,9 @@ pub const Evm = struct {
         // Get caller from current frame
         const caller = if (self.getCurrentFrame()) |frame| frame.address else self.origin;
 
-        // Create a new frame for the inner call
-        const frame = try self.allocator.create(Frame);
-        frame.* = try Frame.init(
-            self.allocator,
+        // Create and push frame onto stack
+        try self.frames.append(self.arena.allocator(), try Frame.init(
+            self.arena.allocator(),
             code,
             @intCast(gas),
             caller,
@@ -337,12 +333,11 @@ pub const Evm = struct {
             input,
             @as(*anyopaque, @ptrCast(self)),
             self.hardfork,
-        );
-
-        try self.frames.append(self.allocator, frame);
+        ));
         errdefer _ = self.frames.pop();
 
-        frame.execute() catch {
+        // Execute frame (don't cache pointer - it may become invalid during nested calls)
+        self.frames.items[self.frames.items.len - 1].execute() catch {
             _ = self.frames.pop();
             return CallResult{
                 .success = false,
@@ -351,12 +346,12 @@ pub const Evm = struct {
             };
         };
 
-        // Pop frame from stack
-        _ = self.frames.pop();
+        // Get frame results (refetch pointer after execution)
+        const frame = &self.frames.items[self.frames.items.len - 1];
 
         // Store return data
         const output = if (frame.output.len > 0) blk: {
-            const output_copy = try self.allocator.alloc(u8, frame.output.len);
+            const output_copy = try self.arena.allocator().alloc(u8, frame.output.len);
             @memcpy(output_copy, frame.output);
             break :blk output_copy;
         } else &[_]u8{};
@@ -367,6 +362,9 @@ pub const Evm = struct {
             .gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0))),
             .output = output,
         };
+
+        // Pop frame from stack
+        _ = self.frames.pop();
 
         // No cleanup needed - arena handles it
         return result;
@@ -429,23 +427,23 @@ pub const Evm = struct {
     }
 
     /// Get current frame (top of the frame stack)
-    pub fn getCurrentFrame(self: *const Self) ?*Frame {
-        if (self.frames.items.len > 0) return self.frames.items[self.frames.items.len - 1];
+    pub fn getCurrentFrame(self: *Self) ?*Frame {
+        if (self.frames.items.len > 0) return &self.frames.items[self.frames.items.len - 1];
         return null;
     }
 
     /// Get current frame's PC (for tracer)
     pub fn getPC(self: *const Self) u32 {
-        if (self.getCurrentFrame()) |frame| {
-            return frame.pc;
+        if (self.frames.items.len > 0) {
+            return self.frames.items[self.frames.items.len - 1].pc;
         }
         return 0;
     }
 
     /// Get current frame's bytecode (for tracer)
     pub fn getBytecode(self: *const Self) []const u8 {
-        if (self.getCurrentFrame()) |frame| {
-            return frame.bytecode;
+        if (self.frames.items.len > 0) {
+            return self.frames.items[self.frames.items.len - 1].bytecode;
         }
         return &[_]u8{};
     }

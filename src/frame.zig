@@ -1290,19 +1290,17 @@ pub const Frame = struct {
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
-                var allocated_input: ?[]u8 = null;
                 if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                     const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                     const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
                     const data = try self.allocator.alloc(u8, in_len);
-                    allocated_input = data;
                     var j: u32 = 0;
                     while (j < in_len) : (j += 1) {
                         data[j] = self.readMemory(in_off + j);
                     }
                     input_data = data;
                 }
-                defer if (allocated_input) |data| self.allocator.free(data);
+                // Note: No defer free needed - arena allocator will clean up
 
                 // Calculate available gas
                 const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
@@ -1375,19 +1373,17 @@ pub const Frame = struct {
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
-                var allocated_input: ?[]u8 = null;
                 if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                     const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                     const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
                     const data = try self.allocator.alloc(u8, in_len);
-                    allocated_input = data;
                     var j: u32 = 0;
                     while (j < in_len) : (j += 1) {
                         data[j] = self.readMemory(in_off + j);
                     }
                     input_data = data;
                 }
-                defer if (allocated_input) |data| self.allocator.free(data);
+                // Note: No defer free needed - arena allocator will clean up
 
                 // Calculate available gas
                 const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
@@ -1478,19 +1474,17 @@ pub const Frame = struct {
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
-                var allocated_input: ?[]u8 = null;
                 if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                     const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                     const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
                     const data = try self.allocator.alloc(u8, in_len);
-                    allocated_input = data;
                     var j: u32 = 0;
                     while (j < in_len) : (j += 1) {
                         data[j] = self.readMemory(in_off + j);
                     }
                     input_data = data;
                 }
-                defer if (allocated_input) |data| self.allocator.free(data);
+                // Note: No defer free needed - arena allocator will clean up
 
                 // Calculate available gas
                 const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
@@ -1582,19 +1576,17 @@ pub const Frame = struct {
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
-                var allocated_input: ?[]u8 = null;
                 if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                     const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                     const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
                     const data = try self.allocator.alloc(u8, in_len);
-                    allocated_input = data;
                     var j: u32 = 0;
                     while (j < in_len) : (j += 1) {
                         data[j] = self.readMemory(in_off + j);
                     }
                     input_data = data;
                 }
-                defer if (allocated_input) |data| self.allocator.free(data);
+                // Note: No defer free needed - arena allocator will clean up
 
                 // Calculate available gas
                 const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
