@@ -168,7 +168,7 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
 
         if (ctx.bytecode.len == 0) return false;
 
-        const result = ctx.evm.execute(
+        const result = ctx.evm.call(
             ctx.bytecode,
             ctx.gas,
             ctx.caller,

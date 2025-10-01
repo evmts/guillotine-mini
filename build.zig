@@ -125,7 +125,7 @@ pub fn build(b: *std.Build) void {
 
     // Create WASM module with primitives dependency
     const wasm_mod = b.addModule("guillotine_mini_wasm", .{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("src/root_c.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
         .imports = &.{
@@ -138,6 +138,26 @@ pub fn build(b: *std.Build) void {
         .root_module = wasm_mod,
     });
     wasm_lib.entry = .disabled;
+    wasm_lib.export_table = true;
+
+    // Export all functions starting with evm_
+    wasm_lib.root_module.export_symbol_names = &.{
+        "evm_create",
+        "evm_destroy",
+        "evm_set_bytecode",
+        "evm_set_execution_context",
+        "evm_set_blockchain_context",
+        "evm_execute",
+        "evm_get_gas_remaining",
+        "evm_get_gas_used",
+        "evm_is_success",
+        "evm_get_output_len",
+        "evm_get_output",
+        "evm_set_storage",
+        "evm_get_storage",
+        "evm_set_balance",
+        "evm_set_code",
+    };
 
     const wasm_install = b.addInstallArtifact(wasm_lib, .{});
 
