@@ -1,5 +1,5 @@
 # Zig
-zig-cache/
+.zig-cache/
 zig-out/
 *.o
 *.a
@@ -13,3 +13,4 @@ node_modules/
 .bun/
 bun.lockb
 *.bun
+test/specs/generated/
