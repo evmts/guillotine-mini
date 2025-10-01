@@ -8,8 +8,8 @@ const LabelInfo = struct {
 
 // Replace <contract:...> and <eoa:...> placeholders with hex addresses
 fn replacePlaceholders(allocator: std.mem.Allocator, code: []const u8) ![]u8 {
-    var result = std.ArrayList(u8).init(allocator);
-    defer result.deinit();
+    var result = std.ArrayList(u8){};
+    defer result.deinit(allocator);
 
     var i: usize = 0;
     while (i < code.len) {
@@ -25,18 +25,18 @@ fn replacePlaceholders(allocator: std.mem.Allocator, code: []const u8) ![]u8 {
                     if (std.mem.lastIndexOf(u8, placeholder, "0x")) |addr_start| {
                         const addr = placeholder[addr_start .. placeholder.len - 1]; // Remove trailing >
                         // Write "0x" + address
-                        try result.appendSlice(addr);
+                        try result.appendSlice(allocator, addr);
                         i = end_idx + 1;
                         continue;
                     }
                 }
             }
         }
-        try result.append(code[i]);
+        try result.append(allocator, code[i]);
         i += 1;
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 // Simple assembler to compile basic assembly code for tests
@@ -112,12 +112,12 @@ fn parseLllExpression(allocator: std.mem.Allocator, code: []const u8) !LllExpr {
     // Check if this is a list (starts with '(')
     if (code[pos] == '(') {
         pos += 1; // Skip '('
-        var items = std.ArrayList(LllExpr).init(allocator);
+        var items = std.ArrayList(LllExpr){};
         errdefer {
             for (items.items) |*item| {
                 item.deinit(allocator);
             }
-            items.deinit();
+            items.deinit(allocator);
         }
 
         while (pos < code.len) {
@@ -136,7 +136,7 @@ fn parseLllExpression(allocator: std.mem.Allocator, code: []const u8) !LllExpr {
             try items.append(result);
         }
 
-        return LllExpr{ .list = try items.toOwnedSlice() };
+        return LllExpr{ .list = try items.toOwnedSlice(allocator) };
     }
 
     // Otherwise parse atom (opcode or number)
@@ -151,12 +151,12 @@ fn parseLllExpressionAt(allocator: std.mem.Allocator, code: []const u8, pos: *us
     // Check if this is a list
     if (code[pos.*] == '(') {
         pos.* += 1; // Skip '('
-        var items = std.ArrayList(LllExpr).init(allocator);
+        var items = std.ArrayList(LllExpr){};
         errdefer {
             for (items.items) |*item| {
                 item.deinit(allocator);
             }
-            items.deinit();
+            items.deinit(allocator);
         }
 
         while (pos.* < code.len) {
@@ -175,7 +175,7 @@ fn parseLllExpressionAt(allocator: std.mem.Allocator, code: []const u8, pos: *us
             try items.append(result);
         }
 
-        return LllExpr{ .list = try items.toOwnedSlice() };
+        return LllExpr{ .list = try items.toOwnedSlice(allocator) };
     }
 
     // Otherwise parse atom
@@ -236,11 +236,11 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
     switch (expr) {
         .opcode => |name| {
             // Single opcode
-            var bytecode = std.ArrayList(u8).init(allocator);
-            defer bytecode.deinit();
+            var bytecode = std.ArrayList(u8){};
+            defer bytecode.deinit(allocator);
             const opcode = try getOpcode(name);
             try bytecode.append(opcode);
-            return bytecode.toOwnedSlice();
+            return bytecode.toOwnedSlice(allocator);
         },
         .number => |value| {
             // Push the number
@@ -248,13 +248,13 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
         },
         .mload => |index| {
             // @x compiles to: PUSH index, MLOAD
-            var bytecode = std.ArrayList(u8).init(allocator);
-            defer bytecode.deinit();
+            var bytecode = std.ArrayList(u8){};
+            defer bytecode.deinit(allocator);
             const push_bytes = try compilePushValue(allocator, index);
             defer allocator.free(push_bytes);
             try bytecode.appendSlice(push_bytes);
             try bytecode.append(0x51); // MLOAD
-            return bytecode.toOwnedSlice();
+            return bytecode.toOwnedSlice(allocator);
         },
         .list => |items| {
             if (items.len == 0) return error.InvalidFormat;
@@ -266,8 +266,8 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
 
                 // Handle (seq ...) - sequential execution
                 if (std.mem.eql(u8, op_name, "seq")) {
-                    var bytecode = std.ArrayList(u8).init(allocator);
-                    defer bytecode.deinit();
+                    var bytecode = std.ArrayList(u8){};
+                    defer bytecode.deinit(allocator);
 
                     // Compile each expression in sequence
                     for (items[1..]) |item| {
@@ -275,7 +275,7 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                         defer {
                             var it = labels_map.iterator();
                             while (it.next()) |entry| {
-                                entry.value_ptr.references.deinit();
+                                entry.value_ptr.references.deinit(allocator);
                             }
                             labels_map.deinit();
                         }
@@ -284,7 +284,7 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                         try bytecode.appendSlice(item_bytecode);
                     }
 
-                    return bytecode.toOwnedSlice();
+                    return bytecode.toOwnedSlice(allocator);
                 }
 
                 // Handle (lll ...) - meta-compilation
@@ -296,15 +296,15 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                     defer {
                         var it = labels_map.iterator();
                         while (it.next()) |entry| {
-                            entry.value_ptr.references.deinit();
+                            entry.value_ptr.references.deinit(allocator);
                         }
                         labels_map.deinit();
                     }
                     const inner_bytecode = try compileLllExpr(allocator, items[1], &labels_map, 0);
                     defer allocator.free(inner_bytecode);
 
-                    var bytecode = std.ArrayList(u8).init(allocator);
-                    defer bytecode.deinit();
+                    var bytecode = std.ArrayList(u8){};
+                    defer bytecode.deinit(allocator);
 
                     // Push the bytecode length
                     const len_bytes = try compilePushValue(allocator, inner_bytecode.len);
@@ -319,7 +319,7 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                     defer {
                         var it = labels_map2.iterator();
                         while (it.next()) |entry| {
-                            entry.value_ptr.references.deinit();
+                            entry.value_ptr.references.deinit(allocator);
                         }
                         labels_map2.deinit();
                     }
@@ -336,12 +336,12 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                     // This is a simplified version - full LLL would embed the code
                     try bytecode.appendSlice(inner_bytecode);
 
-                    return bytecode.toOwnedSlice();
+                    return bytecode.toOwnedSlice(allocator);
                 }
 
                 // Regular opcode with arguments - compile in REVERSE order
-                var bytecode = std.ArrayList(u8).init(allocator);
-                defer bytecode.deinit();
+                var bytecode = std.ArrayList(u8){};
+                defer bytecode.deinit(allocator);
 
                 // Push arguments in reverse order (prefix -> postfix)
                 var i = items.len;
@@ -351,7 +351,7 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                     defer {
                         var it = labels_map.iterator();
                         while (it.next()) |entry| {
-                            entry.value_ptr.references.deinit();
+                            entry.value_ptr.references.deinit(allocator);
                         }
                         labels_map.deinit();
                     }
@@ -364,7 +364,7 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                 const opcode = try getOpcode(op_name);
                 try bytecode.append(opcode);
 
-                return bytecode.toOwnedSlice();
+                return bytecode.toOwnedSlice(allocator);
             }
 
             return error.InvalidFormat;
@@ -374,8 +374,8 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
 
 // Helper to compile a PUSH for a value
 fn compilePushValue(allocator: std.mem.Allocator, value: u256) ![]u8 {
-    var bytecode = std.ArrayList(u8).init(allocator);
-    defer bytecode.deinit();
+    var bytecode = std.ArrayList(u8){};
+    defer bytecode.deinit(allocator);
 
     // For addresses (20 bytes), use PUSH20
     if (value > 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF and
@@ -418,7 +418,7 @@ fn compilePushValue(allocator: std.mem.Allocator, value: u256) ![]u8 {
         }
     }
 
-    return bytecode.toOwnedSlice();
+    return bytecode.toOwnedSlice(allocator);
 }
 
 // Compile complex expressions with labels and multiple parts
@@ -436,14 +436,14 @@ fn compileComplexExpression(allocator: std.mem.Allocator, code: []const u8) ![]u
         return compileSingleExpression(allocator, trimmed_code);
     }
 
-    var bytecode = std.ArrayList(u8).init(allocator);
-    defer bytecode.deinit();
+    var bytecode = std.ArrayList(u8){};
+    defer bytecode.deinit(allocator);
 
     var labels = std.StringHashMap(LabelInfo).init(allocator);
     defer {
         var it = labels.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.references.deinit();
+            entry.value_ptr.references.deinit(allocator);
         }
         labels.deinit();
     }
@@ -489,7 +489,7 @@ fn compileComplexExpression(allocator: std.mem.Allocator, code: []const u8) ![]u
                         if (!gop.found_existing) {
                             gop.value_ptr.* = LabelInfo{
                                 .position = bytecode.items.len,
-                                .references = std.ArrayList(usize).init(allocator),
+                                .references = std.ArrayList(usize){},
                             };
                         } else {
                             gop.value_ptr.position = bytecode.items.len;
@@ -638,14 +638,14 @@ fn compileComplexExpression(allocator: std.mem.Allocator, code: []const u8) ![]u
         }
     }
 
-    return bytecode.toOwnedSlice();
+    return bytecode.toOwnedSlice(allocator);
 }
 
 // Compile a single expression (no wrapper)
 fn compileSingleExpression(allocator: std.mem.Allocator, code: []const u8) ![]u8 {
     // Tokenize the assembly code
-    var tokens = std.ArrayList([]const u8).init(allocator);
-    defer tokens.deinit();
+    var tokens = std.ArrayList([]const u8){};
+    defer tokens.deinit(allocator);
 
     var it = std.mem.tokenizeAny(u8, code, " \t\n\r()");
     while (it.next()) |token| {
@@ -653,8 +653,8 @@ fn compileSingleExpression(allocator: std.mem.Allocator, code: []const u8) ![]u8
     }
 
     // Compile tokens to bytecode
-    var bytecode = std.ArrayList(u8).init(allocator);
-    defer bytecode.deinit();
+    var bytecode = std.ArrayList(u8){};
+    defer bytecode.deinit(allocator);
 
     var i: usize = 0;
     while (i < tokens.items.len) : (i += 1) {
@@ -716,7 +716,7 @@ fn compileSingleExpression(allocator: std.mem.Allocator, code: []const u8) ![]u8
         }
     }
 
-    return bytecode.toOwnedSlice();
+    return bytecode.toOwnedSlice(allocator);
 }
 
 fn isNumber(token: []const u8) bool {
