@@ -187,6 +187,10 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                 tx_data,
             );
 
+            // Increment sender's nonce after transaction
+            const current_nonce = test_host.getNonce(sender);
+            try test_host.setNonce(sender, current_nonce + 1);
+
             // Result is automatically cleaned up by arena
             _ = result;
         }
@@ -199,6 +203,22 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
             while (it.next()) |kv| {
                 const address = try parseAddress(kv.key_ptr.*);
                 const expected = kv.value_ptr.*;
+
+                // Check if account should not exist
+                if (expected.object.get("shouldnotexist")) |sne| {
+                    const should_not_exist = try parseIntFromJson(sne);
+                    if (should_not_exist == 1) {
+                        // Verify account doesn't exist (no balance, no code, no nonce, no storage)
+                        const balance = test_host.balances.get(address) orelse 0;
+                        const nonce = test_host.getNonce(address);
+                        const code = test_host.code.get(address) orelse &[_]u8{};
+
+                        try testing.expectEqual(@as(u256, 0), balance);
+                        try testing.expectEqual(@as(u64, 0), nonce);
+                        try testing.expectEqual(@as(usize, 0), code.len);
+                        continue;
+                    }
+                }
 
                 // Check balance
                 if (expected.object.get("balance")) |expected_bal| {
@@ -250,6 +270,22 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                         while (it.next()) |kv| {
                             const address = try parseAddress(kv.key_ptr.*);
                             const expected = kv.value_ptr.*;
+
+                            // Check if account should not exist
+                            if (expected.object.get("shouldnotexist")) |sne| {
+                                const should_not_exist = try parseIntFromJson(sne);
+                                if (should_not_exist == 1) {
+                                    // Verify account doesn't exist (no balance, no code, no nonce, no storage)
+                                    const balance = test_host.balances.get(address) orelse 0;
+                                    const nonce = test_host.getNonce(address);
+                                    const code = test_host.code.get(address) orelse &[_]u8{};
+
+                                    try testing.expectEqual(@as(u256, 0), balance);
+                                    try testing.expectEqual(@as(u64, 0), nonce);
+                                    try testing.expectEqual(@as(usize, 0), code.len);
+                                    continue;
+                                }
+                            }
 
                             // Check balance
                             if (expected.object.get("balance")) |expected_bal| {

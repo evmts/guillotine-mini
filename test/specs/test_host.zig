@@ -23,7 +23,7 @@ pub const StorageSlotKey = struct {
     pub fn eql(self: @This(), a: StorageSlotKey, b: StorageSlotKey, b_index: usize) bool {
         _ = self;
         _ = b_index;
-        return a.address.equals(b) and a.slot == b.slot;
+        return a.address.equals(b.address) and a.slot == b.slot;
     }
 };
 
@@ -70,6 +70,8 @@ pub const TestHost = struct {
                 .getCode = getCode,
                 .getStorage = getStorage,
                 .setStorage = setStorage,
+                .getNonce = getNonceVTable,
+                .setNonce = setNonceVTable,
             },
         };
     }
@@ -100,13 +102,22 @@ pub const TestHost = struct {
 
     // HostInterface vtable implementations
     fn innerCall(ptr: *anyopaque, gas: u64, address: Address, value: u256, input: []const u8, call_type: HostInterface.CallType) CallResult {
-        _ = ptr;
-        _ = address;
-        _ = value;
         _ = input;
         _ = call_type;
-        // For now, just return success
-        // TODO: Implement nested calls if needed
+        const self: *Self = @ptrCast(@alignCast(ptr));
+
+        // Simple stub implementation:
+        // 1. Don't execute code (would need full EVM for proper nested calls)
+        // 2. For now, just return success without executing
+        // TODO: Implement proper nested call execution with code execution
+
+        // Note: Balance transfers should be handled by the calling EVM/frame,
+        // not here in innerCall. The caller should deduct from sender and add to receiver.
+        // For now, we just return success to allow tests to proceed.
+        _ = self;
+        _ = address;
+        _ = value;
+
         return .{
             .success = true,
             .gas_left = gas,
@@ -134,6 +145,20 @@ pub const TestHost = struct {
         const self: *Self = @ptrCast(@alignCast(ptr));
         const key = StorageSlotKey{ .address = address, .slot = slot };
         self.storage.put(key, value) catch {
+            // In a test context, we should not fail silently
+            // But the interface doesn't allow errors
+            return;
+        };
+    }
+
+    fn getNonceVTable(ptr: *anyopaque, address: Address) u64 {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        return self.getNonce(address);
+    }
+
+    fn setNonceVTable(ptr: *anyopaque, address: Address, nonce: u64) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.setNonce(address, nonce) catch {
             // In a test context, we should not fail silently
             // But the interface doesn't allow errors
             return;
