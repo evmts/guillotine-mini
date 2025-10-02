@@ -213,7 +213,8 @@ pub const Frame = struct {
     /// ----------------------------------- GAS ---------------------------------- ///
     /// Consume gas
     pub fn consumeGas(self: *Self, amount: u64) EvmError!void {
-        if (self.gas_remaining < @as(i64, @intCast(amount))) {
+        // Check if amount is too large to fit in i64 or exceeds remaining gas
+        if (amount > std.math.maxInt(i64) or self.gas_remaining < @as(i64, @intCast(amount))) {
             self.gas_remaining = 0;
             return error.OutOfGas;
         }
@@ -226,6 +227,14 @@ pub const Frame = struct {
         const current_size = @as(u64, self.memory_size);
 
         if (end_bytes <= current_size) return 0;
+
+        // Cap memory size to prevent gas calculation overflow
+        // Max reasonable memory is 16MB (0x1000000 bytes) which is ~500k words
+        // At that size, gas cost would be ~125 billion, far exceeding any reasonable gas limit
+        const max_memory: u64 = 0x1000000;
+        // Return a large value that won't overflow when added to other gas costs
+        // but will still trigger OutOfGas (maxInt(i64) is ~9 quintillion)
+        if (end_bytes > max_memory) return std.math.maxInt(i64);
 
         const current_words = wordCount(current_size);
         const new_words = wordCount(end_bytes);
@@ -1246,16 +1255,50 @@ pub const Frame = struct {
                 const value = try self.popStack();
                 const offset = try self.popStack();
                 const length = try self.popStack();
-                
+
                 const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
                 const gas_cost = self.createGasCost(len);
                 try self.consumeGas(gas_cost);
 
-                // In minimal implementation, just return a dummy address
-                // TODO: Add contract code size validation after CREATE executes init code
-                _ = value;
-                _ = offset;
-                try self.pushStack(0); // Dummy created address
+                // Read init code from memory
+                var init_code: []const u8 = &.{};
+                if (length > 0 and length <= std.math.maxInt(u32)) {
+                    const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
+
+                    // Check memory bounds and charge for expansion
+                    const end_bytes = @as(u64, off) + @as(u64, len);
+                    const mem_cost = self.memoryExpansionCost(end_bytes);
+                    try self.consumeGas(mem_cost);
+
+                    const code = try self.allocator.alloc(u8, len);
+                    var j: u32 = 0;
+                    while (j < len) : (j += 1) {
+                        code[j] = self.readMemory(off + j);
+                    }
+                    init_code = code;
+                }
+
+                // Calculate available gas (EIP-150: all but 1/64th)
+                const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
+                const max_gas = remaining_gas - (remaining_gas / 64);
+
+                // Perform CREATE
+                const result = try evm.inner_create(value, init_code, max_gas, null);
+
+                // Update gas
+                const gas_used = max_gas - result.gas_left;
+                self.gas_remaining -= @intCast(gas_used);
+
+                // Push address onto stack (0 if failed)
+                const addr_u256 = if (result.success) blk: {
+                    var val: u256 = 0;
+                    for (result.address.bytes) |b| {
+                        val = (val << 8) | b;
+                    }
+                    break :blk val;
+                } else 0;
+                try self.pushStack(addr_u256);
+
                 self.pc += 1;
             },
 
@@ -1293,12 +1336,18 @@ pub const Frame = struct {
                 if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                     const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                     const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
-                    const data = try self.allocator.alloc(u8, in_len);
-                    var j: u32 = 0;
-                    while (j < in_len) : (j += 1) {
-                        data[j] = self.readMemory(in_off + j);
+
+                    // Check if in_off + in_len would overflow
+                    const end_offset = in_off +% in_len;
+                    if (end_offset >= in_off) {
+                        const data = try self.allocator.alloc(u8, in_len);
+                        var j: u32 = 0;
+                        while (j < in_len) : (j += 1) {
+                            data[j] = self.readMemory(in_off + j);
+                        }
+                        input_data = data;
                     }
-                    input_data = data;
+                    // else: overflow occurred, use empty input data
                 }
                 // Note: No defer free needed - arena allocator will clean up
 
@@ -1308,8 +1357,8 @@ pub const Frame = struct {
                 const max_gas = remaining_gas - (remaining_gas / 64);
                 const available_gas = @min(gas_limit, max_gas);
 
-                // Perform the inner call
-                const result = try evm.inner_call(call_address, value_arg, input_data, available_gas);
+                // Perform the inner call (regular CALL)
+                const result = try evm.inner_call(call_address, value_arg, input_data, available_gas, .Call);
 
                 // Write output to memory
                 if (out_length > 0 and result.output.len > 0) {
@@ -1376,12 +1425,18 @@ pub const Frame = struct {
                 if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                     const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                     const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
-                    const data = try self.allocator.alloc(u8, in_len);
-                    var j: u32 = 0;
-                    while (j < in_len) : (j += 1) {
-                        data[j] = self.readMemory(in_off + j);
+
+                    // Check if in_off + in_len would overflow
+                    const end_offset = in_off +% in_len;
+                    if (end_offset >= in_off) {
+                        const data = try self.allocator.alloc(u8, in_len);
+                        var j: u32 = 0;
+                        while (j < in_len) : (j += 1) {
+                            data[j] = self.readMemory(in_off + j);
+                        }
+                        input_data = data;
                     }
-                    input_data = data;
+                    // else: overflow occurred, use empty input data
                 }
                 // Note: No defer free needed - arena allocator will clean up
 
@@ -1391,8 +1446,8 @@ pub const Frame = struct {
                 const max_gas = remaining_gas - (remaining_gas / 64);
                 const available_gas = @min(gas_limit, max_gas);
 
-                // Perform the inner call
-                const result = try evm.inner_call(call_address, value_arg, input_data, available_gas);
+                // Perform the inner call (CALLCODE)
+                const result = try evm.inner_call(call_address, value_arg, input_data, available_gas, .CallCode);
 
                 // Write output to memory
                 if (out_length > 0 and result.output.len > 0) {
@@ -1432,6 +1487,13 @@ pub const Frame = struct {
                 if (length > 0) {
                     const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
                     const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
+
+                    // Check if off + len would overflow
+                    const end_offset = off +% len;
+                    if (end_offset < off) {
+                        // Overflow occurred, return out of bounds error
+                        return error.OutOfBounds;
+                    }
 
                     // Charge memory expansion for the return slice
                     const end_bytes = @as(u64, off) + @as(u64, len);
@@ -1477,12 +1539,18 @@ pub const Frame = struct {
                 if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                     const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                     const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
-                    const data = try self.allocator.alloc(u8, in_len);
-                    var j: u32 = 0;
-                    while (j < in_len) : (j += 1) {
-                        data[j] = self.readMemory(in_off + j);
+
+                    // Check if in_off + in_len would overflow
+                    const end_offset = in_off +% in_len;
+                    if (end_offset >= in_off) {
+                        const data = try self.allocator.alloc(u8, in_len);
+                        var j: u32 = 0;
+                        while (j < in_len) : (j += 1) {
+                            data[j] = self.readMemory(in_off + j);
+                        }
+                        input_data = data;
                     }
-                    input_data = data;
+                    // else: overflow occurred, use empty input data
                 }
                 // Note: No defer free needed - arena allocator will clean up
 
@@ -1492,8 +1560,8 @@ pub const Frame = struct {
                 const max_gas = remaining_gas - (remaining_gas / 64);
                 const available_gas = @min(gas_limit, max_gas);
 
-                // Perform the inner call
-                const result = try evm.inner_call(call_address, self.value, input_data, available_gas);
+                // Perform the inner call (DELEGATECALL)
+                const result = try evm.inner_call(call_address, self.value, input_data, available_gas, .DelegateCall);
 
                 // Write output to memory
                 if (out_length > 0 and result.output.len > 0) {
@@ -1534,16 +1602,50 @@ pub const Frame = struct {
                 const offset = try self.popStack();
                 const length = try self.popStack();
                 const salt = try self.popStack();
-                
+
                 const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
                 const gas_cost = self.create2GasCost(len);
                 try self.consumeGas(gas_cost);
 
-                // TODO: Add contract code size validation after CREATE2 executes init code
-                _ = value;
-                _ = offset;
-                _ = salt;
-                try self.pushStack(0); // Dummy created address
+                // Read init code from memory
+                var init_code: []const u8 = &.{};
+                if (length > 0 and length <= std.math.maxInt(u32)) {
+                    const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
+
+                    // Check memory bounds and charge for expansion
+                    const end_bytes = @as(u64, off) + @as(u64, len);
+                    const mem_cost = self.memoryExpansionCost(end_bytes);
+                    try self.consumeGas(mem_cost);
+
+                    const code = try self.allocator.alloc(u8, len);
+                    var j: u32 = 0;
+                    while (j < len) : (j += 1) {
+                        code[j] = self.readMemory(off + j);
+                    }
+                    init_code = code;
+                }
+
+                // Calculate available gas (EIP-150: all but 1/64th)
+                const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
+                const max_gas = remaining_gas - (remaining_gas / 64);
+
+                // Perform CREATE2 with salt
+                const result = try evm.inner_create(value, init_code, max_gas, salt);
+
+                // Update gas
+                const gas_used = max_gas - result.gas_left;
+                self.gas_remaining -= @intCast(gas_used);
+
+                // Push address onto stack (0 if failed)
+                const addr_u256 = if (result.success) blk: {
+                    var val: u256 = 0;
+                    for (result.address.bytes) |b| {
+                        val = (val << 8) | b;
+                    }
+                    break :blk val;
+                } else 0;
+                try self.pushStack(addr_u256);
+
                 self.pc += 1;
             },
 
@@ -1579,12 +1681,18 @@ pub const Frame = struct {
                 if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                     const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                     const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
-                    const data = try self.allocator.alloc(u8, in_len);
-                    var j: u32 = 0;
-                    while (j < in_len) : (j += 1) {
-                        data[j] = self.readMemory(in_off + j);
+
+                    // Check if in_off + in_len would overflow
+                    const end_offset = in_off +% in_len;
+                    if (end_offset >= in_off) {
+                        const data = try self.allocator.alloc(u8, in_len);
+                        var j: u32 = 0;
+                        while (j < in_len) : (j += 1) {
+                            data[j] = self.readMemory(in_off + j);
+                        }
+                        input_data = data;
                     }
-                    input_data = data;
+                    // else: overflow occurred, use empty input data
                 }
                 // Note: No defer free needed - arena allocator will clean up
 
@@ -1594,8 +1702,8 @@ pub const Frame = struct {
                 const max_gas = remaining_gas - (remaining_gas / 64);
                 const available_gas = @min(gas_limit, max_gas);
 
-                // Perform the inner call
-                const result = try evm.inner_call(call_address, 0, input_data, available_gas);
+                // Perform the inner call (STATICCALL)
+                const result = try evm.inner_call(call_address, 0, input_data, available_gas, .StaticCall);
 
                 // Write output to memory
                 if (out_length > 0 and result.output.len > 0) {
@@ -1958,7 +2066,13 @@ pub const Frame = struct {
 
     /// Main execution loop
     pub fn execute(self: *Self) EvmError!void {
+        var iteration_count: u64 = 0;
+        const max_iterations: u64 = 10_000_000; // Prevent infinite loops (reasonable limit ~10M ops)
         while (!self.stopped and !self.reverted and self.pc < self.bytecode.len) {
+            iteration_count += 1;
+            if (iteration_count > max_iterations) {
+                return error.ExecutionTimeout;
+            }
             try self.step();
         }
     }

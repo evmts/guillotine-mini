@@ -28,4 +28,5 @@ pub const CallError = error{
     InvalidPush,
     CreateInitCodeSizeLimit,
     CreateContractSizeLimit,
+    ExecutionTimeout,
 };
