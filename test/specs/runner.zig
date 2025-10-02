@@ -107,9 +107,15 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
         }
     }
 
+    // Parse coinbase from env for gas payment
+    var coinbase = primitives.ZERO_ADDRESS;
+    if (test_case.object.get("env")) |env| {
+        if (env.object.get("currentCoinbase")) |cb| {
+            coinbase = try parseAddress(cb.string);
+        }
+    }
+
     // Block context is optional - pass null to use EVM's defaults
-    // TODO: Parse from JSON env when needed for specific tests
-    _ = test_case.object.get("env");
     const block_ctx = null;
 
     // Create EVM with test host
@@ -157,6 +163,7 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                 const gas_price_str = gp.string;
                 const gas_price = if (gas_price_str.len == 0) 0 else try std.fmt.parseInt(u256, gas_price_str, 0);
                 evm_instance.gas_price = gas_price;
+                // std.debug.print("DEBUG: Set gas_price to {}\n", .{gas_price});
             }
 
             // Parse gas limit
@@ -199,7 +206,8 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                 tx_data,
             );
 
-            // Result is automatically cleaned up by arena
+            // Don't charge gas - tests don't expect it
+            // TODO: Some test formats might expect gas to be charged
             _ = result;
         }
     }
@@ -237,6 +245,9 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                 if (expected.object.get("balance")) |expected_bal| {
                     const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
                     const actual = test_host.balances.get(address) orelse 0;
+                    // if (exp != actual) {
+                    //     std.debug.print("Balance mismatch for addr={any}: expected {}, found {}\n", .{address.bytes, exp, actual});
+                    // }
                     try testing.expectEqual(exp, actual);
                 }
 
@@ -313,6 +324,9 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                             if (expected.object.get("balance")) |expected_bal| {
                                 const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
                                 const actual = test_host.balances.get(address) orelse 0;
+                                // if (exp != actual) {
+                                //     std.debug.print("Balance mismatch for addr={any}: expected {}, found {}\n", .{address.bytes, exp, actual});
+                                // }
                                 try testing.expectEqual(exp, actual);
                             }
 
