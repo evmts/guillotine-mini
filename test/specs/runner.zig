@@ -173,6 +173,10 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                 break :blk try parseAddress(to_str);
             } else null;
 
+            // Increment sender's nonce before transaction (as per Ethereum spec)
+            const current_nonce = test_host.getNonce(sender);
+            try test_host.setNonce(sender, current_nonce + 1);
+
             // Get contract code
             const target_addr = to orelse primitives.ZERO_ADDRESS;
             const bytecode = test_host.code.get(target_addr) orelse &[_]u8{};
@@ -186,10 +190,6 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                 value,
                 tx_data,
             );
-
-            // Increment sender's nonce after transaction
-            const current_nonce = test_host.getNonce(sender);
-            try test_host.setNonce(sender, current_nonce + 1);
 
             // Result is automatically cleaned up by arena
             _ = result;
