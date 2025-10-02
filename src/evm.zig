@@ -70,6 +70,7 @@ pub const Evm = struct {
     storage: std.AutoHashMap(StorageSlotKey, u256),
     original_storage: std.AutoHashMap(StorageSlotKey, u256),
     balances: std.AutoHashMap(Address, u256),
+    nonces: std.AutoHashMap(Address, u64),
     code: std.AutoHashMap(Address, []const u8),
     warm_addresses: std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false),
     warm_storage_slots: std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false),
@@ -98,6 +99,7 @@ pub const Evm = struct {
             .storage = undefined,
             .original_storage = undefined,
             .balances = undefined,
+            .nonces = undefined,
             .code = undefined,
             .warm_addresses = undefined,
             .warm_storage_slots = undefined,
@@ -203,6 +205,7 @@ pub const Evm = struct {
         const arena_allocator = self.arena.allocator();
         self.storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
         self.balances = std.AutoHashMap(Address, u256).init(arena_allocator);
+        self.nonces = std.AutoHashMap(Address, u64).init(arena_allocator);
         self.code = std.AutoHashMap(Address, []const u8).init(arena_allocator);
         self.warm_addresses = std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false).init(arena_allocator);
         self.warm_storage_slots = std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false).init(arena_allocator);
@@ -297,6 +300,7 @@ pub const Evm = struct {
         value: u256,
         input: []const u8,
         gas: u64,
+        call_type: HostInterface.CallType,
     ) errors.CallError!CallResult {
         if (self.frames.items.len >= 1024) {
             return CallResult{
@@ -306,21 +310,39 @@ pub const Evm = struct {
             };
         }
 
+        // Get caller from current frame
+        const caller = if (self.getCurrentFrame()) |frame| frame.address else self.origin;
+
+        // Handle balance transfer if value > 0 (only for regular CALL)
+        if (value > 0 and call_type == .Call) {
+            const caller_balance = self.balances.get(caller) orelse 0;
+            if (caller_balance < value) {
+                // Insufficient balance - call fails
+                return CallResult{
+                    .success = false,
+                    .gas_left = gas,
+                    .output = &[_]u8{},
+                };
+            }
+
+            // Transfer balance
+            try self.balances.put(caller, caller_balance - value);
+            const callee_balance = self.balances.get(address) orelse 0;
+            try self.balances.put(address, callee_balance + value);
+        }
+
         // Get code for the target address
         const code = self.get_code(address);
         if (code.len == 0) {
             // TODO: Implement precompiles
 
-            // Empty account - just return success
+            // Empty account - balance already transferred, just return success
             return CallResult{
                 .success = true,
                 .gas_left = gas,
                 .output = &[_]u8{},
             };
         }
-
-        // Get caller from current frame
-        const caller = if (self.getCurrentFrame()) |frame| frame.address else self.origin;
 
         // Create and push frame onto stack
         try self.frames.append(self.arena.allocator(), try Frame.init(
@@ -370,6 +392,185 @@ pub const Evm = struct {
         return result;
     }
 
+    /// Handle CREATE operation (contract creation)
+    pub fn inner_create(
+        self: *Self,
+        value: u256,
+        init_code: []const u8,
+        gas: u64,
+        salt: ?u256,
+    ) errors.CallError!struct { address: Address, success: bool, gas_left: u64 } {
+        // Check call depth
+        if (self.frames.items.len >= 1024) {
+            return .{
+                .address = primitives.ZERO_ADDRESS,
+                .success = false,
+                .gas_left = 0,
+            };
+        }
+
+        // Get caller from current frame
+        const caller = if (self.getCurrentFrame()) |frame| frame.address else self.origin;
+
+        // Handle balance transfer if value > 0
+        if (value > 0) {
+            const caller_balance = self.balances.get(caller) orelse 0;
+            if (caller_balance < value) {
+                // Insufficient balance - CREATE fails
+                return .{
+                    .address = primitives.ZERO_ADDRESS,
+                    .success = false,
+                    .gas_left = gas,
+                };
+            }
+            // Note: balance transfer happens after we know the new address
+        }
+
+        // Calculate new contract address
+        const new_address = if (salt) |s| blk: {
+            // CREATE2: keccak256(0xff ++ caller ++ salt ++ keccak256(init_code))[12:]
+            var hash_input = std.ArrayList(u8){};
+            defer hash_input.deinit(self.allocator);
+
+            try hash_input.append(self.allocator, 0xff);
+            try hash_input.appendSlice(self.allocator, &caller.bytes);
+
+            // Add salt (32 bytes, big-endian)
+            var salt_bytes: [32]u8 = undefined;
+            var i: usize = 0;
+            while (i < 32) : (i += 1) {
+                salt_bytes[31 - i] = @as(u8, @truncate(s >> @intCast(i * 8)));
+            }
+            try hash_input.appendSlice(self.allocator, &salt_bytes);
+
+            // Add keccak256(init_code)
+            var code_hash: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(init_code, &code_hash, .{});
+            try hash_input.appendSlice(self.allocator, &code_hash);
+
+            // Hash and take last 20 bytes
+            var addr_hash: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(hash_input.items, &addr_hash, .{});
+
+            var addr_bytes: [20]u8 = undefined;
+            @memcpy(&addr_bytes, addr_hash[12..32]);
+            break :blk Address{ .bytes = addr_bytes };
+        } else blk: {
+            // CREATE: keccak256(rlp([sender, nonce]))[12:]
+            // Get caller's nonce and increment it
+            const nonce = if (self.host) |h|
+                h.getNonce(caller)
+            else
+                self.nonces.get(caller) orelse 0;
+
+            if (self.host) |h| {
+                h.setNonce(caller, nonce + 1);
+            } else {
+                try self.nonces.put(caller, nonce + 1);
+            }
+
+            // Manually construct RLP encoding of [address_bytes, nonce]
+            // Address is 20 bytes, nonce is variable length
+            var rlp_data = std.ArrayList(u8){};
+            defer rlp_data.deinit(self.allocator);
+
+            // Encode address (20 bytes, 0x80 + 20 = 0x94)
+            try rlp_data.append(self.allocator, 0x94);
+            try rlp_data.appendSlice(self.allocator, &caller.bytes);
+
+            // Encode nonce
+            if (nonce == 0) {
+                try rlp_data.append(self.allocator, 0x80); // Empty byte string
+            } else if (nonce < 0x80) {
+                try rlp_data.append(self.allocator, @intCast(nonce));
+            } else {
+                // Multi-byte nonce (TODO: handle properly for large nonces)
+                try rlp_data.append(self.allocator, 0x81); // 1-byte string
+                try rlp_data.append(self.allocator, @intCast(nonce));
+            }
+
+            // Wrap in list prefix
+            const total_len = rlp_data.items.len;
+            var final_rlp = std.ArrayList(u8){};
+            defer final_rlp.deinit(self.allocator);
+            try final_rlp.append(self.allocator, @intCast(0xc0 + total_len)); // List with length
+            try final_rlp.appendSlice(self.allocator, rlp_data.items);
+
+            // Hash and take last 20 bytes
+            var addr_hash: [32]u8 = undefined;
+            std.crypto.hash.sha3.Keccak256.hash(final_rlp.items, &addr_hash, .{});
+
+            var addr_bytes: [20]u8 = undefined;
+            @memcpy(&addr_bytes, addr_hash[12..32]);
+            break :blk Address{ .bytes = addr_bytes };
+        };
+
+        // Transfer balance if value > 0
+        if (value > 0) {
+            const caller_balance = self.balances.get(caller) orelse 0;
+            try self.balances.put(caller, caller_balance - value);
+            const new_addr_balance = self.balances.get(new_address) orelse 0;
+            try self.balances.put(new_address, new_addr_balance + value);
+        }
+
+        // Execute initialization code
+        try self.frames.append(self.arena.allocator(), try Frame.init(
+            self.arena.allocator(),
+            init_code,
+            @intCast(gas),
+            caller,
+            new_address,
+            value,
+            &[_]u8{}, // no calldata for CREATE
+            @as(*anyopaque, @ptrCast(self)),
+            self.hardfork,
+        ));
+        errdefer _ = self.frames.pop();
+
+        // Execute frame
+        self.frames.items[self.frames.items.len - 1].execute() catch {
+            _ = self.frames.pop();
+            return .{
+                .address = primitives.ZERO_ADDRESS,
+                .success = false,
+                .gas_left = 0,
+            };
+        };
+
+        // Get frame results
+        const frame = &self.frames.items[self.frames.items.len - 1];
+        const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
+        const success = !frame.reverted;
+
+        // If successful, deploy the code
+        if (success and frame.output.len > 0) {
+            // Check code size limit (EIP-170: 24576 bytes)
+            const max_code_size = 24576;
+            if (frame.output.len > max_code_size) {
+                _ = self.frames.pop();
+                return .{
+                    .address = primitives.ZERO_ADDRESS,
+                    .success = false,
+                    .gas_left = gas_left,
+                };
+            }
+
+            // Deploy code
+            const code_copy = try self.arena.allocator().alloc(u8, frame.output.len);
+            @memcpy(code_copy, frame.output);
+            try self.code.put(new_address, code_copy);
+        }
+
+        // Pop frame
+        _ = self.frames.pop();
+
+        return .{
+            .address = if (success) new_address else primitives.ZERO_ADDRESS,
+            .success = success,
+            .gas_left = gas_left,
+        };
+    }
+
     /// Add gas refund (called by frame)
     pub fn add_refund(self: *Self, amount: u64) void {
         self.gas_refund += amount;
@@ -400,16 +601,20 @@ pub const Evm = struct {
 
     /// Set storage value (called by frame)
     pub fn set_storage(self: *Self, address: Address, slot: u256, value: u256) !void {
-        if (self.host) |h| {
-            h.setStorage(address, slot, value);
-            return;
-        }
         const key = StorageSlotKey{ .address = address, .slot = slot };
 
         // Track original value on first write in transaction
         if (!self.original_storage.contains(key)) {
-            const current = self.storage.get(key) orelse 0;
+            const current = if (self.host) |h|
+                h.getStorage(address, slot)
+            else
+                self.storage.get(key) orelse 0;
             try self.original_storage.put(key, current);
+        }
+
+        if (self.host) |h| {
+            h.setStorage(address, slot, value);
+            return;
         }
 
         try self.storage.put(key, value);
@@ -423,6 +628,10 @@ pub const Evm = struct {
             return original;
         }
         // Otherwise return current value (unchanged in this transaction)
+        // Use host if available
+        if (self.host) |h| {
+            return h.getStorage(address, slot);
+        }
         return self.storage.get(key) orelse 0;
     }
 
