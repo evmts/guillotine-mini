@@ -11,6 +11,7 @@ pub const HostInterface = struct {
     pub const VTable = struct {
         innerCall: *const fn (ptr: *anyopaque, gas: u64, address: Address, value: u256, input: []const u8, call_type: CallType) CallResult,
         getBalance: *const fn (ptr: *anyopaque, address: Address) u256,
+        setBalance: *const fn (ptr: *anyopaque, address: Address, balance: u256) void,
         getCode: *const fn (ptr: *anyopaque, address: Address) []const u8,
         getStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256) u256,
         setStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256, value: u256) void,
@@ -33,6 +34,10 @@ pub const HostInterface = struct {
 
     pub fn getBalance(self: HostInterface, address: Address) u256 {
         return self.vtable.getBalance(self.ptr, address);
+    }
+
+    pub fn setBalance(self: HostInterface, address: Address, balance: u256) void {
+        self.vtable.setBalance(self.ptr, address, balance);
     }
 
     pub fn getCode(self: HostInterface, address: Address) []const u8 {
@@ -78,6 +83,7 @@ pub const Host = struct {
             .vtable = &.{
                 .innerCall = innerCall,
                 .getBalance = getBalance,
+                .setBalance = setBalance,
                 .getCode = getCode,
                 .getStorage = getStorage,
                 .setStorage = setStorage,
@@ -105,6 +111,12 @@ pub const Host = struct {
         _ = ptr;
         _ = address;
         return 0;
+    }
+
+    fn setBalance(ptr: *anyopaque, address: Address, balance: u256) void {
+        _ = ptr;
+        _ = address;
+        _ = balance;
     }
 
     fn getCode(ptr: *anyopaque, address: Address) []const u8 {

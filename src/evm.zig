@@ -315,7 +315,7 @@ pub const Evm = struct {
 
         // Handle balance transfer if value > 0 (only for regular CALL)
         if (value > 0 and call_type == .Call) {
-            const caller_balance = self.balances.get(caller) orelse 0;
+            const caller_balance = if (self.host) |h| h.getBalance(caller) else self.balances.get(caller) orelse 0;
             if (caller_balance < value) {
                 // Insufficient balance - call fails
                 return CallResult{
@@ -326,9 +326,15 @@ pub const Evm = struct {
             }
 
             // Transfer balance
-            try self.balances.put(caller, caller_balance - value);
-            const callee_balance = self.balances.get(address) orelse 0;
-            try self.balances.put(address, callee_balance + value);
+            if (self.host) |h| {
+                h.setBalance(caller, caller_balance - value);
+                const callee_balance = h.getBalance(address);
+                h.setBalance(address, callee_balance + value);
+            } else {
+                try self.balances.put(caller, caller_balance - value);
+                const callee_balance = self.balances.get(address) orelse 0;
+                try self.balances.put(address, callee_balance + value);
+            }
         }
 
         // Get code for the target address
@@ -414,7 +420,7 @@ pub const Evm = struct {
 
         // Handle balance transfer if value > 0
         if (value > 0) {
-            const caller_balance = self.balances.get(caller) orelse 0;
+            const caller_balance = if (self.host) |h| h.getBalance(caller) else self.balances.get(caller) orelse 0;
             if (caller_balance < value) {
                 // Insufficient balance - CREATE fails
                 return .{
@@ -507,10 +513,17 @@ pub const Evm = struct {
 
         // Transfer balance if value > 0
         if (value > 0) {
-            const caller_balance = self.balances.get(caller) orelse 0;
-            try self.balances.put(caller, caller_balance - value);
-            const new_addr_balance = self.balances.get(new_address) orelse 0;
-            try self.balances.put(new_address, new_addr_balance + value);
+            if (self.host) |h| {
+                const caller_balance = h.getBalance(caller);
+                h.setBalance(caller, caller_balance - value);
+                const new_addr_balance = h.getBalance(new_address);
+                h.setBalance(new_address, new_addr_balance + value);
+            } else {
+                const caller_balance = self.balances.get(caller) orelse 0;
+                try self.balances.put(caller, caller_balance - value);
+                const new_addr_balance = self.balances.get(new_address) orelse 0;
+                try self.balances.put(new_address, new_addr_balance + value);
+            }
         }
 
         // Execute initialization code

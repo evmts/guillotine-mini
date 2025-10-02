@@ -67,6 +67,7 @@ pub const TestHost = struct {
             .vtable = &.{
                 .innerCall = innerCall,
                 .getBalance = getBalance,
+                .setBalance = setBalanceVTable,
                 .getCode = getCode,
                 .getStorage = getStorage,
                 .setStorage = setStorage,
@@ -128,6 +129,13 @@ pub const TestHost = struct {
     fn getBalance(ptr: *anyopaque, address: Address) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.balances.get(address) orelse 0;
+    }
+
+    fn setBalanceVTable(ptr: *anyopaque, address: Address, balance: u256) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.balances.put(address, balance) catch {
+            return;
+        };
     }
 
     fn getCode(ptr: *anyopaque, address: Address) []const u8 {
