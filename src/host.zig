@@ -14,6 +14,8 @@ pub const HostInterface = struct {
         getCode: *const fn (ptr: *anyopaque, address: Address) []const u8,
         getStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256) u256,
         setStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256, value: u256) void,
+        getNonce: *const fn (ptr: *anyopaque, address: Address) u64,
+        setNonce: *const fn (ptr: *anyopaque, address: Address, nonce: u64) void,
     };
 
     pub const CallType = enum {
@@ -44,6 +46,14 @@ pub const HostInterface = struct {
     pub fn setStorage(self: HostInterface, address: Address, slot: u256, value: u256) void {
         self.vtable.setStorage(self.ptr, address, slot, value);
     }
+
+    pub fn getNonce(self: HostInterface, address: Address) u64 {
+        return self.vtable.getNonce(self.ptr, address);
+    }
+
+    pub fn setNonce(self: HostInterface, address: Address, nonce: u64) void {
+        self.vtable.setNonce(self.ptr, address, nonce);
+    }
 };
 
 /// Call result type
@@ -70,7 +80,9 @@ pub const Host = struct {
                 .getBalance = getBalance,
                 .getCode = getCode,
                 .getStorage = getStorage,
-                .set_storage = setStorage,
+                .setStorage = setStorage,
+                .getNonce = getNonce,
+                .setNonce = setNonce,
             },
         };
     }
@@ -113,5 +125,17 @@ pub const Host = struct {
         _ = address;
         _ = slot;
         _ = value;
+    }
+
+    fn getNonce(ptr: *anyopaque, address: Address) u64 {
+        _ = ptr;
+        _ = address;
+        return 0;
+    }
+
+    fn setNonce(ptr: *anyopaque, address: Address, nonce: u64) void {
+        _ = ptr;
+        _ = address;
+        _ = nonce;
     }
 };
