@@ -335,6 +335,7 @@ pub const Evm = struct {
             const caller_balance = if (self.host) |h| h.getBalance(caller) else self.balances.get(caller) orelse 0;
             if (caller_balance < value) {
                 // Insufficient balance - call fails
+                // std.debug.print("CALL FAILED: insufficient balance (caller={any} needs {} has {})\n", .{caller.bytes, value, caller_balance});
                 return CallResult{
                     .success = false,
                     .gas_left = gas,
@@ -383,6 +384,7 @@ pub const Evm = struct {
 
         // Execute frame (don't cache pointer - it may become invalid during nested calls)
         self.frames.items[self.frames.items.len - 1].execute() catch {
+            // std.debug.print("CALL FAILED: execution error {} (addr={any})\n", .{err, address.bytes});
             _ = self.frames.pop();
             return CallResult{
                 .success = false,
@@ -407,6 +409,10 @@ pub const Evm = struct {
             .gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0))),
             .output = output,
         };
+
+        // if (frame.reverted) {
+        //     std.debug.print("CALL FAILED: reverted (addr={any})\n", .{address.bytes});
+        // }
 
         // Pop frame from stack
         _ = self.frames.pop();

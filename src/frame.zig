@@ -1064,6 +1064,11 @@ pub const Frame = struct {
                 const key = try self.popStack();
                 const value = try self.popStack();
 
+                // Debug: log SSTORE operations for slot 0
+                // if (key == 0) {
+                //     std.debug.print("SSTORE at pc={} addr={any} storing key={} value={}\n", .{self.pc, self.address.bytes, key, value});
+                // }
+
                 // Get current and original values for gas calculation
                 const current_value = evm.get_storage(self.address, key);
                 const original_value = evm.get_original_storage(self.address, key);
@@ -1381,11 +1386,17 @@ pub const Frame = struct {
                 self.return_data = result.output;
 
                 // Push success status
-                try self.pushStack(if (result.success) 1 else 0);
+                const success_val: u256 = if (result.success) 1 else 0;
+                try self.pushStack(success_val);
 
                 // Update gas
                 const gas_used = available_gas - result.gas_left;
                 self.gas_remaining -= @intCast(gas_used);
+
+                // Debug: log if call failed
+                // if (!result.success) {
+                //     std.debug.print("CALL at pc={} returned failure, pushed {} to stack, gas_remaining={}\n", .{self.pc, success_val, self.gas_remaining});
+                // }
 
                 self.pc += 1;
             },

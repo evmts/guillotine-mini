@@ -18,6 +18,7 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
         return;
     }
 
+    // std.debug.print("DEBUG: Starting test\n", .{});
 
     // Create test host
     var test_host = try TestHost.init(allocator);
@@ -151,6 +152,13 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
             // Set origin
             evm_instance.origin = sender;
 
+            // Parse and set gas price
+            if (tx.object.get("gasPrice")) |gp| {
+                const gas_price_str = gp.string;
+                const gas_price = if (gas_price_str.len == 0) 0 else try std.fmt.parseInt(u256, gas_price_str, 0);
+                evm_instance.gas_price = gas_price;
+            }
+
             // Parse gas limit
             const gas_limit = if (tx.object.get("gasLimit")) |g| blk: {
                 if (g == .array) {
@@ -198,6 +206,11 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
 
     // Validate post-state
     if (test_case.object.get("post")) |post| {
+        // Debug: print all storage for debugging
+        // var storage_debug_it = test_host.storage.iterator();
+        // while (storage_debug_it.next()) |entry| {
+        //     std.debug.print("DEBUG: Storage addr={any} slot={} value={}\n", .{entry.key_ptr.address.bytes, entry.key_ptr.slot, entry.value_ptr.*});
+        // }
         if (post == .object) {
             var it = post.object.iterator();
             while (it.next()) |kv| {
@@ -254,6 +267,9 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
 
                             const slot_key = StorageSlotKey{ .address = address, .slot = key };
                             const actual_value = test_host.storage.get(slot_key) orelse 0;
+                            // if (exp_value != actual_value) {
+                            //     std.debug.print("Storage mismatch: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
+                            // }
                             try testing.expectEqual(exp_value, actual_value);
                         }
                     }
@@ -261,6 +277,12 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
             }
         }
     } else if (test_case.object.get("expect")) |expect_list| {
+        // Debug: print all storage for debugging
+        // var storage_debug_it2 = test_host.storage.iterator();
+        // while (storage_debug_it2.next()) |entry| {
+        //     std.debug.print("DEBUG: Storage addr={any} slot={} value={}\n", .{entry.key_ptr.address.bytes, entry.key_ptr.slot, entry.value_ptr.*});
+        // }
+
         // Handle expect format (alternative to post)
         if (expect_list == .array) {
             for (expect_list.array.items) |expectation| {
@@ -321,6 +343,9 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
 
                                         const slot_key = StorageSlotKey{ .address = address, .slot = key };
                                         const actual_value = test_host.storage.get(slot_key) orelse 0;
+                                        // if (exp_value != actual_value) {
+                                        //     std.debug.print("Storage mismatch: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
+                                        // }
                                         try testing.expectEqual(exp_value, actual_value);
                                     }
                                 }
