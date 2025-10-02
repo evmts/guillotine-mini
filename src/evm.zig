@@ -215,6 +215,23 @@ pub const Evm = struct {
 
         try self.preWarmTransaction(address);
 
+        // Transfer value from caller to recipient (if value > 0)
+        if (value > 0 and self.host != null) {
+            const sender_balance = if (self.host) |h| h.getBalance(caller) else 0;
+            if (sender_balance < value) {
+                return CallResult{
+                    .success = false,
+                    .gas_left = 0,
+                    .output = &[_]u8{},
+                };
+            }
+            if (self.host) |h| {
+                h.setBalance(caller, sender_balance - value);
+                const recipient_balance = h.getBalance(address);
+                h.setBalance(address, recipient_balance + value);
+            }
+        }
+
         const intrinsic_gas: i64 = @intCast(GasConstants.TxGas);
         if (gas < intrinsic_gas) {
             @branchHint(.cold);
