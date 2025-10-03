@@ -1330,6 +1330,25 @@ pub const Frame = struct {
                 var gas_cost: u64 = GasConstants.CallGas;
                 if (value_arg > 0) {
                     gas_cost += GasConstants.CallValueTransferGas;
+
+                    // EIP-150: Check if target account exists
+                    // If calling non-existent account with value, add account creation cost
+                    const target_exists = blk: {
+                        if (evm.host) |h| {
+                            const has_balance = h.getBalance(call_address) > 0;
+                            const has_code = h.getCode(call_address).len > 0;
+                            const has_nonce = h.getNonce(call_address) > 0;
+                            break :blk has_balance or has_code or has_nonce;
+                        } else {
+                            const has_balance = (evm.balances.get(call_address) orelse 0) > 0;
+                            const has_code = (evm.code.get(call_address) orelse &[_]u8{}).len > 0;
+                            const has_nonce = (evm.nonces.get(call_address) orelse 0) > 0;
+                            break :blk has_balance or has_code or has_nonce;
+                        }
+                    };
+                    if (!target_exists) {
+                        gas_cost += GasConstants.CallNewAccountGas; // +25000 for creating new account
+                    }
                 }
                 // EIP-2929: access target account (warm/cold)
                 const access_cost = try evm.accessAddress(call_address);
@@ -1360,7 +1379,13 @@ pub const Frame = struct {
                 const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
                 const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
                 const max_gas = remaining_gas - (remaining_gas / 64);
-                const available_gas = @min(gas_limit, max_gas);
+                const available_gas_without_stipend = @min(gas_limit, max_gas);
+
+                // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
+                const available_gas = if (value_arg > 0)
+                    available_gas_without_stipend + GasConstants.CallStipend
+                else
+                    available_gas_without_stipend;
 
                 // Perform the inner call (regular CALL)
                 const result = try evm.inner_call(call_address, value_arg, input_data, available_gas, .Call);
@@ -1389,13 +1414,15 @@ pub const Frame = struct {
                 const success_val: u256 = if (result.success) 1 else 0;
                 try self.pushStack(success_val);
 
-                // Update gas
-                const gas_used = available_gas - result.gas_left;
-                self.gas_remaining -= @intCast(gas_used);
+                // Update gas - only charge caller for gas without stipend
+                // The stipend is free additional gas for the callee
+                const gas_used_total = available_gas - result.gas_left;
+                const gas_used_by_caller = @min(gas_used_total, available_gas_without_stipend);
+                self.gas_remaining -= @intCast(gas_used_by_caller);
 
                 // Debug: log if call failed
                 // if (!result.success) {
-                //     std.debug.print("CALL at pc={} returned failure, pushed {} to stack, gas_remaining={}\n", .{self.pc, success_val, self.gas_remaining});
+                //     std.debug.print("CALL FAIL: pc={} gas_left={} gas_used={}\n", .{self.pc, result.gas_left, gas_used_total});
                 // }
 
                 self.pc += 1;
@@ -1455,7 +1482,13 @@ pub const Frame = struct {
                 const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
                 const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
                 const max_gas = remaining_gas - (remaining_gas / 64);
-                const available_gas = @min(gas_limit, max_gas);
+                const available_gas_without_stipend = @min(gas_limit, max_gas);
+
+                // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
+                const available_gas = if (value_arg > 0)
+                    available_gas_without_stipend + GasConstants.CallStipend
+                else
+                    available_gas_without_stipend;
 
                 // Perform the inner call (CALLCODE)
                 const result = try evm.inner_call(call_address, value_arg, input_data, available_gas, .CallCode);
@@ -1483,9 +1516,10 @@ pub const Frame = struct {
                 // Push success status
                 try self.pushStack(if (result.success) 1 else 0);
 
-                // Update gas
-                const gas_used = available_gas - result.gas_left;
-                self.gas_remaining -= @intCast(gas_used);
+                // Update gas - only charge caller for gas without stipend
+                const gas_used_total = available_gas - result.gas_left;
+                const gas_used_by_caller = @min(gas_used_total, available_gas_without_stipend);
+                self.gas_remaining -= @intCast(gas_used_by_caller);
 
                 self.pc += 1;
             },
@@ -2045,18 +2079,74 @@ pub const Frame = struct {
 
             // SELFDESTRUCT
             0xff => {
-                const beneficiary = try self.popStack();
-                _ = beneficiary;
-                
-                const gas_cost = self.selfdestructGasCost();
+                const beneficiary_u256 = try self.popStack();
+
+                // Convert beneficiary to address
+                var beneficiary_bytes: [20]u8 = undefined;
+                var i: usize = 0;
+                while (i < 20) : (i += 1) {
+                    beneficiary_bytes[19 - i] = @truncate(beneficiary_u256 >> @intCast(i * 8));
+                }
+                const beneficiary = Address{ .bytes = beneficiary_bytes };
+
+                // Calculate gas cost (EIP-150: 5000 base + 25000 if creating new account)
+                var gas_cost = self.selfdestructGasCost();
+                const evm_ptr = self.getEvm();
+                const self_balance = if (evm_ptr.host) |h|
+                    h.getBalance(self.address)
+                else
+                    evm_ptr.balances.get(self.address) orelse 0;
+
+                // Check if beneficiary exists (has code, balance, or nonce)
+                if (self.hardfork.isAtLeast(.TANGERINE_WHISTLE) and self_balance > 0) {
+                    const beneficiary_exists = blk: {
+                        if (evm_ptr.host) |h| {
+                            const has_balance = h.getBalance(beneficiary) > 0;
+                            const has_code = h.getCode(beneficiary).len > 0;
+                            const has_nonce = h.getNonce(beneficiary) > 0;
+                            break :blk has_balance or has_code or has_nonce;
+                        } else {
+                            const has_balance = (evm_ptr.balances.get(beneficiary) orelse 0) > 0;
+                            const has_code = (evm_ptr.code.get(beneficiary) orelse &[_]u8{}).len > 0;
+                            const has_nonce = (evm_ptr.nonces.get(beneficiary) orelse 0) > 0;
+                            break :blk has_balance or has_code or has_nonce;
+                        }
+                    };
+                    if (!beneficiary_exists) {
+                        gas_cost += GasConstants.CallNewAccountGas; // +25000 for creating new account
+                    }
+                }
+
                 try self.consumeGas(gas_cost);
-                
+
+                // Transfer balance to beneficiary
+                if (self_balance > 0) {
+                    // Special case: self-destruct to self should just zero the balance
+                    if (self.address.equals(beneficiary)) {
+                        if (evm_ptr.host) |h| {
+                            h.setBalance(self.address, 0);
+                        } else {
+                            try evm_ptr.balances.put(self.address, 0);
+                        }
+                    } else {
+                        if (evm_ptr.host) |h| {
+                            const beneficiary_balance = h.getBalance(beneficiary);
+                            h.setBalance(self.address, 0);
+                            h.setBalance(beneficiary, beneficiary_balance + self_balance);
+                        } else {
+                            const beneficiary_balance = evm_ptr.balances.get(beneficiary) orelse 0;
+                            try evm_ptr.balances.put(self.address, 0);
+                            try evm_ptr.balances.put(beneficiary, beneficiary_balance + self_balance);
+                        }
+                    }
+                }
+
                 // Apply refund to EVM's gas_refund counter
                 const refund = self.selfdestructRefund();
                 if (refund > 0) {
-                    self.getEvm().gas_refund += refund;
+                    evm_ptr.gas_refund += refund;
                 }
-                
+
                 self.stopped = true;
             },
 
