@@ -260,7 +260,16 @@ pub const Evm = struct {
 
         // Execute the frame (don't cache pointer - it may become invalid during nested calls)
         self.frames.items[self.frames.items.len - 1].execute() catch {
-            // Error case - return failure (arena will clean up)
+            // Error case - reverse value transfer if needed
+            if (value > 0 and self.host != null) {
+                if (self.host) |h| {
+                    const sender_balance = h.getBalance(caller);
+                    const recipient_balance = h.getBalance(address);
+                    h.setBalance(caller, sender_balance + value);
+                    h.setBalance(address, recipient_balance - value);
+                }
+            }
+            // Return failure (arena will clean up)
             return CallResult{
                 .success = false,
                 .gas_left = 0,
@@ -293,6 +302,16 @@ pub const Evm = struct {
             // Apply the refund
             gas_left = gas_left + capped_refund;
             self.gas_refund = 0;
+        }
+
+        // Reverse value transfer if transaction reverted
+        if (frame.reverted and value > 0 and self.host != null) {
+            if (self.host) |h| {
+                const sender_balance = h.getBalance(caller);
+                const recipient_balance = h.getBalance(address);
+                h.setBalance(caller, sender_balance + value);
+                h.setBalance(address, recipient_balance - value);
+            }
         }
 
         // Return result
@@ -335,7 +354,7 @@ pub const Evm = struct {
             const caller_balance = if (self.host) |h| h.getBalance(caller) else self.balances.get(caller) orelse 0;
             if (caller_balance < value) {
                 // Insufficient balance - call fails
-                // std.debug.print("CALL FAILED: insufficient balance (caller={any} needs {} has {})\n", .{caller.bytes, value, caller_balance});
+                std.debug.print("CALL FAILED: insufficient balance (caller={any} needs {} has {})\n", .{caller.bytes, value, caller_balance});
                 return CallResult{
                     .success = false,
                     .gas_left = gas,
@@ -345,6 +364,7 @@ pub const Evm = struct {
 
             // Transfer balance
             if (self.host) |h| {
+                std.debug.print("TRANSFER: from={any} to={any} value={} (caller_bal={} callee_bal={})\n", .{caller.bytes, address.bytes, value, caller_balance, h.getBalance(address)});
                 h.setBalance(caller, caller_balance - value);
                 const callee_balance = h.getBalance(address);
                 h.setBalance(address, callee_balance + value);
@@ -358,9 +378,45 @@ pub const Evm = struct {
         // Get code for the target address
         const code = self.get_code(address);
         if (code.len == 0) {
-            // TODO: Implement precompiles
+            // Check if this is a precompile address
+            const addr_num = blk: {
+                var val: u256 = 0;
+                for (address.bytes) |b| {
+                    val = (val << 8) | b;
+                }
+                break :blk val;
+            };
 
-            // Empty account - balance already transferred, just return success
+            // Precompile 0x04: Identity (datacopy) - available in all forks
+            if (addr_num == 4) {
+                // Identity: copy input to output
+                // Gas cost: 15 + 3 * (len(input) / 32) rounded up
+                const input_len = input.len;
+                const word_count = (input_len + 31) / 32;
+                const precompile_gas = 15 + (3 * word_count);
+
+                if (gas < precompile_gas) {
+                    // Out of gas
+                    return CallResult{
+                        .success = false,
+                        .gas_left = 0,
+                        .output = &[_]u8{},
+                    };
+                }
+
+                // Copy input to output
+                const output = try self.arena.allocator().alloc(u8, input_len);
+                @memcpy(output, input);
+
+                return CallResult{
+                    .success = true,
+                    .gas_left = gas - precompile_gas,
+                    .output = output,
+                };
+            }
+
+            // For other precompiles or empty accounts, return success with no output
+            // TODO: Implement other precompiles
             return CallResult{
                 .success = true,
                 .gas_left = gas,
@@ -386,6 +442,22 @@ pub const Evm = struct {
         self.frames.items[self.frames.items.len - 1].execute() catch {
             // std.debug.print("CALL FAILED: execution error {} (addr={any})\n", .{err, address.bytes});
             _ = self.frames.pop();
+
+            // Reverse value transfer on failure
+            if (value > 0 and call_type == .Call) {
+                if (self.host) |h| {
+                    const caller_balance = h.getBalance(caller);
+                    const callee_balance = h.getBalance(address);
+                    h.setBalance(caller, caller_balance + value);
+                    h.setBalance(address, callee_balance - value);
+                } else {
+                    const caller_balance = self.balances.get(caller) orelse 0;
+                    const callee_balance = self.balances.get(address) orelse 0;
+                    try self.balances.put(caller, caller_balance + value);
+                    try self.balances.put(address, callee_balance - value);
+                }
+            }
+
             return CallResult{
                 .success = false,
                 .gas_left = 0,
@@ -410,6 +482,22 @@ pub const Evm = struct {
             .output = output,
         };
 
+        // Reverse value transfer if call reverted
+        if (frame.reverted and value > 0 and call_type == .Call) {
+            std.debug.print("REVERT: reversing transfer from={any} to={any} value={}\n", .{caller.bytes, address.bytes, value});
+            if (self.host) |h| {
+                const caller_balance = h.getBalance(caller);
+                const callee_balance = h.getBalance(address);
+                h.setBalance(caller, caller_balance + value);
+                h.setBalance(address, callee_balance - value);
+            } else {
+                const caller_balance = self.balances.get(caller) orelse 0;
+                const callee_balance = self.balances.get(address) orelse 0;
+                try self.balances.put(caller, caller_balance + value);
+                try self.balances.put(address, callee_balance - value);
+            }
+        }
+
         // if (frame.reverted) {
         //     std.debug.print("CALL FAILED: reverted (addr={any})\n", .{address.bytes});
         // }
@@ -417,6 +505,7 @@ pub const Evm = struct {
         // Pop frame from stack
         _ = self.frames.pop();
 
+        std.debug.print("RETURN: addr={any} success={} gas_left={}\n", .{address.bytes, result.success, result.gas_left});
         // No cleanup needed - arena handles it
         return result;
     }
@@ -566,6 +655,22 @@ pub const Evm = struct {
         // Execute frame
         self.frames.items[self.frames.items.len - 1].execute() catch {
             _ = self.frames.pop();
+
+            // Reverse value transfer on error
+            if (value > 0) {
+                if (self.host) |h| {
+                    const caller_balance = h.getBalance(caller);
+                    const new_addr_balance = h.getBalance(new_address);
+                    h.setBalance(caller, caller_balance + value);
+                    h.setBalance(new_address, new_addr_balance - value);
+                } else {
+                    const caller_balance = self.balances.get(caller) orelse 0;
+                    const new_addr_balance = self.balances.get(new_address) orelse 0;
+                    try self.balances.put(caller, caller_balance + value);
+                    try self.balances.put(new_address, new_addr_balance - value);
+                }
+            }
+
             return .{
                 .address = primitives.ZERO_ADDRESS,
                 .success = false,
@@ -584,6 +689,22 @@ pub const Evm = struct {
             const max_code_size = 24576;
             if (frame.output.len > max_code_size) {
                 _ = self.frames.pop();
+
+                // Reverse value transfer on code size failure
+                if (value > 0) {
+                    if (self.host) |h| {
+                        const caller_balance = h.getBalance(caller);
+                        const new_addr_balance = h.getBalance(new_address);
+                        h.setBalance(caller, caller_balance + value);
+                        h.setBalance(new_address, new_addr_balance - value);
+                    } else {
+                        const caller_balance = self.balances.get(caller) orelse 0;
+                        const new_addr_balance = self.balances.get(new_address) orelse 0;
+                        try self.balances.put(caller, caller_balance + value);
+                        try self.balances.put(new_address, new_addr_balance - value);
+                    }
+                }
+
                 return .{
                     .address = primitives.ZERO_ADDRESS,
                     .success = false,
@@ -595,6 +716,21 @@ pub const Evm = struct {
             const code_copy = try self.arena.allocator().alloc(u8, frame.output.len);
             @memcpy(code_copy, frame.output);
             try self.code.put(new_address, code_copy);
+        } else if (!success) {
+            // Reverse value transfer on revert
+            if (value > 0) {
+                if (self.host) |h| {
+                    const caller_balance = h.getBalance(caller);
+                    const new_addr_balance = h.getBalance(new_address);
+                    h.setBalance(caller, caller_balance + value);
+                    h.setBalance(new_address, new_addr_balance - value);
+                } else {
+                    const caller_balance = self.balances.get(caller) orelse 0;
+                    const new_addr_balance = self.balances.get(new_address) orelse 0;
+                    try self.balances.put(caller, caller_balance + value);
+                    try self.balances.put(new_address, new_addr_balance - value);
+                }
+            }
         }
 
         // Pop frame
