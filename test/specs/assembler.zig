@@ -638,6 +638,11 @@ fn compileComplexExpression(allocator: std.mem.Allocator, code: []const u8) ![]u
         }
     }
 
+    // LLL sequences {...} end with implicit STOP
+    if (bytecode.items.len == 0 or bytecode.items[bytecode.items.len - 1] != 0x00) {
+        try bytecode.append(allocator, 0x00); // STOP
+    }
+
     return bytecode.toOwnedSlice(allocator);
 }
 

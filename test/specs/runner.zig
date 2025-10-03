@@ -59,6 +59,7 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                                 // Compile assembly to bytecode
                                 const compiled_bytes = try assembler.compileAssembly(allocator, code_str);
                                 defer allocator.free(compiled_bytes);
+
                                 try test_host.setCode(address, compiled_bytes);
                             } else {
                                 // Handle :raw format or direct hex
@@ -245,9 +246,14 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                 if (expected.object.get("balance")) |expected_bal| {
                     const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
                     const actual = test_host.balances.get(address) orelse 0;
-                    // if (exp != actual) {
-                    //     std.debug.print("Balance mismatch for addr={any}: expected {}, found {}\n", .{address.bytes, exp, actual});
-                    // }
+                    if (exp != actual) {
+                        if ((exp == 100 and actual == 99) or
+                            (exp == 37 and actual == 48) or
+                            (exp == 0 and actual == 23) or
+                            (exp == 0 and actual == 2)) {
+                            std.debug.print("INVESTIGATE BALANCE: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
+                        }
+                    }
                     try testing.expectEqual(exp, actual);
                 }
 
@@ -255,6 +261,14 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                 if (expected.object.get("nonce")) |expected_nonce| {
                     const exp = try parseIntFromJson(expected_nonce);
                     const actual = test_host.getNonce(address);
+                    if (exp != actual) {
+                        if ((exp == 100 and actual == 99) or
+                            (exp == 37 and actual == 48) or
+                            (exp == 0 and actual == 23) or
+                            (exp == 0 and actual == 2)) {
+                            std.debug.print("INVESTIGATE NONCE: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
+                        }
+                    }
                     try testing.expectEqual(exp, actual);
                 }
 
@@ -278,9 +292,15 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
 
                             const slot_key = StorageSlotKey{ .address = address, .slot = key };
                             const actual_value = test_host.storage.get(slot_key) orelse 0;
-                            // if (exp_value != actual_value) {
-                            //     std.debug.print("Storage mismatch: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
-                            // }
+                            if (exp_value != actual_value) {
+                                // Only print specific values we're investigating
+                                if ((exp_value == 100 and actual_value == 99) or
+                                    (exp_value == 37 and actual_value == 48) or
+                                    (exp_value == 0 and actual_value == 23) or
+                                    (exp_value == 0 and actual_value == 2)) {
+                                    std.debug.print("INVESTIGATE: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
+                                }
+                            }
                             try testing.expectEqual(exp_value, actual_value);
                         }
                     }
@@ -324,9 +344,7 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                             if (expected.object.get("balance")) |expected_bal| {
                                 const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
                                 const actual = test_host.balances.get(address) orelse 0;
-                                // if (exp != actual) {
-                                //     std.debug.print("Balance mismatch for addr={any}: expected {}, found {}\n", .{address.bytes, exp, actual});
-                                // }
+                                // All debug removed
                                 try testing.expectEqual(exp, actual);
                             }
 
@@ -334,6 +352,14 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                             if (expected.object.get("nonce")) |expected_nonce| {
                                 const exp = try parseIntFromJson(expected_nonce);
                                 const actual = test_host.getNonce(address);
+                                if (exp != actual) {
+                                    if ((exp == 100 and actual == 99) or
+                                        (exp == 37 and actual == 48) or
+                                        (exp == 0 and actual == 23) or
+                                        (exp == 0 and actual == 2)) {
+                                        std.debug.print("INVESTIGATE NONCE(expect): addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
+                                    }
+                                }
                                 try testing.expectEqual(exp, actual);
                             }
 
@@ -357,9 +383,7 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
 
                                         const slot_key = StorageSlotKey{ .address = address, .slot = key };
                                         const actual_value = test_host.storage.get(slot_key) orelse 0;
-                                        // if (exp_value != actual_value) {
-                                        //     std.debug.print("Storage mismatch: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
-                                        // }
+                                        // Debug removed
                                         try testing.expectEqual(exp_value, actual_value);
                                     }
                                 }
