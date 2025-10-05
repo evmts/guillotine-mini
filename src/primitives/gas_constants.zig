@@ -1618,3 +1618,25 @@ test "hardfork - edge cases across hardforks" {
     try testing.expectEqual(@as(u64, 100), TLoadGas);
     try testing.expectEqual(@as(u64, 100), TStoreGas);
 }
+
+// ============================================================================
+// EIP-4844: Blob Transactions
+// ============================================================================
+pub const GAS_PER_BLOB: u64 = 131072; // 2^17
+pub const TARGET_BLOB_GAS_PER_BLOCK: u64 = 786432; // 3 * 2^18
+pub const MIN_BLOB_GASPRICE: u64 = 1;
+pub const BLOB_BASE_FEE_UPDATE_FRACTION: u64 = 5007716;
+pub const GAS_BLOBHASH_OPCODE: u64 = 3;
+pub const GAS_POINT_EVALUATION: u64 = 50000;
+
+// ============================================================================
+// EIP-2537: BLS12-381 Precompiles
+// ============================================================================
+pub const GAS_BLS_G1_ADD: u64 = 375;
+pub const GAS_BLS_G1_MUL: u64 = 12000;
+pub const GAS_BLS_G1_MAP: u64 = 5500;
+pub const GAS_BLS_G2_ADD: u64 = 600;
+pub const GAS_BLS_G2_MUL: u64 = 22500;
+pub const GAS_BLS_G2_MAP: u64 = 23800;
+pub const GAS_BLS_PAIRING_BASE: u64 = 43000;
+pub const GAS_BLS_PAIRING_PER_PAIR: u64 = 65000;
