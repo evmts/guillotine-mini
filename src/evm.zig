@@ -538,16 +538,9 @@ pub const Evm = struct {
         };
         // std.debug.print("DEBUG inner_call result: address={any} success={} reverted={} frames={}\n", .{address.bytes, result.success, frame.reverted, self.frames.items.len});
 
-        // Restore transient storage if call failed or reverted (EIP-1153)
-        if (!result.success) {
-            std.debug.print("DEBUG: Restoring transient storage after failed call\n", .{});
-            self.transient_storage.clearRetainingCapacity();
-            var restore_it = transient_snapshot.iterator();
-            while (restore_it.next()) |entry| {
-                std.debug.print("DEBUG: Restoring transient slot {} = {}\n", .{entry.key_ptr.*.slot, entry.value_ptr.*});
-                try self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*);
-            }
-        }
+        // Note: Transient storage restoration is now handled by Frame when REVERT executes
+        // or by the catch block above when an exception is thrown.
+        // We no longer restore here to avoid double restoration.
 
         // Reverse value transfer if call reverted
         if (frame.reverted and value > 0 and call_type == .Call) {
