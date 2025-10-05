@@ -553,9 +553,16 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
         const post_state = blk: {
             if (post == .object) {
                 // Check if this is the nested format (has Cancun/Prague keys)
-                if (post.object.get("Cancun") orelse post.object.get("Prague")) |fork_data| {
-                    if (fork_data == .array and fork_data.array.items.len > 0) {
-                        const first_item = fork_data.array.items[0];
+                // Use the same hardfork that was detected earlier
+                const fork_data = if (hardfork) |hf| switch (hf) {
+                    .PRAGUE => post.object.get("Prague"),
+                    .CANCUN => post.object.get("Cancun"),
+                    else => post.object.get("Cancun"),
+                } else post.object.get("Cancun");
+
+                if (fork_data) |fd| {
+                    if (fd == .array and fd.array.items.len > 0) {
+                        const first_item = fd.array.items[0];
                         if (first_item.object.get("state")) |state| {
                             break :blk state;
                         }
@@ -596,7 +603,7 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
                     const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
                     const actual = test_host.balances.get(address) orelse 0;
                     if (exp != actual) {
-                        // std.debug.print("BALANCE MISMATCH: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
+                        std.debug.print("BALANCE MISMATCH: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
                     }
                     try testing.expectEqual(exp, actual);
                 }
