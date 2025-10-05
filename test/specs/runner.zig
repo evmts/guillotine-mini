@@ -7,12 +7,34 @@ const test_host_mod = @import("test_host.zig");
 const TestHost = test_host_mod.TestHost;
 const StorageSlotKey = test_host_mod.StorageSlotKey;
 const assembler = @import("assembler.zig");
+const trace = @import("evm").trace;
 
 // Error type for tests that are not yet implemented
 pub const TestTodo = error.TestTodo;
 
 // Run a single test case from JSON
 pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !void {
+    runJsonTestImpl(allocator, test_case, null) catch |err| {
+        // On failure, re-run with trace capture if we have test case info
+        if (test_case.object.get("_info")) |info| {
+            if (info.object.get("generated-test-hash")) |_| {
+                // Re-run with trace capture
+                var tracer = trace.Tracer.init(allocator);
+                defer tracer.deinit();
+                tracer.enable();
+
+                // Attempt to capture our trace (ignore errors, we'll display original error)
+                runJsonTestImpl(allocator, test_case, &tracer) catch {};
+
+                // TODO: Generate reference trace and compare
+                // For now, just re-throw original error
+            }
+        }
+        return err;
+    };
+}
+
+fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?*trace.Tracer) !void {
     // Handle non-object test cases
     if (test_case != .object) {
         return;
@@ -124,6 +146,11 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
     var evm_instance = try evm_mod.Evm.init(allocator, host_interface, null, block_ctx);
     defer evm_instance.deinit();
 
+    // Attach tracer if provided
+    if (tracer) |t| {
+        evm_instance.setTracer(t);
+    }
+
     // Execute transaction(s)
     const has_transactions = test_case.object.get("transactions") != null;
     const has_transaction = test_case.object.get("transaction") != null;
@@ -217,14 +244,24 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
     // Validate post-state
     if (test_case.object.get("post")) |post| {
         // Debug: print all storage for debugging
-        // var storage_debug_it = test_host.storage.iterator();
-        // while (storage_debug_it.next()) |entry| {
-        //     std.debug.print("DEBUG: Storage addr={any} slot={} value={}\n", .{entry.key_ptr.address.bytes, entry.key_ptr.slot, entry.value_ptr.*});
-        // }
+        var storage_debug_it = test_host.storage.iterator();
+        while (storage_debug_it.next()) |entry| {
+            std.debug.print("DEBUG: Storage addr={any} slot={} value={}\n", .{entry.key_ptr.address.bytes, entry.key_ptr.slot, entry.value_ptr.*});
+        }
+
+        // Print all balances
+        var balance_it = test_host.balances.iterator();
+        while (balance_it.next()) |entry| {
+            std.debug.print("DEBUG: Balance addr={any} value={}\n", .{entry.key_ptr.bytes, entry.value_ptr.*});
+        }
+
+        std.debug.print("DEBUG: post type = {}\n", .{post});
         if (post == .object) {
+            std.debug.print("DEBUG: post is object, iterating keys\n", .{});
             var it = post.object.iterator();
             while (it.next()) |kv| {
                 const address = try parseAddress(kv.key_ptr.*);
+                std.debug.print("DEBUG: Validating account {any}\n", .{address.bytes});
                 const expected = kv.value_ptr.*;
 
                 // Check if account should not exist
@@ -248,12 +285,7 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                     const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
                     const actual = test_host.balances.get(address) orelse 0;
                     if (exp != actual) {
-                        if ((exp == 100 and actual == 99) or
-                            (exp == 37 and actual == 48) or
-                            (exp == 0 and actual == 23) or
-                            (exp == 0 and actual == 2)) {
-                            std.debug.print("INVESTIGATE BALANCE: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
-                        }
+                        std.debug.print("BALANCE MISMATCH: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
                     }
                     try testing.expectEqual(exp, actual);
                 }
@@ -294,13 +326,7 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                             const slot_key = StorageSlotKey{ .address = address, .slot = key };
                             const actual_value = test_host.storage.get(slot_key) orelse 0;
                             if (exp_value != actual_value) {
-                                // Only print specific values we're investigating
-                                if ((exp_value == 100 and actual_value == 99) or
-                                    (exp_value == 37 and actual_value == 48) or
-                                    (exp_value == 0 and actual_value == 23) or
-                                    (exp_value == 0 and actual_value == 2)) {
-                                    std.debug.print("INVESTIGATE: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
-                                }
+                                std.debug.print("STORAGE MISMATCH: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
                             }
                             try testing.expectEqual(exp_value, actual_value);
                         }
