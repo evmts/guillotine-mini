@@ -8,6 +8,7 @@ const Frame = @import("frame.zig").Frame;
 const Hardfork = @import("hardfork.zig").Hardfork;
 const host = @import("host.zig");
 const errors = @import("errors.zig");
+const trace = @import("trace.zig");
 
 const Address = primitives.Address.Address;
 
@@ -83,6 +84,7 @@ pub const Evm = struct {
     host: ?HostInterface,
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
+    tracer: ?*trace.Tracer = null,
     block_context: BlockContext = .{
         .chain_id = 1,
         .block_number = 0,
@@ -125,12 +127,18 @@ pub const Evm = struct {
             .host = h,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .allocator = allocator,
+            .tracer = null,
         };
     }
 
     /// Clean up resources
     pub fn deinit(self: *Self) void {
         self.arena.deinit();
+    }
+
+    /// Set tracer for EIP-3155 trace capture
+    pub fn setTracer(self: *Self, tracer: *trace.Tracer) void {
+        self.tracer = tracer;
     }
 
     pub fn accessAddress(self: *Self, address: Address) !u64 {

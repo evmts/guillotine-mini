@@ -24,6 +24,15 @@ pub const Hardfork = hardfork.Hardfork;
 pub const errors = @import("errors.zig");
 pub const CallError = errors.CallError;
 
+// Export tracing functionality (EIP-3155)
+pub const trace = @import("trace.zig");
+pub const Tracer = trace.Tracer;
+pub const TraceEntry = trace.TraceEntry;
+
+// Export opcode utilities
+pub const opcode = @import("opcode.zig");
+pub const getOpName = opcode.getOpName;
+
 test {
     std.testing.refAllDecls(@This());
 }

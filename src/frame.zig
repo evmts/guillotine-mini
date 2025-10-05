@@ -8,6 +8,7 @@ const Address = primitives.Address.Address;
 const Evm = evm_mod.Evm;
 const EvmError = @import("errors.zig").CallError;
 const Hardfork = @import("hardfork.zig").Hardfork;
+const opcode_utils = @import("opcode.zig");
 
 pub const Frame = struct {
     const Self = @This();
@@ -2162,12 +2163,70 @@ pub const Frame = struct {
         }
     }
 
+    /// Get memory contents as a slice (for tracing)
+    fn getMemorySlice(self: *Self, allocator: std.mem.Allocator) ![]u8 {
+        if (self.memory_size == 0) return &[_]u8{};
+
+        const mem_slice = try allocator.alloc(u8, self.memory_size);
+        var i: u32 = 0;
+        while (i < self.memory_size) : (i += 1) {
+            mem_slice[i] = self.readMemory(i);
+        }
+        return mem_slice;
+    }
+
+    /// Calculate gas cost for an opcode (approximate, for tracing)
+    fn estimateGasCost(_: *Self, op: u8) u64 {
+        // This is a simplified estimation for tracing purposes
+        // The actual gas cost is calculated within executeOpcode
+        return switch (op) {
+            0x00 => 0, // STOP
+            0x01, 0x03, 0x10...0x1d, 0x50 => GasConstants.GasFastestStep, // Fast ops
+            0x02, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a => GasConstants.GasFastStep, // Math ops
+            0x20 => GasConstants.Keccak256Gas, // KECCAK256
+            0x31 => GasConstants.GasExtStep, // BALANCE
+            0x3b, 0x3c, 0x3f => GasConstants.GasExtStep, // EXT* ops
+            0x54 => GasConstants.SloadGas, // SLOAD
+            0x55 => GasConstants.SstoreSetGas, // SSTORE (approximate)
+            0xf0 => GasConstants.CreateGas, // CREATE
+            0xf1, 0xf2, 0xf4, 0xfa => GasConstants.CallGas, // CALL variants
+            0xf5 => GasConstants.CreateGas, // CREATE2
+            0xff => GasConstants.SelfdestructGas, // SELFDESTRUCT
+            else => GasConstants.GasFastestStep,
+        };
+    }
+
     /// Execute a single step
     pub fn step(self: *Self) EvmError!void {
         if (self.stopped or self.reverted or self.pc >= self.bytecode.len) {
             return;
         }
         const opcode = self.getCurrentOpcode() orelse return;
+
+        // Capture trace before executing opcode
+        const evm = self.getEvm();
+        if (evm.tracer) |tracer| {
+            const gas_before = @as(u64, @intCast(@max(self.gas_remaining, 0)));
+            const gas_cost = self.estimateGasCost(opcode);
+
+            // Get memory slice for tracing
+            const mem_slice = self.getMemorySlice(self.allocator) catch null;
+
+            // Capture trace entry
+            tracer.captureState(
+                @as(u64, self.pc),
+                opcode,
+                gas_before,
+                gas_cost,
+                mem_slice,
+                self.stack.items,
+                self.return_data,
+                evm.frames.items.len,
+                @as(i64, @intCast(evm.gas_refund)),
+                opcode_utils.getOpName(opcode),
+            ) catch {};
+        }
+
         try self.executeOpcode(opcode);
     }
 
