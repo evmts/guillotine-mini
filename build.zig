@@ -124,14 +124,20 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_spec_tests.step);
 
     // Add trace test executable
-    const trace_test = b.addExecutable(.{
-        .name = "trace_test",
+    const trace_test_mod = b.addModule("trace_test_mod", .{
         .root_source_file = b.path("test_trace.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "guillotine", .module = mod },
+            .{ .name = "primitives", .module = primitives_mod },
+        },
     });
-    trace_test.root_module.addImport("guillotine", mod);
-    trace_test.root_module.addImport("primitives", primitives_mod);
+
+    const trace_test = b.addExecutable(.{
+        .name = "trace_test",
+        .root_module = trace_test_mod,
+    });
 
     const run_trace_test = b.addRunArtifact(trace_test);
     const trace_test_step = b.step("test-trace", "Run trace capture test");
