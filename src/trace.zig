@@ -16,55 +16,57 @@ pub const TraceEntry = struct {
     error_msg: ?[]const u8 = null,
 
     pub fn toJson(self: *const TraceEntry, allocator: std.mem.Allocator) !std.json.Value {
-        var obj = std.json.ObjectMap.init(allocator);
+        var obj = std.StringArrayHashMap(std.json.Value){};
 
-        try obj.put("pc", .{ .integer = @intCast(self.pc) });
-        try obj.put("op", .{ .integer = @intCast(self.op) });
+        try obj.put(allocator, "pc", .{ .integer = @intCast(self.pc) });
+        try obj.put(allocator, "op", .{ .integer = @intCast(self.op) });
 
         // Format gas as hex string
         var gas_buf: [32]u8 = undefined;
         const gas_str = try std.fmt.bufPrint(&gas_buf, "0x{x}", .{self.gas});
-        try obj.put("gas", .{ .string = try allocator.dupe(u8, gas_str) });
+        try obj.put(allocator, "gas", .{ .string = try allocator.dupe(u8, gas_str) });
 
         var gas_cost_buf: [32]u8 = undefined;
         const gas_cost_str = try std.fmt.bufPrint(&gas_cost_buf, "0x{x}", .{self.gasCost});
-        try obj.put("gasCost", .{ .string = try allocator.dupe(u8, gas_cost_str) });
+        try obj.put(allocator, "gasCost", .{ .string = try allocator.dupe(u8, gas_cost_str) });
 
         // Memory as hex string if present
         if (self.memory) |mem| {
             const hex_mem = try allocator.alloc(u8, mem.len * 2 + 2);
-            _ = try std.fmt.bufPrint(hex_mem, "0x{x}", .{std.fmt.fmtSliceHexLower(mem)});
-            try obj.put("memory", .{ .string = hex_mem });
+            const written = try std.fmt.bufPrint(hex_mem, "0x{x}", .{std.fmt.fmtSliceHexLower(mem)});
+            _ = written;
+            try obj.put(allocator, "memory", .{ .string = hex_mem });
         } else {
-            try obj.put("memory", .null);
+            try obj.put(allocator, "memory", .null);
         }
 
-        try obj.put("memSize", .{ .integer = @intCast(self.memSize) });
+        try obj.put(allocator, "memSize", .{ .integer = @intCast(self.memSize) });
 
         // Stack as array of hex strings
-        var stack_arr = std.json.Array.init(allocator);
+        var stack_arr = std.ArrayList(std.json.Value){};
         for (self.stack) |val| {
             var val_buf: [66]u8 = undefined;
             const val_str = try std.fmt.bufPrint(&val_buf, "0x{x}", .{val});
-            try stack_arr.append(.{ .string = try allocator.dupe(u8, val_str) });
+            try stack_arr.append(allocator, .{ .string = try allocator.dupe(u8, val_str) });
         }
-        try obj.put("stack", .{ .array = stack_arr });
+        try obj.put(allocator, "stack", .{ .array = stack_arr.items });
 
         // Return data as hex string if present
         if (self.returnData) |data| {
             const hex_data = try allocator.alloc(u8, data.len * 2 + 2);
-            _ = try std.fmt.bufPrint(hex_data, "0x{x}", .{std.fmt.fmtSliceHexLower(data)});
-            try obj.put("returnData", .{ .string = hex_data });
+            const written = try std.fmt.bufPrint(hex_data, "0x{x}", .{std.fmt.fmtSliceHexLower(data)});
+            _ = written;
+            try obj.put(allocator, "returnData", .{ .string = hex_data });
         } else {
-            try obj.put("returnData", .null);
+            try obj.put(allocator, "returnData", .null);
         }
 
-        try obj.put("depth", .{ .integer = @intCast(self.depth) });
-        try obj.put("refund", .{ .integer = @intCast(self.refund) });
-        try obj.put("opName", .{ .string = try allocator.dupe(u8, self.opName) });
+        try obj.put(allocator, "depth", .{ .integer = @intCast(self.depth) });
+        try obj.put(allocator, "refund", .{ .integer = @intCast(self.refund) });
+        try obj.put(allocator, "opName", .{ .string = try allocator.dupe(u8, self.opName) });
 
         if (self.error_msg) |err| {
-            try obj.put("error", .{ .string = try allocator.dupe(u8, err) });
+            try obj.put(allocator, "error", .{ .string = try allocator.dupe(u8, err) });
         }
 
         return .{ .object = obj };
@@ -79,7 +81,7 @@ pub const Tracer = struct {
 
     pub fn init(allocator: std.mem.Allocator) Tracer {
         return .{
-            .entries = std.ArrayList(TraceEntry).init(allocator),
+            .entries = std.ArrayList(TraceEntry){},
             .allocator = allocator,
         };
     }
@@ -99,7 +101,7 @@ pub const Tracer = struct {
                 self.allocator.free(msg);
             }
         }
-        self.entries.deinit();
+        self.entries.deinit(self.allocator);
     }
 
     pub fn enable(self: *Tracer) void {
@@ -149,24 +151,71 @@ pub const Tracer = struct {
     }
 
     pub fn toJson(self: *const Tracer) !std.json.Value {
-        var arr = std.json.Array.init(self.allocator);
+        var arr = std.ArrayList(std.json.Value){};
 
         for (self.entries.items) |*entry| {
             const entry_json = try entry.toJson(self.allocator);
-            try arr.append(entry_json);
+            try arr.append(self.allocator, entry_json);
         }
 
-        return .{ .array = arr };
+        return .{ .array = arr.items };
     }
 
     pub fn writeToFile(self: *const Tracer, path: []const u8) !void {
         const file = try std.fs.cwd().createFile(path, .{});
         defer file.close();
 
-        const json_value = try self.toJson();
-        defer json_value.deinit();
+        var json = std.ArrayList(u8){};
+        defer json.deinit(self.allocator);
 
-        try std.json.stringify(json_value, .{ .whitespace = .indent_2 }, file.writer());
+        const writer = json.writer(self.allocator);
+
+        try writer.writeAll("[\n");
+
+        for (self.entries.items, 0..) |entry, i| {
+            if (i > 0) try writer.writeAll(",\n");
+            try writer.writeAll("  {\n");
+            try writer.print("    \"pc\": {d},\n", .{entry.pc});
+            try writer.print("    \"op\": {d},\n", .{entry.op});
+            try writer.print("    \"gas\": \"0x{x}\",\n", .{entry.gas});
+            try writer.print("    \"gasCost\": \"0x{x}\",\n", .{entry.gasCost});
+
+            if (entry.memory) |mem| {
+                try writer.writeAll("    \"memory\": \"0x");
+                for (mem) |b| {
+                    try writer.print("{x:0>2}", .{b});
+                }
+                try writer.writeAll("\",\n");
+            } else {
+                try writer.writeAll("    \"memory\": null,\n");
+            }
+
+            try writer.print("    \"memSize\": {d},\n", .{entry.memSize});
+            try writer.writeAll("    \"stack\": [");
+            for (entry.stack, 0..) |val, j| {
+                if (j > 0) try writer.writeAll(", ");
+                try writer.print("\"0x{x}\"", .{val});
+            }
+            try writer.writeAll("],\n");
+
+            if (entry.returnData) |data| {
+                try writer.writeAll("    \"returnData\": \"0x");
+                for (data) |b| {
+                    try writer.print("{x:0>2}", .{b});
+                }
+                try writer.writeAll("\",\n");
+            } else {
+                try writer.writeAll("    \"returnData\": null,\n");
+            }
+
+            try writer.print("    \"depth\": {d},\n", .{entry.depth});
+            try writer.print("    \"refund\": {d},\n", .{entry.refund});
+            try writer.print("    \"opName\": \"{s}\"\n", .{entry.opName});
+            try writer.writeAll("  }");
+        }
+
+        try writer.writeAll("\n]\n");
+        try file.writeAll(json.items);
     }
 };
 
