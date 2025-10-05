@@ -8,6 +8,7 @@ const TestHost = test_host_mod.TestHost;
 const StorageSlotKey = test_host_mod.StorageSlotKey;
 const assembler = @import("assembler.zig");
 const trace = @import("evm").trace;
+const Hardfork = evm_mod.Hardfork;
 
 // Error type for tests that are not yet implemented
 pub const TestTodo = error.TestTodo;
@@ -15,23 +16,201 @@ pub const TestTodo = error.TestTodo;
 // Run a single test case from JSON
 pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !void {
     runJsonTestImpl(allocator, test_case, null) catch |err| {
-        // On failure, re-run with trace capture if we have test case info
-        if (test_case.object.get("_info")) |info| {
-            if (info.object.get("generated-test-hash")) |_| {
-                // Re-run with trace capture
-                var tracer = trace.Tracer.init(allocator);
-                defer tracer.deinit();
-                tracer.enable();
-
-                // Attempt to capture our trace (ignore errors, we'll display original error)
-                runJsonTestImpl(allocator, test_case, &tracer) catch {};
-
-                // TODO: Generate reference trace and compare
-                // For now, just re-throw original error
-            }
-        }
+        generateTraceDiffOnFailure(allocator, test_case) catch {};
         return err;
     };
+}
+
+fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.Value) !void {
+    // Re-run with trace capture
+    var tracer = trace.Tracer.init(allocator);
+    defer tracer.deinit();
+    tracer.enable();
+
+    // Capture our trace (ignore errors since we're already in error state)
+    runJsonTestImpl(allocator, test_case, &tracer) catch {};
+
+    if (tracer.entries.items.len == 0) {
+        std.debug.print("\n⚠️  No trace captured (test may have failed before execution)\n", .{});
+        return;
+    }
+
+    // Get test file path from _info.source
+    // The source field contains paths like: src/GeneralStateTestsFiller/Cancun/stEIP1153-transientStorage/10_revertUndoesStoreAfterReturnFiller.yml
+    // We need to derive the ethereum-tests JSON path from this
+    var test_file_path_buf: [1024]u8 = undefined;
+    const test_file_path = blk: {
+        if (test_case.object.get("_info")) |info| {
+            if (info.object.get("source")) |source| {
+                const source_path = source.string;
+                // Convert from: src/GeneralStateTestsFiller/Cancun/stEIP1153-transientStorage/10_revertUndoesStoreAfterReturnFiller.yml
+                // To: ethereum-tests/GeneralStateTests/Cancun/stEIP1153-transientStorage/10_revertUndoesStoreAfterReturn.json
+
+                // Find the part after "GeneralStateTestsFiller/"
+                if (std.mem.indexOf(u8, source_path, "GeneralStateTestsFiller/")) |idx| {
+                    const after_filler = source_path[idx + "GeneralStateTestsFiller/".len ..];
+
+                    // Remove "Filler.yml" suffix and add ".json"
+                    if (std.mem.endsWith(u8, after_filler, "Filler.yml")) {
+                        const without_suffix = after_filler[0 .. after_filler.len - "Filler.yml".len];
+                        break :blk try std.fmt.bufPrint(&test_file_path_buf, "ethereum-tests/GeneralStateTests/{s}.json", .{without_suffix});
+                    }
+                }
+            }
+        }
+        break :blk null;
+    };
+
+    if (test_file_path == null) {
+        std.debug.print("\n⚠️  Cannot generate reference trace: could not derive test file path from _info.source\n", .{});
+        return;
+    }
+
+    // Generate reference trace using Python
+    const ref_trace_path = "trace_ref.jsonl";
+    defer std.fs.cwd().deleteFile(ref_trace_path) catch {};
+
+    const python_cmd = try std.fmt.allocPrint(
+        allocator,
+        "execution-specs/.venv/bin/ethereum-spec-evm statetest --json {s} 2>{s} 1>/dev/null",
+        .{ test_file_path.?, ref_trace_path },
+    );
+    defer allocator.free(python_cmd);
+
+    var child = std.process.Child.init(&.{ "sh", "-c", python_cmd }, allocator);
+    _ = child.spawnAndWait() catch {
+        std.debug.print("\n⚠️  Failed to generate reference trace (Python execution-specs error)\n", .{});
+        return;
+    };
+
+    // Parse reference trace
+    const ref_trace_file = std.fs.cwd().openFile(ref_trace_path, .{}) catch {
+        std.debug.print("\n⚠️  Reference trace file not found\n", .{});
+        return;
+    };
+    defer ref_trace_file.close();
+
+    const ref_trace_content = try ref_trace_file.readToEndAlloc(allocator, 100 * 1024 * 1024);
+    defer allocator.free(ref_trace_content);
+
+    // Parse JSONL format (one JSON object per line)
+    var ref_tracer = trace.Tracer.init(allocator);
+    defer ref_tracer.deinit();
+
+    var line_it = std.mem.splitScalar(u8, ref_trace_content, '\n');
+    while (line_it.next()) |line| {
+        if (line.len == 0) continue;
+
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
+        defer parsed.deinit();
+
+        // Extract trace entry fields from JSON
+        const obj = parsed.value.object;
+        const entry = trace.TraceEntry{
+            .pc = @intCast(obj.get("pc").?.integer),
+            .op = @intCast(obj.get("op").?.integer),
+            .gas = blk: {
+                const gas_val = obj.get("gas").?;
+                if (gas_val == .string) {
+                    break :blk try std.fmt.parseInt(u64, gas_val.string, 0);
+                } else {
+                    break :blk @intCast(gas_val.integer);
+                }
+            },
+            .gasCost = blk: {
+                const cost_val = obj.get("gasCost").?;
+                if (cost_val == .string) {
+                    break :blk try std.fmt.parseInt(u64, cost_val.string, 0);
+                } else {
+                    break :blk @intCast(cost_val.integer);
+                }
+            },
+            .memory = null,
+            .memSize = @intCast(obj.get("memSize").?.integer),
+            .stack = &.{},
+            .returnData = null,
+            .depth = @intCast(obj.get("depth").?.integer),
+            .refund = @intCast(obj.get("refund").?.integer),
+            .opName = try allocator.dupe(u8, obj.get("opName").?.string),
+        };
+
+        try ref_tracer.entries.append(allocator, entry);
+    }
+
+    // Compare traces and print diff
+    const diff = try trace.TraceDiff.compare(allocator, &tracer, &ref_tracer);
+
+    std.debug.print("\n", .{});
+
+    // Print diff using debug output
+    if (diff.divergence_index) |idx| {
+        std.debug.print("\x1b[33m⚠ Trace Divergence at step {d}\x1b[0m\n", .{idx});
+
+        if (diff.diff_field) |field| {
+            std.debug.print("\x1b[1mDifference in: {s}\x1b[0m\n\n", .{field});
+        }
+
+        if (diff.our_entry) |our| {
+            std.debug.print("\x1b[36mOur EVM:\x1b[0m\n", .{});
+            std.debug.print("  PC: 0x{x}  Op: 0x{x:0>2} ({s})  Gas: {d}\n", .{
+                our.pc,
+                our.op,
+                our.opName,
+                our.gas,
+            });
+            std.debug.print("  Stack depth: {d}\n", .{our.stack.len});
+        }
+
+        if (diff.ref_entry) |ref| {
+            std.debug.print("\n\x1b[35mReference:\x1b[0m\n", .{});
+            std.debug.print("  PC: 0x{x}  Op: 0x{x:0>2} ({s})  Gas: {d}\n", .{
+                ref.pc,
+                ref.op,
+                ref.opName,
+                ref.gas,
+            });
+            std.debug.print("  Stack depth: {d}\n", .{ref.stack.len});
+        }
+    } else {
+        std.debug.print("✓ Traces match perfectly!\n", .{});
+    }
+
+    std.debug.print("\n", .{});
+}
+
+/// Extract hardfork from test JSON
+/// Checks post/expect sections and returns the detected hardfork
+fn extractHardfork(test_case: std.json.Value) ?Hardfork {
+    // Check 'post' section for hardfork keys (Cancun, Prague, etc.)
+    if (test_case.object.get("post")) |post| {
+        if (post == .object) {
+            // Try common hardfork names
+            inline for (&[_][]const u8{ "Prague", "Cancun", "Shanghai", "Merge", "London", "Berlin", "Istanbul", "Constantinople", "Byzantium" }) |fork_name| {
+                if (post.object.get(fork_name)) |_| {
+                    if (Hardfork.fromString(fork_name)) |hf| {
+                        return hf;
+                    }
+                }
+            }
+        }
+    }
+
+    // Check 'expect' section for network field
+    if (test_case.object.get("expect")) |expect_list| {
+        if (expect_list == .array and expect_list.array.items.len > 0) {
+            const first_expect = expect_list.array.items[0];
+            if (first_expect.object.get("network")) |network| {
+                if (network == .array and network.array.items.len > 0) {
+                    const network_str = network.array.items[0].string;
+                    if (Hardfork.fromString(network_str)) |hf| {
+                        return hf;
+                    }
+                }
+            }
+        }
+    }
+
+    return null;
 }
 
 fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?*trace.Tracer) !void {
@@ -40,7 +219,7 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
         return;
     }
 
-    // std.debug.print("DEBUG: Starting test\n", .{});
+    // // std.debug.print("DEBUG: Starting test\n", .{});
 
     // Create test host
     var test_host = try TestHost.init(allocator);
@@ -141,9 +320,12 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
     // Block context is optional - pass null to use EVM's defaults
     const block_ctx = null;
 
-    // Create EVM with test host
+    // Extract hardfork from test JSON
+    const hardfork = extractHardfork(test_case);
+
+    // Create EVM with test host and detected hardfork
     const host_interface = test_host.hostInterface();
-    var evm_instance = try evm_mod.Evm.init(allocator, host_interface, null, block_ctx);
+    var evm_instance = try evm_mod.Evm.init(allocator, host_interface, hardfork, block_ctx);
     defer evm_instance.deinit();
 
     // Attach tracer if provided
@@ -186,12 +368,35 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
             // Set origin
             evm_instance.origin = sender;
 
-            // Parse and set gas price
+            // Parse and set gas price (support both legacy and EIP-1559)
             if (tx.object.get("gasPrice")) |gp| {
                 const gas_price_str = gp.string;
                 const gas_price = if (gas_price_str.len == 0) 0 else try std.fmt.parseInt(u256, gas_price_str, 0);
                 evm_instance.gas_price = gas_price;
-                // std.debug.print("DEBUG: Set gas_price to {}\n", .{gas_price});
+                // // std.debug.print("DEBUG: Set gas_price to {}\n", .{gas_price});
+            } else if (tx.object.get("maxFeePerGas")) |max_fee| {
+                // EIP-1559 transaction
+                const max_fee_per_gas = try parseIntFromJson(max_fee);
+                const max_priority_fee = if (tx.object.get("maxPriorityFeePerGas")) |mpf|
+                    try parseIntFromJson(mpf)
+                else
+                    0;
+
+                // Get base fee from environment
+                const base_fee = if (test_case.object.get("env")) |env_val|
+                    if (env_val.object.get("currentBaseFee")) |bf|
+                        try parseIntFromJson(bf)
+                    else
+                        0
+                else
+                    0;
+
+                // Effective gas price = min(maxFeePerGas, baseFee + maxPriorityFeePerGas)
+                const priority_fee_per_gas = if (max_fee_per_gas > base_fee)
+                    @min(max_priority_fee, max_fee_per_gas - base_fee)
+                else
+                    0;
+                evm_instance.gas_price = base_fee + priority_fee_per_gas;
             }
 
             // Parse gas limit
@@ -235,33 +440,56 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
                 null,
             );
 
-            // Don't charge gas - tests don't expect it
-            // TODO: Some test formats might expect gas to be charged
-            _ = result;
+            // Charge gas from sender
+            const gas_used = gas_limit - result.gas_left;
+            const gas_cost = gas_used * evm_instance.gas_price;
+            const sender_balance = test_host.balances.get(sender) orelse 0;
+            try test_host.setBalance(sender, sender_balance - gas_cost);
         }
     }
 
     // Validate post-state
     if (test_case.object.get("post")) |post| {
         // Debug: print all storage for debugging
-        var storage_debug_it = test_host.storage.iterator();
-        while (storage_debug_it.next()) |entry| {
-            std.debug.print("DEBUG: Storage addr={any} slot={} value={}\n", .{entry.key_ptr.address.bytes, entry.key_ptr.slot, entry.value_ptr.*});
-        }
+        // var storage_debug_it = test_host.storage.iterator();
+        // while (storage_debug_it.next()) |entry| {
+        //     // std.debug.print("DEBUG: Storage addr={any} slot={} value={}\n", .{entry.key_ptr.address.bytes, entry.key_ptr.slot, entry.value_ptr.*});
+        // }
 
         // Print all balances
-        var balance_it = test_host.balances.iterator();
-        while (balance_it.next()) |entry| {
-            std.debug.print("DEBUG: Balance addr={any} value={}\n", .{entry.key_ptr.bytes, entry.value_ptr.*});
-        }
+        // var balance_it = test_host.balances.iterator();
+        // while (balance_it.next()) |entry| {
+        //     // std.debug.print("DEBUG: Balance addr={any} value={}\n", .{entry.key_ptr.bytes, entry.value_ptr.*});
+        // }
 
-        std.debug.print("DEBUG: post type = {}\n", .{post});
-        if (post == .object) {
-            std.debug.print("DEBUG: post is object, iterating keys\n", .{});
-            var it = post.object.iterator();
+        // std.debug.print("DEBUG: post type = {}\n", .{post});
+
+        // Handle different post formats
+        // Format 1: post -> Cancun/Prague (array) -> [0] -> state -> addresses
+        // Format 2: post -> addresses
+        const post_state = blk: {
+            if (post == .object) {
+                // Check if this is the nested format (has Cancun/Prague keys)
+                if (post.object.get("Cancun") orelse post.object.get("Prague")) |fork_data| {
+                    if (fork_data == .array and fork_data.array.items.len > 0) {
+                        const first_item = fork_data.array.items[0];
+                        if (first_item.object.get("state")) |state| {
+                            break :blk state;
+                        }
+                    }
+                }
+                // Direct format
+                break :blk post;
+            }
+            break :blk post;
+        };
+
+        if (post_state == .object) {
+            // std.debug.print("DEBUG: post_state is object, iterating keys\n", .{});
+            var it = post_state.object.iterator();
             while (it.next()) |kv| {
                 const address = try parseAddress(kv.key_ptr.*);
-                std.debug.print("DEBUG: Validating account {any}\n", .{address.bytes});
+                // std.debug.print("DEBUG: Validating account {any}\n", .{address.bytes});
                 const expected = kv.value_ptr.*;
 
                 // Check if account should not exist
@@ -285,7 +513,7 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
                     const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
                     const actual = test_host.balances.get(address) orelse 0;
                     if (exp != actual) {
-                        std.debug.print("BALANCE MISMATCH: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
+                        // std.debug.print("BALANCE MISMATCH: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
                     }
                     try testing.expectEqual(exp, actual);
                 }
@@ -326,7 +554,7 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
                             const slot_key = StorageSlotKey{ .address = address, .slot = key };
                             const actual_value = test_host.storage.get(slot_key) orelse 0;
                             if (exp_value != actual_value) {
-                                std.debug.print("STORAGE MISMATCH: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
+                                // std.debug.print("STORAGE MISMATCH: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
                             }
                             try testing.expectEqual(exp_value, actual_value);
                         }
@@ -338,7 +566,7 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
         // Debug: print all storage for debugging
         // var storage_debug_it2 = test_host.storage.iterator();
         // while (storage_debug_it2.next()) |entry| {
-        //     std.debug.print("DEBUG: Storage addr={any} slot={} value={}\n", .{entry.key_ptr.address.bytes, entry.key_ptr.slot, entry.value_ptr.*});
+        //     // std.debug.print("DEBUG: Storage addr={any} slot={} value={}\n", .{entry.key_ptr.address.bytes, entry.key_ptr.slot, entry.value_ptr.*});
         // }
 
         // Handle expect format (alternative to post)

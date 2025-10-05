@@ -86,4 +86,42 @@ pub const Hardfork = enum {
     pub fn isBefore(self: Hardfork, target: Hardfork) bool {
         return self.toInt() < target.toInt();
     }
+
+    /// Parse hardfork from string name (case-insensitive)
+    /// Supports both standard names and common variations
+    pub fn fromString(name: []const u8) ?Hardfork {
+        const std = @import("std");
+
+        // Handle comparisons like ">=Cancun" or ">Berlin"
+        var clean_name = name;
+        if (name.len > 0 and (name[0] == '>' or name[0] == '<')) {
+            var start: usize = 1;
+            if (name.len > 1 and name[1] == '=') {
+                start = 2;
+            }
+            clean_name = name[start..];
+        }
+
+        // Case-insensitive comparison
+        if (std.ascii.eqlIgnoreCase(clean_name, "Frontier")) return .FRONTIER;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Homestead")) return .HOMESTEAD;
+        if (std.ascii.eqlIgnoreCase(clean_name, "DAO")) return .DAO;
+        if (std.ascii.eqlIgnoreCase(clean_name, "TangerineWhistle")) return .TANGERINE_WHISTLE;
+        if (std.ascii.eqlIgnoreCase(clean_name, "SpuriousDragon")) return .SPURIOUS_DRAGON;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Byzantium")) return .BYZANTIUM;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Constantinople")) return .CONSTANTINOPLE;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Petersburg")) return .PETERSBURG;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Istanbul")) return .ISTANBUL;
+        if (std.ascii.eqlIgnoreCase(clean_name, "MuirGlacier")) return .MUIR_GLACIER;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Berlin")) return .BERLIN;
+        if (std.ascii.eqlIgnoreCase(clean_name, "London")) return .LONDON;
+        if (std.ascii.eqlIgnoreCase(clean_name, "ArrowGlacier")) return .ARROW_GLACIER;
+        if (std.ascii.eqlIgnoreCase(clean_name, "GrayGlacier")) return .GRAY_GLACIER;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Merge")) return .MERGE;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Shanghai")) return .SHANGHAI;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Cancun")) return .CANCUN;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Prague")) return .PRAGUE;
+
+        return null;
+    }
 };
