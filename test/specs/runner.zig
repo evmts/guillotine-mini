@@ -421,6 +421,57 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
                 break :blk try parseAddress(to_str);
             } else null;
 
+            // Validate blob transaction if blobVersionedHashes are present (EIP-4844)
+            if (tx.object.get("blobVersionedHashes")) |blob_hashes| {
+                const blob_count = blob_hashes.array.items.len;
+
+                // Get max blob count from config for the current hardfork
+                var max_blobs: usize = 6; // Default for Cancun
+                if (test_case.object.get("config")) |config| {
+                    if (config.object.get("blobSchedule")) |schedule| {
+                        const fork_name = if (hardfork) |hf| switch (hf) {
+                            .PRAGUE => "Prague",
+                            .CANCUN => "Cancun",
+                            else => "Cancun",
+                        } else "Cancun";
+
+                        if (schedule.object.get(fork_name)) |fork_config| {
+                            if (fork_config.object.get("max")) |max_val| {
+                                max_blobs = try parseIntFromJson(max_val);
+                            }
+                        }
+                    }
+                }
+
+                // Check if blob count exceeds maximum
+                if (blob_count > max_blobs) {
+                    // Transaction should be rejected - check if test expects this
+                    if (test_case.object.get("post")) |post| {
+                        const fork_data = if (hardfork) |hf| switch (hf) {
+                            .PRAGUE => post.object.get("Prague"),
+                            .CANCUN => post.object.get("Cancun"),
+                            else => post.object.get("Cancun"),
+                        } else post.object.get("Cancun");
+
+                        if (fork_data) |fd| {
+                            if (fd == .array and fd.array.items.len > 0) {
+                                const first_item = fd.array.items[0];
+                                if (first_item.object.get("expectException")) |exception| {
+                                    const exception_str = exception.string;
+                                    // If test expects TYPE_3_TX_BLOB_COUNT_EXCEEDED, skip execution
+                                    if (std.mem.indexOf(u8, exception_str, "TYPE_3_TX_BLOB_COUNT_EXCEEDED") != null) {
+                                        // Transaction is invalid as expected, don't execute
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // If we get here, the test doesn't expect this exception, so fail
+                    return error.BlobCountExceeded;
+                }
+            }
+
             // Increment sender's nonce before transaction (as per Ethereum spec)
             const current_nonce = test_host.getNonce(sender);
             try test_host.setNonce(sender, current_nonce + 1);
