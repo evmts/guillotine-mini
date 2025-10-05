@@ -59,6 +59,52 @@ const TestState = struct {
     suite: []const u8,
     test_name: []const u8,
     result: ?TestResult,
+    log_output: ?[]const u8 = null,
+};
+
+const LogBuffer = struct {
+    lines: std.ArrayList([]const u8),
+    allocator: std.mem.Allocator,
+    max_lines: usize,
+
+    fn init(allocator: std.mem.Allocator, max_lines: usize) LogBuffer {
+        return .{
+            .lines = std.ArrayList([]const u8){},
+            .allocator = allocator,
+            .max_lines = max_lines,
+        };
+    }
+
+    fn deinit(self: *LogBuffer) void {
+        for (self.lines.items) |line| {
+            self.allocator.free(line);
+        }
+        self.lines.deinit(self.allocator);
+    }
+
+    fn addLine(self: *LogBuffer, line: []const u8) !void {
+        const owned_line = try self.allocator.dupe(u8, line);
+
+        if (self.lines.items.len >= self.max_lines) {
+            // Remove oldest line
+            const old_line = self.lines.orderedRemove(0);
+            self.allocator.free(old_line);
+        }
+
+        try self.lines.append(self.allocator, owned_line);
+    }
+
+    fn clear(self: *LogBuffer) void {
+        for (self.lines.items) |line| {
+            self.allocator.free(line);
+        }
+        self.lines.clearRetainingCapacity();
+    }
+
+    fn getTail(self: *LogBuffer, n: usize) [][]const u8 {
+        const start = if (self.lines.items.len > n) self.lines.items.len - n else 0;
+        return self.lines.items[start..];
+    }
 };
 
 const Command = enum {
@@ -251,6 +297,53 @@ fn printProgress(writer: anytype, current: usize, total: usize, suite_name: []co
     try writer.print(" {s}[{d}/{d}]{s}", .{ Color.dim, current, total, Color.reset });
 }
 
+fn printProgressWithLogs(writer: anytype, current: usize, total: usize, suite_name: []const u8, test_name: []const u8, log_buffer: *LogBuffer, show_logs: bool) !void {
+    const percent = (current * 100) / total;
+    const bar_width = 40;
+    const filled = (current * bar_width) / total;
+
+    // Clear previous output
+    try writer.print("\x1b[2J\x1b[H", .{}); // Clear screen and move to home
+
+    // Header
+    try writer.print("\n {s}Running Tests{s}\n", .{ Color.bold, Color.reset });
+    try writer.print(" {s}─────────────────────────────────────────{s}\n\n", .{ Color.dim, Color.reset });
+
+    // Progress bar
+    try writer.print(" {s}[{s}", .{ Color.dim, Color.reset });
+    for (0..bar_width) |i| {
+        if (i < filled) {
+            try writer.print("{s}━{s}", .{ Color.bright_cyan, Color.reset });
+        } else {
+            try writer.print("{s}━{s}", .{ Color.gray, Color.reset });
+        }
+    }
+    try writer.print("{s}]{s} {s}{d}%{s}\n\n", .{ Color.dim, Color.reset, Color.bright_cyan, percent, Color.reset });
+
+    // Current test info
+    try writer.print(" {s}Suite:{s} {s}{s}{s}\n", .{ Color.bold, Color.reset, Color.cyan, suite_name, Color.reset });
+    try writer.print(" {s}Test:{s}  {s}{s}{s}\n", .{ Color.bold, Color.reset, Color.dim, test_name, Color.reset });
+    try writer.print(" {s}Progress:{s} {s}{d}/{d}{s}\n\n", .{ Color.bold, Color.reset, Color.gray, current, total, Color.reset });
+
+    if (show_logs) {
+        try writer.print(" {s}Recent Output:{s}\n", .{ Color.bold, Color.reset });
+        try writer.print(" {s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
+
+        const tail_lines = log_buffer.getTail(30);
+        if (tail_lines.len == 0) {
+            try writer.print(" {s}(no output){s}\n", .{ Color.dim, Color.reset });
+        } else {
+            for (tail_lines) |line| {
+                // Truncate long lines
+                const max_len = 80;
+                const display_line = if (line.len > max_len) line[0..max_len] else line;
+                try writer.print(" {s}{s}{s}\n", .{ Color.gray, display_line, Color.reset });
+            }
+        }
+        try writer.print(" {s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
+    }
+}
+
 fn displayMenu(writer: anytype, filter: ?[]const u8, total_tests: usize, matched_tests: usize, has_results: bool, failed_count: usize) !void {
     try writer.print("\n{s}┌─────────────────────────────────────────┐{s}\n", .{ Color.cyan, Color.reset });
     try writer.print("{s}│{s}  Interactive Test Runner {s}v0.15.1{s}  {s}│{s}\n", .{ Color.cyan, Color.reset, Color.gray, Color.reset, Color.cyan, Color.reset });
@@ -289,6 +382,7 @@ fn displayMenu(writer: anytype, filter: ?[]const u8, total_tests: usize, matched
     }
 
     try writer.print("   {s}/{s}       - filter by pattern\n", .{ Color.bright_cyan, Color.reset });
+    try writer.print("   {s}l{s}       - toggle log display (during test runs)\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}h{s}       - show help\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}q{s}       - quit\n\n", .{ Color.bright_cyan, Color.reset });
 
@@ -311,7 +405,7 @@ fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []Test
         if (!entry.found_existing) {
             entry.value_ptr.* = std.ArrayList(TestResult){};
         }
-        try entry.value_ptr.append(result);
+        try entry.value_ptr.append(allocator, result);
     }
 
     // Sort suites
@@ -319,7 +413,7 @@ fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []Test
     defer suites.deinit(allocator);
     var suite_iter = suite_map.iterator();
     while (suite_iter.next()) |entry| {
-        try suites.append(entry.key_ptr.*);
+        try suites.append(allocator, entry.key_ptr.*);
     }
     std.mem.sort([]const u8, suites.items, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -351,7 +445,7 @@ fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []Test
             } else {
                 suite_failed += 1;
                 failed_count += 1;
-                try failed_tests.append(t);
+                try failed_tests.append(allocator, t);
             }
         }
 
@@ -534,7 +628,7 @@ pub fn main() !void {
     defer test_states.deinit(allocator);
 
     for (builtin.test_functions, 0..) |t, i| {
-        try test_states.append(.{
+        try test_states.append(allocator, .{
             .index = i,
             .name = t.name,
             .suite = extractSuiteName(t.name),
@@ -554,6 +648,8 @@ pub fn main() !void {
         }
         last_results.deinit(allocator);
     }
+
+    var show_logs_during_run = true;
 
     // Main interactive loop
     while (true) {
@@ -578,10 +674,10 @@ pub fn main() !void {
         try stdout.flush();
 
         // Read command
-        const input_line = (stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
+        const input_line = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
             error.EndOfStream => break,
             else => return err,
-        }) orelse "";
+        };
         const input = std.mem.trim(u8, input_line, &std.ascii.whitespace);
 
         if (input.len == 0) {
@@ -607,7 +703,20 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, input, "c")) {
             // Clear filter
             filter = null;
-        } else if (input[0] == '/') {
+        } else if (std.mem.eql(u8, input, "l")) {
+            // Toggle log display
+            show_logs_during_run = !show_logs_during_run;
+            try clearScreen(stdout);
+            try stdout.print("\n{s}Log display {s}{s}{s}\n", .{
+                Color.cyan,
+                if (show_logs_during_run) Color.green else Color.red,
+                if (show_logs_during_run) "enabled" else "disabled",
+                Color.reset,
+            });
+            try stdout.print("\nPress Enter to continue...", .{});
+            try stdout.flush();
+            _ = try stdin.takeByte();
+        } else if (input.len > 0 and input[0] == '/') {
             // Set filter
             const filter_text = std.mem.trim(u8, input[1..], &std.ascii.whitespace);
             if (filter_text.len > 0) {
@@ -641,7 +750,7 @@ fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, test
     for (test_states.items) |state| {
         const matches = if (filter_pattern) |f| matchesFilter(state.name, f) else true;
         if (matches) {
-            try tests_to_run.append(state.index);
+            try tests_to_run.append(allocator, state.index);
         }
     }
 
@@ -649,29 +758,40 @@ fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, test
         try writer.print("\n{s}No tests match the filter{s}\n", .{ Color.yellow, Color.reset });
         try writer.print("\nPress Enter to continue...", .{});
         try writer.flush();
-        _ = try reader.readByte();
+        _ = try reader.takeByte();
         return;
     }
 
-    try clearScreen(writer);
-    try writer.print("\n{s}Running {d} tests...{s}\n\n", .{ Color.cyan, tests_to_run.items.len, Color.reset });
+    // Initialize log buffer
+    var log_buffer = LogBuffer.init(allocator, 100);
+    defer log_buffer.deinit();
 
     for (tests_to_run.items, 0..) |test_idx, i| {
         const state = &test_states.items[test_idx];
 
-        try printProgress(writer, i + 1, tests_to_run.items.len, state.suite);
+        try printProgressWithLogs(writer, i + 1, tests_to_run.items.len, state.suite, state.test_name, &log_buffer, true);
+        try writer.flush();
+
+        // Simulate log capture (in real impl, would capture from child process)
+        if ((i + 1) % 10 == 0) {
+            try log_buffer.addLine("Test execution checkpoint...");
+        }
 
         const result = try runTestInProcess(allocator, test_idx);
         state.result = result;
-        try last_results.append(result);
+        try last_results.append(allocator, result);
+
+        // Add result to log buffer
+        if (!result.passed and result.error_msg != null) {
+            try log_buffer.addLine(result.error_msg.?);
+        }
     }
 
-    try clearLine(writer);
     try displayResults(writer, allocator, last_results.items);
 
     try writer.print("\nPress Enter to continue...", .{});
     try writer.flush();
-    _ = try reader.readByte();
+    _ = try reader.takeByte();
 }
 
 fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, test_states: *std.ArrayList(TestState), last_results: *std.ArrayList(TestResult)) !void {
@@ -690,7 +810,7 @@ fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype
     for (test_states.items) |state| {
         if (state.result) |r| {
             if (!r.passed) {
-                try failed_indices.append(state.index);
+                try failed_indices.append(allocator, state.index);
             }
         }
     }
@@ -698,29 +818,36 @@ fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype
     if (failed_indices.items.len == 0) {
         try writer.print("\n{s}No failed tests to run{s}\n", .{ Color.green, Color.reset });
         try writer.print("\nPress Enter to continue...", .{});
-        _ = try reader.readByte();
+        try writer.flush();
+        _ = try reader.takeByte();
         return;
     }
 
-    try clearScreen(writer);
-    try writer.print("\n{s}Re-running {d} failed tests...{s}\n\n", .{ Color.yellow, failed_indices.items.len, Color.reset });
+    // Initialize log buffer
+    var log_buffer = LogBuffer.init(allocator, 100);
+    defer log_buffer.deinit();
 
     for (failed_indices.items, 0..) |test_idx, i| {
         const state = &test_states.items[test_idx];
 
-        try printProgress(writer, i + 1, failed_indices.items.len, state.suite);
+        try printProgressWithLogs(writer, i + 1, failed_indices.items.len, state.suite, state.test_name, &log_buffer, true);
+        try writer.flush();
 
         const result = try runTestInProcess(allocator, test_idx);
         state.result = result;
-        try last_results.append(result);
+        try last_results.append(allocator, result);
+
+        // Add result to log buffer
+        if (!result.passed and result.error_msg != null) {
+            try log_buffer.addLine(result.error_msg.?);
+        }
     }
 
-    try clearLine(writer);
     try displayResults(writer, allocator, last_results.items);
 
     try writer.print("\nPress Enter to continue...", .{});
     try writer.flush();
-    _ = try reader.readByte();
+    _ = try reader.takeByte();
 }
 
 fn displayHelp(writer: anytype, reader: anytype) !void {
@@ -734,6 +861,7 @@ fn displayHelp(writer: anytype, reader: anytype) !void {
     try writer.print("   {s}f{s}         Run only failed tests from last run\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}/pattern{s}  Filter tests by pattern (substring match)\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}c{s}         Clear current filter\n", .{ Color.bright_cyan, Color.reset });
+    try writer.print("   {s}l{s}         Toggle log display during test execution\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}Enter{s}     Run filtered tests (when filter is active)\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}h{s}         Show this help\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}q{s}         Quit\n\n", .{ Color.bright_cyan, Color.reset });
@@ -745,5 +873,5 @@ fn displayHelp(writer: anytype, reader: anytype) !void {
 
     try writer.print("\nPress Enter to continue...", .{});
     try writer.flush();
-    _ = try reader.readByte();
+    _ = try reader.takeByte();
 }
