@@ -231,12 +231,43 @@ fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestResult
 
         std.posix.exit(0); // Success
     } else {
-        // Parent process - wait for child
-        const wait_result = std.posix.waitpid(pid, 0);
+        // Parent process - wait for child with 60 second timeout
+        const timeout_ns: i128 = 60 * std.time.ns_per_s;
+        const deadline = std.time.nanoTimestamp() + timeout_ns;
+
+        var timed_out = false;
+        var wait_result: std.posix.WaitPidResult = undefined;
+
+        while (true) {
+            // Try non-blocking wait
+            wait_result = std.posix.waitpid(pid, std.posix.W.NOHANG);
+
+            // Check if child has exited
+            if (wait_result.pid == pid) {
+                break;
+            }
+
+            // Check timeout
+            const now = std.time.nanoTimestamp();
+            if (now >= deadline) {
+                // Timeout - kill the child process
+                std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+                _ = std.posix.waitpid(pid, 0); // Clean up zombie
+                timed_out = true;
+                break;
+            }
+
+            // Sleep a bit before checking again
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+        }
+
         const test_end = std.time.nanoTimestamp();
         test_result.duration_ns = @intCast(test_end - test_start);
 
-        if (std.posix.W.IFEXITED(wait_result.status)) {
+        if (timed_out) {
+            test_result.passed = false;
+            test_result.error_msg = try allocator.dupe(u8, "test timeout (60s)");
+        } else if (std.posix.W.IFEXITED(wait_result.status)) {
             const exit_code = std.posix.W.EXITSTATUS(wait_result.status);
             if (exit_code == 0) {
                 test_result.passed = true;
