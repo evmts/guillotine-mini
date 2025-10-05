@@ -110,6 +110,11 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Set log level to error only (suppress debug output from tests)
+    const log_options = b.addOptions();
+    log_options.addOption(std.log.Level, "log_level", .err);
+    spec_tests.root_module.addOptions("build_options", log_options);
+
     const run_spec_tests = b.addRunArtifact(spec_tests);
     run_spec_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
     const spec_test_step = b.step("specs", "Run execution-specs tests");
@@ -117,6 +122,23 @@ pub fn build(b: *std.Build) void {
 
     // Add spec tests to main test step
     test_step.dependOn(&run_spec_tests.step);
+
+    // Interactive test runner
+    const interactive_spec_tests = b.addTest(.{
+        .root_module = spec_runner_mod,
+        .test_runner = .{
+            .path = b.path("interactive_test_runner.zig"),
+            .mode = .simple,
+        },
+    });
+
+    // Set log level to error only (suppress debug output from tests)
+    interactive_spec_tests.root_module.addOptions("build_options", log_options);
+
+    const run_interactive_tests = b.addRunArtifact(interactive_spec_tests);
+    run_interactive_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
+    const interactive_test_step = b.step("test-watch", "Run interactive test runner");
+    interactive_test_step.dependOn(&run_interactive_tests.step);
 
     // WASM build target with ReleaseSmall optimization
     const wasm_target = b.resolveTargetQuery(.{
