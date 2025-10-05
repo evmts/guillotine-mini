@@ -89,7 +89,12 @@ pub const TestHost = struct {
 
     pub fn setStorageSlot(self: *Self, address: Address, slot: u256, value: u256) !void {
         const key = StorageSlotKey{ .address = address, .slot = slot };
-        try self.storage.put(key, value);
+        // EVM spec: storage slots with value 0 should be deleted, not stored
+        if (value == 0) {
+            _ = self.storage.remove(key);
+        } else {
+            try self.storage.put(key, value);
+        }
     }
 
     pub fn setNonce(self: *Self, address: Address, nonce: u64) !void {
@@ -152,11 +157,16 @@ pub const TestHost = struct {
     fn setStorage(ptr: *anyopaque, address: Address, slot: u256, value: u256) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
         const key = StorageSlotKey{ .address = address, .slot = slot };
-        self.storage.put(key, value) catch {
-            // In a test context, we should not fail silently
-            // But the interface doesn't allow errors
-            return;
-        };
+        // EVM spec: storage slots with value 0 should be deleted, not stored
+        if (value == 0) {
+            _ = self.storage.remove(key);
+        } else {
+            self.storage.put(key, value) catch {
+                // In a test context, we should not fail silently
+                // But the interface doesn't allow errors
+                return;
+            };
+        }
     }
 
     fn getNonceVTable(ptr: *anyopaque, address: Address) u64 {
