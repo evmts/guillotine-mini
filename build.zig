@@ -112,12 +112,8 @@ pub fn build(b: *std.Build) void {
 
     const run_spec_tests = b.addRunArtifact(spec_tests);
     run_spec_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
-    const spec_test_step = b.step("test-specs", "Run execution-specs tests");
+    const spec_test_step = b.step("specs", "Run execution-specs tests");
     spec_test_step.dependOn(&run_spec_tests.step);
-
-    // Add alias "specs" for convenience
-    const specs_step = b.step("specs", "Run execution-specs tests");
-    specs_step.dependOn(&run_spec_tests.step);
 
     // Add spec tests to main test step
     test_step.dependOn(&run_spec_tests.step);
