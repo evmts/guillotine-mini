@@ -1155,9 +1155,7 @@ pub const Frame = struct {
 
                 try self.consumeGas(GasConstants.WarmStorageReadCost);
                 const key = try self.popStack();
-                // For Evm tracer, we use regular storage for transient storage
-                // In a real implementation, this would be separate
-                const value = evm.get_storage(self.address, key);
+                const value = evm.get_transient_storage(self.address, key);
                 try self.pushStack(value);
                 self.pc += 1;
             },
@@ -1167,12 +1165,10 @@ pub const Frame = struct {
                 // EIP-1153: TSTORE was introduced in Cancun hardfork
                 if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;
 
-                try self.consumeGas(GasConstants.WarmStorageReadCost); // Use same as TLOAD for now
+                try self.consumeGas(GasConstants.WarmStorageReadCost);
                 const key = try self.popStack();
                 const value = try self.popStack();
-                // For Evm tracer, we can just track transient storage in the EVM
-                // Transient storage behaves like regular storage but is cleared after tx
-                try evm.set_storage(self.address, key, value);
+                try evm.set_transient_storage(self.address, key, value);
                 self.pc += 1;
             },
 

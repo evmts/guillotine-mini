@@ -69,6 +69,7 @@ pub const Evm = struct {
     frames: std.ArrayList(Frame),
     storage: std.AutoHashMap(StorageSlotKey, u256),
     original_storage: std.AutoHashMap(StorageSlotKey, u256),
+    transient_storage: std.AutoHashMap(StorageSlotKey, u256),
     balances: std.AutoHashMap(Address, u256),
     nonces: std.AutoHashMap(Address, u64),
     code: std.AutoHashMap(Address, []const u8),
@@ -98,6 +99,7 @@ pub const Evm = struct {
             .frames = undefined,
             .storage = undefined,
             .original_storage = undefined,
+            .transient_storage = undefined,
             .balances = undefined,
             .nonces = undefined,
             .code = undefined,
@@ -212,6 +214,7 @@ pub const Evm = struct {
         self.frames = std.ArrayList(Frame){};
         try self.frames.ensureTotalCapacity(arena_allocator, 16);
         self.original_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
+        self.transient_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
 
         try self.preWarmTransaction(address);
 
@@ -805,6 +808,22 @@ pub const Evm = struct {
             return h.getStorage(address, slot);
         }
         return self.storage.get(key) orelse 0;
+    }
+
+    /// Get transient storage value (EIP-1153)
+    pub fn get_transient_storage(self: *Self, address: Address, slot: u256) u256 {
+        const key = StorageSlotKey{ .address = address, .slot = slot };
+        return self.transient_storage.get(key) orelse 0;
+    }
+
+    /// Set transient storage value (EIP-1153)
+    pub fn set_transient_storage(self: *Self, address: Address, slot: u256, value: u256) !void {
+        const key = StorageSlotKey{ .address = address, .slot = slot };
+        if (value == 0) {
+            _ = self.transient_storage.remove(key);
+        } else {
+            try self.transient_storage.put(key, value);
+        }
     }
 
     /// Get current frame (top of the frame stack)
