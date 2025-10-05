@@ -175,6 +175,7 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
             ctx.address,
             ctx.value,
             ctx.calldata,
+            null,
         ) catch return false;
 
         ctx.result = result;

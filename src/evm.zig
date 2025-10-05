@@ -70,6 +70,7 @@ pub const Evm = struct {
     storage: std.AutoHashMap(StorageSlotKey, u256),
     original_storage: std.AutoHashMap(StorageSlotKey, u256),
     transient_storage: std.AutoHashMap(StorageSlotKey, u256),
+    created_accounts: std.AutoHashMap(Address, void),
     balances: std.AutoHashMap(Address, u256),
     nonces: std.AutoHashMap(Address, u64),
     code: std.AutoHashMap(Address, []const u8),
@@ -100,6 +101,7 @@ pub const Evm = struct {
             .storage = undefined,
             .original_storage = undefined,
             .transient_storage = undefined,
+            .created_accounts = undefined,
             .balances = undefined,
             .nonces = undefined,
             .code = undefined,
@@ -203,6 +205,13 @@ pub const Evm = struct {
         address: Address,
         value: u256,
         calldata: []const u8,
+        access_list: ?struct {
+            addresses: []const Address,
+            storage_keys: []const struct {
+                address: Address,
+                slot: u256,
+            },
+        },
     ) errors.CallError!CallResult {
         const arena_allocator = self.arena.allocator();
         self.storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
@@ -215,8 +224,26 @@ pub const Evm = struct {
         try self.frames.ensureTotalCapacity(arena_allocator, 16);
         self.original_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
         self.transient_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
+        self.created_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
 
         try self.preWarmTransaction(address);
+
+        // Pre-warm access list (EIP-2930)
+        if (access_list) |list| {
+            // Pre-warm all addresses in access list
+            for (list.addresses) |addr| {
+                _ = try self.warm_addresses.getOrPut(addr);
+            }
+
+            // Pre-warm all storage keys in access list
+            for (list.storage_keys) |entry| {
+                const key = StorageSlotKey{
+                    .address = entry.address,
+                    .slot = entry.slot,
+                };
+                _ = try self.warm_storage_slots.getOrPut(key);
+            }
+        }
 
         // Transfer value from caller to recipient (if value > 0)
         if (value > 0 and self.host != null) {
@@ -719,6 +746,9 @@ pub const Evm = struct {
             const code_copy = try self.arena.allocator().alloc(u8, frame.output.len);
             @memcpy(code_copy, frame.output);
             try self.code.put(new_address, code_copy);
+
+            // Mark account as created in this transaction (EIP-6780)
+            try self.created_accounts.put(new_address, {});
         } else if (!success) {
             // Reverse value transfer on revert
             if (value > 0) {

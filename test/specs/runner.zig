@@ -205,6 +205,7 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
                 target_addr,
                 value,
                 tx_data,
+                null,
             );
 
             // Don't charge gas - tests don't expect it

@@ -2137,6 +2137,16 @@ pub const Frame = struct {
                     }
                 }
 
+                // EIP-6780: Only delete account if created in same transaction
+                const was_created_this_tx = evm_ptr.created_accounts.contains(self.address);
+
+                if (was_created_this_tx) {
+                    // Full destruction: clear code (only in EVM storage, not in host)
+                    // Note: When using a host, code deletion would be managed externally
+                    try evm_ptr.code.put(self.address, &[_]u8{});
+                }
+                // Otherwise: Balance already transferred above, code persists per EIP-6780
+
                 // Apply refund to EVM's gas_refund counter
                 const refund = self.selfdestructRefund();
                 if (refund > 0) {
