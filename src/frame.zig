@@ -1587,8 +1587,18 @@ pub const Frame = struct {
                 }
                 const call_address = Address{ .bytes = addr_bytes };
 
-                // Base gas cost
-                try self.consumeGas(GasConstants.CallGas);
+                // Base gas cost + EIP-2929 account access
+                var gas_cost: u64 = GasConstants.CallGas;
+                const access_cost = try evm.accessAddress(call_address);
+                gas_cost += access_cost;
+                try self.consumeGas(gas_cost);
+
+                // Charge memory expansion cost for input region
+                if (in_length > 0) {
+                    const in_end = @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length));
+                    const mem_cost_in = self.memoryExpansionCost(in_end);
+                    try self.consumeGas(mem_cost_in);
+                }
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
@@ -1731,6 +1741,13 @@ pub const Frame = struct {
                 const access_cost = try evm.accessAddress(call_address);
                 call_gas_cost += access_cost;
                 try self.consumeGas(call_gas_cost);
+
+                // Charge memory expansion cost for input region
+                if (in_length > 0) {
+                    const in_end = @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length));
+                    const mem_cost_in = self.memoryExpansionCost(in_end);
+                    try self.consumeGas(mem_cost_in);
+                }
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};

@@ -66,13 +66,13 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
         return;
     }
 
-    // Generate reference trace using Python
+    // Generate reference trace using Python ethereum-spec-evm
     const ref_trace_path = "trace_ref.jsonl";
     defer std.fs.cwd().deleteFile(ref_trace_path) catch {};
 
     const python_cmd = try std.fmt.allocPrint(
         allocator,
-        "execution-specs/.venv/bin/ethereum-spec-evm statetest --json {s} 2>{s} 1>/dev/null",
+        "execution-specs/.venv/bin/ethereum-spec-evm statetest --json {s} 1>{s} 2>/dev/null",
         .{ test_file_path.?, ref_trace_path },
     );
     defer allocator.free(python_cmd);
