@@ -145,7 +145,7 @@ pub const Tracer = struct {
             .opName = op_name_copy,
         };
 
-        try self.entries.append(entry);
+        try self.entries.append(self.allocator, entry);
     }
 
     pub fn toJson(self: *const Tracer) !std.json.Value {
