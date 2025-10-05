@@ -1154,7 +1154,7 @@ pub const Frame = struct {
                 // EIP-1153: TLOAD was introduced in Cancun hardfork
                 if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;
 
-                try self.consumeGas(GasConstants.WarmStorageReadCost);
+                try self.consumeGas(GasConstants.TLoadGas);
                 const key = try self.popStack();
                 const value = evm.get_transient_storage(self.address, key);
                 try self.pushStack(value);
@@ -1166,7 +1166,7 @@ pub const Frame = struct {
                 // EIP-1153: TSTORE was introduced in Cancun hardfork
                 if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;
 
-                try self.consumeGas(GasConstants.WarmStorageReadCost);
+                try self.consumeGas(GasConstants.TStoreGas);
                 const key = try self.popStack();
                 const value = try self.popStack();
                 try evm.set_transient_storage(self.address, key, value);
