@@ -321,6 +321,9 @@ pub fn main() !void {
         results.deinit(allocator);
     }
 
+    // Check for test filter from environment variable
+    const test_filter = std.posix.getenv("TEST_FILTER");
+
     const total_tests = builtin.test_functions.len;
     const start_time = std.time.nanoTimestamp();
 
@@ -346,6 +349,13 @@ pub fn main() !void {
     // Run all tests in isolated processes
     for (builtin.test_functions, 0..) |t, i| {
         const suite_name = extractSuiteName(t.name);
+
+        // Skip test if filter is set and test name doesn't match
+        if (test_filter) |filter| {
+            if (std.mem.indexOf(u8, t.name, filter) == null) {
+                continue;
+            }
+        }
 
         if (has_tty) {
             printProgress(stdout, i + 1, total_tests, suite_name);
