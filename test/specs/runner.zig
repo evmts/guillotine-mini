@@ -368,11 +368,16 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
             // Set origin
             evm_instance.origin = sender;
 
+            // Track priority fee for EIP-1559 coinbase rewards
+            var priority_fee_per_gas: u256 = 0;
+
             // Parse and set gas price (support both legacy and EIP-1559)
             if (tx.object.get("gasPrice")) |gp| {
                 const gas_price_str = gp.string;
                 const gas_price = if (gas_price_str.len == 0) 0 else try std.fmt.parseInt(u256, gas_price_str, 0);
                 evm_instance.gas_price = gas_price;
+                // For legacy transactions, entire gas price goes to coinbase
+                priority_fee_per_gas = gas_price;
                 // // std.debug.print("DEBUG: Set gas_price to {}\n", .{gas_price});
             } else if (tx.object.get("maxFeePerGas")) |max_fee| {
                 // EIP-1559 transaction
@@ -392,7 +397,7 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
                     0;
 
                 // Effective gas price = min(maxFeePerGas, baseFee + maxPriorityFeePerGas)
-                const priority_fee_per_gas = if (max_fee_per_gas > base_fee)
+                priority_fee_per_gas = if (max_fee_per_gas > base_fee)
                     @min(max_priority_fee, max_fee_per_gas - base_fee)
                 else
                     0;
@@ -421,9 +426,39 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
                 break :blk try parseAddress(to_str);
             } else null;
 
-            // Validate blob transaction if blobVersionedHashes are present (EIP-4844)
-            if (tx.object.get("blobVersionedHashes")) |blob_hashes| {
-                const blob_count = blob_hashes.array.items.len;
+            // Parse blob versioned hashes if present (EIP-4844)
+            var blob_hashes_storage: ?[]const [32]u8 = null;
+            if (tx.object.get("blobVersionedHashes")) |blob_hashes_json| {
+                // EIP-4844: Blob transactions cannot be used for contract creation
+                // Check if this is a contract creation (to is null or empty)
+                if (to == null) {
+                    // Transaction should be rejected - check if test expects this
+                    if (test_case.object.get("post")) |post| {
+                        const fork_data = if (hardfork) |hf| switch (hf) {
+                            .PRAGUE => post.object.get("Prague"),
+                            .CANCUN => post.object.get("Cancun"),
+                            else => post.object.get("Cancun"),
+                        } else post.object.get("Cancun");
+
+                        if (fork_data) |fd| {
+                            if (fd == .array and fd.array.items.len > 0) {
+                                const first_item = fd.array.items[0];
+                                if (first_item.object.get("expectException")) |exception| {
+                                    const exception_str = exception.string;
+                                    // If test expects TYPE_3_TX_CONTRACT_CREATION, skip execution
+                                    if (std.mem.indexOf(u8, exception_str, "TYPE_3_TX_CONTRACT_CREATION") != null) {
+                                        // Transaction is invalid as expected, don't execute
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // If we get here, the test doesn't expect this exception, so fail
+                    return error.BlobTransactionContractCreation;
+                }
+
+                const blob_count = blob_hashes_json.array.items.len;
 
                 // Get max blob count from config for the current hardfork
                 var max_blobs: usize = 6; // Default for Cancun
@@ -470,7 +505,21 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
                     // If we get here, the test doesn't expect this exception, so fail
                     return error.BlobCountExceeded;
                 }
+
+                // Parse blob hashes from JSON
+                const blob_hashes_array = try allocator.alloc([32]u8, blob_count);
+                for (blob_hashes_json.array.items, 0..) |hash_json, i| {
+                    const hash_str = hash_json.string;
+                    const hash_bytes = try primitives.Hex.hex_to_bytes(allocator, hash_str);
+                    defer allocator.free(hash_bytes);
+                    if (hash_bytes.len != 32) {
+                        return error.InvalidBlobHash;
+                    }
+                    @memcpy(&blob_hashes_array[i], hash_bytes);
+                }
+                blob_hashes_storage = blob_hashes_array;
             }
+            defer if (blob_hashes_storage) |hashes| allocator.free(hashes);
 
             // Increment sender's nonce before transaction (as per Ethereum spec)
             const current_nonce = test_host.getNonce(sender);
@@ -489,6 +538,7 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
                 value,
                 tx_data,
                 null,
+                blob_hashes_storage,
             );
 
             // Charge gas from sender
@@ -525,9 +575,18 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
             const sender_balance = test_host.balances.get(sender) orelse 0;
             try test_host.setBalance(sender, sender_balance - total_gas_cost);
 
-            // Pay only regular gas fees to coinbase (blob gas is burned per EIP-4844)
+            // Pay gas fees to coinbase (in state tests, base fee goes to coinbase instead of being burned)
+            const coinbase_reward = gas_cost;
             const coinbase_balance = test_host.balances.get(coinbase) orelse 0;
-            try test_host.setBalance(coinbase, coinbase_balance + gas_cost);
+
+            // Debug output
+            if (blob_gas_fee > 0) {
+                std.debug.print("DEBUG: gas_limit={} gas_left={} gas_used={} success={} priority_fee={} coinbase_reward={} blob_gas_fee={}\n", .{
+                    gas_limit, result.gas_left, gas_used, result.success, priority_fee_per_gas, coinbase_reward, blob_gas_fee
+                });
+            }
+
+            try test_host.setBalance(coinbase, coinbase_balance + coinbase_reward);
         }
     }
 
