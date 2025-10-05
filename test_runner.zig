@@ -199,6 +199,70 @@ fn getSourceContext(allocator: std.mem.Allocator, file_path: []const u8, line_nu
     return context.toOwnedSlice(allocator) catch null;
 }
 
+fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestResult {
+    const t = builtin.test_functions[test_index];
+    const suite_name = extractSuiteName(t.name);
+    const test_name = extractTestName(t.name);
+
+    var test_result = TestResult{
+        .name = t.name,
+        .suite = suite_name,
+        .test_name = test_name,
+        .passed = true,
+        .error_msg = null,
+        .duration_ns = 0,
+    };
+
+    const test_start = std.time.nanoTimestamp();
+
+    // Fork to isolate test execution
+    const pid = try std.posix.fork();
+
+    if (pid == 0) {
+        // Child process - run the test
+        std.testing.allocator_instance = .{};
+        t.func() catch {
+            std.posix.exit(1);
+        };
+
+        if (std.testing.allocator_instance.deinit() == .leak) {
+            std.posix.exit(2); // Exit code 2 for memory leak
+        }
+
+        std.posix.exit(0); // Success
+    } else {
+        // Parent process - wait for child
+        const wait_result = std.posix.waitpid(pid, 0);
+        const test_end = std.time.nanoTimestamp();
+        test_result.duration_ns = @intCast(test_end - test_start);
+
+        if (std.posix.W.IFEXITED(wait_result.status)) {
+            const exit_code = std.posix.W.EXITSTATUS(wait_result.status);
+            if (exit_code == 0) {
+                test_result.passed = true;
+            } else if (exit_code == 1) {
+                test_result.passed = false;
+                test_result.error_msg = try allocator.dupe(u8, "test failed");
+            } else if (exit_code == 2) {
+                test_result.passed = false;
+                test_result.error_msg = try allocator.dupe(u8, "memory leak detected");
+            } else {
+                test_result.passed = false;
+                test_result.error_msg = try std.fmt.allocPrint(allocator, "exited with code {d}", .{exit_code});
+            }
+        } else if (std.posix.W.IFSIGNALED(wait_result.status)) {
+            const signal = std.posix.W.TERMSIG(wait_result.status);
+            test_result.passed = false;
+            test_result.error_msg = try std.fmt.allocPrint(allocator, "crashed with signal {d}", .{signal});
+        } else {
+            test_result.passed = false;
+            test_result.error_msg = try allocator.dupe(u8, "abnormal termination");
+        }
+    }
+
+    return test_result;
+}
+
 pub fn main() !void {
     const stdout_file = std.fs.File.stdout();
     const stderr_file = std.fs.File.stderr();
@@ -248,59 +312,16 @@ pub fn main() !void {
     // Check if output is a TTY
     const has_tty = stdout_file.isTty();
 
-    // Run all tests
+    // Run all tests in isolated processes
     for (builtin.test_functions, 0..) |t, i| {
-        std.testing.allocator_instance = .{};
-        const test_start = std.time.nanoTimestamp();
-
         const suite_name = extractSuiteName(t.name);
-        const test_name = extractTestName(t.name);
 
         if (has_tty) {
             printProgress(stdout, i + 1, total_tests, suite_name);
             try stdout.flush();
         }
 
-        var test_result = TestResult{
-            .name = t.name,
-            .suite = suite_name,
-            .test_name = test_name,
-            .passed = true,
-            .error_msg = null,
-            .duration_ns = 0,
-        };
-
-        t.func() catch |err| {
-            const test_end = std.time.nanoTimestamp();
-            test_result.duration_ns = @intCast(test_end - test_start);
-
-            // Check if this is a TODO test (not yet implemented)
-            const err_name = @errorName(err);
-            if (std.mem.eql(u8, err_name, "TestTodo")) {
-                test_result.todo = true;
-                test_result.passed = false;
-                test_result.error_msg = try allocator.dupe(u8, "Test not yet implemented (assembly compilation required)");
-            } else {
-                test_result.passed = false;
-                const err_msg = try std.fmt.allocPrint(allocator, "{}", .{err});
-                test_result.error_msg = err_msg;
-            }
-
-            try results.append(allocator, test_result);
-            continue;
-        };
-
-        if (std.testing.allocator_instance.deinit() == .leak) {
-            const test_end = std.time.nanoTimestamp();
-            test_result.duration_ns = @intCast(test_end - test_start);
-            test_result.passed = false;
-            test_result.error_msg = try allocator.dupe(u8, "memory leak detected");
-            try results.append(allocator, test_result);
-            continue;
-        }
-
-        const test_end = std.time.nanoTimestamp();
-        test_result.duration_ns = @intCast(test_end - test_start);
+        const test_result = try runTestInProcess(allocator, i);
         try results.append(allocator, test_result);
     }
 
