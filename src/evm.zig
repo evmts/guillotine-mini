@@ -384,6 +384,14 @@ pub const Evm = struct {
             };
         }
 
+        // Snapshot transient storage before the call (EIP-1153)
+        // Transient storage must be reverted on call failure
+        var transient_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
+        var it = self.transient_storage.iterator();
+        while (it.next()) |entry| {
+            try transient_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+
         // Get caller from current frame
         const caller = if (self.getCurrentFrame()) |frame| frame.address else self.origin;
 
@@ -415,6 +423,7 @@ pub const Evm = struct {
 
         // Get code for the target address
         const code = self.get_code(address);
+        // std.debug.print("DEBUG inner_call: address={any} code.len={} frames={}\n", .{address.bytes, code.len, self.frames.items.len});
         if (code.len == 0) {
             // Check if this is a precompile address
             const addr_num = blk: {
@@ -455,6 +464,7 @@ pub const Evm = struct {
 
             // For other precompiles or empty accounts, return success with no output
             // TODO: Implement other precompiles
+            // std.debug.print("DEBUG: Returning success for empty code (addr_num={})\n", .{addr_num});
             return CallResult{
                 .success = true,
                 .gas_left = gas,
@@ -496,6 +506,13 @@ pub const Evm = struct {
                 }
             }
 
+            // Restore transient storage on failure (EIP-1153)
+            self.transient_storage.clearRetainingCapacity();
+            var restore_it = transient_snapshot.iterator();
+            while (restore_it.next()) |entry| {
+                try self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+
             return CallResult{
                 .success = false,
                 .gas_left = 0,
@@ -519,6 +536,18 @@ pub const Evm = struct {
             .gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0))),
             .output = output,
         };
+        // std.debug.print("DEBUG inner_call result: address={any} success={} reverted={} frames={}\n", .{address.bytes, result.success, frame.reverted, self.frames.items.len});
+
+        // Restore transient storage if call failed or reverted (EIP-1153)
+        if (!result.success) {
+            std.debug.print("DEBUG: Restoring transient storage after failed call\n", .{});
+            self.transient_storage.clearRetainingCapacity();
+            var restore_it = transient_snapshot.iterator();
+            while (restore_it.next()) |entry| {
+                std.debug.print("DEBUG: Restoring transient slot {} = {}\n", .{entry.key_ptr.*.slot, entry.value_ptr.*});
+                try self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+        }
 
         // Reverse value transfer if call reverted
         if (frame.reverted and value > 0 and call_type == .Call) {
@@ -638,7 +667,7 @@ pub const Evm = struct {
             if (nonce == 0) {
                 try rlp_data.append(self.allocator, 0x80); // Empty byte string
             } else if (nonce < 0x80) {
-                try rlp_data.append(self.allocator, @intCast(nonce));
+                try rlp_data.append(self.allocator, @as(u8, @intCast(nonce)));
             } else {
                 // Multi-byte nonce - encode as big-endian bytes with length prefix
                 // First, determine the minimum number of bytes needed
@@ -661,7 +690,7 @@ pub const Evm = struct {
                 const byte_count = 8 - start_idx;
 
                 // RLP: 0x80 + length, then the bytes
-                try rlp_data.append(self.allocator, @intCast(0x80 + byte_count));
+                try rlp_data.append(self.allocator, @as(u8, @intCast(0x80 + byte_count)));
                 try rlp_data.appendSlice(self.allocator, nonce_bytes[start_idx..]);
             }
 
@@ -669,7 +698,7 @@ pub const Evm = struct {
             const total_len = rlp_data.items.len;
             var final_rlp = std.ArrayList(u8){};
             defer final_rlp.deinit(self.allocator);
-            try final_rlp.append(self.allocator, @intCast(0xc0 + total_len)); // List with length
+            try final_rlp.append(self.allocator, @as(u8, @intCast(0xc0 + total_len))); // List with length
             try final_rlp.appendSlice(self.allocator, rlp_data.items);
 
             // Hash and take last 20 bytes
