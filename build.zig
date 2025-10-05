@@ -123,6 +123,20 @@ pub fn build(b: *std.Build) void {
     // Add spec tests to main test step
     test_step.dependOn(&run_spec_tests.step);
 
+    // Add trace test executable
+    const trace_test = b.addExecutable(.{
+        .name = "trace_test",
+        .root_source_file = b.path("test_trace.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    trace_test.root_module.addImport("guillotine", mod);
+    trace_test.root_module.addImport("primitives", primitives_mod);
+
+    const run_trace_test = b.addRunArtifact(trace_test);
+    const trace_test_step = b.step("test-trace", "Run trace capture test");
+    trace_test_step.dependOn(&run_trace_test.step);
+
     // Interactive test runner
     const interactive_spec_tests = b.addTest(.{
         .root_module = spec_runner_mod,
