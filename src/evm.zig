@@ -384,7 +384,7 @@ pub const Evm = struct {
             const caller_balance = if (self.host) |h| h.getBalance(caller) else self.balances.get(caller) orelse 0;
             if (caller_balance < value) {
                 // Insufficient balance - call fails
-                std.debug.print("CALL FAILED: insufficient balance (caller={any} needs {} has {})\n", .{caller.bytes, value, caller_balance});
+                // std.debug.print("CALL FAILED: insufficient balance (caller={any} needs {} has {})\n", .{caller.bytes, value, caller_balance});
                 return CallResult{
                     .success = false,
                     .gas_left = gas,
@@ -394,7 +394,7 @@ pub const Evm = struct {
 
             // Transfer balance
             if (self.host) |h| {
-                std.debug.print("TRANSFER: from={any} to={any} value={} (caller_bal={} callee_bal={})\n", .{caller.bytes, address.bytes, value, caller_balance, h.getBalance(address)});
+                // std.debug.print("TRANSFER: from={any} to={any} value={} (caller_bal={} callee_bal={})\n", .{caller.bytes, address.bytes, value, caller_balance, h.getBalance(address)});
                 h.setBalance(caller, caller_balance - value);
                 const callee_balance = h.getBalance(address);
                 h.setBalance(address, callee_balance + value);
@@ -514,7 +514,7 @@ pub const Evm = struct {
 
         // Reverse value transfer if call reverted
         if (frame.reverted and value > 0 and call_type == .Call) {
-            std.debug.print("REVERT: reversing transfer from={any} to={any} value={}\n", .{caller.bytes, address.bytes, value});
+            // std.debug.print("REVERT: reversing transfer from={any} to={any} value={}\n", .{caller.bytes, address.bytes, value});
             if (self.host) |h| {
                 const caller_balance = h.getBalance(caller);
                 const callee_balance = h.getBalance(address);
@@ -535,7 +535,7 @@ pub const Evm = struct {
         // Pop frame from stack
         _ = self.frames.pop();
 
-        std.debug.print("RETURN: addr={any} success={} gas_left={}\n", .{address.bytes, result.success, result.gas_left});
+        // std.debug.print("RETURN: addr={any} success={} gas_left={}\n", .{address.bytes, result.success, result.gas_left});
         // No cleanup needed - arena handles it
         return result;
     }
