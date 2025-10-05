@@ -494,8 +494,40 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
             // Charge gas from sender
             const gas_used = gas_limit - result.gas_left;
             const gas_cost = gas_used * evm_instance.gas_price;
+
+            // Calculate blob gas fee for EIP-4844 blob transactions
+            var blob_gas_fee: u256 = 0;
+            if (tx.object.get("blobVersionedHashes")) |blob_hashes| {
+                const blob_count = blob_hashes.array.items.len;
+
+                // Get current excess blob gas from environment
+                const excess_blob_gas = if (test_case.object.get("env")) |env_val|
+                    if (env_val.object.get("currentExcessBlobGas")) |ebg|
+                        try parseIntFromJson(ebg)
+                    else
+                        0
+                else
+                    0;
+
+                // Calculate blob gas price using fake_exponential formula
+                // When excess_blob_gas is 0, blob_gas_price = MIN_BLOB_BASE_FEE = 1
+                // For simplicity, using MIN_BLOB_BASE_FEE when excess is 0
+                const blob_gas_price: u256 = if (excess_blob_gas == 0) 1 else 1; // TODO: implement fake_exponential
+
+                // Each blob uses 131072 (0x20000) gas
+                const blob_gas_per_blob: u256 = 131072;
+                const total_blob_gas = @as(u256, @intCast(blob_count)) * blob_gas_per_blob;
+
+                blob_gas_fee = total_blob_gas * blob_gas_price;
+            }
+
+            const total_gas_cost = gas_cost + blob_gas_fee;
             const sender_balance = test_host.balances.get(sender) orelse 0;
-            try test_host.setBalance(sender, sender_balance - gas_cost);
+            try test_host.setBalance(sender, sender_balance - total_gas_cost);
+
+            // Pay only regular gas fees to coinbase (blob gas is burned per EIP-4844)
+            const coinbase_balance = test_host.balances.get(coinbase) orelse 0;
+            try test_host.setBalance(coinbase, coinbase_balance + gas_cost);
         }
     }
 

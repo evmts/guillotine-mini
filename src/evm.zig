@@ -352,16 +352,19 @@ pub const Evm = struct {
             }
         }
 
-        // Return result
+        // Return result (add intrinsic gas back to get total gas left from original limit)
         const result = CallResult{
             .success = !frame.reverted,
-            .gas_left = gas_left,
+            .gas_left = gas_left + GasConstants.TxGas,
             .output = output,
         };
 
         // Reset transaction-scoped caches
         self.warm_addresses.clearRetainingCapacity();
         self.warm_storage_slots.clearRetainingCapacity();
+
+        // Clear transient storage at end of transaction (EIP-1153)
+        self.transient_storage.clearRetainingCapacity();
 
         // No cleanup needed - arena handles it
         return result;
@@ -538,9 +541,14 @@ pub const Evm = struct {
         };
         // std.debug.print("DEBUG inner_call result: address={any} success={} reverted={} frames={}\n", .{address.bytes, result.success, frame.reverted, self.frames.items.len});
 
-        // Note: Transient storage restoration is now handled by Frame when REVERT executes
-        // or by the catch block above when an exception is thrown.
-        // We no longer restore here to avoid double restoration.
+        // Restore transient storage on revert (EIP-1153)
+        if (frame.reverted) {
+            self.transient_storage.clearRetainingCapacity();
+            var restore_it = transient_snapshot.iterator();
+            while (restore_it.next()) |entry| {
+                try self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+        }
 
         // Reverse value transfer if call reverted
         if (frame.reverted and value > 0 and call_type == .Call) {
