@@ -634,15 +634,35 @@ pub const Evm = struct {
             try rlp_data.append(self.allocator, 0x94);
             try rlp_data.appendSlice(self.allocator, &caller.bytes);
 
-            // Encode nonce
+            // Encode nonce (RLP encoding for integers)
             if (nonce == 0) {
                 try rlp_data.append(self.allocator, 0x80); // Empty byte string
             } else if (nonce < 0x80) {
                 try rlp_data.append(self.allocator, @intCast(nonce));
             } else {
-                // Multi-byte nonce (TODO: handle properly for large nonces)
-                try rlp_data.append(self.allocator, 0x81); // 1-byte string
-                try rlp_data.append(self.allocator, @intCast(nonce));
+                // Multi-byte nonce - encode as big-endian bytes with length prefix
+                // First, determine the minimum number of bytes needed
+                var nonce_bytes: [8]u8 = undefined;
+                var nonce_len: usize = 0;
+                var temp_nonce = nonce;
+
+                // Convert to big-endian bytes, skipping leading zeros
+                var i: usize = 8;
+                while (i > 0) : (i -= 1) {
+                    const byte = @as(u8, @truncate(temp_nonce & 0xFF));
+                    nonce_bytes[i - 1] = byte;
+                    temp_nonce >>= 8;
+                    if (temp_nonce == 0 and nonce_len == 0) {
+                        nonce_len = i;
+                    }
+                }
+
+                const start_idx = nonce_len;
+                const byte_count = 8 - start_idx;
+
+                // RLP: 0x80 + length, then the bytes
+                try rlp_data.append(self.allocator, @intCast(0x80 + byte_count));
+                try rlp_data.appendSlice(self.allocator, nonce_bytes[start_idx..]);
             }
 
             // Wrap in list prefix
