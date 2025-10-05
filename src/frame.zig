@@ -1352,6 +1352,13 @@ pub const Frame = struct {
                 gas_cost += access_cost;
                 try self.consumeGas(gas_cost);
 
+                // Charge memory expansion cost for input region
+                if (in_length > 0) {
+                    const in_end = @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length));
+                    const mem_cost_in = self.memoryExpansionCost(in_end);
+                    try self.consumeGas(mem_cost_in);
+                }
+
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
                 if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
@@ -1454,6 +1461,13 @@ pub const Frame = struct {
                 const access_cost = try evm.accessAddress(call_address);
                 gas_cost += access_cost;
                 try self.consumeGas(gas_cost);
+
+                // Charge memory expansion cost for input region
+                if (in_length > 0) {
+                    const in_end = @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length));
+                    const mem_cost_in = self.memoryExpansionCost(in_end);
+                    try self.consumeGas(mem_cost_in);
+                }
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
