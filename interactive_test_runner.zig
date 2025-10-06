@@ -350,18 +350,33 @@ fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, _: a
 
         try printProgressWithLogs(writer, i + 1, tests_to_run.items.len, state.suite, state.test_name, &log_buffer, show_logs);
 
-        // Simulate log capture (in real impl, would capture from child process)
-        if ((i + 1) % 10 == 0) {
-            try log_buffer.addLine("Test execution checkpoint...");
-        }
-
         const result = try utils.runTestInProcess(allocator, test_idx);
         state.result = result;
         try last_results.append(allocator, result);
 
-        // Add result to log buffer
-        if (!result.passed and result.error_msg != null) {
-            try log_buffer.addLine(result.error_msg.?);
+        // Show result immediately after test completes
+        if (show_logs) {
+            const icon = if (result.passed) Icons.check else Icons.cross;
+            const color = if (result.passed) Color.green else Color.red;
+            const status = if (result.passed) "PASS" else "FAIL";
+
+            const log_msg = try std.fmt.allocPrint(allocator, "{s}{s}{s} {s} {s}.{s}", .{
+                color,
+                icon,
+                Color.reset,
+                status,
+                state.suite,
+                state.test_name,
+            });
+            defer allocator.free(log_msg);
+            try log_buffer.addLine(log_msg);
+
+            // Add error message to log buffer
+            if (!result.passed and result.error_msg != null) {
+                const err_msg = try std.fmt.allocPrint(allocator, "  Error: {s}", .{result.error_msg.?});
+                defer allocator.free(err_msg);
+                try log_buffer.addLine(err_msg);
+            }
         }
     }
 
@@ -412,9 +427,29 @@ fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype
         state.result = result;
         try last_results.append(allocator, result);
 
-        // Add result to log buffer
-        if (!result.passed and result.error_msg != null) {
-            try log_buffer.addLine(result.error_msg.?);
+        // Show result immediately after test completes
+        if (show_logs) {
+            const icon = if (result.passed) Icons.check else Icons.cross;
+            const color = if (result.passed) Color.green else Color.red;
+            const status = if (result.passed) "PASS" else "FAIL";
+
+            const log_msg = try std.fmt.allocPrint(allocator, "{s}{s}{s} {s} {s}.{s}", .{
+                color,
+                icon,
+                Color.reset,
+                status,
+                state.suite,
+                state.test_name,
+            });
+            defer allocator.free(log_msg);
+            try log_buffer.addLine(log_msg);
+
+            // Add error message to log buffer
+            if (!result.passed and result.error_msg != null) {
+                const err_msg = try std.fmt.allocPrint(allocator, "  Error: {s}", .{result.error_msg.?});
+                defer allocator.free(err_msg);
+                try log_buffer.addLine(err_msg);
+            }
         }
     }
 
