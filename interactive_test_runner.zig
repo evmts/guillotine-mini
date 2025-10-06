@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const utils = @import("test/utils.zig");
+const watcher = @import("test/watcher.zig");
 
 const Color = utils.Color;
 const Icons = utils.Icons;
@@ -145,6 +146,7 @@ fn displayMenu(writer: anytype, filter: ?[]const u8, total_tests: usize, matched
     }
 
     try writer.print("   {s}/{s}       - filter by pattern\n", .{ Color.bright_cyan, Color.reset });
+    try writer.print("   {s}w{s}       - toggle watch mode (auto-rerun on file changes)\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}l{s}       - toggle log display (during test runs)\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}h{s}       - show help\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}q{s}       - quit\n\n", .{ Color.bright_cyan, Color.reset });
