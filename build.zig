@@ -117,6 +117,20 @@ pub fn build(b: *std.Build) void {
             ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean; fi",
         });
 
+    // Generate Zig test wrappers from JSON fixtures
+    const generate_zig_tests = b.addSystemCommand(&.{
+        "python3",
+        "scripts/generate_spec_tests.py",
+    });
+    generate_zig_tests.step.dependOn(&fill_specs.step);
+
+    // Update test/specs/root.zig with generated test imports
+    const update_spec_root = b.addSystemCommand(&.{
+        "python3",
+        "scripts/update_spec_root.py",
+    });
+    update_spec_root.step.dependOn(&generate_zig_tests.step);
+
     const spec_runner_mod = b.addModule("spec_runner", .{
         .root_source_file = b.path("test/specs/root.zig"),
         .target = target,
@@ -139,8 +153,8 @@ pub fn build(b: *std.Build) void {
     const run_spec_tests = b.addRunArtifact(spec_tests);
     run_spec_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
 
-    // Make spec tests depend on filling the fixtures first
-    run_spec_tests.step.dependOn(&fill_specs.step);
+    // Make spec tests depend on test generation pipeline
+    run_spec_tests.step.dependOn(&update_spec_root.step);
 
     const spec_test_step = b.step("specs", "Run execution-specs tests");
     spec_test_step.dependOn(&run_spec_tests.step);
