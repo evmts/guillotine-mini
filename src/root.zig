@@ -6,6 +6,8 @@ pub const evm = @import("evm.zig");
 pub const Evm = evm.Evm;
 pub const CallResult = evm.CallResult;
 pub const StorageSlotKey = evm.StorageSlotKey;
+pub const AccessListParam = evm.AccessListParam;
+pub const AccessListStorageKey = evm.AccessListStorageKey;
 
 // Export Frame
 pub const frame = @import("frame.zig");

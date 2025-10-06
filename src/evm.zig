@@ -17,6 +17,18 @@ pub const HostInterface = host.HostInterface;
 pub const CallResult = host.CallResult;
 pub const Host = host.Host;
 
+/// Access list storage key slot type
+pub const AccessListStorageKey = struct {
+    address: Address,
+    slot: u256,
+};
+
+/// Access list parameter type for EIP-2930
+pub const AccessListParam = struct {
+    addresses: []const Address,
+    storage_keys: []const AccessListStorageKey,
+};
+
 /// Storage slot key for tracking
 pub const StorageSlotKey = struct {
     address: Address,
@@ -214,13 +226,7 @@ pub const Evm = struct {
         address: Address,
         value: u256,
         calldata: []const u8,
-        access_list: ?struct {
-            addresses: []const Address,
-            storage_keys: []const struct {
-                address: Address,
-                slot: u256,
-            },
-        },
+        access_list: ?AccessListParam,
         blob_versioned_hashes: ?[]const [32]u8,
     ) errors.CallError!CallResult {
         const arena_allocator = self.arena.allocator();
