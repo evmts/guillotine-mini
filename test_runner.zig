@@ -7,7 +7,7 @@ const Icons = utils.Icons;
 const TestResult = utils.TestResult;
 
 pub fn main() !void {
-    const stdout_file = std.io.getStdOut();
+    const stdout_file = std.fs.File.stdout();
 
     var buffered_stdout = std.io.bufferedWriter(stdout_file.writer());
     const stdout = buffered_stdout.writer();
@@ -38,14 +38,16 @@ pub fn main() !void {
         break :blk .pretty;
     };
 
-    // Check for parallel execution
-    const parallel = std.posix.getenv("TEST_PARALLEL") != null;
+    // Check for parallel execution (default ON, disable with TEST_SEQUENTIAL=1)
+    const parallel = std.posix.getenv("TEST_SEQUENTIAL") == null;
     const max_workers = blk: {
         if (std.posix.getenv("TEST_WORKERS")) |workers_str| {
             const workers = std.fmt.parseInt(usize, workers_str, 10) catch 4;
             break :blk workers;
         }
-        break :blk 4; // Default to 4 workers
+        // Default to number of CPU cores or 4, whichever is smaller
+        const cpu_count = std.Thread.getCpuCount() catch 4;
+        break :blk @min(cpu_count, 8); // Cap at 8 to avoid too many forks
     };
 
     const total_tests = builtin.test_functions.len;
