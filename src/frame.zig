@@ -301,7 +301,7 @@ pub const Frame = struct {
         
         // Keccak256 hash cost (always present for CREATE2)
         const word_count = wordCount(@as(u64, init_code_size));
-        gas_cost += word_count * GasConstants.Keccak256WordGas;
+        gas_cost += GasConstants.Keccak256Gas + (word_count * GasConstants.Keccak256WordGas);
         
         if (self.hardfork.isAtLeast(.SHANGHAI)) {
             // Additional init code word cost

@@ -352,7 +352,7 @@ pub const Evm = struct {
             }
         }
 
-        // Return result with execution-phase gas left (intrinsic gas handled by caller)
+        // Return result (execution gas left; intrinsic gas handled by caller)
         const result = CallResult{
             .success = !frame.reverted,
             .gas_left = gas_left,
@@ -812,10 +812,20 @@ pub const Evm = struct {
 
         // Get frame results
         const frame = &self.frames.items[self.frames.items.len - 1];
-        const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-        const success = !frame.reverted;
+        var gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
+        var success = !frame.reverted;
 
         // If successful, deploy the code
+        if (success and frame.output.len > 0) {
+            // Charge code deposit cost (200 gas per byte)
+            const deposit_cost = @as(u64, @intCast(frame.output.len)) * GasConstants.CreateDataGas;
+            if (gas_left < deposit_cost) {
+                // Out of gas during code deposit -> creation fails
+                success = false;
+                gas_left = 0;
+            }
+        }
+
         if (success and frame.output.len > 0) {
             // Check code size limit (EIP-170: 24576 bytes)
             const max_code_size = 24576;
@@ -844,10 +854,12 @@ pub const Evm = struct {
                 };
             }
 
-            // Deploy code
+            // Deploy code and deduct deposit gas
             const code_copy = try self.arena.allocator().alloc(u8, frame.output.len);
             @memcpy(code_copy, frame.output);
             try self.code.put(new_address, code_copy);
+            const deposit_cost = @as(u64, @intCast(frame.output.len)) * GasConstants.CreateDataGas;
+            gas_left -= deposit_cost;
 
             // Mark account as created in this transaction (EIP-6780)
             try self.created_accounts.put(new_address, {});

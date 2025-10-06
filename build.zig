@@ -111,10 +111,6 @@ pub fn build(b: *std.Build) void {
 
     const spec_tests = b.addTest(.{
         .root_module = spec_runner_mod,
-        .test_runner = .{
-            .path = b.path("test_runner.zig"),
-            .mode = .simple,
-        },
     });
 
     // Set log level to error only (suppress debug output from tests)

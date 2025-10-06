@@ -109,26 +109,26 @@ pub fn extractTestName(full_name: []const u8) []const u8 {
 
 pub fn formatDuration(writer: anytype, ns: u64) void {
     if (ns < 1_000) {
-        writer.print("{s}{d} ns{s}", .{ Color.gray, ns, Color.reset }) catch {};
+        std.fmt.format(writer, "{s}{d} ns{s}", .{ Color.gray, ns, Color.reset }) catch {};
     } else if (ns < 1_000_000) {
-        writer.print("{s}{d:.2} μs{s}", .{ Color.gray, @as(f64, @floatFromInt(ns)) / 1_000.0, Color.reset }) catch {};
+        std.fmt.format(writer, "{s}{d:.2} μs{s}", .{ Color.gray, @as(f64, @floatFromInt(ns)) / 1_000.0, Color.reset }) catch {};
     } else if (ns < 1_000_000_000) {
-        writer.print("{s}{d:.2} ms{s}", .{ Color.gray, @as(f64, @floatFromInt(ns)) / 1_000_000.0, Color.reset }) catch {};
+        std.fmt.format(writer, "{s}{d:.2} ms{s}", .{ Color.gray, @as(f64, @floatFromInt(ns)) / 1_000_000.0, Color.reset }) catch {};
     } else {
-        writer.print("{s}{d:.2} s{s}", .{ Color.yellow, @as(f64, @floatFromInt(ns)) / 1_000_000_000.0, Color.reset }) catch {};
+        std.fmt.format(writer, "{s}{d:.2} s{s}", .{ Color.yellow, @as(f64, @floatFromInt(ns)) / 1_000_000_000.0, Color.reset }) catch {};
     }
 }
 
 pub fn clearLine(writer: anytype) void {
-    writer.print("\r\x1b[K", .{}) catch {};
+    std.fmt.format(writer, "\r\x1b[K", .{}) catch {};
 }
 
 pub fn clearScreen(writer: anytype) !void {
-    try writer.print("\x1b[2J\x1b[H", .{});
+    try std.fmt.format(writer, "\x1b[2J\x1b[H", .{});
 }
 
 pub fn moveCursorUp(writer: anytype, lines: usize) void {
-    writer.print("\x1b[{d}A", .{lines}) catch {};
+    std.fmt.format(writer, "\x1b[{d}A", .{lines}) catch {};
 }
 
 pub fn printProgress(writer: anytype, current: usize, total: usize, suite_name: []const u8) void {
@@ -139,23 +139,23 @@ pub fn printProgress(writer: anytype, current: usize, total: usize, suite_name: 
     const bar_width = 20;
     const filled = (current * bar_width) / total;
 
-    writer.print(" {s}⠙{s} ", .{ Color.cyan, Color.reset }) catch {};
+    std.fmt.format(writer, " {s}⠙{s} ", .{ Color.cyan, Color.reset }) catch {};
 
     // Progress bar
-    writer.print("{s}[{s}", .{ Color.dim, Color.reset }) catch {};
+    std.fmt.format(writer, "{s}[{s}", .{ Color.dim, Color.reset }) catch {};
     for (0..bar_width) |i| {
         if (i < filled) {
-            writer.print("{s}━{s}", .{ Color.bright_cyan, Color.reset }) catch {};
+            std.fmt.format(writer, "{s}━{s}", .{ Color.bright_cyan, Color.reset }) catch {};
         } else {
-            writer.print("{s}━{s}", .{ Color.gray, Color.reset }) catch {};
+            std.fmt.format(writer, "{s}━{s}", .{ Color.gray, Color.reset }) catch {};
         }
     }
-    writer.print("{s}]{s} ", .{ Color.dim, Color.reset }) catch {};
+    std.fmt.format(writer, "{s}]{s} ", .{ Color.dim, Color.reset }) catch {};
 
-    writer.print("{s}{d}%{s} ", .{ Color.bright_cyan, percent, Color.reset }) catch {};
-    writer.print("{s}|{s} ", .{ Color.dim, Color.reset }) catch {};
-    writer.print("{s}{s}{s}", .{ Color.gray, suite_name, Color.reset }) catch {};
-    writer.print(" {s}[{d}/{d}]{s}", .{ Color.dim, current, total, Color.reset }) catch {};
+    std.fmt.format(writer, "{s}{d}%{s} ", .{ Color.bright_cyan, percent, Color.reset }) catch {};
+    std.fmt.format(writer, "{s}|{s} ", .{ Color.dim, Color.reset }) catch {};
+    std.fmt.format(writer, "{s}{s}{s}", .{ Color.gray, suite_name, Color.reset }) catch {};
+    std.fmt.format(writer, " {s}[{d}/{d}]{s}", .{ Color.dim, current, total, Color.reset }) catch {};
 }
 
 pub fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestResult {
@@ -255,7 +255,7 @@ pub fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestRe
 
 pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []TestResult) !void {
     // Group results by suite
-    var suite_map = std.StringHashMap(std.array_list.Managed(TestResult)).init(allocator);
+    var suite_map = std.StringHashMap(std.ArrayList(TestResult)).init(allocator);
     defer {
         var it = suite_map.iterator();
         while (it.next()) |entry| {
@@ -267,13 +267,13 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
     for (results) |result| {
         const entry = try suite_map.getOrPut(result.suite);
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.array_list.Managed(TestResult).init(allocator);
+            entry.value_ptr.* = std.ArrayList(TestResult).init(allocator);
         }
         try entry.value_ptr.append(result);
     }
 
     // Sort suites
-    var suites = std.array_list.Managed([]const u8).init(allocator);
+    var suites = std.ArrayList([]const u8).init(allocator);
     defer suites.deinit();
     var suite_iter = suite_map.iterator();
     while (suite_iter.next()) |entry| {
@@ -288,12 +288,12 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
     var passed_count: u32 = 0;
     var failed_count: u32 = 0;
     var todo_count: u32 = 0;
-    var failed_tests = std.array_list.Managed(TestResult).init(allocator);
-    defer failed_tests.deinit();
+    var failed_tests = std.ArrayListUnmanaged(TestResult){};
+    defer failed_tests.deinit(allocator);
 
-    try writer.print("\n{s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
-    try writer.print(" {s}Test Results{s}\n", .{ Color.bold, Color.reset });
-    try writer.print("{s}─────────────────────────────────────────{s}\n\n", .{ Color.dim, Color.reset });
+    try std.fmt.format(writer, "\n{s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
+    try std.fmt.format(writer, " {s}Test Results{s}\n", .{ Color.bold, Color.reset });
+    try std.fmt.format(writer, "{s}─────────────────────────────────────────{s}\n\n", .{ Color.dim, Color.reset });
 
     for (suites.items) |suite| {
         const tests = suite_map.get(suite).?;
@@ -314,13 +314,13 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
             } else {
                 suite_failed += 1;
                 failed_count += 1;
-                try failed_tests.append(t);
+                try failed_tests.append(allocator, t);
             }
         }
 
         // Print suite header
         if (suite_failed > 0) {
-            try writer.print(" {s}{s} FAIL {s} {s}{s}{s} ", .{
+            try std.fmt.format(writer, " {s}{s} FAIL {s} {s}{s}{s} ", .{
                 Color.bg_red,
                 Color.white,
                 Color.reset,
@@ -329,7 +329,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
                 Color.reset,
             });
         } else if (suite_todo > 0 and suite_passed == 0) {
-            try writer.print(" {s}{s} TODO {s} {s}{s}{s} ", .{
+            try std.fmt.format(writer, " {s}{s} TODO {s} {s}{s}{s} ", .{
                 Color.bg_yellow,
                 Color.black,
                 Color.reset,
@@ -338,7 +338,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
                 Color.reset,
             });
         } else {
-            try writer.print(" {s}{s}{s} {s}{s}{s} ", .{
+            try std.fmt.format(writer, " {s}{s}{s} {s}{s}{s} ", .{
                 Color.green,
                 Icons.check,
                 Color.reset,
@@ -350,13 +350,13 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
 
         // Print test counts
         if (suite_failed > 0) {
-            try writer.print("{s}{d} failed{s}", .{
+            try std.fmt.format(writer, "{s}{d} failed{s}", .{
                 Color.red,
                 suite_failed,
                 Color.reset,
             });
             if (suite_passed > 0) {
-                try writer.print(" {s}|{s} {s}{d} passed{s}", .{
+                try std.fmt.format(writer, " {s}|{s} {s}{d} passed{s}", .{
                     Color.dim,
                     Color.reset,
                     Color.green,
@@ -365,7 +365,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
                 });
             }
             if (suite_todo > 0) {
-                try writer.print(" {s}|{s} {s}{d} todo{s}", .{
+                try std.fmt.format(writer, " {s}|{s} {s}{d} todo{s}", .{
                     Color.dim,
                     Color.reset,
                     Color.yellow,
@@ -374,13 +374,13 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
                 });
             }
         } else if (suite_todo > 0) {
-            try writer.print("{s}{d} todo{s}", .{
+            try std.fmt.format(writer, "{s}{d} todo{s}", .{
                 Color.yellow,
                 suite_todo,
                 Color.reset,
             });
             if (suite_passed > 0) {
-                try writer.print(" {s}|{s} {s}{d} passed{s}", .{
+                try std.fmt.format(writer, " {s}|{s} {s}{d} passed{s}", .{
                     Color.dim,
                     Color.reset,
                     Color.green,
@@ -389,21 +389,21 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
                 });
             }
         } else {
-            try writer.print("{s}({d}){s}", .{
+            try std.fmt.format(writer, "{s}({d}){s}", .{
                 Color.green,
                 suite_passed,
                 Color.reset,
             });
         }
 
-        try writer.print(" ", .{});
+        try std.fmt.format(writer, " ", .{});
         formatDuration(writer, suite_duration);
-        try writer.print("\n", .{});
+        try std.fmt.format(writer, "\n", .{});
 
         // Print failed and todo test names
         for (tests.items) |t| {
             if (t.todo) {
-                try writer.print("   {s}{s}{s} {s}{s} (TODO){s}\n", .{
+                try std.fmt.format(writer, "   {s}{s}{s} {s}{s} (TODO){s}\n", .{
                     Color.yellow,
                     Icons.clock,
                     Color.reset,
@@ -412,7 +412,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
                     Color.reset,
                 });
             } else if (!t.passed) {
-                try writer.print("   {s}{s}{s} {s}{s}{s}\n", .{
+                try std.fmt.format(writer, "   {s}{s}{s} {s}{s}{s}\n", .{
                     Color.red,
                     Icons.cross,
                     Color.reset,
@@ -426,22 +426,22 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
 
     // Print detailed failure information
     if (failed_tests.items.len > 0) {
-        try writer.print("\n{s}⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯{s}\n", .{
+        try std.fmt.format(writer, "\n{s}⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯{s}\n", .{
             Color.red,
             Color.reset,
         });
-        try writer.print(" {s}Failed Tests {d}{s}\n", .{
+        try std.fmt.format(writer, " {s}Failed Tests {d}{s}\n", .{
             Color.red,
             failed_tests.items.len,
             Color.reset,
         });
-        try writer.print("{s}⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯{s}\n\n", .{
+        try std.fmt.format(writer, "{s}⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯{s}\n\n", .{
             Color.red,
             Color.reset,
         });
 
         for (failed_tests.items, 0..) |fail, idx| {
-            try writer.print(" {s}FAIL{s} {s}{s} {s}{s}{s}{s}\n", .{
+            try std.fmt.format(writer, " {s}FAIL{s} {s}{s} {s}{s}{s}{s}\n", .{
                 Color.bg_bright_red,
                 Color.reset,
                 Color.white,
@@ -453,10 +453,10 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
             });
 
             if (fail.error_msg) |msg| {
-                try writer.print("\n", .{});
+                try std.fmt.format(writer, "\n", .{});
                 var lines = std.mem.tokenizeScalar(u8, msg, '\n');
                 while (lines.next()) |line| {
-                    try writer.print("      {s}{s} {s}{s}{s}\n", .{
+                    try std.fmt.format(writer, "      {s}{s} {s}{s}{s}\n", .{
                         Color.red,
                         Icons.cross,
                         Color.reset,
@@ -467,17 +467,17 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
             }
 
             if (idx < failed_tests.items.len - 1) {
-                try writer.print("\n", .{});
+                try std.fmt.format(writer, "\n", .{});
             }
         }
     }
 
     // Print summary
-    try writer.print("\n{s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
-    try writer.print(" {s}Summary{s}\n", .{ Color.bold, Color.reset });
+    try std.fmt.format(writer, "\n{s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
+    try std.fmt.format(writer, " {s}Summary{s}\n", .{ Color.bold, Color.reset });
 
     if (failed_count > 0) {
-        try writer.print("   {s}Tests:{s}  {s}{d} failed{s}", .{
+        try std.fmt.format(writer, "   {s}Tests:{s}  {s}{d} failed{s}", .{
             Color.bold,
             Color.reset,
             Color.red,
@@ -485,7 +485,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
             Color.reset,
         });
         if (passed_count > 0) {
-            try writer.print(" {s}|{s} {s}{d} passed{s}", .{
+            try std.fmt.format(writer, " {s}|{s} {s}{d} passed{s}", .{
                 Color.dim,
                 Color.reset,
                 Color.green,
@@ -494,7 +494,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
             });
         }
         if (todo_count > 0) {
-            try writer.print(" {s}|{s} {s}{d} todo{s}", .{
+            try std.fmt.format(writer, " {s}|{s} {s}{d} todo{s}", .{
                 Color.dim,
                 Color.reset,
                 Color.yellow,
@@ -503,7 +503,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
             });
         }
     } else {
-        try writer.print("   {s}Tests:{s}  {s}{d} passed{s}", .{
+        try std.fmt.format(writer, "   {s}Tests:{s}  {s}{d} passed{s}", .{
             Color.bold,
             Color.reset,
             Color.green,
@@ -511,7 +511,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
             Color.reset,
         });
         if (todo_count > 0) {
-            try writer.print(" {s}|{s} {s}{d} todo{s}", .{
+            try std.fmt.format(writer, " {s}|{s} {s}{d} todo{s}", .{
                 Color.dim,
                 Color.reset,
                 Color.yellow,
@@ -520,12 +520,12 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
             });
         }
     }
-    try writer.print(" {s}({d}){s}\n", .{
+    try std.fmt.format(writer, " {s}({d}){s}\n", .{
         Color.dim,
         results.len,
         Color.reset,
     });
-    try writer.print("{s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
+    try std.fmt.format(writer, "{s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
 }
 
 pub fn matchesFilter(test_name: []const u8, filter: []const u8) bool {
@@ -554,34 +554,34 @@ pub fn outputJSON(writer: anytype, results: []TestResult, duration_ns: u64) !voi
         }
     }
 
-    try writer.print("{{", .{});
-    try writer.print("\"success\":{s},", .{if (failed == 0) "true" else "false"});
-    try writer.print("\"total\":{d},", .{results.len});
-    try writer.print("\"passed\":{d},", .{passed});
-    try writer.print("\"failed\":{d},", .{failed});
-    try writer.print("\"todo\":{d},", .{todo});
-    try writer.print("\"duration_ms\":{d:.2},", .{@as(f64, @floatFromInt(duration_ns)) / 1_000_000.0});
-    try writer.print("\"tests\":[", .{});
+    try std.fmt.format(writer, "{{", .{});
+    try std.fmt.format(writer, "\"success\":{s},", .{if (failed == 0) "true" else "false"});
+    try std.fmt.format(writer, "\"total\":{d},", .{results.len});
+    try std.fmt.format(writer, "\"passed\":{d},", .{passed});
+    try std.fmt.format(writer, "\"failed\":{d},", .{failed});
+    try std.fmt.format(writer, "\"todo\":{d},", .{todo});
+    try std.fmt.format(writer, "\"duration_ms\":{d:.2},", .{@as(f64, @floatFromInt(duration_ns)) / 1_000_000.0});
+    try std.fmt.format(writer, "\"tests\":[", .{});
 
     for (results, 0..) |r, i| {
-        try writer.print("{{", .{});
-        try writer.print("\"name\":\"{s}\",", .{escapeJSON(r.name)});
-        try writer.print("\"suite\":\"{s}\",", .{escapeJSON(r.suite)});
-        try writer.print("\"test_name\":\"{s}\",", .{escapeJSON(r.test_name)});
-        try writer.print("\"status\":\"{s}\",", .{if (r.todo) "todo" else if (r.passed) "passed" else "failed"});
-        try writer.print("\"duration_ms\":{d:.2}", .{@as(f64, @floatFromInt(r.duration_ns)) / 1_000_000.0});
+        try std.fmt.format(writer, "{{", .{});
+        try std.fmt.format(writer, "\"name\":\"{s}\",", .{escapeJSON(r.name)});
+        try std.fmt.format(writer, "\"suite\":\"{s}\",", .{escapeJSON(r.suite)});
+        try std.fmt.format(writer, "\"test_name\":\"{s}\",", .{escapeJSON(r.test_name)});
+        try std.fmt.format(writer, "\"status\":\"{s}\",", .{if (r.todo) "todo" else if (r.passed) "passed" else "failed"});
+        try std.fmt.format(writer, "\"duration_ms\":{d:.2}", .{@as(f64, @floatFromInt(r.duration_ns)) / 1_000_000.0});
 
         if (r.error_msg) |msg| {
-            try writer.print(",\"error\":\"{s}\"", .{escapeJSON(msg)});
+            try std.fmt.format(writer, ",\"error\":\"{s}\"", .{escapeJSON(msg)});
         }
 
-        try writer.print("}}", .{});
+        try std.fmt.format(writer, "}}", .{});
         if (i < results.len - 1) {
-            try writer.print(",", .{});
+            try std.fmt.format(writer, ",", .{});
         }
     }
 
-    try writer.print("]}}\n", .{});
+    try std.fmt.format(writer, "]}}\n", .{});
 }
 
 pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !void {
@@ -601,8 +601,8 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
 
     const duration_s = @as(f64, @floatFromInt(duration_ns)) / 1_000_000_000.0;
 
-    try writer.print("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n", .{});
-    try writer.print("<testsuites tests=\"{d}\" failures=\"{d}\" skipped=\"{d}\" time=\"{d:.3}\">\n", .{
+    try std.fmt.format(writer, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n", .{});
+    try std.fmt.format(writer, "<testsuites tests=\"{d}\" failures=\"{d}\" skipped=\"{d}\" time=\"{d:.3}\">\n", .{
         results.len,
         failed,
         skipped,
@@ -610,7 +610,7 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
     });
 
     // Group by suite
-    var suite_map = std.StringHashMap(std.array_list.Managed(TestResult)).init(std.heap.page_allocator);
+    var suite_map = std.StringHashMap(std.ArrayList(TestResult)).init(std.heap.page_allocator);
     defer {
         var it = suite_map.iterator();
         while (it.next()) |entry| {
@@ -622,7 +622,7 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
     for (results) |result| {
         const entry = try suite_map.getOrPut(result.suite);
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.array_list.Managed(TestResult).init(std.heap.page_allocator);
+            entry.value_ptr.* = std.ArrayList(TestResult).init(std.heap.page_allocator);
         }
         try entry.value_ptr.append(result);
     }
@@ -647,7 +647,7 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
 
         const suite_duration_s = @as(f64, @floatFromInt(suite_duration)) / 1_000_000_000.0;
 
-        try writer.print("  <testsuite name=\"{s}\" tests=\"{d}\" failures=\"{d}\" skipped=\"{d}\" time=\"{d:.3}\">\n", .{
+        try std.fmt.format(writer, "  <testsuite name=\"{s}\" tests=\"{d}\" failures=\"{d}\" skipped=\"{d}\" time=\"{d:.3}\">\n", .{
             escapeXML(suite_name),
             tests.items.len,
             suite_failed,
@@ -657,27 +657,27 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
 
         for (tests.items) |t| {
             const test_duration_s = @as(f64, @floatFromInt(t.duration_ns)) / 1_000_000_000.0;
-            try writer.print("    <testcase name=\"{s}\" classname=\"{s}\" time=\"{d:.3}\"", .{
+            try std.fmt.format(writer, "    <testcase name=\"{s}\" classname=\"{s}\" time=\"{d:.3}\"", .{
                 escapeXML(t.test_name),
                 escapeXML(t.suite),
                 test_duration_s,
             });
 
             if (t.todo) {
-                try writer.print(">\n      <skipped message=\"TODO\"/>\n    </testcase>\n", .{});
+                try std.fmt.format(writer, ">\n      <skipped message=\"TODO\"/>\n    </testcase>\n", .{});
             } else if (!t.passed) {
-                try writer.print(">\n      <failure message=\"{s}\"/>\n    </testcase>\n", .{
+                try std.fmt.format(writer, ">\n      <failure message=\"{s}\"/>\n    </testcase>\n", .{
                     if (t.error_msg) |msg| escapeXML(msg) else "Test failed",
                 });
             } else {
-                try writer.print("/>\n", .{});
+                try std.fmt.format(writer, "/>\n", .{});
             }
         }
 
-        try writer.print("  </testsuite>\n", .{});
+        try std.fmt.format(writer, "  </testsuite>\n", .{});
     }
 
-    try writer.print("</testsuites>\n", .{});
+    try std.fmt.format(writer, "</testsuites>\n", .{});
 }
 
 fn escapeJSON(s: []const u8) []const u8 {
@@ -768,7 +768,7 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
     }
 
     // Collect results
-    var results = std.array_list.Managed(TestResult).init(allocator);
+    var results = std.ArrayList(TestResult).init(allocator);
     for (tasks) |task| {
         if (task.result) |result| {
             try results.append(result);
@@ -782,7 +782,7 @@ pub fn printSlowestTests(writer: anytype, results: []TestResult, count: usize) !
     if (results.len == 0) return;
 
     // Create a copy for sorting
-    var sorted = std.array_list.Managed(TestResult).init(std.heap.page_allocator);
+    var sorted = std.ArrayList(TestResult).init(std.heap.page_allocator);
     defer sorted.deinit();
 
     for (results) |r| {
@@ -799,15 +799,15 @@ pub fn printSlowestTests(writer: anytype, results: []TestResult, count: usize) !
     const display_count = @min(count, sorted.items.len);
     if (display_count == 0) return;
 
-    try writer.print("\n{s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
-    try writer.print(" {s}Slowest Tests ({d}){s}\n", .{ Color.bold, display_count, Color.reset });
-    try writer.print("{s}─────────────────────────────────────────{s}\n\n", .{ Color.dim, Color.reset });
+    try std.fmt.format(writer, "\n{s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
+    try std.fmt.format(writer, " {s}Slowest Tests ({d}){s}\n", .{ Color.bold, display_count, Color.reset });
+    try std.fmt.format(writer, "{s}─────────────────────────────────────────{s}\n\n", .{ Color.dim, Color.reset });
 
     for (sorted.items[0..display_count]) |t| {
         const icon = if (t.passed) Icons.check else Icons.cross;
         const color = if (t.passed) Color.green else Color.red;
 
-        try writer.print(" {s}{s}{s} {s}{s}.{s}{s} ", .{
+        try std.fmt.format(writer, " {s}{s}{s} {s}{s}.{s}{s} ", .{
             color,
             icon,
             Color.reset,
@@ -817,6 +817,6 @@ pub fn printSlowestTests(writer: anytype, results: []TestResult, count: usize) !
             Color.reset,
         });
         formatDuration(writer, t.duration_ns);
-        try writer.print("\n", .{});
+        try std.fmt.format(writer, "\n", .{});
     }
 }

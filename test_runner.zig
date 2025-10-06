@@ -8,21 +8,21 @@ const TestResult = utils.TestResult;
 
 pub fn main() !void {
     const stdout_file = std.fs.File.stdout();
-
-    var stdout = stdout_file.deprecatedWriter();
+    var stdout_buffer: [8192]u8 = undefined;
+    var stdout = stdout_file.writer(stdout_buffer[0..]);
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var results = std.array_list.Managed(utils.TestResult).init(allocator);
+    var results = std.ArrayListUnmanaged(TestResult){};
     defer {
         for (results.items) |*result| {
             if (result.error_msg) |msg| {
                 allocator.free(msg);
             }
         }
-        results.deinit();
+        results.deinit(allocator);
     }
 
     // Check for test filter from environment variable
@@ -57,25 +57,25 @@ pub fn main() !void {
 
     // Only print header for pretty format
     if (output_format == .pretty) {
-        try stdout.print("\n", .{});
-        try stdout.print(" {s}{s} RUN {s} {s}v0.15.1{s}\n", .{
+        try std.fmt.format(stdout, "\n", .{});
+        try std.fmt.format(stdout, " {s}{s} RUN {s} {s}v0.15.1{s}\n", .{
             Color.bg_blue,
             Color.white,
             Color.reset,
             Color.gray,
             Color.reset,
         });
-        try stdout.print(" {s}{s}~/guillotine{s}\n\n", .{
+        try std.fmt.format(stdout, " {s}{s}~/guillotine{s}\n\n", .{
             Color.cyan,
             Icons.arrow,
             Color.reset,
         });
-        // no-op: deprecatedWriter is unbuffered
+        try stdout_file.flush();
     }
 
     // Collect test indices to run
-    var test_indices = std.array_list.Managed(usize).init(allocator);
-    defer test_indices.deinit();
+    var test_indices = std.ArrayListUnmanaged(usize){};
+    defer test_indices.deinit(allocator);
 
     for (builtin.test_functions, 0..) |t, i| {
         // Skip test if filter is set and test name doesn't match
@@ -84,7 +84,7 @@ pub fn main() !void {
                 continue;
             }
         }
-        try test_indices.append(i);
+        try test_indices.append(allocator, i);
     }
 
     // Run tests (parallel or sequential)
@@ -97,14 +97,14 @@ pub fn main() !void {
                 max_workers,
                 Color.reset,
             });
-            // no-op: deprecatedWriter is unbuffered
+            try stdout_file.flush();
         }
 
         const parallel_results = try utils.runTestsParallel(allocator, test_indices.items, max_workers);
         defer allocator.free(parallel_results);
 
         for (parallel_results) |result| {
-            try results.append(result);
+            try results.append(allocator, result);
         }
     } else {
         // Sequential execution
@@ -114,16 +114,16 @@ pub fn main() !void {
 
             if (has_tty and output_format == .pretty) {
                 utils.printProgress(stdout, i + 1, test_indices.items.len, suite_name);
-                // no-op: deprecatedWriter is unbuffered
+                try stdout_file.flush();
             }
 
             const test_result = try utils.runTestInProcess(allocator, test_idx);
-            try results.append(test_result);
+            try results.append(allocator, test_result);
         }
 
         if (has_tty and output_format == .pretty) {
             utils.clearLine(stdout);
-            // no-op: deprecatedWriter is unbuffered
+            try stdout_file.flush();
         }
     }
 
@@ -145,7 +145,7 @@ pub fn main() !void {
         },
     }
 
-    // no-op: deprecatedWriter is unbuffered
+    try stdout_file.flush();
 
     // Count results to determine exit code
     var failed_count: u32 = 0;
