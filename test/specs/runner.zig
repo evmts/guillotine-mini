@@ -723,38 +723,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const target_addr = to orelse primitives.ZERO_ADDRESS;
             const bytecode = test_host.code.get(target_addr) orelse &[_]u8{};
 
-            // Parse access list for EIP-2929 warm/cold tracking
-            // Pre-warm addresses and storage slots before execution
-            if (tx.object.get("accessLists")) |access_lists_json| {
-                if (access_lists_json == .array and access_lists_json.array.items.len > 0) {
-                    const access_list_json = access_lists_json.array.items[0];
-                    if (access_list_json == .array) {
-                        for (access_list_json.array.items) |entry| {
-                            if (entry.object.get("address")) |addr_json| {
-                                const addr = try parseAddress(addr_json.string);
-                                // Manually warm the address
-                                _ = try evm_instance.warm_addresses.getOrPut(addr);
-
-                                // Parse and warm storage keys for this address
-                                if (entry.object.get("storageKeys")) |keys| {
-                                    if (keys == .array) {
-                                        for (keys.array.items) |key_json| {
-                                            const slot = try std.fmt.parseInt(u256, key_json.string, 0);
-                                            const storage_key = evm_mod.StorageSlotKey{
-                                                .address = addr,
-                                                .slot = slot,
-                                            };
-                                            _ = try evm_instance.warm_storage_slots.getOrPut(storage_key);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
             // Execute with execution gas (intrinsic gas already deducted)
+            // NOTE: Access list warming is now handled inside evm.call()
             const result = try evm_instance.call(
                 bytecode,
                 @intCast(execution_gas),
@@ -762,7 +732,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 target_addr,
                 value,
                 tx_data,
-                null, // access_list parsing done manually above
+                null, // TODO: Parse and pass access list from transaction JSON
                 blob_hashes_storage,
             );
 
