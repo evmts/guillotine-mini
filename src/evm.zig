@@ -352,10 +352,10 @@ pub const Evm = struct {
             }
         }
 
-        // Return result (add intrinsic gas back to get total gas left from original limit)
+        // Return result with execution-phase gas left (intrinsic gas handled by caller)
         const result = CallResult{
             .success = !frame.reverted,
-            .gas_left = gas_left + GasConstants.TxGas,
+            .gas_left = gas_left,
             .output = output,
         };
 
