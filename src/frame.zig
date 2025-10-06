@@ -965,9 +965,27 @@ pub const Frame = struct {
 
                 try self.consumeGas(GasConstants.GasFastestStep);
                 const index = try self.popStack();
-                _ = index;
-                // For now, return zero (no blob hashes in test context)
-                try self.pushStack(0);
+
+                // Return the blob hash at the given index, or 0 if out of bounds
+                // Use std.math.cast to safely convert u256 to usize, returns null if overflow
+                const hash_value = if (std.math.cast(usize, index)) |index_usize| blk: {
+                    if (index_usize < evm.blob_versioned_hashes.len) {
+                        // Convert the 32-byte blob hash to u256
+                        const blob_hash = evm.blob_versioned_hashes[index_usize];
+                        var value: u256 = 0;
+                        for (blob_hash) |byte| {
+                            value = (value << 8) | byte;
+                        }
+                        break :blk value;
+                    } else {
+                        // Index out of bounds, return 0
+                        break :blk 0;
+                    }
+                } else blk: {
+                    // Index too large to represent as usize, definitely out of bounds
+                    break :blk 0;
+                };
+                try self.pushStack(hash_value);
                 self.pc += 1;
             },
 
@@ -1818,25 +1836,25 @@ pub const Frame = struct {
                 const src = try self.popStack();
                 const dest = try self.popStack();
 
-                // Fast path: zero length does nothing
-                if (len == 0) {
-                    self.pc += 1;
-                    return;
-                }
-
                 // Bounds and type conversions (clamp to u64 before u32/u24 style ops)
                 const dest_u32 = std.math.cast(u32, dest) orelse return error.OutOfBounds;
                 const src_u32 = std.math.cast(u32, src) orelse return error.OutOfBounds;
                 const len_u32 = std.math.cast(u32, len) orelse return error.OutOfBounds;
 
                 // Gas: memory expansion + copy gas (CopyGas per 32-byte word)
+                // Note: MCOPY uses Wcopy gas schedule, not Wverylow + Wcopy
                 const end_src: u64 = @as(u64, src_u32) + @as(u64, len_u32);
                 const end_dest: u64 = @as(u64, dest_u32) + @as(u64, len_u32);
-                const mem_cost_src = self.memoryExpansionCost(end_src);
-                const mem_cost_dest = self.memoryExpansionCost(end_dest);
-                const mem_cost = @max(mem_cost_src, mem_cost_dest);
+                const max_end = @max(end_src, end_dest);
+                const mem_cost = self.memoryExpansionCost(max_end);
                 const copy_cost = copyGasCost(len_u32);
                 try self.consumeGas(mem_cost + copy_cost);
+
+                // Fast path: zero length - gas charged but no copy needed
+                if (len_u32 == 0) {
+                    self.pc += 1;
+                    return;
+                }
 
                 // Copy via temporary buffer to handle overlapping regions
                 const tmp = try self.allocator.alloc(u8, len_u32);
