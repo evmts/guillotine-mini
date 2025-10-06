@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) void {
 
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
-    // set the releative field.
+    // set the relative field.
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
