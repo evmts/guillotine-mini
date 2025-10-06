@@ -92,6 +92,13 @@ pub fn build(b: *std.Build) void {
     });
 
     // Add execution-specs tests
+    // First, add a build step to generate test fixtures using Python fill command
+    const fill_specs = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cd /Users/williamcory/guillotine-mini/execution-specs && uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --fork Cancun --clean",
+    });
+
     const spec_runner_mod = b.addModule("spec_runner", .{
         .root_source_file = b.path("test/specs/root.zig"),
         .target = target,
@@ -117,6 +124,10 @@ pub fn build(b: *std.Build) void {
 
     const run_spec_tests = b.addRunArtifact(spec_tests);
     run_spec_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
+
+    // Make spec tests depend on filling the fixtures first
+    run_spec_tests.step.dependOn(&fill_specs.step);
+
     const spec_test_step = b.step("specs", "Run execution-specs tests");
     spec_test_step.dependOn(&run_spec_tests.step);
 
