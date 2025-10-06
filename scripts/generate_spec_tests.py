@@ -44,10 +44,16 @@ def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path) -> N
     output_file = output_dir / rel_path.with_suffix(".zig")
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
+    # Calculate relative path back to runner.zig
+    # Count directory depth and build appropriate ../ path
+    # We need to go up from the output_file directory to output_dir, then up one more to test/specs
+    depth = len(output_file.relative_to(output_dir).parts)  # includes the file itself
+    runner_path = "../" * depth + "runner.zig"
+
     # Generate Zig test code
     zig_code = ['const std = @import("std");']
     zig_code.append('const testing = std.testing;')
-    zig_code.append('const runner = @import("../../runner.zig");')
+    zig_code.append(f'const runner = @import("{runner_path}");')
     zig_code.append("")
 
     # Generate a test for each test case in the JSON file
