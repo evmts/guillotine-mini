@@ -143,7 +143,14 @@ pub fn build(b: *std.Build) void {
 
     const spec_tests = b.addTest(.{
         .root_module = spec_runner_mod,
+        .test_runner = .{
+            .path = b.path("test_runner.zig"),
+            .mode = .simple,
+        },
     });
+
+    // Make spec test compilation depend on test generation pipeline
+    spec_tests.step.dependOn(&update_spec_root.step);
 
     // Set log level to error only (suppress debug output from tests)
     const log_options = b.addOptions();
@@ -152,9 +159,6 @@ pub fn build(b: *std.Build) void {
 
     const run_spec_tests = b.addRunArtifact(spec_tests);
     run_spec_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
-
-    // Make spec tests depend on test generation pipeline
-    run_spec_tests.step.dependOn(&update_spec_root.step);
 
     const spec_test_step = b.step("specs", "Run execution-specs tests");
     spec_test_step.dependOn(&run_spec_tests.step);
