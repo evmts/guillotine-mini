@@ -437,6 +437,37 @@ pub const Evm = struct {
                 break :blk val;
             };
 
+            // Precompile 0x02: SHA256 - available in all forks
+            if (addr_num == 2) {
+                const Sha256 = std.crypto.hash.sha2.Sha256;
+                // Gas cost: 60 + 12 * (len(input) / 32) rounded up
+                const input_len = input.len;
+                const word_count = (input_len + 31) / 32;
+                const precompile_gas = 60 + (12 * word_count);
+
+                if (gas < precompile_gas) {
+                    // Out of gas
+                    return CallResult{
+                        .success = false,
+                        .gas_left = 0,
+                        .output = &[_]u8{},
+                    };
+                }
+
+                // Compute SHA256 hash
+                var hash: [32]u8 = undefined;
+                Sha256.hash(input, &hash, .{});
+
+                const output = try self.arena.allocator().alloc(u8, 32);
+                @memcpy(output, &hash);
+
+                return CallResult{
+                    .success = true,
+                    .gas_left = gas - precompile_gas,
+                    .output = output,
+                };
+            }
+
             // Precompile 0x04: Identity (datacopy) - available in all forks
             if (addr_num == 4) {
                 // Identity: copy input to output
@@ -593,6 +624,19 @@ pub const Evm = struct {
                 .success = false,
                 .gas_left = 0,
             };
+        }
+
+        // EIP-3860: Check init code size limit (Shanghai and later)
+        std.debug.print("DEBUG inner_create: hardfork={} init_code.len={} max={}\n", .{self.hardfork, init_code.len, GasConstants.MaxInitcodeSize});
+        if (self.hardfork.isAtLeast(.SHANGHAI)) {
+            if (init_code.len > GasConstants.MaxInitcodeSize) {
+                std.debug.print("EIP-3860: Init code size {} exceeds limit {}, CREATE2 failing\n", .{init_code.len, GasConstants.MaxInitcodeSize});
+                return .{
+                    .address = primitives.ZERO_ADDRESS,
+                    .success = false,
+                    .gas_left = gas,
+                };
+            }
         }
 
         // Get caller from current frame

@@ -1679,6 +1679,7 @@ pub const Frame = struct {
 
             // CREATE2
             0xf5 => {
+                std.debug.print("DEBUG: Executing CREATE2 opcode\n", .{});
                 // EIP-1014: CREATE2 opcode was introduced in Constantinople hardfork
                 if (evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
 
@@ -1687,8 +1688,10 @@ pub const Frame = struct {
                 const length = try self.popStack();
                 const salt = try self.popStack();
 
+                std.debug.print("DEBUG: CREATE2 params: length={} offset={} value={} salt={}\n", .{length, offset, value, salt});
                 const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
                 const gas_cost = self.create2GasCost(len);
+                std.debug.print("DEBUG: CREATE2 gas_cost={}\n", .{gas_cost});
                 try self.consumeGas(gas_cost);
 
                 // Read init code from memory
@@ -1836,19 +1839,30 @@ pub const Frame = struct {
                 const src = try self.popStack();
                 const dest = try self.popStack();
 
-                // Bounds and type conversions (clamp to u64 before u32/u24 style ops)
+                // Calculate memory expansion cost BEFORE bounds checking
+                // This ensures we charge gas (and fail with OutOfGas) for huge memory expansions
+                // even if the values don't fit in u32
+
+                // Safe conversion: if values don't fit in u64, use maxInt(u64) which will trigger
+                // massive gas cost in memoryExpansionCost
+                const dest_u64 = std.math.cast(u64, dest) orelse std.math.maxInt(u64);
+                const len_u64 = std.math.cast(u64, len) orelse std.math.maxInt(u64);
+                const end_dest: u64 = dest_u64 +| len_u64;  // saturating add to prevent overflow
+                const mem_cost = self.memoryExpansionCost(end_dest);
+
+                // For copy cost, we need to handle len > u32::MAX specially
+                // If len doesn't fit in u32, the copy cost will be astronomical
+                const copy_cost = if (len <= std.math.maxInt(u32))
+                    copyGasCost(@intCast(len))
+                else
+                    std.math.maxInt(i64);  // Huge value that will trigger OutOfGas
+
+                try self.consumeGas(mem_cost + copy_cost);
+
+                // Now that gas is charged, do bounds checking for actual memory operations
                 const dest_u32 = std.math.cast(u32, dest) orelse return error.OutOfBounds;
                 const src_u32 = std.math.cast(u32, src) orelse return error.OutOfBounds;
                 const len_u32 = std.math.cast(u32, len) orelse return error.OutOfBounds;
-
-                // Gas: memory expansion + copy gas (CopyGas per 32-byte word)
-                // Note: MCOPY uses Wcopy gas schedule, not Wverylow + Wcopy
-                const end_src: u64 = @as(u64, src_u32) + @as(u64, len_u32);
-                const end_dest: u64 = @as(u64, dest_u32) + @as(u64, len_u32);
-                const max_end = @max(end_src, end_dest);
-                const mem_cost = self.memoryExpansionCost(max_end);
-                const copy_cost = copyGasCost(len_u32);
-                try self.consumeGas(mem_cost + copy_cost);
 
                 // Fast path: zero length - gas charged but no copy needed
                 if (len_u32 == 0) {
@@ -2237,6 +2251,7 @@ pub const Frame = struct {
             0x3b, 0x3c, 0x3f => GasConstants.GasExtStep, // EXT* ops
             0x54 => GasConstants.SloadGas, // SLOAD
             0x55 => GasConstants.SstoreSetGas, // SSTORE (approximate)
+            0x5f => GasConstants.GasQuickStep, // PUSH0
             0xf0 => GasConstants.CreateGas, // CREATE
             0xf1, 0xf2, 0xf4, 0xfa => GasConstants.CallGas, // CALL variants
             0xf5 => GasConstants.CreateGas, // CREATE2

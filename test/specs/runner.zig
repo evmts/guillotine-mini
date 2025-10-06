@@ -660,6 +660,12 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const current_nonce = test_host.getNonce(sender);
             try test_host.setNonce(sender, current_nonce + 1);
 
+            // Per Ethereum spec: charge sender for full gas limit upfront
+            // We'll refund unused gas after execution
+            const upfront_gas_cost = @as(u256, gas_limit) * evm_instance.gas_price;
+            const sender_balance = test_host.balances.get(sender) orelse 0;
+            try test_host.setBalance(sender, sender_balance - upfront_gas_cost);
+
             // Get contract code
             const target_addr = to orelse primitives.ZERO_ADDRESS;
             const bytecode = test_host.code.get(target_addr) orelse &[_]u8{};
@@ -676,10 +682,15 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 blob_hashes_storage,
             );
 
-            // Charge gas from sender
-            // gas_used = intrinsic_gas + (execution_gas - gas_left)
+            // Calculate gas used (after refunds, which are already applied in result.gas_left)
             const gas_used = intrinsic_gas + (execution_gas - result.gas_left);
             std.debug.print("DEBUG GAS: intrinsic={} execution={} gas_left={} gas_used={}\n", .{intrinsic_gas, execution_gas, result.gas_left, gas_used});
+
+            // Refund unused gas to sender
+            const gas_unused = gas_limit - gas_used;
+            const gas_refund_amount = gas_unused * evm_instance.gas_price;
+            const sender_balance_after_exec = test_host.balances.get(sender) orelse 0;
+            try test_host.setBalance(sender, sender_balance_after_exec + gas_refund_amount);
 
             // Calculate blob gas fee for EIP-4844 blob transactions
             var blob_gas_fee: u256 = 0;
@@ -707,22 +718,22 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 blob_gas_fee = total_blob_gas * blob_gas_price;
             }
 
-            // For blob transactions, access list costs and per-blob-hash costs are not charged to sender
-            // (they don't earn priority fee for coinbase either)
+            // Charge blob gas fee to sender (for EIP-4844 transactions)
+            // This is separate from regular gas and was not included in the upfront charge
+            if (blob_gas_fee > 0) {
+                const sender_balance_before_blob = test_host.balances.get(sender) orelse 0;
+                try test_host.setBalance(sender, sender_balance_before_blob - blob_gas_fee);
+            }
+
+            // Pay coinbase their reward (priority fee portion only for EIP-1559/EIP-4844)
+            // For EIP-1559/EIP-4844 transactions, only the priority fee goes to coinbase
+            // (base fee is burned, not given to coinbase)
+            // For blob transactions, access list and blob hash costs don't earn priority fee
             const blob_hash_cost = if (blob_hashes_storage) |hashes| @as(u64, @intCast(hashes.len)) * 1100 else 0;
             const gas_for_coinbase = if (blob_gas_fee > 0)
                 gas_used - access_list_gas - blob_hash_cost
             else
                 gas_used;
-
-            const gas_cost = gas_for_coinbase * evm_instance.gas_price;
-            const total_gas_cost = gas_cost + blob_gas_fee;
-            const sender_balance = test_host.balances.get(sender) orelse 0;
-            try test_host.setBalance(sender, sender_balance - total_gas_cost);
-
-            // Pay gas fee to coinbase
-            // For EIP-1559/EIP-4844 transactions, only the priority fee goes to coinbase
-            // (base fee is burned, not given to coinbase)
             const coinbase_reward = gas_for_coinbase * priority_fee_per_gas;
             const coinbase_balance = test_host.balances.get(coinbase) orelse 0;
 
