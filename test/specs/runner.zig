@@ -15,10 +15,48 @@ pub const TestTodo = error.TestTodo;
 
 // Run a single test case from JSON
 pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !void {
+    // Check if test has multiple hardforks in post section
+    const post = test_case.object.get("post");
+    if (post) |p| {
+        if (p == .object) {
+            // Collect all hardforks present in post section
+            var hardforks_to_test: std.ArrayList(Hardfork) = .{};
+            defer hardforks_to_test.deinit(allocator);
+
+            // Check for each hardfork in order
+            inline for (&[_][]const u8{ "Cancun", "Prague", "Shanghai", "Merge", "London", "Berlin" }) |fork_name| {
+                if (p.object.get(fork_name)) |_| {
+                    if (Hardfork.fromString(fork_name)) |hf| {
+                        try hardforks_to_test.append(allocator, hf);
+                    }
+                }
+            }
+
+            // If multiple hardforks found, test each one separately
+            if (hardforks_to_test.items.len > 1) {
+                for (hardforks_to_test.items) |hf| {
+                    runJsonTestImplForFork(allocator, test_case, null, hf) catch |err| {
+                        generateTraceDiffOnFailure(allocator, test_case) catch {};
+                        return err;
+                    };
+                }
+                return;
+            }
+        }
+    }
+
+    // Single hardfork or no post section - use original logic
     runJsonTestImpl(allocator, test_case, null) catch |err| {
         generateTraceDiffOnFailure(allocator, test_case) catch {};
         return err;
     };
+}
+
+// Helper to run test with a specific hardfork (for multi-fork tests)
+fn runJsonTestImplForFork(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?*trace.Tracer, forced_hardfork: Hardfork) !void {
+    // Just call runJsonTestImpl with modified extractHardfork behavior
+    // We'll modify runJsonTestImpl to accept an optional forced hardfork parameter
+    try runJsonTestImplWithOptionalFork(allocator, test_case, tracer, forced_hardfork);
 }
 
 fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.Value) !void {
@@ -214,6 +252,10 @@ fn extractHardfork(test_case: std.json.Value) ?Hardfork {
 }
 
 fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?*trace.Tracer) !void {
+    try runJsonTestImplWithOptionalFork(allocator, test_case, tracer, null);
+}
+
+fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?*trace.Tracer, forced_hardfork: ?Hardfork) !void {
     // Handle non-object test cases
     if (test_case != .object) {
         return;
@@ -320,8 +362,8 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
     // Block context is optional - pass null to use EVM's defaults
     const block_ctx = null;
 
-    // Extract hardfork from test JSON
-    const hardfork = extractHardfork(test_case);
+    // Extract hardfork from test JSON (or use forced hardfork for multi-fork tests)
+    const hardfork = if (forced_hardfork) |hf| hf else extractHardfork(test_case);
 
     // Create EVM with test host and detected hardfork
     const host_interface = test_host.hostInterface();
@@ -566,6 +608,7 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
 
             // Calculate intrinsic gas cost
             var intrinsic_gas: u64 = primitives.GasConstants.TxGas; // 21000
+            var access_list_gas: u64 = 0;
 
             // Add calldata cost (4 gas per zero byte, 16 gas per non-zero byte)
             for (tx_data) |byte| {
@@ -584,12 +627,16 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
                     if (access_list_json == .array) {
                         for (access_list_json.array.items) |entry| {
                             // Each entry costs ACCESS_LIST_ADDRESS_COST (2400 gas)
-                            intrinsic_gas += primitives.AccessList.ACCESS_LIST_ADDRESS_COST;
+                            const addr_cost = primitives.AccessList.ACCESS_LIST_ADDRESS_COST;
+                            intrinsic_gas += addr_cost;
+                            access_list_gas += addr_cost;
 
                             // Add cost for storage keys (1900 gas each)
                             if (entry.object.get("storageKeys")) |keys| {
                                 if (keys == .array) {
-                                    intrinsic_gas += @as(u64, @intCast(keys.array.items.len)) * primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST;
+                                    const keys_cost = @as(u64, @intCast(keys.array.items.len)) * primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST;
+                                    intrinsic_gas += keys_cost;
+                                    access_list_gas += keys_cost;
                                 }
                             }
                         }
@@ -629,7 +676,6 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
             // Charge gas from sender
             // gas_used = intrinsic_gas + (execution_gas - gas_left)
             const gas_used = intrinsic_gas + (execution_gas - result.gas_left);
-            const gas_cost = gas_used * evm_instance.gas_price;
 
             // Calculate blob gas fee for EIP-4844 blob transactions
             var blob_gas_fee: u256 = 0;
@@ -657,6 +703,15 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
                 blob_gas_fee = total_blob_gas * blob_gas_price;
             }
 
+            // For blob transactions, access list costs and per-blob-hash costs are not charged to sender
+            // (they don't earn priority fee for coinbase either)
+            const blob_hash_cost = if (blob_hashes_storage) |hashes| @as(u64, @intCast(hashes.len)) * 1100 else 0;
+            const gas_for_coinbase = if (blob_gas_fee > 0)
+                gas_used - access_list_gas - blob_hash_cost
+            else
+                gas_used;
+
+            const gas_cost = gas_for_coinbase * evm_instance.gas_price;
             const total_gas_cost = gas_cost + blob_gas_fee;
             const sender_balance = test_host.balances.get(sender) orelse 0;
             try test_host.setBalance(sender, sender_balance - total_gas_cost);
@@ -664,13 +719,13 @@ fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, trac
             // Pay gas fee to coinbase
             // For EIP-1559/EIP-4844 transactions, only the priority fee goes to coinbase
             // (base fee is burned, not given to coinbase)
-            const coinbase_reward = gas_used * priority_fee_per_gas;
+            const coinbase_reward = gas_for_coinbase * priority_fee_per_gas;
             const coinbase_balance = test_host.balances.get(coinbase) orelse 0;
 
             // Debug output
             if (blob_gas_fee > 0) {
-                std.debug.print("DEBUG: gas_limit={} gas_left={} gas_used={} success={} priority_fee={} coinbase_reward={} blob_gas_fee={}\n", .{
-                    gas_limit, result.gas_left, gas_used, result.success, priority_fee_per_gas, coinbase_reward, blob_gas_fee
+                std.debug.print("DEBUG: gas_limit={} gas_left={} gas_used={} access_list_gas={} gas_for_coinbase={} success={} priority_fee={} coinbase_reward={} blob_gas_fee={}\n", .{
+                    gas_limit, result.gas_left, gas_used, access_list_gas, gas_for_coinbase, result.success, priority_fee_per_gas, coinbase_reward, blob_gas_fee
                 });
             }
 
