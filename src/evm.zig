@@ -96,6 +96,7 @@ pub const Evm = struct {
         .block_base_fee = 0,
         .blob_base_fee = 0,
     },
+    blob_versioned_hashes: []const [32]u8 = &[_][32]u8{},
 
     pub fn init(allocator: std.mem.Allocator, h: ?HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext) !Self {
         return Self{
@@ -220,6 +221,7 @@ pub const Evm = struct {
                 slot: u256,
             },
         },
+        blob_versioned_hashes: ?[]const [32]u8,
     ) errors.CallError!CallResult {
         const arena_allocator = self.arena.allocator();
         self.storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
@@ -233,6 +235,13 @@ pub const Evm = struct {
         self.original_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
         self.transient_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
         self.created_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
+
+        // Set blob versioned hashes for EIP-4844
+        if (blob_versioned_hashes) |hashes| {
+            self.blob_versioned_hashes = hashes;
+        } else {
+            self.blob_versioned_hashes = &[_][32]u8{};
+        }
 
         try self.preWarmTransaction(address);
 
@@ -270,23 +279,16 @@ pub const Evm = struct {
             }
         }
 
-        const intrinsic_gas: i64 = @intCast(GasConstants.TxGas);
-        if (gas < intrinsic_gas) {
-            @branchHint(.cold);
-            return CallResult{
-                .success = false,
-                .gas_left = 0,
-                .output = &[_]u8{},
-            };
-        }
-        const execution_gas = gas - intrinsic_gas;
-        const execution_gas_limit: u64 = @as(u64, @intCast(execution_gas));
+        // Note: intrinsic gas should be deducted by the caller (e.g., test runner)
+        // before calling this function. This function receives gas that's already
+        // net of intrinsic costs, similar to inner_call().
+        const execution_gas_limit: u64 = @as(u64, @intCast(gas));
 
         // Create and push frame onto stack
         try self.frames.append(self.arena.allocator(), try Frame.init(
             self.arena.allocator(),
             bytecode,
-            execution_gas,
+            gas,
             caller,
             address,
             value,
@@ -323,18 +325,16 @@ pub const Evm = struct {
         var gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
         // Apply gas refund if the call was successful
         if (!frame.reverted) {
-            // Calculate total gas used including intrinsic gas (TxGas)
-            // The refund cap should be based on total gas used, not just execution gas
+            // Calculate gas used (note: intrinsic gas is handled by the caller)
             const execution_gas_used = if (execution_gas_limit > gas_left) execution_gas_limit - gas_left else 0;
-            const total_gas_used = GasConstants.TxGas + execution_gas_used;
 
             // Pre-London: refund up to half of gas used; post-London: refund up to one fifth of gas used
             const capped_refund = if (self.hardfork.isBefore(.LONDON)) blk: {
                 @branchHint(.cold);
-                break :blk @min(self.gas_refund, total_gas_used / 2);
+                break :blk @min(self.gas_refund, execution_gas_used / 2);
             } else blk: {
                 @branchHint(.likely);
-                break :blk @min(self.gas_refund, total_gas_used / 5);
+                break :blk @min(self.gas_refund, execution_gas_used / 5);
             };
 
             // Apply the refund
