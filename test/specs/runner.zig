@@ -401,28 +401,28 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             } else try allocator.alloc(u8, 0);
             defer allocator.free(tx_data);
 
-            // Determine sender
-            const sender = if (tx.object.get("sender")) |s|
-                try parseAddress(s.string)
-            else if (tx.object.get("secretKey") != null)
-                try Address.fromHex("0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b")
-            else
-                primitives.ZERO_ADDRESS;
+            // Parse value early for sender selection
+            const value = if (tx.object.get("value")) |v| blk: {
+                const val_str = if (v == .array) v.array.items[0].string else v.string;
+                break :blk if (val_str.len == 0) 0 else try std.fmt.parseInt(u256, val_str, 0);
+            } else 0;
 
-            // Set origin
-            evm_instance.origin = sender;
-
-            // Track priority fee for EIP-1559 coinbase rewards
+            // Parse gas price (legacy) or compute effective gas price (EIP-1559)
             var priority_fee_per_gas: u256 = 0;
-
-            // Parse and set gas price (support both legacy and EIP-1559)
             if (tx.object.get("gasPrice")) |gp| {
                 const gas_price_str = gp.string;
                 const gas_price = if (gas_price_str.len == 0) 0 else try std.fmt.parseInt(u256, gas_price_str, 0);
                 evm_instance.gas_price = gas_price;
-                // For legacy transactions, entire gas price goes to coinbase
-                priority_fee_per_gas = gas_price;
-                // // std.debug.print("DEBUG: Set gas_price to {}\n", .{gas_price});
+                // If a base fee is present in the env (London+), only the tip (gas_price - base_fee)
+                // goes to the coinbase as priority fee. Otherwise, entire gas_price goes to coinbase.
+                const base_fee_env: u256 = if (test_case.object.get("env")) |env_val|
+                    if (env_val.object.get("currentBaseFee")) |bf|
+                        try parseIntFromJson(bf)
+                    else
+                        0
+                else
+                    0;
+                priority_fee_per_gas = if (gas_price > base_fee_env) gas_price - base_fee_env else 0;
             } else if (tx.object.get("maxFeePerGas")) |max_fee| {
                 // EIP-1559 transaction
                 const max_fee_per_gas = try parseIntFromJson(max_fee);
@@ -449,7 +449,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 std.debug.print("DEBUG: base_fee={} max_priority_fee={} priority_fee_per_gas={} gas_price={}\n", .{base_fee, max_priority_fee, priority_fee_per_gas, evm_instance.gas_price});
             }
 
-            // Parse gas limit
+            // Parse gas limit early for affordability checks
             const gas_limit = if (tx.object.get("gasLimit")) |g| blk: {
                 if (g == .array) {
                     break :blk try parseIntFromJson(g.array.items[0]);
@@ -458,11 +458,59 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
             } else 1000000;
 
-            // Parse value
-            const value = if (tx.object.get("value")) |v| blk: {
-                const val_str = if (v == .array) v.array.items[0].string else v.string;
-                break :blk if (val_str.len == 0) 0 else try std.fmt.parseInt(u256, val_str, 0);
-            } else 0;
+            // Determine sender
+            var sender: Address = primitives.ZERO_ADDRESS;
+            if (tx.object.get("sender")) |s| {
+                sender = try parseAddress(s.string);
+            } else if (tx.object.get("secretKey") != null) {
+                // Heuristic: if sender is not explicitly provided, try to find a pre-state account
+                // whose nonce matches the transaction nonce. This aligns with how fixtures select senders.
+                const tx_nonce: u64 = if (tx.object.get("nonce")) |n|
+                    try parseIntFromJson(n)
+                else
+                    0;
+
+                var chosen: ?Address = null;
+                if (test_case.object.get("pre")) |pre| {
+                    if (pre == .object) {
+                        var it = pre.object.iterator();
+                        // Track best candidate by having sufficient balance for upfront gas + value
+                        while (it.next()) |kv| {
+                            const addr = try parseAddress(kv.key_ptr.*);
+                            const acct = kv.value_ptr.*;
+                            const acct_nonce: u64 = if (acct.object.get("nonce")) |n|
+                                try parseIntFromJson(n)
+                            else
+                                0;
+                            if (acct_nonce != tx_nonce) continue;
+                            // Check affordability if balance is provided
+                            const acct_balance: u256 = if (acct.object.get("balance")) |b|
+                                if (b.string.len == 0) 0 else try std.fmt.parseInt(u256, b.string, 0)
+                            else
+                                0;
+                            const upfront_gas_cost = @as(u256, gas_limit) * evm_instance.gas_price;
+                            if (acct_balance >= (upfront_gas_cost + value)) {
+                                chosen = addr;
+                                break; // good match
+                            } else if (chosen == null) {
+                                // Fallback to first nonce-matching account if none affordable
+                                chosen = addr;
+                            }
+                        }
+                    }
+                }
+                if (chosen) |addr| {
+                    sender = addr;
+                } else {
+                    // Fallback to legacy default test key address
+                    sender = try Address.fromHex("0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+                }
+            }
+
+            // Set origin
+            evm_instance.origin = sender;
+
+            // priority_fee_per_gas already set above for coinbase rewards
 
             // Parse to address
             const to = if (tx.object.get("to")) |to_val| blk: {
@@ -656,14 +704,19 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const execution_gas = gas_limit - intrinsic_gas;
             std.debug.print("DEBUG GAS PRE-EXEC: intrinsic={} gas_limit={} execution={}\n", .{intrinsic_gas, gas_limit, execution_gas});
 
-            // Increment sender's nonce before transaction (as per Ethereum spec)
+            // Per Ethereum spec: sender must have sufficient funds for upfront gas + value
+            const upfront_gas_cost = @as(u256, gas_limit) * evm_instance.gas_price;
+            const sender_balance = test_host.balances.get(sender) orelse 0;
+            if (sender_balance < (upfront_gas_cost + value)) {
+                std.debug.print("DEBUG: Transaction skipped - insufficient funds (balance={} < upfront_gas+value={})\n", .{sender_balance, upfront_gas_cost + value});
+                continue;
+            }
+
+            // Increment sender's nonce (consumed even on REVERT/OOG after inclusion)
             const current_nonce = test_host.getNonce(sender);
             try test_host.setNonce(sender, current_nonce + 1);
 
-            // Per Ethereum spec: charge sender for full gas limit upfront
-            // We'll refund unused gas after execution
-            const upfront_gas_cost = @as(u256, gas_limit) * evm_instance.gas_price;
-            const sender_balance = test_host.balances.get(sender) orelse 0;
+            // Charge sender for full gas limit upfront (refunds applied after execution)
             try test_host.setBalance(sender, sender_balance - upfront_gas_cost);
 
             // Get contract code
