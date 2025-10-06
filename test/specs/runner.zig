@@ -645,13 +645,16 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             }
 
             // Ensure we have enough gas for intrinsic cost
+            std.debug.print("DEBUG GAS CHECK: gas_limit={} intrinsic_gas={}\n", .{gas_limit, intrinsic_gas});
             if (gas_limit < intrinsic_gas) {
                 // Transaction is invalid - out of gas
+                std.debug.print("DEBUG: Transaction skipped - out of gas\n", .{});
                 continue;
             }
 
             // Calculate execution gas (gas available after intrinsic cost)
             const execution_gas = gas_limit - intrinsic_gas;
+            std.debug.print("DEBUG GAS PRE-EXEC: intrinsic={} gas_limit={} execution={}\n", .{intrinsic_gas, gas_limit, execution_gas});
 
             // Increment sender's nonce before transaction (as per Ethereum spec)
             const current_nonce = test_host.getNonce(sender);
@@ -676,6 +679,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Charge gas from sender
             // gas_used = intrinsic_gas + (execution_gas - gas_left)
             const gas_used = intrinsic_gas + (execution_gas - result.gas_left);
+            std.debug.print("DEBUG GAS: intrinsic={} execution={} gas_left={} gas_used={}\n", .{intrinsic_gas, execution_gas, result.gas_left, gas_used});
 
             // Calculate blob gas fee for EIP-4844 blob transactions
             var blob_gas_fee: u256 = 0;
