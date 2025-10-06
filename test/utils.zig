@@ -700,7 +700,7 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
     if (test_indices.len == 0) return &[_]TestResult{};
 
     // Create task list
-    var tasks = try allocator.alloc(TestTask, test_indices.len);
+    const tasks = try allocator.alloc(TestTask, test_indices.len);
     defer allocator.free(tasks);
 
     for (tasks, 0..) |*task, i| {
@@ -709,7 +709,7 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
 
     // Create worker threads
     const worker_count = @min(max_workers, test_indices.len);
-    var threads = try allocator.alloc(std.Thread, worker_count);
+    const threads = try allocator.alloc(std.Thread, worker_count);
     defer allocator.free(threads);
 
     var next_task_idx: usize = 0;

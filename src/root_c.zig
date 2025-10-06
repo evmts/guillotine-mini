@@ -176,6 +176,7 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
             ctx.value,
             ctx.calldata,
             null,
+            null,
         ) catch return false;
 
         ctx.result = result;
