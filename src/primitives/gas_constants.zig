@@ -228,6 +228,14 @@ pub const TxDataZeroGas: u64 = 4;
 /// Higher cost reflects increased storage and bandwidth requirements
 pub const TxDataNonZeroGas: u64 = 16;
 
+/// Gas cost per address in access list (EIP-2930)
+/// Applied to type 1 (0x01) and type 3 (0x03) blob transactions
+pub const TxAccessListAddressGas: u64 = 2400;
+
+/// Gas cost per storage key in access list (EIP-2930)
+/// Applied to type 1 (0x01) and type 3 (0x03) blob transactions
+pub const TxAccessListStorageKeyGas: u64 = 1900;
+
 /// Gas cost per word for copy operations
 /// Applied to CODECOPY, EXTCODECOPY, RETURNDATACOPY, etc.
 pub const CopyGas: u64 = 3;
