@@ -176,7 +176,6 @@ fn displayHelp(writer: anytype, reader: anytype) !void {
     try writer.print("   {s}c{s}         Clear filter and show all tests\n\n", .{ Color.dim, Color.reset });
 
     try writer.print("\nPress Enter to continue...", .{});
-    try writer.flush();
     _ = try reader.readByte();
 }
 
@@ -185,19 +184,15 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const stdout_file = std.io.getStdOut();
-    const stdin_file = std.io.getStdIn();
+    const stdout_file = std.fs.File.stdout();
+    const stdin_file = std.fs.File.stdin();
 
-    var buffered_stdout = std.io.bufferedWriter(stdout_file.writer());
-    var buffered_stdin = std.io.bufferedReader(stdin_file.reader());
-
-    const stdout = buffered_stdout.writer();
-    const stdin = buffered_stdin.reader();
+    var stdout = stdout_file.deprecatedWriter();
+    var stdin = stdin_file.deprecatedReader();
 
     // Check if we have a TTY
     if (!stdout_file.isTty()) {
         try stdout.print("Error: Interactive test runner requires a TTY\n", .{});
-        try buffered_stdout.flush();
         return error.NoTTY;
     }
 
@@ -260,23 +255,17 @@ pub fn main() !void {
         const has_results = last_results.items.len > 0;
 
         try displayMenu(stdout, filter, test_states.items.len, matched_count, has_results, failed_count);
-        try buffered_stdout.flush();
 
         // Read command
-        const input_line = stdin.readUntilDelimiterOrEof(&filter_buf, '\n') catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return err,
-        };
+        const input_line = (try stdin.readUntilDelimiterOrEof(&filter_buf, '\n')) orelse break;
 
-        if (input_line == null) break;
-
-        const input = std.mem.trim(u8, input_line.?, &std.ascii.whitespace);
+        const input = std.mem.trim(u8, input_line, &std.ascii.whitespace);
 
         if (input.len == 0) {
             // Enter pressed - run filtered tests if we have a filter
             if (filter != null and filter.?.len > 0) {
                 // Run filtered tests
-                try runTests(allocator, stdout, stdin, &buffered_stdout, &test_states, filter, &last_results, show_logs_during_run);
+                try runTests(allocator, stdout, stdin, stdout, &test_states, filter, &last_results, show_logs_during_run);
             }
             continue;
         }
@@ -286,11 +275,11 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, input, "a")) {
             // Run all tests
             filter = null;
-            try runTests(allocator, stdout, stdin, &buffered_stdout, &test_states, null, &last_results, show_logs_during_run);
+            try runTests(allocator, stdout, stdin, stdout, &test_states, null, &last_results, show_logs_during_run);
         } else if (std.mem.eql(u8, input, "f")) {
             // Run failed tests
             if (has_results and failed_count > 0) {
-                try runFailedTests(allocator, stdout, stdin, &buffered_stdout, &test_states, &last_results, show_logs_during_run);
+                try runFailedTests(allocator, stdout, stdin, stdout, &test_states, &last_results, show_logs_during_run);
             }
         } else if (std.mem.eql(u8, input, "c")) {
             // Clear filter
@@ -306,7 +295,6 @@ pub fn main() !void {
                 Color.reset,
             });
             try stdout.print("\nPress Enter to continue...", .{});
-            try buffered_stdout.flush();
             _ = try stdin.readByte();
         } else if (input.len > 0 and input[0] == '/') {
             // Set filter
@@ -324,10 +312,9 @@ pub fn main() !void {
     }
 
     try stdout.print("\n{s}Goodbye!{s}\n\n", .{ Color.cyan, Color.reset });
-    try buffered_stdout.flush();
 }
 
-fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, buffered_writer: anytype, test_states: *std.ArrayList(TestState), filter_pattern: ?[]const u8, last_results: *std.ArrayList(TestResult), show_logs: bool) !void {
+fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, _: anytype, test_states: *std.ArrayList(TestState), filter_pattern: ?[]const u8, last_results: *std.ArrayList(TestResult), show_logs: bool) !void {
     // Clear previous results
     for (last_results.items) |*result| {
         if (result.error_msg) |msg| {
@@ -350,7 +337,6 @@ fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, buff
     if (tests_to_run.items.len == 0) {
         try writer.print("\n{s}No tests match the filter{s}\n", .{ Color.yellow, Color.reset });
         try writer.print("\nPress Enter to continue...", .{});
-        try buffered_writer.flush();
         _ = try reader.readByte();
         return;
     }
@@ -363,7 +349,6 @@ fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, buff
         const state = &test_states.items[test_idx];
 
         try printProgressWithLogs(writer, i + 1, tests_to_run.items.len, state.suite, state.test_name, &log_buffer, show_logs);
-        try buffered_writer.flush();
 
         // Simulate log capture (in real impl, would capture from child process)
         if ((i + 1) % 10 == 0) {
@@ -383,11 +368,10 @@ fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, buff
     try utils.displayResults(writer, allocator, last_results.items);
 
     try writer.print("\nPress Enter to continue...", .{});
-    try buffered_writer.flush();
     _ = try reader.readByte();
 }
 
-fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, buffered_writer: anytype, test_states: *std.ArrayList(TestState), last_results: *std.ArrayList(TestResult), show_logs: bool) !void {
+fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, _: anytype, test_states: *std.ArrayList(TestState), last_results: *std.ArrayList(TestResult), show_logs: bool) !void {
     // Clear previous results
     for (last_results.items) |*result| {
         if (result.error_msg) |msg| {
@@ -411,7 +395,6 @@ fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype
     if (failed_indices.items.len == 0) {
         try writer.print("\n{s}No failed tests to run{s}\n", .{ Color.green, Color.reset });
         try writer.print("\nPress Enter to continue...", .{});
-        try buffered_writer.flush();
         _ = try reader.readByte();
         return;
     }
@@ -424,7 +407,6 @@ fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype
         const state = &test_states.items[test_idx];
 
         try printProgressWithLogs(writer, i + 1, failed_indices.items.len, state.suite, state.test_name, &log_buffer, show_logs);
-        try buffered_writer.flush();
 
         const result = try utils.runTestInProcess(allocator, test_idx);
         state.result = result;
@@ -439,6 +421,5 @@ fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype
     try utils.displayResults(writer, allocator, last_results.items);
 
     try writer.print("\nPress Enter to continue...", .{});
-    try buffered_writer.flush();
     _ = try reader.readByte();
 }
