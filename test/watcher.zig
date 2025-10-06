@@ -10,7 +10,7 @@ pub const FileWatcher = struct {
     pub fn init(allocator: std.mem.Allocator, poll_interval_ms: u64) FileWatcher {
         return .{
             .allocator = allocator,
-            .watched_paths = std.ArrayList([]const u8).init(allocator),
+            .watched_paths = std.ArrayList([]const u8){},
             .last_check = std.time.nanoTimestamp(),
             .poll_interval_ms = poll_interval_ms,
         };
@@ -20,12 +20,12 @@ pub const FileWatcher = struct {
         for (self.watched_paths.items) |path| {
             self.allocator.free(path);
         }
-        self.watched_paths.deinit();
+        self.watched_paths.deinit(self.allocator);
     }
 
     pub fn addPath(self: *FileWatcher, path: []const u8) !void {
         const owned_path = try self.allocator.dupe(u8, path);
-        try self.watched_paths.append(owned_path);
+        try self.watched_paths.append(self.allocator, owned_path);
     }
 
     pub fn addGlob(self: *FileWatcher, glob_pattern: []const u8) !void {

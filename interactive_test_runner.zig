@@ -23,7 +23,7 @@ const LogBuffer = struct {
 
     fn init(allocator: std.mem.Allocator, max_lines: usize) LogBuffer {
         return .{
-            .lines = std.ArrayList([]const u8).init(allocator),
+            .lines = std.ArrayList([]const u8){},
             .allocator = allocator,
             .max_lines = max_lines,
         };
@@ -33,7 +33,7 @@ const LogBuffer = struct {
         for (self.lines.items) |line| {
             self.allocator.free(line);
         }
-        self.lines.deinit();
+        self.lines.deinit(self.allocator);
     }
 
     fn addLine(self: *LogBuffer, line: []const u8) !void {
@@ -45,7 +45,7 @@ const LogBuffer = struct {
             self.allocator.free(old_line);
         }
 
-        try self.lines.append(owned_line);
+        try self.lines.append(self.allocator, owned_line);
     }
 
     fn clear(self: *LogBuffer) void {
@@ -205,11 +205,11 @@ pub fn main() !void {
     const env_filter = std.posix.getenv("TEST_FILTER");
 
     // Initialize test states
-    var test_states = std.ArrayList(TestState).init(allocator);
-    defer test_states.deinit();
+    var test_states = std.ArrayList(TestState){};
+    defer test_states.deinit(allocator);
 
     for (builtin.test_functions, 0..) |t, i| {
-        try test_states.append(.{
+        try test_states.append(allocator, .{
             .index = i,
             .name = t.name,
             .suite = utils.extractSuiteName(t.name),
@@ -228,14 +228,14 @@ pub fn main() !void {
         filter = filter_buf[0..len];
     }
 
-    var last_results = std.ArrayList(TestResult).init(allocator);
+    var last_results = std.ArrayList(TestResult){};
     defer {
         for (last_results.items) |*result| {
             if (result.error_msg) |msg| {
                 allocator.free(msg);
             }
         }
-        last_results.deinit();
+        last_results.deinit(allocator);
     }
 
     var show_logs_during_run = true;
@@ -337,13 +337,13 @@ fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, buff
     last_results.clearRetainingCapacity();
 
     // Count tests to run
-    var tests_to_run = std.ArrayList(usize).init(allocator);
-    defer tests_to_run.deinit();
+    var tests_to_run = std.ArrayList(usize){};
+    defer tests_to_run.deinit(allocator);
 
     for (test_states.items) |state| {
         const matches = if (filter_pattern) |f| utils.matchesFilter(state.name, f) else true;
         if (matches) {
-            try tests_to_run.append(state.index);
+            try tests_to_run.append(allocator, state.index);
         }
     }
 
@@ -372,7 +372,7 @@ fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, buff
 
         const result = try utils.runTestInProcess(allocator, test_idx);
         state.result = result;
-        try last_results.append(result);
+        try last_results.append(allocator, result);
 
         // Add result to log buffer
         if (!result.passed and result.error_msg != null) {
@@ -397,13 +397,13 @@ fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype
     last_results.clearRetainingCapacity();
 
     // Find failed tests
-    var failed_indices = std.ArrayList(usize).init(allocator);
-    defer failed_indices.deinit();
+    var failed_indices = std.ArrayList(usize){};
+    defer failed_indices.deinit(allocator);
 
     for (test_states.items) |state| {
         if (state.result) |r| {
             if (!r.passed) {
-                try failed_indices.append(state.index);
+                try failed_indices.append(allocator, state.index);
             }
         }
     }
@@ -428,7 +428,7 @@ fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype
 
         const result = try utils.runTestInProcess(allocator, test_idx);
         state.result = result;
-        try last_results.append(result);
+        try last_results.append(allocator, result);
 
         // Add result to log buffer
         if (!result.passed and result.error_msg != null) {

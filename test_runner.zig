@@ -9,14 +9,13 @@ const TestResult = utils.TestResult;
 pub fn main() !void {
     const stdout_file = std.fs.File.stdout();
 
-    var buffered_stdout = std.io.bufferedWriter(stdout_file.writer());
-    const stdout = buffered_stdout.writer();
+    var stdout = stdout_file.deprecatedWriter();
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var results = std.ArrayList(TestResult).init(allocator);
+    var results = std.array_list.Managed(utils.TestResult).init(allocator);
     defer {
         for (results.items) |*result| {
             if (result.error_msg) |msg| {
@@ -71,11 +70,11 @@ pub fn main() !void {
             Icons.arrow,
             Color.reset,
         });
-        try buffered_stdout.flush();
+        // no-op: deprecatedWriter is unbuffered
     }
 
     // Collect test indices to run
-    var test_indices = std.ArrayList(usize).init(allocator);
+    var test_indices = std.array_list.Managed(usize).init(allocator);
     defer test_indices.deinit();
 
     for (builtin.test_functions, 0..) |t, i| {
@@ -98,7 +97,7 @@ pub fn main() !void {
                 max_workers,
                 Color.reset,
             });
-            try buffered_stdout.flush();
+            // no-op: deprecatedWriter is unbuffered
         }
 
         const parallel_results = try utils.runTestsParallel(allocator, test_indices.items, max_workers);
@@ -115,7 +114,7 @@ pub fn main() !void {
 
             if (has_tty and output_format == .pretty) {
                 utils.printProgress(stdout, i + 1, test_indices.items.len, suite_name);
-                try buffered_stdout.flush();
+                // no-op: deprecatedWriter is unbuffered
             }
 
             const test_result = try utils.runTestInProcess(allocator, test_idx);
@@ -124,7 +123,7 @@ pub fn main() !void {
 
         if (has_tty and output_format == .pretty) {
             utils.clearLine(stdout);
-            try buffered_stdout.flush();
+            // no-op: deprecatedWriter is unbuffered
         }
     }
 
@@ -146,7 +145,7 @@ pub fn main() !void {
         },
     }
 
-    try buffered_stdout.flush();
+    // no-op: deprecatedWriter is unbuffered
 
     // Count results to determine exit code
     var failed_count: u32 = 0;

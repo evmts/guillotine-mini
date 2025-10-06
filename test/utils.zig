@@ -255,7 +255,7 @@ pub fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestRe
 
 pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []TestResult) !void {
     // Group results by suite
-    var suite_map = std.StringHashMap(std.ArrayList(TestResult)).init(allocator);
+    var suite_map = std.StringHashMap(std.array_list.Managed(TestResult)).init(allocator);
     defer {
         var it = suite_map.iterator();
         while (it.next()) |entry| {
@@ -267,13 +267,13 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
     for (results) |result| {
         const entry = try suite_map.getOrPut(result.suite);
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList(TestResult).init(allocator);
+            entry.value_ptr.* = std.array_list.Managed(TestResult).init(allocator);
         }
         try entry.value_ptr.append(result);
     }
 
     // Sort suites
-    var suites = std.ArrayList([]const u8).init(allocator);
+    var suites = std.array_list.Managed([]const u8).init(allocator);
     defer suites.deinit();
     var suite_iter = suite_map.iterator();
     while (suite_iter.next()) |entry| {
@@ -288,7 +288,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
     var passed_count: u32 = 0;
     var failed_count: u32 = 0;
     var todo_count: u32 = 0;
-    var failed_tests = std.ArrayList(TestResult).init(allocator);
+    var failed_tests = std.array_list.Managed(TestResult).init(allocator);
     defer failed_tests.deinit();
 
     try writer.print("\n{s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
@@ -610,7 +610,7 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
     });
 
     // Group by suite
-    var suite_map = std.StringHashMap(std.ArrayList(TestResult)).init(std.heap.page_allocator);
+    var suite_map = std.StringHashMap(std.array_list.Managed(TestResult)).init(std.heap.page_allocator);
     defer {
         var it = suite_map.iterator();
         while (it.next()) |entry| {
@@ -622,7 +622,7 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
     for (results) |result| {
         const entry = try suite_map.getOrPut(result.suite);
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList(TestResult).init(std.heap.page_allocator);
+            entry.value_ptr.* = std.array_list.Managed(TestResult).init(std.heap.page_allocator);
         }
         try entry.value_ptr.append(result);
     }
@@ -768,7 +768,7 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
     }
 
     // Collect results
-    var results = std.ArrayList(TestResult).init(allocator);
+    var results = std.array_list.Managed(TestResult).init(allocator);
     for (tasks) |task| {
         if (task.result) |result| {
             try results.append(result);
@@ -782,7 +782,7 @@ pub fn printSlowestTests(writer: anytype, results: []TestResult, count: usize) !
     if (results.len == 0) return;
 
     // Create a copy for sorting
-    var sorted = std.ArrayList(TestResult).init(std.heap.page_allocator);
+    var sorted = std.array_list.Managed(TestResult).init(std.heap.page_allocator);
     defer sorted.deinit();
 
     for (results) |r| {
