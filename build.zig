@@ -110,19 +110,11 @@ pub fn build(b: *std.Build) void {
             "sh",
             "-c",
             // No-op only if all fork fixtures are present; otherwise fill all
-            "ROOT=/Users/williamcory/guillotine-mini/execution-specs; "
-            ++ "SRC=\"$ROOT/tests/eest\"; OUT=\"$ROOT/tests/eest/static/state_tests\"; "
-            ++ "if [ ! -d \"$OUT\" ]; then NEEDS=1; else NEEDS=0; fi; "
-            ++ "FORKS=$(ls -1 \"$SRC\" | grep -Ev '^(static|benchmark|unscheduled|__|\\.)'); "
-            ++ "for f in $FORKS; do "
-            ++ "  if [ $NEEDS -eq 1 ]; then break; fi; "
-            ++ "  if ! (find \"$OUT/state_tests/eest/$f\" -type f -name '*.json' -print -quit 2>/dev/null | grep -q . ";
-            ++ "     || find \"$OUT/blockchain_tests/eest/$f\" -type f -name '*.json' -print -quit 2>/dev/null | grep -q . ";
-            ++ "     || find \"$OUT/blockchain_tests_engine/eest/$f\" -type f -name '*.json' -print -quit 2>/dev/null | grep -q .); then "
-            ++ "    NEEDS=1; fi; "
-            ++ "done; "
-            ++ "if [ $NEEDS -eq 0 ]; then echo 'All fork fixtures present, skipping fill'; "
-            ++ "else cd \"$ROOT\" && uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean; fi",
+            "OUT_DIR=/Users/williamcory/guillotine-mini/execution-specs/tests/eest/static/state_tests; "
+            ++ "if [ -d \"$OUT_DIR\" ] && find \"$OUT_DIR\" -type f -name '*.json' | grep -q .; then "
+            ++ "echo 'Specs already built, skipping fill'; "
+            ++ "else cd /Users/williamcory/guillotine-mini/execution-specs && "
+            ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean; fi",
         });
 
     const spec_runner_mod = b.addModule("spec_runner", .{
