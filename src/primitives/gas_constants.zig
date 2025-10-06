@@ -133,7 +133,8 @@ pub const CreateGas: u64 = 32000;
 
 /// Base gas cost for CALL operations
 /// This is the minimum cost before additional charges
-pub const CallGas: u64 = 40;
+// Base CALL cost is modeled via warm/cold access (EIP-2929); keep base at 0 here
+pub const CallGas: u64 = 0;
 
 /// Gas stipend provided to called contract when transferring value
 /// Ensures called contract has minimum gas to execute basic operations
