@@ -92,12 +92,38 @@ pub fn build(b: *std.Build) void {
     });
 
     // Add execution-specs tests
+    // Build option to force refreshing the generated Python fixtures
+    const refresh_specs_opt = b.option(bool, "refresh-specs", "Force refresh of execution-specs fixtures");
+    const force_refresh = refresh_specs_opt orelse false;
+
     // First, add a build step to generate test fixtures using Python fill command
-    const fill_specs = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        "cd /Users/williamcory/guillotine-mini/execution-specs && uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --fork Cancun --clean",
-    });
+    const fill_specs = if (force_refresh)
+        b.addSystemCommand(&.{
+            "sh",
+            "-c",
+            // Force refresh: always run fill (with --clean) for all deployed forks
+            "cd /Users/williamcory/guillotine-mini/execution-specs && "
+            ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean",
+        })
+    else
+        b.addSystemCommand(&.{
+            "sh",
+            "-c",
+            // No-op only if all fork fixtures are present; otherwise fill all
+            "ROOT=/Users/williamcory/guillotine-mini/execution-specs; "
+            ++ "SRC=\"$ROOT/tests/eest\"; OUT=\"$ROOT/tests/eest/static/state_tests\"; "
+            ++ "if [ ! -d \"$OUT\" ]; then NEEDS=1; else NEEDS=0; fi; "
+            ++ "FORKS=$(ls -1 \"$SRC\" | grep -Ev '^(static|benchmark|unscheduled|__|\\.)'); "
+            ++ "for f in $FORKS; do "
+            ++ "  if [ $NEEDS -eq 1 ]; then break; fi; "
+            ++ "  if ! (find \"$OUT/state_tests/eest/$f\" -type f -name '*.json' -print -quit 2>/dev/null | grep -q . ";
+            ++ "     || find \"$OUT/blockchain_tests/eest/$f\" -type f -name '*.json' -print -quit 2>/dev/null | grep -q . ";
+            ++ "     || find \"$OUT/blockchain_tests_engine/eest/$f\" -type f -name '*.json' -print -quit 2>/dev/null | grep -q .); then "
+            ++ "    NEEDS=1; fi; "
+            ++ "done; "
+            ++ "if [ $NEEDS -eq 0 ]; then echo 'All fork fixtures present, skipping fill'; "
+            ++ "else cd \"$ROOT\" && uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean; fi",
+        });
 
     const spec_runner_mod = b.addModule("spec_runner", .{
         .root_source_file = b.path("test/specs/root.zig"),
