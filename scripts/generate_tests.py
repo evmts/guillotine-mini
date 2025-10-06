@@ -66,22 +66,36 @@ def generate_test_file(
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Determine import path for runner based on depth
-    depth = len(output_file.relative_to(output_dir).parts) - 1
-    runner_import = "../" * (depth + 1) + "runner.zig"
+    # Calculate relative path from generated file back to root.zig
+    # The generated file will be at test/specs/generated/...
+    # We need to import root.zig from test/specs/
+    depth = len(output_file.relative_to(output_dir).parts)  # includes the file itself
+    # Go up to test/specs/generated/, then up once more to test/specs/
+    root_import = "../" * depth + "root.zig"
 
     # Generate Zig test code
     zig_code = ['const std = @import("std");']
     zig_code.append('const testing = std.testing;')
-    zig_code.append(f'const runner = @import("{runner_import}");')
+    zig_code.append(f'const root = @import("{root_import}");')
+    zig_code.append('const runner = root.runner;')
     zig_code.append("")
 
     test_count = 0
+    used_names: Dict[str, int] = {}  # Track used test names to handle collisions
+
     # Generate a test for each test case in the JSON file
     for test_name in data.keys():
         safe_test_name = sanitize_test_name(test_name)
 
-        zig_code.append(f'test "{safe_test_name}" {{')
+        # Handle duplicate test names by appending a counter
+        if safe_test_name in used_names:
+            used_names[safe_test_name] += 1
+            unique_test_name = f"{safe_test_name}_{used_names[safe_test_name]}"
+        else:
+            used_names[safe_test_name] = 0
+            unique_test_name = safe_test_name
+
+        zig_code.append(f'test "{unique_test_name}" {{')
         zig_code.append("    const allocator = testing.allocator;")
         zig_code.append("")
         zig_code.append("    // Read and parse the JSON test file")

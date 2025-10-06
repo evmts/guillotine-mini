@@ -726,10 +726,10 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Parse access list for EIP-2930 (Berlin+)
             var access_list_addrs_storage: ?[]Address = null;
             defer if (access_list_addrs_storage) |addrs| allocator.free(addrs);
-            var access_list_slots_storage: ?[]struct { address: Address, slot: u256 } = null;
+            var access_list_slots_storage: ?[]evm_mod.AccessListStorageKey = null;
             defer if (access_list_slots_storage) |slots| allocator.free(slots);
 
-            const access_list_param = if (tx.object.get("accessLists")) |access_lists_json| blk: {
+            const access_list_param: ?evm_mod.AccessListParam = if (tx.object.get("accessLists")) |access_lists_json| blk: {
                 if (access_lists_json == .array and access_lists_json.array.items.len > 0) {
                     const access_list_json = access_lists_json.array.items[0];
                     if (access_list_json == .array) {
@@ -750,7 +750,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                         // Allocate arrays
                         const addrs = try allocator.alloc(Address, addr_count);
                         access_list_addrs_storage = addrs;
-                        const slots = try allocator.alloc(struct { address: Address, slot: u256 }, slot_count);
+                        const slots = try allocator.alloc(evm_mod.AccessListStorageKey, slot_count);
                         access_list_slots_storage = slots;
 
                         // Second pass: populate arrays

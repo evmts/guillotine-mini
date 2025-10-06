@@ -14,7 +14,6 @@ test "spec runner infrastructure" {
 }
 
 // Import generated tests
-test { _ = @import("generated/.meta/index.zig"); }
 test { _ = @import("generated/blockchain_tests/eest/berlin/eip2929_gas_cost_increases/precompile_warming/precompile_warming.zig"); }
 test { _ = @import("generated/blockchain_tests/eest/berlin/eip2930_access_list/acl/account_storage_warm_cold_state.zig"); }
 test { _ = @import("generated/blockchain_tests/eest/berlin/eip2930_access_list/acl/transaction_intrinsic_gas_cost.zig"); }

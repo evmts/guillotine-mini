@@ -44,27 +44,40 @@ def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path) -> N
     output_file = output_dir / rel_path.with_suffix(".zig")
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Calculate relative path back to runner.zig
-    # Count directory depth and build appropriate ../ path
-    # We need to go up from the output_file directory to output_dir, then up one more to test/specs
+    # Calculate relative path from generated file back to root.zig
+    # The generated file will be at test/specs/generated/...
+    # We need to import root.zig from test/specs/
     depth = len(output_file.relative_to(output_dir).parts)  # includes the file itself
-    runner_path = "../" * depth + "runner.zig"
+    # Go up to test/specs/generated/, then up once more to test/specs/
+    root_import = "../" * depth + "root.zig"
 
     # Generate Zig test code
     zig_code = ['const std = @import("std");']
     zig_code.append('const testing = std.testing;')
-    zig_code.append(f'const runner = @import("{runner_path}");')
+    zig_code.append(f'const root = @import("{root_import}");')
+    zig_code.append('const runner = root.runner;')
     zig_code.append("")
+
+    # Track used test names to handle collisions
+    used_names = {}
 
     # Generate a test for each test case in the JSON file
     for test_name in data.keys():
         safe_test_name = sanitize_test_name(test_name)
 
+        # Handle duplicate test names by appending a counter
+        if safe_test_name in used_names:
+            used_names[safe_test_name] += 1
+            unique_test_name = f"{safe_test_name}_{used_names[safe_test_name]}"
+        else:
+            used_names[safe_test_name] = 0
+            unique_test_name = safe_test_name
+
         # Absolute path to JSON file from repository root
         # When tests run, cwd is the repository root
         json_abs_path = f"execution-specs/tests/eest/static/state_tests/{rel_path}"
 
-        zig_code.append(f'test "{safe_test_name}" {{')
+        zig_code.append(f'test "{unique_test_name}" {{')
         zig_code.append("    const allocator = testing.allocator;")
         zig_code.append("")
         zig_code.append("    // Read and parse the JSON test file")
@@ -103,8 +116,8 @@ def main():
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    # Find all JSON test files
-    json_files = list(specs_root.rglob("*.json"))
+    # Find all JSON test files (excluding .meta directories)
+    json_files = [f for f in specs_root.rglob("*.json") if ".meta" not in f.parts]
     print(f"Found {len(json_files)} JSON test files")
     print(f"Generating all test files...")
 
