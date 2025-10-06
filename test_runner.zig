@@ -7,7 +7,7 @@ const Icons = utils.Icons;
 const TestResult = utils.TestResult;
 
 pub fn main() !void {
-    const stdout_file = std.io.stdout;
+    const stdout_file = std.io.getStdOut();
 
     var buffered_stdout = std.io.bufferedWriter(stdout_file.writer());
     const stdout = buffered_stdout.writer();
@@ -38,9 +38,9 @@ pub fn main() !void {
         break :blk .pretty;
     };
 
-    // Check for output format - simplified for now since we don't use it
-    _ = std.posix.getenv("TEST_PARALLEL");
-    _ = blk: {
+    // Check for parallel execution
+    const parallel = std.posix.getenv("TEST_PARALLEL") != null;
+    const max_workers = blk: {
         if (std.posix.getenv("TEST_WORKERS")) |workers_str| {
             const workers = std.fmt.parseInt(usize, workers_str, 10) catch 4;
             break :blk workers;
