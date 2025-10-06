@@ -723,8 +723,70 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const target_addr = to orelse primitives.ZERO_ADDRESS;
             const bytecode = test_host.code.get(target_addr) orelse &[_]u8{};
 
+            // Parse access list for EIP-2930 (Berlin+)
+            var access_list_addrs_storage: ?[]Address = null;
+            defer if (access_list_addrs_storage) |addrs| allocator.free(addrs);
+            var access_list_slots_storage: ?[]struct { address: Address, slot: u256 } = null;
+            defer if (access_list_slots_storage) |slots| allocator.free(slots);
+
+            const access_list_param = if (tx.object.get("accessLists")) |access_lists_json| blk: {
+                if (access_lists_json == .array and access_lists_json.array.items.len > 0) {
+                    const access_list_json = access_lists_json.array.items[0];
+                    if (access_list_json == .array) {
+                        // First pass: count addresses and storage keys
+                        var addr_count: usize = 0;
+                        var slot_count: usize = 0;
+                        for (access_list_json.array.items) |entry| {
+                            if (entry.object.get("address")) |_| {
+                                addr_count += 1;
+                                if (entry.object.get("storageKeys")) |keys| {
+                                    if (keys == .array) {
+                                        slot_count += keys.array.items.len;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Allocate arrays
+                        const addrs = try allocator.alloc(Address, addr_count);
+                        access_list_addrs_storage = addrs;
+                        const slots = try allocator.alloc(struct { address: Address, slot: u256 }, slot_count);
+                        access_list_slots_storage = slots;
+
+                        // Second pass: populate arrays
+                        var addr_idx: usize = 0;
+                        var slot_idx: usize = 0;
+                        for (access_list_json.array.items) |entry| {
+                            if (entry.object.get("address")) |addr_json| {
+                                const addr = try parseAddress(addr_json.string);
+                                addrs[addr_idx] = addr;
+                                addr_idx += 1;
+
+                                if (entry.object.get("storageKeys")) |keys| {
+                                    if (keys == .array) {
+                                        for (keys.array.items) |key_json| {
+                                            const slot = try std.fmt.parseInt(u256, key_json.string, 0);
+                                            slots[slot_idx] = .{
+                                                .address = addr,
+                                                .slot = slot,
+                                            };
+                                            slot_idx += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        break :blk .{
+                            .addresses = addrs,
+                            .storage_keys = slots,
+                        };
+                    }
+                }
+                break :blk null;
+            } else null;
+
             // Execute with execution gas (intrinsic gas already deducted)
-            // NOTE: Access list warming is now handled inside evm.call()
             const result = try evm_instance.call(
                 bytecode,
                 @intCast(execution_gas),
@@ -732,7 +794,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 target_addr,
                 value,
                 tx_data,
-                null, // TODO: Parse and pass access list from transaction JSON
+                access_list_param,
                 blob_hashes_storage,
             );
 
