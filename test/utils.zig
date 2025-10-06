@@ -259,7 +259,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
     defer {
         var it = suite_map.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(allocator);
         }
         suite_map.deinit();
     }
@@ -267,17 +267,17 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
     for (results) |result| {
         const entry = try suite_map.getOrPut(result.suite);
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList(TestResult).init(allocator);
+            entry.value_ptr.* = .{};
         }
-        try entry.value_ptr.append(result);
+        try entry.value_ptr.append(allocator, result);
     }
 
     // Sort suites
-    var suites = std.ArrayList([]const u8).init(allocator);
-    defer suites.deinit();
+    var suites: std.ArrayList([]const u8) = .{};
+    defer suites.deinit(allocator);
     var suite_iter = suite_map.iterator();
     while (suite_iter.next()) |entry| {
-        try suites.append(entry.key_ptr.*);
+        try suites.append(allocator, entry.key_ptr.*);
     }
     std.mem.sort([]const u8, suites.items, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -614,7 +614,7 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
     defer {
         var it = suite_map.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(std.heap.page_allocator);
         }
         suite_map.deinit();
     }
@@ -622,9 +622,9 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
     for (results) |result| {
         const entry = try suite_map.getOrPut(result.suite);
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList(TestResult).init(std.heap.page_allocator);
+            entry.value_ptr.* = .{};
         }
-        try entry.value_ptr.append(result);
+        try entry.value_ptr.append(std.heap.page_allocator, result);
     }
 
     var suite_iter = suite_map.iterator();
@@ -768,25 +768,25 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
     }
 
     // Collect results
-    var results = std.ArrayList(TestResult).init(allocator);
+    var results: std.ArrayList(TestResult) = .{};
     for (tasks) |task| {
         if (task.result) |result| {
-            try results.append(result);
+            try results.append(allocator, result);
         }
     }
 
-    return try results.toOwnedSlice();
+    return try results.toOwnedSlice(allocator);
 }
 
 pub fn printSlowestTests(writer: anytype, results: []TestResult, count: usize) !void {
     if (results.len == 0) return;
 
     // Create a copy for sorting
-    var sorted = std.ArrayList(TestResult).init(std.heap.page_allocator);
-    defer sorted.deinit();
+    var sorted: std.ArrayList(TestResult) = .{};
+    defer sorted.deinit(std.heap.page_allocator);
 
     for (results) |r| {
-        try sorted.append(r);
+        try sorted.append(std.heap.page_allocator, r);
     }
 
     // Sort by duration (descending)
