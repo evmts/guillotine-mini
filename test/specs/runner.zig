@@ -811,6 +811,13 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
             }
 
+            // Add blob hash cost for blob transactions (EIP-4844, Cancun+)
+            if (blob_hashes_storage) |blob_hashes| {
+                // Each blob hash costs HASH_OPCODE_COST (3 gas) in intrinsic gas
+                const blob_hash_intrinsic_cost = @as(u64, @intCast(blob_hashes.len)) * primitives.GasConstants.BlobHashGas;
+                intrinsic_gas += blob_hash_intrinsic_cost;
+            }
+
             // Ensure we have enough gas for intrinsic cost
             if (gas_limit < intrinsic_gas) {
                 // Transaction is invalid - check if test expects this
@@ -1061,7 +1068,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             //
             // IMPORTANT: In early forks (Frontier/Homestead), the coinbase gets paid for the FULL gas_limit,
             // not just gas consumed. Later forks (Tangerine Whistle+) only pay for gas actually consumed.
-            const blob_hash_cost = if (blob_hashes_storage) |hashes| @as(u64, @intCast(hashes.len)) * 1100 else 0;
+            const blob_hash_cost = if (blob_hashes_storage) |hashes| @as(u64, @intCast(hashes.len)) * primitives.GasConstants.BlobHashGas else 0;
             const gas_for_coinbase = if (evm_instance.hardfork.isBefore(.TANGERINE_WHISTLE))
                 gas_limit  // Early forks: coinbase gets paid for full gas_limit
             else if (blob_gas_fee > 0)
