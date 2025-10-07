@@ -53,6 +53,7 @@ const TEST_SUITES: TestSuite[] = [
   { name: 'prague-setcode-gas', command: 'zig build specs-prague-setcode-gas', description: 'Prague EIP-7702 set code gas tests' },
   { name: 'prague-setcode-txs', command: 'zig build specs-prague-setcode-txs', description: 'Prague EIP-7702 set code transaction tests' },
   { name: 'prague-setcode-advanced', command: 'zig build specs-prague-setcode-advanced', description: 'Prague EIP-7702 advanced set code tests' },
+
   // Osaka sub-targets (broken up from large test suite)
   { name: 'osaka-modexp-variable-gas', command: 'zig build specs-osaka-modexp-variable-gas', description: 'Osaka EIP-7883 modexp variable gas tests' },
   { name: 'osaka-modexp-vectors-eip', command: 'zig build specs-osaka-modexp-vectors-eip', description: 'Osaka EIP-7883 modexp vectors from EIP tests' },
@@ -62,12 +63,10 @@ const TEST_SUITES: TestSuite[] = [
 
   // Shanghai EIPs
   { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
+  { name: 'shanghai-initcode', command: 'zig build specs-shanghai-initcode', description: 'Shanghai EIP-3860 initcode tests' },
 
   // Smaller hardforks (no sub-targets needed)
-  { name: 'shanghai-initcode', command: 'zig build specs-shanghai-initcode', description: 'Shanghai EIP-3860 initcode tests' },
   { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
-  { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
-  { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
   // Berlin sub-targets (broken up from large test suite)
   { name: 'berlin-acl', command: 'zig build specs-berlin-acl', description: 'Berlin EIP-2930 access list account storage tests' },
   { name: 'berlin-intrinsic-gas-cost', command: 'zig build specs-berlin-intrinsic-gas-cost', description: 'Berlin EIP-2930 transaction intrinsic gas cost tests' },
@@ -84,6 +83,8 @@ const TEST_SUITES: TestSuite[] = [
   { name: 'frontier-push', command: 'zig build specs-frontier-push', description: 'Frontier PUSH tests' },
   { name: 'frontier-stack', command: 'zig build specs-frontier-stack', description: 'Frontier stack overflow tests' },
   { name: 'frontier-opcodes', command: 'zig build specs-frontier-opcodes', description: 'Frontier all opcodes tests' },
+  { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
+  { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
 ];
 
 interface TestResult {
@@ -680,8 +681,12 @@ Create the commit now using git commands.
       if (testResult.passed) {
         console.log(`✅ ${suite.name} - All tests passing!`);
 
-        // Commit the changes
-        await this.commitWithAgent(suite);
+        // Only commit if we made changes (attempt > 1 means we ran the agent)
+        if (attemptNumber > 1) {
+          await this.commitWithAgent(suite);
+        } else {
+          console.log(`ℹ️  Tests already passing on first run, skipping commit`);
+        }
 
         return true;
       }
