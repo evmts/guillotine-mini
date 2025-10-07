@@ -302,9 +302,9 @@ pub const Frame = struct {
         var gas_cost: u64 = GasConstants.CreateGas; // Base 32,000 gas
 
         // Keccak256 hash cost for hashing init_code
-        // CREATE2 only charges for the keccak256 of init_code, not for the address calculation
+        // CREATE2 charges for the full keccak256 hash (base + per-word cost)
         const init_code_word_count = wordCount(@as(u64, init_code_size));
-        gas_cost += init_code_word_count * GasConstants.Keccak256WordGas;
+        gas_cost += GasConstants.Keccak256Gas + (init_code_word_count * GasConstants.Keccak256WordGas);
 
         if (self.hardfork.isAtLeast(.SHANGHAI)) {
             // Additional init code word cost (EIP-3860)
@@ -608,6 +608,7 @@ pub const Frame = struct {
                 if (evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
 
                 try self.consumeGas(GasConstants.GasFastestStep);
+                // Pop shift (TOS), then value
                 const shift = try self.popStack();
                 const value = try self.popStack();
                 const result = if (shift >= 256) 0 else value << @intCast(shift);
@@ -621,6 +622,7 @@ pub const Frame = struct {
                 if (evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
 
                 try self.consumeGas(GasConstants.GasFastestStep);
+                // Pop shift (TOS), then value
                 const shift = try self.popStack();
                 const value = try self.popStack();
                 const result = if (shift >= 256) 0 else value >> @intCast(shift);
@@ -634,6 +636,7 @@ pub const Frame = struct {
                 if (evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
 
                 try self.consumeGas(GasConstants.GasFastestStep);
+                // Pop shift (TOS), then value
                 const shift = try self.popStack();
                 const value = try self.popStack();
                 const value_signed = @as(i256, @bitCast(value));
@@ -710,8 +713,16 @@ pub const Frame = struct {
                 }
                 const addr = Address{ .bytes = addr_bytes };
 
-                // EIP-150/EIP-2929: hardfork-aware account access cost
-                const access_cost = try self.externalAccountGasCost(addr);
+                // Gas cost: hardfork-aware
+                // Berlin+: cold/warm access (2600/100)
+                // Tangerine Whistle-Berlin: 400 gas
+                // Pre-Tangerine Whistle: 20 gas
+                const access_cost = if (evm.hardfork.isAtLeast(.BERLIN))
+                    try evm.accessAddress(addr)
+                else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    400
+                else
+                    20;
                 try self.consumeGas(access_cost);
                 const balance = evm.get_balance(addr);
                 try self.pushStack(balance);
@@ -2001,8 +2012,16 @@ pub const Frame = struct {
                 const addr_int = try self.popStack();
                 const ext_addr = primitives.Address.from_u256(addr_int);
 
-                // EIP-150/EIP-2929: hardfork-aware account access cost
-                const access_cost = try self.externalAccountGasCost(ext_addr);
+                // Gas cost: hardfork-aware
+                // Berlin+: cold/warm access (2600/100)
+                // Tangerine Whistle-Berlin: 700 gas
+                // Pre-Tangerine Whistle: 20 gas
+                const access_cost = if (evm.hardfork.isAtLeast(.BERLIN))
+                    try evm.accessAddress(ext_addr)
+                else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    700
+                else
+                    20;
                 try self.consumeGas(access_cost);
 
                 // For Frame, we don't have access to external code
@@ -2059,8 +2078,13 @@ pub const Frame = struct {
                 const addr_int = try self.popStack();
                 const ext_addr = primitives.Address.from_u256(addr_int);
 
-                // EIP-150/EIP-2929: hardfork-aware account access cost
-                const access_cost = try self.externalAccountGasCost(ext_addr);
+                // Gas cost: hardfork-aware
+                // Berlin+: cold/warm access (2600/100)
+                // Constantinople-Berlin: 400 gas
+                const access_cost = if (evm.hardfork.isAtLeast(.BERLIN))
+                    try evm.accessAddress(ext_addr)
+                else
+                    400;
                 try self.consumeGas(access_cost);
 
                 // For Frame, return empty code hash
