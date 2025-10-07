@@ -13,6 +13,31 @@ const Hardfork = evm_mod.Hardfork;
 // Error type for tests that are not yet implemented
 pub const TestTodo = error.TestTodo;
 
+// Taylor series approximation of factor * e^(numerator/denominator)
+// This implements the fake_exponential function from EIP-4844
+fn taylorExponential(factor: u256, numerator: u256, denominator: u256) u256 {
+    var i: u256 = 1;
+    var output: u256 = 0;
+    var numerator_accumulated: u256 = factor * denominator;
+
+    while (numerator_accumulated > 0) {
+        output += numerator_accumulated;
+
+        // Calculate next term: numerator_accumulated * numerator / (denominator * i)
+        // Use checked arithmetic to prevent overflow
+        const temp = std.math.mul(u256, numerator_accumulated, numerator) catch break;
+        const divisor = std.math.mul(u256, denominator, i) catch break;
+        numerator_accumulated = temp / divisor;
+
+        i += 1;
+
+        // Safety limit to prevent infinite loops
+        if (i > 100) break;
+    }
+
+    return output / denominator;
+}
+
 // Run a single test case from JSON
 pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !void {
     // Check if test has multiple hardforks in post section
@@ -667,6 +692,15 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
             }
 
+            // Add authorization list cost if present (EIP-7702, Prague+)
+            if (tx.object.get("authorizationList")) |auth_list_json| {
+                if (auth_list_json == .array) {
+                    // Per EIP-7702: PER_AUTH_BASE_COST (12500) per authorization
+                    const auth_count = auth_list_json.array.items.len;
+                    intrinsic_gas += @as(u64, @intCast(auth_count)) * primitives.Authorization.PER_AUTH_BASE_COST;
+                }
+            }
+
             // Add access list cost if present
             if (tx.object.get("accessLists")) |access_lists_json| {
                 // accessLists is an array of access lists (one per data/gas/value combo)
@@ -704,11 +738,38 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const execution_gas = gas_limit - intrinsic_gas;
             std.debug.print("DEBUG GAS PRE-EXEC: intrinsic={} gas_limit={} execution={}\n", .{intrinsic_gas, gas_limit, execution_gas});
 
-            // Per Ethereum spec: sender must have sufficient funds for upfront gas + value
+            // Calculate blob gas fee upfront for EIP-4844 transactions
+            var blob_gas_fee: u256 = 0;
+            if (blob_hashes_storage) |blob_hashes| {
+                const blob_count = blob_hashes.len;
+
+                // Get current excess blob gas from environment
+                const excess_blob_gas = if (test_case.object.get("env")) |env_val|
+                    if (env_val.object.get("currentExcessBlobGas")) |ebg|
+                        try parseIntFromJson(ebg)
+                    else
+                        0
+                else
+                    0;
+
+                // Calculate blob gas price using taylor_exponential formula
+                // blob_gas_price = fake_exponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION)
+                const MIN_BLOB_GASPRICE: u256 = 1;
+                const BLOB_BASE_FEE_UPDATE_FRACTION: u256 = 3338477;
+                const blob_gas_price = taylorExponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION);
+
+                // Each blob uses 131072 (2^17) gas
+                const blob_gas_per_blob: u256 = 131072;
+                const total_blob_gas = @as(u256, @intCast(blob_count)) * blob_gas_per_blob;
+
+                blob_gas_fee = total_blob_gas * blob_gas_price;
+            }
+
+            // Per Ethereum spec: sender must have sufficient funds for upfront gas + blob fee + value
             const upfront_gas_cost = @as(u256, gas_limit) * evm_instance.gas_price;
             const sender_balance = test_host.balances.get(sender) orelse 0;
-            if (sender_balance < (upfront_gas_cost + value)) {
-                std.debug.print("DEBUG: Transaction skipped - insufficient funds (balance={} < upfront_gas+value={})\n", .{sender_balance, upfront_gas_cost + value});
+            if (sender_balance < (upfront_gas_cost + blob_gas_fee + value)) {
+                std.debug.print("DEBUG: Transaction skipped - insufficient funds (balance={} < upfront_gas+blob_fee+value={})\n", .{sender_balance, upfront_gas_cost + blob_gas_fee + value});
                 continue;
             }
 
@@ -716,8 +777,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const current_nonce = test_host.getNonce(sender);
             try test_host.setNonce(sender, current_nonce + 1);
 
-            // Charge sender for full gas limit upfront (refunds applied after execution)
-            try test_host.setBalance(sender, sender_balance - upfront_gas_cost);
+            // Charge sender for full gas limit + blob gas fee upfront (refunds applied after execution)
+            try test_host.setBalance(sender, sender_balance - upfront_gas_cost - blob_gas_fee);
 
             // Get contract code
             const target_addr = to orelse primitives.ZERO_ADDRESS;
@@ -786,6 +847,47 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 break :blk null;
             } else null;
 
+            // Process authorization list for EIP-7702 (Prague+)
+            if (tx.object.get("authorizationList")) |auth_list_json| {
+                if (auth_list_json == .array) {
+                    for (auth_list_json.array.items) |auth_json| {
+                        // Parse authorization: {chainId, address, nonce, v, r, s}
+                        const chain_id = try parseIntFromJson(auth_json.object.get("chainId").?);
+                        _ = chain_id; // TODO: validate chain_id matches transaction
+                        const auth_addr_str = auth_json.object.get("address").?.string;
+                        const auth_addr = try parseAddress(auth_addr_str);
+                        const auth_nonce = try parseIntFromJson(auth_json.object.get("nonce").?);
+
+                        // Get authority (signer) if available
+                        var authority: ?Address = null;
+                        if (auth_json.object.get("signer")) |signer_json| {
+                            authority = try parseAddress(signer_json.string);
+                        }
+
+                        // If we have the authority, set delegation designation code
+                        if (authority) |auth| {
+                            // Check if authority nonce matches
+                            const auth_current_nonce = test_host.getNonce(auth);
+                            if (auth_current_nonce == auth_nonce) {
+                                // Set delegation designation code: 0xef0100 + address (20 bytes)
+                                var delegation_code: [23]u8 = undefined;
+                                delegation_code[0] = 0xef;
+                                delegation_code[1] = 0x01;
+                                delegation_code[2] = 0x00;
+                                @memcpy(delegation_code[3..23], &auth_addr.bytes);
+
+                                const code_copy = try allocator.alloc(u8, 23);
+                                @memcpy(code_copy, &delegation_code);
+                                try test_host.code.put(auth, code_copy);
+
+                                // Increment authority nonce (EIP-7702 requirement)
+                                try test_host.setNonce(auth, auth_current_nonce + 1);
+                            }
+                        }
+                    }
+                }
+            }
+
             // Execute with execution gas (intrinsic gas already deducted)
             const result = try evm_instance.call(
                 bytecode,
@@ -807,39 +909,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const gas_refund_amount = gas_unused * evm_instance.gas_price;
             const sender_balance_after_exec = test_host.balances.get(sender) orelse 0;
             try test_host.setBalance(sender, sender_balance_after_exec + gas_refund_amount);
-
-            // Calculate blob gas fee for EIP-4844 blob transactions
-            var blob_gas_fee: u256 = 0;
-            if (tx.object.get("blobVersionedHashes")) |blob_hashes| {
-                const blob_count = blob_hashes.array.items.len;
-
-                // Get current excess blob gas from environment
-                const excess_blob_gas = if (test_case.object.get("env")) |env_val|
-                    if (env_val.object.get("currentExcessBlobGas")) |ebg|
-                        try parseIntFromJson(ebg)
-                    else
-                        0
-                else
-                    0;
-
-                // Calculate blob gas price using fake_exponential formula
-                // When excess_blob_gas is 0, blob_gas_price = MIN_BLOB_BASE_FEE = 1
-                // For simplicity, using MIN_BLOB_BASE_FEE when excess is 0
-                const blob_gas_price: u256 = if (excess_blob_gas == 0) 1 else 1; // TODO: implement fake_exponential
-
-                // Each blob uses 131072 (0x20000) gas
-                const blob_gas_per_blob: u256 = 131072;
-                const total_blob_gas = @as(u256, @intCast(blob_count)) * blob_gas_per_blob;
-
-                blob_gas_fee = total_blob_gas * blob_gas_price;
-            }
-
-            // Charge blob gas fee to sender (for EIP-4844 transactions)
-            // This is separate from regular gas and was not included in the upfront charge
-            if (blob_gas_fee > 0) {
-                const sender_balance_before_blob = test_host.balances.get(sender) orelse 0;
-                try test_host.setBalance(sender, sender_balance_before_blob - blob_gas_fee);
-            }
 
             // Pay coinbase their reward (priority fee portion only for EIP-1559/EIP-4844)
             // For EIP-1559/EIP-4844 transactions, only the priority fee goes to coinbase
