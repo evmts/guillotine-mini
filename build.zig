@@ -166,6 +166,81 @@ pub fn build(b: *std.Build) void {
     // Add spec tests to main test step
     test_step.dependOn(&run_spec_tests.step);
 
+    // Create hardfork-specific test suites
+    const hardforks = [_]struct { name: []const u8, desc: []const u8 }{
+        .{ .name = "frontier", .desc = "Frontier hardfork tests" },
+        .{ .name = "homestead", .desc = "Homestead hardfork tests" },
+        .{ .name = "byzantium", .desc = "Byzantium hardfork tests" },
+        .{ .name = "constantinople", .desc = "Constantinople hardfork tests" },
+        .{ .name = "istanbul", .desc = "Istanbul hardfork tests" },
+        .{ .name = "berlin", .desc = "Berlin hardfork tests (EIP-2929, EIP-2930)" },
+        .{ .name = "paris", .desc = "Paris/Merge hardfork tests" },
+        .{ .name = "shanghai", .desc = "Shanghai hardfork tests (EIP-3651, EIP-3855, EIP-3860, EIP-4895)" },
+        .{ .name = "cancun", .desc = "Cancun hardfork tests (EIP-1153, EIP-4788, EIP-4844, EIP-5656, EIP-6780, EIP-7516)" },
+        .{ .name = "prague", .desc = "Prague hardfork tests" },
+        .{ .name = "osaka", .desc = "Osaka hardfork tests" },
+    };
+
+    for (hardforks) |fork| {
+        const fork_tests = b.addTest(.{
+            .root_module = spec_runner_mod,
+            .test_runner = .{
+                .path = b.path("test_runner.zig"),
+                .mode = .simple,
+            },
+        });
+        fork_tests.step.dependOn(&update_spec_root.step);
+        fork_tests.root_module.addOptions("build_options", log_options);
+
+        const run_fork_tests = b.addRunArtifact(fork_tests);
+        run_fork_tests.setCwd(b.path("."));
+        run_fork_tests.setEnvironmentVariable("TEST_FILTER", fork.name);
+
+        const step_name = b.fmt("specs-{s}", .{fork.name});
+        const fork_step = b.step(step_name, fork.desc);
+        fork_step.dependOn(&run_fork_tests.step);
+    }
+
+    // Create EIP-specific test suites for large hardforks
+    const eip_suites = [_]struct { name: []const u8, filter: []const u8, desc: []const u8 }{
+        // Cancun EIPs (105 tests total, broken down)
+        .{ .name = "cancun-tstore", .filter = "eip1153_tstore", .desc = "Cancun EIP-1153 transient storage tests" },
+        .{ .name = "cancun-blobs", .filter = "eip4844_blobs", .desc = "Cancun EIP-4844 blob transaction tests" },
+        .{ .name = "cancun-mcopy", .filter = "eip5656_mcopy", .desc = "Cancun EIP-5656 MCOPY tests" },
+        .{ .name = "cancun-selfdestruct", .filter = "eip6780_selfdestruct", .desc = "Cancun EIP-6780 SELFDESTRUCT tests" },
+        .{ .name = "cancun-beacon", .filter = "eip4788_beacon_root", .desc = "Cancun EIP-4788 beacon root tests" },
+
+        // Berlin EIPs
+        .{ .name = "berlin-gas", .filter = "eip2929_gas_cost_increases", .desc = "Berlin EIP-2929 gas cost tests" },
+        .{ .name = "berlin-accesslist", .filter = "eip2930_access_list", .desc = "Berlin EIP-2930 access list tests" },
+
+        // Shanghai EIPs
+        .{ .name = "shanghai-push0", .filter = "eip3855_push0", .desc = "Shanghai EIP-3855 PUSH0 tests" },
+        .{ .name = "shanghai-warmcoinbase", .filter = "eip3651_warm_coinbase", .desc = "Shanghai EIP-3651 warm coinbase tests" },
+        .{ .name = "shanghai-initcode", .filter = "eip3860_initcode", .desc = "Shanghai EIP-3860 initcode tests" },
+        .{ .name = "shanghai-withdrawals", .filter = "eip4895_withdrawals", .desc = "Shanghai EIP-4895 withdrawal tests" },
+    };
+
+    for (eip_suites) |suite| {
+        const eip_tests = b.addTest(.{
+            .root_module = spec_runner_mod,
+            .test_runner = .{
+                .path = b.path("test_runner.zig"),
+                .mode = .simple,
+            },
+        });
+        eip_tests.step.dependOn(&update_spec_root.step);
+        eip_tests.root_module.addOptions("build_options", log_options);
+
+        const run_eip_tests = b.addRunArtifact(eip_tests);
+        run_eip_tests.setCwd(b.path("."));
+        run_eip_tests.setEnvironmentVariable("TEST_FILTER", suite.filter);
+
+        const step_name = b.fmt("specs-{s}", .{suite.name});
+        const eip_step = b.step(step_name, suite.desc);
+        eip_step.dependOn(&run_eip_tests.step);
+    }
+
     // Add trace test executable
     const trace_test_mod = b.addModule("trace_test_mod", .{
         .root_source_file = b.path("test_trace.zig"),
