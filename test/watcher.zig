@@ -113,7 +113,7 @@ pub const FileWatcher = struct {
             if (try self.checkForChanges()) {
                 return;
             }
-            std.time.sleep(self.poll_interval_ms * std.time.ns_per_ms);
+            std.Thread.sleep(self.poll_interval_ms * std.time.ns_per_ms);
         }
     }
 };
@@ -138,7 +138,7 @@ pub fn watchAndRun(
         try watcher.waitForChange();
 
         // Debounce - wait a bit for multiple file changes to settle
-        std.time.sleep(200 * std.time.ns_per_ms);
+        std.Thread.sleep(200 * std.time.ns_per_ms);
 
         // Clear any additional changes during debounce
         _ = try watcher.checkForChanges();

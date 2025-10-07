@@ -158,7 +158,7 @@ fn runTestsParallelWithProgress(allocator: std.mem.Allocator, writer: anytype, t
             rate,
         });
 
-        std.time.sleep(100 * std.time.ns_per_ms); // Update every 100ms
+        std.Thread.sleep(100 * std.time.ns_per_ms); // Update every 100ms
     }
 
     try writer.print("\n", .{});
