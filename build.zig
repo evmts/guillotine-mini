@@ -269,18 +269,148 @@ pub fn build(b: *std.Build) void {
 
     // Create hardfork-specific test suites
     const hardforks = [_]struct { name: []const u8, desc: []const u8 }{
-        .{ .name = "frontier", .desc = "Frontier hardfork tests" },
+        .{ .name = "frontier", .desc = "Frontier hardfork tests - runs all frontier-* sub-targets" },
         .{ .name = "homestead", .desc = "Homestead hardfork tests" },
         .{ .name = "byzantium", .desc = "Byzantium hardfork tests" },
         .{ .name = "constantinople", .desc = "Constantinople hardfork tests" },
         .{ .name = "istanbul", .desc = "Istanbul hardfork tests" },
-        .{ .name = "berlin", .desc = "Berlin hardfork tests (EIP-2929, EIP-2930)" },
+        .{ .name = "berlin", .desc = "Berlin hardfork tests (EIP-2929, EIP-2930) - runs all berlin-* sub-targets" },
         .{ .name = "paris", .desc = "Paris/Merge hardfork tests" },
         .{ .name = "shanghai", .desc = "Shanghai hardfork tests (EIP-3651, EIP-3855, EIP-3860, EIP-4895)" },
-        .{ .name = "cancun", .desc = "Cancun hardfork tests (EIP-1153, EIP-4788, EIP-4844, EIP-5656, EIP-6780, EIP-7516)" },
-        .{ .name = "prague", .desc = "Prague hardfork tests" },
-        .{ .name = "osaka", .desc = "Osaka hardfork tests" },
+        .{ .name = "cancun", .desc = "Cancun hardfork tests (EIP-1153, EIP-4788, EIP-4844, EIP-5656, EIP-6780, EIP-7516) - runs all cancun-* sub-targets" },
+        .{ .name = "prague", .desc = "Prague hardfork tests - runs all prague-* sub-targets" },
+        .{ .name = "osaka", .desc = "Osaka hardfork tests - runs all osaka-* sub-targets" },
     };
+
+    // Break up large hardforks into smaller sub-targets for faster test iteration
+    // Define a common struct type for all sub-targets
+    const SubTarget = struct { name: []const u8, filter: []const u8, desc: []const u8 };
+
+    // Berlin has 2772 tests in tx_intrinsic_gas alone
+    const berlin_sub_targets = [_]SubTarget{
+        .{ .name = "berlin-acl", .filter = "berlin.*acl.*account_storage_warm_cold_state", .desc = "Berlin EIP-2930 access list account storage tests" },
+        .{ .name = "berlin-intrinsic-gas-cost", .filter = "berlin.*acl.*transaction_intrinsic_gas_cost", .desc = "Berlin EIP-2930 transaction intrinsic gas cost tests" },
+        .{ .name = "berlin-intrinsic-type0", .filter = "berlin.*tx_intrinsic_gas.*tx_type_0", .desc = "Berlin EIP-2930 intrinsic gas type 0 transaction tests" },
+        .{ .name = "berlin-intrinsic-type1", .filter = "berlin.*tx_intrinsic_gas.*tx_type_1", .desc = "Berlin EIP-2930 intrinsic gas type 1 transaction tests" },
+    };
+
+    // Frontier has 12k+ lines in stack_overflow.zig and 6k+ in push.zig
+    const frontier_sub_targets = [_]SubTarget{
+        .{ .name = "frontier-precompiles", .filter = "frontier.*precompile", .desc = "Frontier precompile tests" },
+        .{ .name = "frontier-identity", .filter = "frontier.*identity", .desc = "Frontier identity precompile tests" },
+        .{ .name = "frontier-create", .filter = "frontier.*create", .desc = "Frontier CREATE tests" },
+        .{ .name = "frontier-call", .filter = "frontier.*call", .desc = "Frontier CALL/CALLCODE tests" },
+        .{ .name = "frontier-calldata", .filter = "frontier.*calldata", .desc = "Frontier calldata opcode tests" },
+        .{ .name = "frontier-dup", .filter = "frontier.*dup", .desc = "Frontier DUP tests" },
+        .{ .name = "frontier-push", .filter = "frontier.*push", .desc = "Frontier PUSH tests" },
+        .{ .name = "frontier-stack", .filter = "frontier.*stack_overflow", .desc = "Frontier stack overflow tests" },
+        .{ .name = "frontier-opcodes", .filter = "frontier.*opcodes.*all_opcodes", .desc = "Frontier all opcodes tests" },
+    };
+
+    // Cancun has 20k+ lines in sufficient_balance_blob_tx.zig
+    const cancun_sub_targets = [_]SubTarget{
+        .{ .name = "cancun-tstore-basic", .filter = "cancun.*tstore.*(basic_tload|tstorage[^_])", .desc = "Cancun EIP-1153 basic TLOAD/TSTORE tests" },
+        .{ .name = "cancun-tstore-reentrancy", .filter = "cancun.*tstore.*(reentrancy|reentrant)", .desc = "Cancun EIP-1153 reentrancy tests" },
+        .{ .name = "cancun-tstore-contexts", .filter = "cancun.*tstore.*(contexts|selfdestruct)", .desc = "Cancun EIP-1153 execution context tests" },
+        .{ .name = "cancun-mcopy", .filter = "cancun.*mcopy", .desc = "Cancun EIP-5656 MCOPY tests" },
+        .{ .name = "cancun-selfdestruct", .filter = "cancun.*selfdestruct", .desc = "Cancun EIP-6780 SELFDESTRUCT tests" },
+        .{ .name = "cancun-blobbasefee", .filter = "cancun.*blobgasfee", .desc = "Cancun EIP-7516 BLOBBASEFEE tests" },
+        .{ .name = "cancun-blob-precompile", .filter = "cancun.*point_evaluation", .desc = "Cancun EIP-4844 point evaluation precompile tests" },
+        .{ .name = "cancun-blob-opcodes", .filter = "cancun.*blobhash", .desc = "Cancun EIP-4844 BLOBHASH opcode tests" },
+        .{ .name = "cancun-blob-tx-small", .filter = "cancun.*blob_txs.*(attribute|invalid|blob_type_tx_pre_fork)", .desc = "Cancun EIP-4844 small blob transaction tests" },
+        .{ .name = "cancun-blob-tx-subtraction", .filter = "cancun.*blob_gas_subtraction_tx", .desc = "Cancun EIP-4844 blob gas subtraction tests" },
+        .{ .name = "cancun-blob-tx-insufficient", .filter = "cancun.*insufficient_balance_blob_tx", .desc = "Cancun EIP-4844 insufficient balance tests" },
+        .{ .name = "cancun-blob-tx-sufficient", .filter = "cancun.*sufficient_balance_blob_tx", .desc = "Cancun EIP-4844 sufficient balance tests" },
+        .{ .name = "cancun-blob-tx-valid-combos", .filter = "cancun.*valid_blob_tx_combinations", .desc = "Cancun EIP-4844 valid combinations tests" },
+    };
+
+    // Prague has 4540 lines in transaction_validity_type_1_type_2.zig and many BLS12-381 tests
+    const prague_sub_targets = [_]SubTarget{
+        .{ .name = "prague-calldata-cost-type0", .filter = "prague.*eip7623.*type_0", .desc = "Prague EIP-7623 calldata cost type 0 tests" },
+        .{ .name = "prague-calldata-cost-type1-2", .filter = "prague.*eip7623.*type_1_type_2", .desc = "Prague EIP-7623 calldata cost type 1/2 tests" },
+        .{ .name = "prague-calldata-cost-type3", .filter = "prague.*eip7623.*type_3", .desc = "Prague EIP-7623 calldata cost type 3 tests" },
+        .{ .name = "prague-calldata-cost-type4", .filter = "prague.*eip7623.*type_4", .desc = "Prague EIP-7623 calldata cost type 4 tests" },
+        .{ .name = "prague-calldata-cost-refunds", .filter = "prague.*eip7623.*(refunds|execution_gas)", .desc = "Prague EIP-7623 refunds and gas tests" },
+        .{ .name = "prague-bls-g1", .filter = "prague.*bls12.*(g1add|g1mul|g1msm)", .desc = "Prague EIP-2537 BLS12-381 G1 tests" },
+        .{ .name = "prague-bls-g2", .filter = "prague.*bls12.*(g2add|g2mul|g2msm)", .desc = "Prague EIP-2537 BLS12-381 G2 tests" },
+        .{ .name = "prague-bls-pairing", .filter = "prague.*bls12.*pairing", .desc = "Prague EIP-2537 BLS12-381 pairing tests" },
+        .{ .name = "prague-bls-map", .filter = "prague.*bls12.*map", .desc = "Prague EIP-2537 BLS12-381 map tests" },
+        .{ .name = "prague-bls-misc", .filter = "prague.*bls12.*(variable_length|before_fork)", .desc = "Prague EIP-2537 BLS12-381 misc tests" },
+        .{ .name = "prague-setcode-calls", .filter = "prague.*eip7702.*calls", .desc = "Prague EIP-7702 set code call tests" },
+        .{ .name = "prague-setcode-gas", .filter = "prague.*eip7702.*gas", .desc = "Prague EIP-7702 set code gas tests" },
+        .{ .name = "prague-setcode-txs", .filter = "prague.*eip7702.*set_code_txs[^_2]", .desc = "Prague EIP-7702 set code transaction tests" },
+        .{ .name = "prague-setcode-advanced", .filter = "prague.*eip7702.*set_code_txs_2", .desc = "Prague EIP-7702 advanced set code tests" },
+    };
+
+    // Osaka has 5836 lines in modexp_variable_gas_cost.zig
+    const osaka_sub_targets = [_]SubTarget{
+        .{ .name = "osaka-modexp-variable-gas", .filter = "osaka.*modexp_variable_gas_cost", .desc = "Osaka EIP-7883 modexp variable gas tests" },
+        .{ .name = "osaka-modexp-vectors-eip", .filter = "osaka.*vectors_from_eip", .desc = "Osaka EIP-7883 modexp vectors from EIP tests" },
+        .{ .name = "osaka-modexp-vectors-legacy", .filter = "osaka.*vectors_from_legacy", .desc = "Osaka EIP-7883 modexp vectors from legacy tests" },
+        .{ .name = "osaka-modexp-misc", .filter = "osaka.*modexp.*(call_operations|gas_usage|invalid|entry_points|exceed)", .desc = "Osaka EIP-7883 modexp misc tests" },
+        .{ .name = "osaka-other", .filter = "osaka.*(eip7823|eip7825)", .desc = "Osaka other EIP tests" },
+    };
+
+    // Helper to create sub-targets for a hardfork
+    const SubTargetConfig = struct {
+        targets: []const SubTarget,
+        fork_name: []const u8,
+    };
+
+    const sub_target_configs = [_]SubTargetConfig{
+        .{ .targets = &berlin_sub_targets, .fork_name = "berlin" },
+        .{ .targets = &frontier_sub_targets, .fork_name = "frontier" },
+        .{ .targets = &cancun_sub_targets, .fork_name = "cancun" },
+        .{ .targets = &prague_sub_targets, .fork_name = "prague" },
+        .{ .targets = &osaka_sub_targets, .fork_name = "osaka" },
+    };
+
+    var fork_sub_steps_map = std.StringHashMap(std.ArrayList(*std.Build.Step)).init(b.allocator);
+    defer {
+        var it = fork_sub_steps_map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(b.allocator);
+        }
+        fork_sub_steps_map.deinit();
+    }
+
+    // Initialize arrays for each fork
+    for (sub_target_configs) |config| {
+        const steps = std.ArrayList(*std.Build.Step){};
+        fork_sub_steps_map.put(config.fork_name, steps) catch @panic("OOM");
+    }
+
+    // Create all sub-targets
+    for (sub_target_configs) |config| {
+        const steps = fork_sub_steps_map.getPtr(config.fork_name).?;
+
+        for (config.targets) |sub_target| {
+            const sub_tests = b.addTest(.{
+                .root_module = spec_runner_mod,
+                .test_runner = .{
+                    .path = b.path("test_runner.zig"),
+                    .mode = .simple,
+                },
+            });
+
+            if (bn254_lib) |lib| {
+                sub_tests.root_module.linkLibrary(lib);
+            }
+
+            sub_tests.step.dependOn(&update_spec_root.step);
+            sub_tests.root_module.addOptions("build_options", log_options);
+
+            const run_sub_tests = b.addRunArtifact(sub_tests);
+            run_sub_tests.setCwd(b.path("."));
+            run_sub_tests.setEnvironmentVariable("TEST_FILTER", sub_target.filter);
+
+            const step_name = b.fmt("specs-{s}", .{sub_target.name});
+            const sub_step = b.step(step_name, sub_target.desc);
+            sub_step.dependOn(&run_sub_tests.step);
+
+            steps.append(b.allocator, &run_sub_tests.step) catch @panic("OOM");
+        }
+    }
 
     for (hardforks) |fork| {
         const fork_tests = b.addTest(.{
@@ -305,22 +435,20 @@ pub fn build(b: *std.Build) void {
 
         const step_name = b.fmt("specs-{s}", .{fork.name});
         const fork_step = b.step(step_name, fork.desc);
-        fork_step.dependOn(&run_fork_tests.step);
+
+        // For hardforks with sub-targets, make the main target depend on all sub-targets
+        if (fork_sub_steps_map.get(fork.name)) |sub_steps| {
+            for (sub_steps.items) |sub_step| {
+                fork_step.dependOn(sub_step);
+            }
+        } else {
+            fork_step.dependOn(&run_fork_tests.step);
+        }
     }
 
-    // Create EIP-specific test suites for large hardforks
+    // Create EIP-specific test suites for hardforks without sub-targets
+    // (Berlin, Frontier, Cancun, Prague, and Osaka now have sub-targets defined above)
     const eip_suites = [_]struct { name: []const u8, filter: []const u8, desc: []const u8 }{
-        // Cancun EIPs (105 tests total, broken down)
-        .{ .name = "cancun-tstore", .filter = "eip1153_tstore", .desc = "Cancun EIP-1153 transient storage tests" },
-        .{ .name = "cancun-blobs", .filter = "eip4844_blobs", .desc = "Cancun EIP-4844 blob transaction tests" },
-        .{ .name = "cancun-mcopy", .filter = "eip5656_mcopy", .desc = "Cancun EIP-5656 MCOPY tests" },
-        .{ .name = "cancun-selfdestruct", .filter = "eip6780_selfdestruct", .desc = "Cancun EIP-6780 SELFDESTRUCT tests" },
-        .{ .name = "cancun-beacon", .filter = "eip4788_beacon_root", .desc = "Cancun EIP-4788 beacon root tests" },
-
-        // Berlin EIPs
-        .{ .name = "berlin-gas", .filter = "eip2929_gas_cost_increases", .desc = "Berlin EIP-2929 gas cost tests" },
-        .{ .name = "berlin-accesslist", .filter = "eip2930_access_list", .desc = "Berlin EIP-2930 access list tests" },
-
         // Shanghai EIPs
         .{ .name = "shanghai-push0", .filter = "eip3855_push0", .desc = "Shanghai EIP-3855 PUSH0 tests" },
         .{ .name = "shanghai-warmcoinbase", .filter = "eip3651_warm_coinbase", .desc = "Shanghai EIP-3651 warm coinbase tests" },
