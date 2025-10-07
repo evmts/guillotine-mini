@@ -24,45 +24,45 @@ const TEST_SUITES: TestSuite[] = [
   // { name: 'shanghai-push0', command: 'zig build specs-shanghai-push0', description: 'Shanghai EIP-3855 PUSH0 tests' },
 
   // Cancun sub-targets (broken up from large test suite)
-  { name: 'cancun-tstore-basic', command: 'zig build specs-cancun-tstore-basic', description: 'Cancun EIP-1153 basic TLOAD/TSTORE tests' },
-  { name: 'cancun-tstore-reentrancy', command: 'zig build specs-cancun-tstore-reentrancy', description: 'Cancun EIP-1153 reentrancy tests' },
-  { name: 'cancun-tstore-contexts', command: 'zig build specs-cancun-tstore-contexts', description: 'Cancun EIP-1153 execution context tests' },
-  { name: 'cancun-mcopy', command: 'zig build specs-cancun-mcopy', description: 'Cancun EIP-5656 MCOPY tests' },
-  { name: 'cancun-selfdestruct', command: 'zig build specs-cancun-selfdestruct', description: 'Cancun EIP-6780 SELFDESTRUCT tests' },
-  { name: 'cancun-blobbasefee', command: 'zig build specs-cancun-blobbasefee', description: 'Cancun EIP-7516 BLOBBASEFEE tests' },
-  { name: 'cancun-blob-precompile', command: 'zig build specs-cancun-blob-precompile', description: 'Cancun EIP-4844 point evaluation precompile tests' },
-  { name: 'cancun-blob-opcodes', command: 'zig build specs-cancun-blob-opcodes', description: 'Cancun EIP-4844 BLOBHASH opcode tests' },
-  { name: 'cancun-blob-tx-small', command: 'zig build specs-cancun-blob-tx-small', description: 'Cancun EIP-4844 small blob transaction tests' },
-  { name: 'cancun-blob-tx-subtraction', command: 'zig build specs-cancun-blob-tx-subtraction', description: 'Cancun EIP-4844 blob gas subtraction tests' },
-  { name: 'cancun-blob-tx-insufficient', command: 'zig build specs-cancun-blob-tx-insufficient', description: 'Cancun EIP-4844 insufficient balance tests' },
-  { name: 'cancun-blob-tx-sufficient', command: 'zig build specs-cancun-blob-tx-sufficient', description: 'Cancun EIP-4844 sufficient balance tests' },
-  { name: 'cancun-blob-tx-valid-combos', command: 'zig build specs-cancun-blob-tx-valid-combos', description: 'Cancun EIP-4844 valid combinations tests' },
+  // { name: 'cancun-tstore-basic', command: 'zig build specs-cancun-tstore-basic', description: 'Cancun EIP-1153 basic TLOAD/TSTORE tests' },
+  // { name: 'cancun-tstore-reentrancy', command: 'zig build specs-cancun-tstore-reentrancy', description: 'Cancun EIP-1153 reentrancy tests' },
+  // { name: 'cancun-tstore-contexts', command: 'zig build specs-cancun-tstore-contexts', description: 'Cancun EIP-1153 execution context tests' },
+  // { name: 'cancun-mcopy', command: 'zig build specs-cancun-mcopy', description: 'Cancun EIP-5656 MCOPY tests' },
+  // { name: 'cancun-selfdestruct', command: 'zig build specs-cancun-selfdestruct', description: 'Cancun EIP-6780 SELFDESTRUCT tests' },
+  // { name: 'cancun-blobbasefee', command: 'zig build specs-cancun-blobbasefee', description: 'Cancun EIP-7516 BLOBBASEFEE tests' },
+  // { name: 'cancun-blob-precompile', command: 'zig build specs-cancun-blob-precompile', description: 'Cancun EIP-4844 point evaluation precompile tests' },
+  // { name: 'cancun-blob-opcodes', command: 'zig build specs-cancun-blob-opcodes', description: 'Cancun EIP-4844 BLOBHASH opcode tests' },
+  // { name: 'cancun-blob-tx-small', command: 'zig build specs-cancun-blob-tx-small', description: 'Cancun EIP-4844 small blob transaction tests' },
+  // { name: 'cancun-blob-tx-subtraction', command: 'zig build specs-cancun-blob-tx-subtraction', description: 'Cancun EIP-4844 blob gas subtraction tests' },
+  // { name: 'cancun-blob-tx-insufficient', command: 'zig build specs-cancun-blob-tx-insufficient', description: 'Cancun EIP-4844 insufficient balance tests' },
+  // { name: 'cancun-blob-tx-sufficient', command: 'zig build specs-cancun-blob-tx-sufficient', description: 'Cancun EIP-4844 sufficient balance tests' },
+  // { name: 'cancun-blob-tx-valid-combos', command: 'zig build specs-cancun-blob-tx-valid-combos', description: 'Cancun EIP-4844 valid combinations tests' },
 
   // Prague sub-targets (broken up from large test suite)
-  { name: 'prague-calldata-cost-type0', command: 'zig build specs-prague-calldata-cost-type0', description: 'Prague EIP-7623 calldata cost type 0 tests' },
-  { name: 'prague-calldata-cost-type1-2', command: 'zig build specs-prague-calldata-cost-type1-2', description: 'Prague EIP-7623 calldata cost type 1/2 tests' },
-  { name: 'prague-calldata-cost-type3', command: 'zig build specs-prague-calldata-cost-type3', description: 'Prague EIP-7623 calldata cost type 3 tests' },
-  { name: 'prague-calldata-cost-type4', command: 'zig build specs-prague-calldata-cost-type4', description: 'Prague EIP-7623 calldata cost type 4 tests' },
-  { name: 'prague-calldata-cost-refunds', command: 'zig build specs-prague-calldata-cost-refunds', description: 'Prague EIP-7623 refunds and gas tests' },
-  { name: 'prague-bls-g1', command: 'zig build specs-prague-bls-g1', description: 'Prague EIP-2537 BLS12-381 G1 tests' },
-  { name: 'prague-bls-g2', command: 'zig build specs-prague-bls-g2', description: 'Prague EIP-2537 BLS12-381 G2 tests' },
-  { name: 'prague-bls-pairing', command: 'zig build specs-prague-bls-pairing', description: 'Prague EIP-2537 BLS12-381 pairing tests' },
-  { name: 'prague-bls-map', command: 'zig build specs-prague-bls-map', description: 'Prague EIP-2537 BLS12-381 map tests' },
-  { name: 'prague-bls-misc', command: 'zig build specs-prague-bls-misc', description: 'Prague EIP-2537 BLS12-381 misc tests' },
-  { name: 'prague-setcode-calls', command: 'zig build specs-prague-setcode-calls', description: 'Prague EIP-7702 set code call tests' },
-  { name: 'prague-setcode-gas', command: 'zig build specs-prague-setcode-gas', description: 'Prague EIP-7702 set code gas tests' },
-  { name: 'prague-setcode-txs', command: 'zig build specs-prague-setcode-txs', description: 'Prague EIP-7702 set code transaction tests' },
-  { name: 'prague-setcode-advanced', command: 'zig build specs-prague-setcode-advanced', description: 'Prague EIP-7702 advanced set code tests' },
+  // { name: 'prague-calldata-cost-type0', command: 'zig build specs-prague-calldata-cost-type0', description: 'Prague EIP-7623 calldata cost type 0 tests' },
+  // { name: 'prague-calldata-cost-type1-2', command: 'zig build specs-prague-calldata-cost-type1-2', description: 'Prague EIP-7623 calldata cost type 1/2 tests' },
+  // { name: 'prague-calldata-cost-type3', command: 'zig build specs-prague-calldata-cost-type3', description: 'Prague EIP-7623 calldata cost type 3 tests' },
+  // { name: 'prague-calldata-cost-type4', command: 'zig build specs-prague-calldata-cost-type4', description: 'Prague EIP-7623 calldata cost type 4 tests' },
+  // { name: 'prague-calldata-cost-refunds', command: 'zig build specs-prague-calldata-cost-refunds', description: 'Prague EIP-7623 refunds and gas tests' },
+  // { name: 'prague-bls-g1', command: 'zig build specs-prague-bls-g1', description: 'Prague EIP-2537 BLS12-381 G1 tests' },
+  // { name: 'prague-bls-g2', command: 'zig build specs-prague-bls-g2', description: 'Prague EIP-2537 BLS12-381 G2 tests' },
+  // { name: 'prague-bls-pairing', command: 'zig build specs-prague-bls-pairing', description: 'Prague EIP-2537 BLS12-381 pairing tests' },
+  // { name: 'prague-bls-map', command: 'zig build specs-prague-bls-map', description: 'Prague EIP-2537 BLS12-381 map tests' },
+  // { name: 'prague-bls-misc', command: 'zig build specs-prague-bls-misc', description: 'Prague EIP-2537 BLS12-381 misc tests' },
+  // { name: 'prague-setcode-calls', command: 'zig build specs-prague-setcode-calls', description: 'Prague EIP-7702 set code call tests' },
+  // { name: 'prague-setcode-gas', command: 'zig build specs-prague-setcode-gas', description: 'Prague EIP-7702 set code gas tests' },
+  // { name: 'prague-setcode-txs', command: 'zig build specs-prague-setcode-txs', description: 'Prague EIP-7702 set code transaction tests' },
+  // { name: 'prague-setcode-advanced', command: 'zig build specs-prague-setcode-advanced', description: 'Prague EIP-7702 advanced set code tests' },
 
   // Osaka sub-targets (broken up from large test suite)
-  { name: 'osaka-modexp-variable-gas', command: 'zig build specs-osaka-modexp-variable-gas', description: 'Osaka EIP-7883 modexp variable gas tests' },
-  { name: 'osaka-modexp-vectors-eip', command: 'zig build specs-osaka-modexp-vectors-eip', description: 'Osaka EIP-7883 modexp vectors from EIP tests' },
-  { name: 'osaka-modexp-vectors-legacy', command: 'zig build specs-osaka-modexp-vectors-legacy', description: 'Osaka EIP-7883 modexp vectors from legacy tests' },
-  { name: 'osaka-modexp-misc', command: 'zig build specs-osaka-modexp-misc', description: 'Osaka EIP-7883 modexp misc tests' },
-  { name: 'osaka-other', command: 'zig build specs-osaka-other', description: 'Osaka other EIP tests' },
+  // { name: 'osaka-modexp-variable-gas', command: 'zig build specs-osaka-modexp-variable-gas', description: 'Osaka EIP-7883 modexp variable gas tests' },
+  // { name: 'osaka-modexp-vectors-eip', command: 'zig build specs-osaka-modexp-vectors-eip', description: 'Osaka EIP-7883 modexp vectors from EIP tests' },
+  // { name: 'osaka-modexp-vectors-legacy', command: 'zig build specs-osaka-modexp-vectors-legacy', description: 'Osaka EIP-7883 modexp vectors from legacy tests' },
+  // { name: 'osaka-modexp-misc', command: 'zig build specs-osaka-modexp-misc', description: 'Osaka EIP-7883 modexp misc tests' },
+  // { name: 'osaka-other', command: 'zig build specs-osaka-other', description: 'Osaka other EIP tests' },
 
   // Shanghai EIPs
-  { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
+  // { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
   { name: 'shanghai-initcode', command: 'zig build specs-shanghai-initcode', description: 'Shanghai EIP-3860 initcode tests' },
 
   // Smaller hardforks (no sub-targets needed)
@@ -70,22 +70,21 @@ const TEST_SUITES: TestSuite[] = [
   { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
   { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
   // Berlin sub-targets (broken up from large test suite)
-  { name: 'berlin-acl', command: 'zig build specs-berlin-acl', description: 'Berlin EIP-2930 access list account storage tests' },
-  { name: 'berlin-intrinsic-gas-cost', command: 'zig build specs-berlin-intrinsic-gas-cost', description: 'Berlin EIP-2930 transaction intrinsic gas cost tests' },
-  { name: 'berlin-intrinsic-type0', command: 'zig build specs-berlin-intrinsic-type0', description: 'Berlin EIP-2930 intrinsic gas type 0 transaction tests' },
-  { name: 'berlin-intrinsic-type1', command: 'zig build specs-berlin-intrinsic-type1', description: 'Berlin EIP-2930 intrinsic gas type 1 transaction tests' },
+  // { name: 'berlin-acl', command: 'zig build specs-berlin-acl', description: 'Berlin EIP-2930 access list account storage tests' },
+  // { name: 'berlin-intrinsic-gas-cost', command: 'zig build specs-berlin-intrinsic-gas-cost', description: 'Berlin EIP-2930 transaction intrinsic gas cost tests' },
+  // { name: 'berlin-intrinsic-type0', command: 'zig build specs-berlin-intrinsic-type0', description: 'Berlin EIP-2930 intrinsic gas type 0 transaction tests' },
+  // { name: 'berlin-intrinsic-type1', command: 'zig build specs-berlin-intrinsic-type1', description: 'Berlin EIP-2930 intrinsic gas type 1 transaction tests' },
 
   // Frontier sub-targets (broken up from large test suite)
-  { name: 'frontier-precompiles', command: 'zig build specs-frontier-precompiles', description: 'Frontier precompile tests' },
-  { name: 'frontier-identity', command: 'zig build specs-frontier-identity', description: 'Frontier identity precompile tests' },
-  { name: 'frontier-create', command: 'zig build specs-frontier-create', description: 'Frontier CREATE tests' },
-  { name: 'frontier-call', command: 'zig build specs-frontier-call', description: 'Frontier CALL/CALLCODE tests' },
-  { name: 'frontier-calldata', command: 'zig build specs-frontier-calldata', description: 'Frontier calldata opcode tests' },
-  { name: 'frontier-dup', command: 'zig build specs-frontier-dup', description: 'Frontier DUP tests' },
-  { name: 'frontier-push', command: 'zig build specs-frontier-push', description: 'Frontier PUSH tests' },
-  { name: 'frontier-stack', command: 'zig build specs-frontier-stack', description: 'Frontier stack overflow tests' },
-  { name: 'frontier-opcodes', command: 'zig build specs-frontier-opcodes', description: 'Frontier all opcodes tests' },
-
+  // { name: 'frontier-precompiles', command: 'zig build specs-frontier-precompiles', description: 'Frontier precompile tests' },
+  // { name: 'frontier-identity', command: 'zig build specs-frontier-identity', description: 'Frontier identity precompile tests' },
+  // { name: 'frontier-create', command: 'zig build specs-frontier-create', description: 'Frontier CREATE tests' },
+  // { name: 'frontier-call', command: 'zig build specs-frontier-call', description: 'Frontier CALL/CALLCODE tests' },
+  // { name: 'frontier-calldata', command: 'zig build specs-frontier-calldata', description: 'Frontier calldata opcode tests' },
+  // { name: 'frontier-dup', command: 'zig build specs-frontier-dup', description: 'Frontier DUP tests' },
+  // { name: 'frontier-push', command: 'zig build specs-frontier-push', description: 'Frontier PUSH tests' },
+  // { name: 'frontier-stack', command: 'zig build specs-frontier-stack', description: 'Frontier stack overflow tests' },
+  // { name: 'frontier-opcodes', command: 'zig build specs-frontier-opcodes', description: 'Frontier all opcodes tests' },
 ];
 
 interface TestResult {
@@ -159,9 +158,7 @@ class SpecFixerPipeline {
     const startTime = Date.now();
 
     const prompt = `<task>
-Your goal is to make our EVM ethereum spec compliant by passing the execution tests.
-
-You are an expert EVM implementation debugger tasked with fixing failing Ethereum specification tests.
+Goal: make EVM ethereum spec compliant by passing the execution tests.
 </task>
 
 <context>
@@ -173,19 +170,6 @@ The ethereum specification tests are the official tests we are using as a submod
 **Command**: \`${suite.command}\`
 **Hardfork Context**: This test suite targets specific hardfork rules and EIP requirements that must be satisfied.
 </context>
-
-<test_failure_output>
-The test failures will appear below. Pay careful attention to:
-- Which specific tests are failing (test names often indicate what they're testing)
-- Gas differences (actual vs expected gas usage)
-- State differences (storage, balances, nonces, code)
-- Return values or revert reasons
-- Trace divergence points (if available)
-
-## Test Failure Output
-
-[Test output will be provided here]
-</test_failure_output>
 
 <methodology>
 Follow this systematic debugging approach:
@@ -321,6 +305,127 @@ For gas errors, trace the gas calculation step-by-step:
 3. Dynamic cost (e.g., SSTORE, CALL)
 4. Warm/cold access cost (post-Berlin)
 5. Gas refunds (check cap)
+
+### Strategy 6: Crash Debugging (Systematic Approach)
+
+⚠️ **CRITICAL**: Crash debugging requires a systematic, methodical approach. DO NOT guess, skip steps, or make assumptions. Crashes are often Zig-specific (memory safety, undefined behavior) and may not be obvious from Python reference code.
+
+**Key Principles:**
+- Crashes often swallow all output, including logs and debug prints
+- DO NOT add logging to crashing code - it won't appear before the crash
+- ALWAYS run crashing tests in complete isolation by themselves
+- NEVER attempt to fix the bug until you know the EXACT line where it crashes
+- Be methodical and patient - systematic debugging is faster than guessing
+
+#### Step 1: Isolate the Crashing Test
+**BEFORE ANYTHING ELSE**, run ONLY the crashing test:
+\`\`\`bash
+TEST_FILTER="exact_crashing_test_name" ${suite.command}
+\`\`\`
+
+This ensures:
+- Faster iteration cycles
+- No interference from other tests
+- Clear, focused crash output
+
+#### Step 2: Binary Search for Crash Location
+Your ONLY goal is to find the exact line of code where the crash occurs.
+
+**Method**: Use \`@panic("CHECKPOINT")\` as a binary search marker:
+
+1. Add \`@panic("CHECKPOINT")\` halfway through the suspected code region
+2. Run the test:
+   - If you see "CHECKPOINT" panic → crash happens AFTER this line
+   - If you see the original crash → crash happens BEFORE this line
+3. Move the panic checkpoint and repeat
+4. Continue binary search until you narrow it down to the exact line
+
+**Example**:
+\`\`\`zig
+// Suspected region
+line1();
+line2();
+@panic("CHECKPOINT");  // Add this
+line3();
+line4();
+\`\`\`
+
+Keep moving \`@panic("CHECKPOINT")\` until you identify the exact crashing line.
+
+#### Step 3: Understand the Crash Type
+Once you know WHERE it crashes, determine WHY:
+
+**Common Zig crash types:**
+- **Segmentation fault**: Invalid memory access (null pointer, out of bounds)
+- **Integer overflow**: Arithmetic operation exceeded bounds (check \`@addWithOverflow\`, etc.)
+- **Unreachable**: Code path marked unreachable was hit
+- **Index out of bounds**: Array/slice access beyond length
+- **Division by zero**: Self-explanatory
+- **Stack overflow**: Recursion or excessive stack allocation
+
+Read the crash message carefully to identify the type.
+
+#### Step 4: Capture the Crashing Value
+Now that you know the exact line, determine WHAT VALUE causes the crash:
+
+1. **Add assertions BEFORE the crash line** to inspect values:
+   \`\`\`zig
+   std.debug.print("DEBUG: value = {}, len = {}\\n", .{value, slice.len});
+   std.debug.assert(value < slice.len); // Will trigger with clear message
+   const item = slice[value]; // This was crashing
+   \`\`\`
+
+2. **Temporarily convert crash to error return** (optional):
+   - If you need to see more context, temporarily make it return an error
+   - Pick a rarely-used error (e.g., \`error.TemporaryDebugError\`)
+   - Add a comment: \`// TODO: TEMPORARY - Remove after debugging crash\`
+   - This lets execution continue so you can see more state
+
+#### Step 5: Add Preventive Assertions
+Before fixing, add assertions that SHOULD have caught this:
+
+\`\`\`zig
+std.debug.assert(index < array.len); // Prevent out of bounds
+std.debug.assert(denominator != 0);   // Prevent division by zero
+std.debug.assert(ptr != null);        // Prevent null dereference
+\`\`\`
+
+These make future crashes easier to debug and document invariants.
+
+#### Step 6: Fix the Root Cause
+ONLY NOW should you fix the actual bug. Consider:
+
+- **Bounds checking**: Add proper checks before array access
+- **Null checking**: Verify pointers/optionals before dereferencing
+- **Overflow handling**: Use checked arithmetic or validate ranges
+- **Logic error**: Fix the algorithm if the crash reveals incorrect logic
+
+**Zig-specific considerations:**
+- Use \`@intCast\` carefully - can cause overflow crashes
+- Check slice lengths before indexing
+- Validate \`std.mem.readInt\` doesn't read past buffer end
+- Ensure allocations succeeded before dereferencing
+
+#### Step 7: Verify the Fix
+After fixing:
+1. Run the isolated test: \`TEST_FILTER="exact_test_name" ${suite.command}\`
+2. Verify it passes
+3. Run the full test suite to check for regressions
+4. Remove any temporary debug code (search for "TODO: TEMPORARY")
+
+#### Common Pitfalls to Avoid
+❌ **DON'T** add \`std.debug.print\` at the crash site - output will be swallowed
+❌ **DON'T** skip the binary search - guessing wastes time
+❌ **DON'T** try to fix before knowing the exact crash line
+❌ **DON'T** assume the Python reference shows the issue - this may be Zig-specific
+❌ **DON'T** run multiple tests while debugging a crash - isolate it
+
+✅ **DO** be systematic and methodical
+✅ **DO** use binary search with \`@panic\`
+✅ **DO** run tests in isolation
+✅ **DO** add assertions to document invariants
+✅ **DO** understand WHY before attempting to fix
+
 </debugging_techniques>
 
 <critical_reminders>
