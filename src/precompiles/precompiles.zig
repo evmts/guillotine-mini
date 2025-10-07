@@ -116,6 +116,28 @@ pub fn execute_precompile(
     }
     const precompile_id = address.bytes[19];
     std.debug.assert(precompile_id >= 1 and precompile_id <= 0x12);
+
+    // Validate input size based on precompile type to prevent DoS
+    const max_input_size: usize = switch (precompile_id) {
+        1 => 128, // ECRECOVER has fixed input size
+        2, 3 => InputLimits.MAX_HASH_INPUT, // SHA256, RIPEMD160
+        4 => InputLimits.MAX_IDENTITY_INPUT, // IDENTITY
+        5 => InputLimits.MAX_MODEXP_INPUT, // MODEXP
+        6, 7, 8 => InputLimits.MAX_EC_INPUT, // BN254 operations
+        9 => InputLimits.MAX_BLAKE2F_INPUT, // BLAKE2F (fixed at 213)
+        10 => InputLimits.MAX_POINT_EVAL_INPUT, // Point evaluation (fixed at 192)
+        0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12 => InputLimits.MAX_EC_INPUT, // BLS12-381
+        else => InputLimits.MAX_HASH_INPUT, // Default fallback
+    };
+
+    if (input.len > max_input_size) {
+        return PrecompileOutput{
+            .output = &.{},
+            .gas_used = gas_limit, // Consume all gas on invalid input
+            .success = false,
+        };
+    }
+
     return switch (precompile_id) {
         1 => execute_ecrecover(allocator, input, gas_limit),
         2 => execute_sha256(allocator, input, gas_limit),
@@ -143,6 +165,33 @@ pub fn execute_precompile(
     };
 }
 
+/// Maximum input size limits for precompiles to prevent DoS attacks
+/// These limits ensure that even with maximum input sizes, gas costs remain reasonable
+/// and memory allocations don't cause system issues
+pub const InputLimits = struct {
+    /// Maximum input size for hash precompiles (SHA256, RIPEMD160)
+    /// At 1MB, SHA256 costs ~384k gas, well within block gas limits
+    pub const MAX_HASH_INPUT: usize = 1024 * 1024; // 1 MB
+
+    /// Maximum input size for IDENTITY precompile
+    /// At 1MB, costs ~96k gas
+    pub const MAX_IDENTITY_INPUT: usize = 1024 * 1024; // 1 MB
+
+    /// Maximum input size for MODEXP precompile
+    /// MODEXP has its own dynamic gas calculation, but cap to prevent extreme cases
+    pub const MAX_MODEXP_INPUT: usize = 64 * 1024; // 64 KB
+
+    /// Maximum input size for elliptic curve precompiles
+    /// These have fixed input sizes but validate against this for safety
+    pub const MAX_EC_INPUT: usize = 32 * 1024; // 32 KB
+
+    /// Maximum input size for BLAKE2F (fixed at 213 bytes but kept for consistency)
+    pub const MAX_BLAKE2F_INPUT: usize = 213;
+
+    /// Maximum input size for KZG point evaluation (fixed but kept for consistency)
+    pub const MAX_POINT_EVAL_INPUT: usize = 192;
+};
+
 /// Gas costs for precompiles (in gas units)
 pub const GasCosts = struct {
     pub const ECRECOVER = 3000;
@@ -159,7 +208,7 @@ pub const GasCosts = struct {
     pub const ECPAIRING_PER_PAIR = 34000;
     pub const BLAKE2F_PER_ROUND = 1;
     pub const POINT_EVALUATION = 50000;
-    
+
     // BLS12-381 gas costs (EIP-2537)
     pub const BLS12_381_G1_ADD = 500;
     pub const BLS12_381_G1_MUL = 12000;
