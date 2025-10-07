@@ -7,13 +7,14 @@ const Icons = utils.Icons;
 const TestResult = utils.TestResult;
 
 pub fn main() !void {
-    const stdout_file = std.fs.File.stdout();
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout = stdout_file.writer(stdout_buffer[0..]);
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    const stdout_file = std.fs.File.stdout();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(allocator, 8192);
+    defer stdout_buffer.deinit(allocator);
+    const stdout = stdout_buffer.writer(allocator);
 
     var results = std.ArrayListUnmanaged(TestResult){};
     defer {
@@ -44,9 +45,9 @@ pub fn main() !void {
             const workers = std.fmt.parseInt(usize, workers_str, 10) catch 4;
             break :blk workers;
         }
-        // Default to number of CPU cores or 4, whichever is smaller
+        // Default to CPU count - each test runs an isolated EVM instance
         const cpu_count = std.Thread.getCpuCount() catch 4;
-        break :blk @min(cpu_count, 8); // Cap at 8 to avoid too many forks
+        break :blk cpu_count;
     };
 
     const total_tests = builtin.test_functions.len;
@@ -70,7 +71,8 @@ pub fn main() !void {
             Icons.arrow,
             Color.reset,
         });
-        try stdout_file.flush();
+        try stdout_file.writeAll(stdout_buffer.items);
+        stdout_buffer.clearRetainingCapacity();
     }
 
     // Collect test indices to run
@@ -97,7 +99,8 @@ pub fn main() !void {
                 max_workers,
                 Color.reset,
             });
-            try stdout_file.flush();
+            try stdout_file.writeAll(stdout_buffer.items);
+            stdout_buffer.clearRetainingCapacity();
         }
 
         const parallel_results = try utils.runTestsParallel(allocator, test_indices.items, max_workers);
@@ -114,7 +117,8 @@ pub fn main() !void {
 
             if (has_tty and output_format == .pretty) {
                 utils.printProgress(stdout, i + 1, test_indices.items.len, suite_name);
-                try stdout_file.flush();
+                try stdout_file.writeAll(stdout_buffer.items);
+                stdout_buffer.clearRetainingCapacity();
             }
 
             const test_result = try utils.runTestInProcess(allocator, test_idx);
@@ -123,7 +127,8 @@ pub fn main() !void {
 
         if (has_tty and output_format == .pretty) {
             utils.clearLine(stdout);
-            try stdout_file.flush();
+            try stdout_file.writeAll(stdout_buffer.items);
+            stdout_buffer.clearRetainingCapacity();
         }
     }
 
@@ -145,7 +150,8 @@ pub fn main() !void {
         },
     }
 
-    try stdout_file.flush();
+    try stdout_file.writeAll(stdout_buffer.items);
+    stdout_buffer.clearRetainingCapacity();
 
     // Count results to determine exit code
     var failed_count: u32 = 0;

@@ -217,7 +217,7 @@ pub fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestRe
             }
 
             // Sleep a bit before checking again
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            std.Thread.sleep(3 * std.time.ns_per_ms);
         }
 
         const test_end = std.time.nanoTimestamp();
@@ -690,7 +690,7 @@ fn escapeXML(s: []const u8) []const u8 {
     return s;
 }
 
-const TestTask = struct {
+pub const TestTask = struct {
     index: usize,
     result: ?TestResult = null,
     mutex: std.Thread.Mutex = .{},

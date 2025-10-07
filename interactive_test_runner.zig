@@ -61,6 +61,124 @@ const LogBuffer = struct {
     }
 };
 
+fn runTestsParallelWithProgress(allocator: std.mem.Allocator, writer: anytype, test_indices: []const usize, max_workers: usize, show_logs: bool) ![]TestResult {
+    _ = show_logs;
+    if (test_indices.len == 0) return &[_]TestResult{};
+
+    // Create task list
+    const tasks = try allocator.alloc(utils.TestTask, test_indices.len);
+    defer allocator.free(tasks);
+
+    for (tasks, 0..) |*task, i| {
+        task.* = .{ .index = test_indices[i] };
+    }
+
+    // Create worker threads
+    const worker_count = @min(max_workers, test_indices.len);
+    const threads = try allocator.alloc(std.Thread, worker_count);
+    defer allocator.free(threads);
+
+    var next_task_idx: usize = 0;
+    var completed_count: usize = 0;
+    var task_mutex = std.Thread.Mutex{};
+
+    const WorkerContext = struct {
+        tasks_ptr: [*]utils.TestTask,
+        tasks_len: usize,
+        next_idx: *usize,
+        completed: *usize,
+        mutex: *std.Thread.Mutex,
+        allocator: std.mem.Allocator,
+    };
+
+    const workerFn = struct {
+        fn run(ctx: WorkerContext) void {
+            while (true) {
+                // Get next task
+                ctx.mutex.lock();
+                const task_idx = ctx.next_idx.*;
+                if (task_idx >= ctx.tasks_len) {
+                    ctx.mutex.unlock();
+                    break;
+                }
+                ctx.next_idx.* += 1;
+                ctx.mutex.unlock();
+
+                // Run the test
+                const task = &ctx.tasks_ptr[task_idx];
+                const result = utils.runTestInProcess(ctx.allocator, task.index) catch |err| {
+                    std.debug.print("Error running test {d}: {}\n", .{ task.index, err });
+                    continue;
+                };
+
+                task.mutex.lock();
+                task.result = result;
+                task.mutex.unlock();
+
+                // Update completed count
+                ctx.mutex.lock();
+                ctx.completed.* += 1;
+                ctx.mutex.unlock();
+            }
+        }
+    }.run;
+
+    // Launch workers
+    for (threads, 0..) |*thread, i| {
+        thread.* = try std.Thread.spawn(.{}, workerFn, .{WorkerContext{
+            .tasks_ptr = tasks.ptr,
+            .tasks_len = tasks.len,
+            .next_idx = &next_task_idx,
+            .completed = &completed_count,
+            .mutex = &task_mutex,
+            .allocator = allocator,
+        }});
+        _ = i;
+    }
+
+    // Show progress while tests run
+    const start_time = std.time.milliTimestamp();
+    while (true) {
+        task_mutex.lock();
+        const current = completed_count;
+        task_mutex.unlock();
+
+        if (current >= test_indices.len) break;
+
+        // Update progress display
+        const elapsed_ms = std.time.milliTimestamp() - start_time;
+        const elapsed_sec = @as(f64, @floatFromInt(elapsed_ms)) / 1000.0;
+        const rate = if (elapsed_sec > 0) @as(f64, @floatFromInt(current)) / elapsed_sec else 0;
+
+        try writer.print("\r{s}Progress:{s} {d}/{d} tests ({d:.1} tests/sec) ", .{
+            Color.cyan,
+            Color.reset,
+            current,
+            test_indices.len,
+            rate,
+        });
+
+        std.time.sleep(100 * std.time.ns_per_ms); // Update every 100ms
+    }
+
+    try writer.print("\n", .{});
+
+    // Wait for all workers
+    for (threads) |thread| {
+        thread.join();
+    }
+
+    // Collect results
+    var results: std.ArrayList(TestResult) = .{};
+    for (tasks) |task| {
+        if (task.result) |result| {
+            try results.append(allocator, result);
+        }
+    }
+
+    return try results.toOwnedSlice(allocator);
+}
+
 fn printProgressWithLogs(writer: anytype, current: usize, total: usize, suite_name: []const u8, test_name: []const u8, log_buffer: *LogBuffer, show_logs: bool) !void {
     const percent = (current * 100) / total;
     const bar_width = 40;
@@ -108,14 +226,14 @@ fn printProgressWithLogs(writer: anytype, current: usize, total: usize, suite_na
     }
 }
 
-fn displayMenu(writer: anytype, filter: ?[]const u8, total_tests: usize, matched_tests: usize, has_results: bool, failed_count: usize) !void {
+fn displayMenu(writer: anytype, filter: ?[]const u8, total_tests: usize, matched_tests: usize, has_results: bool, failed_count: usize, parallel_enabled: bool) !void {
     try writer.print("\n{s}┌─────────────────────────────────────────┐{s}\n", .{ Color.cyan, Color.reset });
     try writer.print("{s}│{s}  Interactive Test Runner {s}v0.15.1{s}  {s}│{s}\n", .{ Color.cyan, Color.reset, Color.gray, Color.reset, Color.cyan, Color.reset });
     try writer.print("{s}└─────────────────────────────────────────┘{s}\n\n", .{ Color.cyan, Color.reset });
 
     if (filter) |f| {
         if (f.len > 0) {
-            try writer.print(" {s}Filter:{s} {s}\"{s}\"{s} {s}({d}/{d} tests){s}\n\n", .{
+            try writer.print(" {s}Filter:{s} {s}\"{s}\"{s} {s}({d}/{d} tests){s}\n", .{
                 Color.bold,
                 Color.reset,
                 Color.bright_yellow,
@@ -127,11 +245,20 @@ fn displayMenu(writer: anytype, filter: ?[]const u8, total_tests: usize, matched
                 Color.reset,
             });
         } else {
-            try writer.print(" {s}{d} tests total{s}\n\n", .{ Color.dim, total_tests, Color.reset });
+            try writer.print(" {s}{d} tests total{s}\n", .{ Color.dim, total_tests, Color.reset });
         }
     } else {
-        try writer.print(" {s}{d} tests total{s}\n\n", .{ Color.dim, total_tests, Color.reset });
+        try writer.print(" {s}{d} tests total{s}\n", .{ Color.dim, total_tests, Color.reset });
     }
+
+    // Show parallel execution status
+    try writer.print(" {s}Parallel:{s} {s}{s}{s}\n\n", .{
+        Color.bold,
+        Color.reset,
+        if (parallel_enabled) Color.green else Color.red,
+        if (parallel_enabled) "enabled" else "disabled",
+        Color.reset,
+    });
 
     try writer.print(" {s}Commands:{s}\n", .{ Color.bold, Color.reset });
     try writer.print("   {s}a{s}       - run all tests\n", .{ Color.bright_cyan, Color.reset });
@@ -146,6 +273,7 @@ fn displayMenu(writer: anytype, filter: ?[]const u8, total_tests: usize, matched
     }
 
     try writer.print("   {s}/{s}       - filter by pattern\n", .{ Color.bright_cyan, Color.reset });
+    try writer.print("   {s}p{s}       - toggle parallel execution\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}w{s}       - toggle watch mode (auto-rerun on file changes)\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}l{s}       - toggle log display (during test runs)\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}h{s}       - show help\n", .{ Color.bright_cyan, Color.reset });
@@ -165,6 +293,7 @@ fn displayHelp(writer: anytype, reader: anytype) !void {
     try writer.print("   {s}f{s}         Run only failed tests from last run\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}/pattern{s}  Filter tests by pattern (substring match)\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}c{s}         Clear current filter\n", .{ Color.bright_cyan, Color.reset });
+    try writer.print("   {s}p{s}         Toggle parallel execution\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}l{s}         Toggle log display during test execution\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}Enter{s}     Run filtered tests (when filter is active)\n", .{ Color.bright_cyan, Color.reset });
     try writer.print("   {s}h{s}         Show this help\n", .{ Color.bright_cyan, Color.reset });
@@ -234,6 +363,16 @@ pub fn main() !void {
     }
 
     var show_logs_during_run = true;
+    var parallel_enabled = true;
+    const max_workers = blk: {
+        if (std.posix.getenv("TEST_WORKERS")) |workers_str| {
+            const workers = std.fmt.parseInt(usize, workers_str, 10) catch 4;
+            break :blk workers;
+        }
+        // Default to CPU count - each test runs an isolated EVM instance
+        const cpu_count = std.Thread.getCpuCount() catch 4;
+        break :blk cpu_count;
+    };
 
     // Main interactive loop
     while (true) {
@@ -254,7 +393,7 @@ pub fn main() !void {
 
         const has_results = last_results.items.len > 0;
 
-        try displayMenu(stdout, filter, test_states.items.len, matched_count, has_results, failed_count);
+        try displayMenu(stdout, filter, test_states.items.len, matched_count, has_results, failed_count, parallel_enabled);
 
         // Read command
         const input_line = (try stdin.readUntilDelimiterOrEof(&filter_buf, '\n')) orelse break;
@@ -265,7 +404,7 @@ pub fn main() !void {
             // Enter pressed - run filtered tests if we have a filter
             if (filter != null and filter.?.len > 0) {
                 // Run filtered tests
-                try runTests(allocator, stdout, stdin, stdout, &test_states, filter, &last_results, show_logs_during_run);
+                try runTests(allocator, stdout, stdin, stdout, &test_states, filter, &last_results, show_logs_during_run, parallel_enabled, max_workers);
             }
             continue;
         }
@@ -275,15 +414,27 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, input, "a")) {
             // Run all tests
             filter = null;
-            try runTests(allocator, stdout, stdin, stdout, &test_states, null, &last_results, show_logs_during_run);
+            try runTests(allocator, stdout, stdin, stdout, &test_states, null, &last_results, show_logs_during_run, parallel_enabled, max_workers);
         } else if (std.mem.eql(u8, input, "f")) {
             // Run failed tests
             if (has_results and failed_count > 0) {
-                try runFailedTests(allocator, stdout, stdin, stdout, &test_states, &last_results, show_logs_during_run);
+                try runFailedTests(allocator, stdout, stdin, stdout, &test_states, &last_results, show_logs_during_run, parallel_enabled, max_workers);
             }
         } else if (std.mem.eql(u8, input, "c")) {
             // Clear filter
             filter = null;
+        } else if (std.mem.eql(u8, input, "p")) {
+            // Toggle parallel execution
+            parallel_enabled = !parallel_enabled;
+            try utils.clearScreen(stdout);
+            try stdout.print("\n{s}Parallel execution {s}{s}{s}\n", .{
+                Color.cyan,
+                if (parallel_enabled) Color.green else Color.red,
+                if (parallel_enabled) "enabled" else "disabled",
+                Color.reset,
+            });
+            try stdout.print("\nPress Enter to continue...", .{});
+            _ = try stdin.readByte();
         } else if (std.mem.eql(u8, input, "l")) {
             // Toggle log display
             show_logs_during_run = !show_logs_during_run;
@@ -314,7 +465,7 @@ pub fn main() !void {
     try stdout.print("\n{s}Goodbye!{s}\n\n", .{ Color.cyan, Color.reset });
 }
 
-fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, _: anytype, test_states: *std.ArrayList(TestState), filter_pattern: ?[]const u8, last_results: *std.ArrayList(TestResult), show_logs: bool) !void {
+fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, _: anytype, test_states: *std.ArrayList(TestState), filter_pattern: ?[]const u8, last_results: *std.ArrayList(TestResult), show_logs: bool, parallel: bool, max_workers: usize) !void {
     // Clear previous results
     for (last_results.items) |*result| {
         if (result.error_msg) |msg| {
@@ -341,41 +492,71 @@ fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, _: a
         return;
     }
 
-    // Initialize log buffer
-    var log_buffer = LogBuffer.init(allocator, 100);
-    defer log_buffer.deinit();
+    if (parallel and tests_to_run.items.len > 1) {
+        // Run tests in parallel with live progress
+        try writer.print("\n{s}Running {d} tests in parallel with {d} workers...{s}\n\n", .{
+            Color.cyan,
+            tests_to_run.items.len,
+            max_workers,
+            Color.reset,
+        });
 
-    for (tests_to_run.items, 0..) |test_idx, i| {
-        const state = &test_states.items[test_idx];
+        const parallel_results = try runTestsParallelWithProgress(
+            allocator,
+            writer,
+            tests_to_run.items,
+            max_workers,
+            show_logs,
+        );
+        defer allocator.free(parallel_results);
 
-        try printProgressWithLogs(writer, i + 1, tests_to_run.items.len, state.suite, state.test_name, &log_buffer, show_logs);
+        for (parallel_results) |result| {
+            try last_results.append(allocator, result);
+            // Update test state
+            for (test_states.items) |*state| {
+                if (std.mem.eql(u8, state.name, result.name)) {
+                    state.result = result;
+                    break;
+                }
+            }
+        }
+    } else {
+        // Initialize log buffer
+        var log_buffer = LogBuffer.init(allocator, 100);
+        defer log_buffer.deinit();
 
-        const result = try utils.runTestInProcess(allocator, test_idx);
-        state.result = result;
-        try last_results.append(allocator, result);
+        for (tests_to_run.items, 0..) |test_idx, i| {
+            const state = &test_states.items[test_idx];
 
-        // Show result immediately after test completes
-        if (show_logs) {
-            const icon = if (result.passed) Icons.check else Icons.cross;
-            const color = if (result.passed) Color.green else Color.red;
-            const status = if (result.passed) "PASS" else "FAIL";
+            try printProgressWithLogs(writer, i + 1, tests_to_run.items.len, state.suite, state.test_name, &log_buffer, show_logs);
 
-            const log_msg = try std.fmt.allocPrint(allocator, "{s}{s}{s} {s} {s}.{s}", .{
-                color,
-                icon,
-                Color.reset,
-                status,
-                state.suite,
-                state.test_name,
-            });
-            defer allocator.free(log_msg);
-            try log_buffer.addLine(log_msg);
+            const result = try utils.runTestInProcess(allocator, test_idx);
+            state.result = result;
+            try last_results.append(allocator, result);
 
-            // Add error message to log buffer
-            if (!result.passed and result.error_msg != null) {
-                const err_msg = try std.fmt.allocPrint(allocator, "  Error: {s}", .{result.error_msg.?});
-                defer allocator.free(err_msg);
-                try log_buffer.addLine(err_msg);
+            // Show result immediately after test completes
+            if (show_logs) {
+                const icon = if (result.passed) Icons.check else Icons.cross;
+                const color = if (result.passed) Color.green else Color.red;
+                const status = if (result.passed) "PASS" else "FAIL";
+
+                const log_msg = try std.fmt.allocPrint(allocator, "{s}{s}{s} {s} {s}.{s}", .{
+                    color,
+                    icon,
+                    Color.reset,
+                    status,
+                    state.suite,
+                    state.test_name,
+                });
+                defer allocator.free(log_msg);
+                try log_buffer.addLine(log_msg);
+
+                // Add error message to log buffer
+                if (!result.passed and result.error_msg != null) {
+                    const err_msg = try std.fmt.allocPrint(allocator, "  Error: {s}", .{result.error_msg.?});
+                    defer allocator.free(err_msg);
+                    try log_buffer.addLine(err_msg);
+                }
             }
         }
     }
@@ -386,7 +567,7 @@ fn runTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, _: a
     _ = try reader.readByte();
 }
 
-fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, _: anytype, test_states: *std.ArrayList(TestState), last_results: *std.ArrayList(TestResult), show_logs: bool) !void {
+fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype, _: anytype, test_states: *std.ArrayList(TestState), last_results: *std.ArrayList(TestResult), show_logs: bool, parallel: bool, max_workers: usize) !void {
     // Clear previous results
     for (last_results.items) |*result| {
         if (result.error_msg) |msg| {
@@ -414,41 +595,71 @@ fn runFailedTests(allocator: std.mem.Allocator, writer: anytype, reader: anytype
         return;
     }
 
-    // Initialize log buffer
-    var log_buffer = LogBuffer.init(allocator, 100);
-    defer log_buffer.deinit();
+    if (parallel and failed_indices.items.len > 1) {
+        // Run tests in parallel with live progress
+        try writer.print("\n{s}Running {d} failed tests in parallel with {d} workers...{s}\n\n", .{
+            Color.cyan,
+            failed_indices.items.len,
+            max_workers,
+            Color.reset,
+        });
 
-    for (failed_indices.items, 0..) |test_idx, i| {
-        const state = &test_states.items[test_idx];
+        const parallel_results = try runTestsParallelWithProgress(
+            allocator,
+            writer,
+            failed_indices.items,
+            max_workers,
+            show_logs,
+        );
+        defer allocator.free(parallel_results);
 
-        try printProgressWithLogs(writer, i + 1, failed_indices.items.len, state.suite, state.test_name, &log_buffer, show_logs);
+        for (parallel_results) |result| {
+            try last_results.append(allocator, result);
+            // Update test state
+            for (test_states.items) |*state| {
+                if (std.mem.eql(u8, state.name, result.name)) {
+                    state.result = result;
+                    break;
+                }
+            }
+        }
+    } else {
+        // Initialize log buffer
+        var log_buffer = LogBuffer.init(allocator, 100);
+        defer log_buffer.deinit();
 
-        const result = try utils.runTestInProcess(allocator, test_idx);
-        state.result = result;
-        try last_results.append(allocator, result);
+        for (failed_indices.items, 0..) |test_idx, i| {
+            const state = &test_states.items[test_idx];
 
-        // Show result immediately after test completes
-        if (show_logs) {
-            const icon = if (result.passed) Icons.check else Icons.cross;
-            const color = if (result.passed) Color.green else Color.red;
-            const status = if (result.passed) "PASS" else "FAIL";
+            try printProgressWithLogs(writer, i + 1, failed_indices.items.len, state.suite, state.test_name, &log_buffer, show_logs);
 
-            const log_msg = try std.fmt.allocPrint(allocator, "{s}{s}{s} {s} {s}.{s}", .{
-                color,
-                icon,
-                Color.reset,
-                status,
-                state.suite,
-                state.test_name,
-            });
-            defer allocator.free(log_msg);
-            try log_buffer.addLine(log_msg);
+            const result = try utils.runTestInProcess(allocator, test_idx);
+            state.result = result;
+            try last_results.append(allocator, result);
 
-            // Add error message to log buffer
-            if (!result.passed and result.error_msg != null) {
-                const err_msg = try std.fmt.allocPrint(allocator, "  Error: {s}", .{result.error_msg.?});
-                defer allocator.free(err_msg);
-                try log_buffer.addLine(err_msg);
+            // Show result immediately after test completes
+            if (show_logs) {
+                const icon = if (result.passed) Icons.check else Icons.cross;
+                const color = if (result.passed) Color.green else Color.red;
+                const status = if (result.passed) "PASS" else "FAIL";
+
+                const log_msg = try std.fmt.allocPrint(allocator, "{s}{s}{s} {s} {s}.{s}", .{
+                    color,
+                    icon,
+                    Color.reset,
+                    status,
+                    state.suite,
+                    state.test_name,
+                });
+                defer allocator.free(log_msg);
+                try log_buffer.addLine(log_msg);
+
+                // Add error message to log buffer
+                if (!result.passed and result.error_msg != null) {
+                    const err_msg = try std.fmt.allocPrint(allocator, "  Error: {s}", .{result.error_msg.?});
+                    defer allocator.free(err_msg);
+                    try log_buffer.addLine(err_msg);
+                }
             }
         }
     }
