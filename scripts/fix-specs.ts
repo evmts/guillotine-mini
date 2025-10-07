@@ -170,44 +170,99 @@ class SpecFixerPipeline {
 ## Your Task
 
 1. **Analyze the test failures**: Understand what tests are failing and why
-2. **Read relevant source code**: Use the Read tool to examine the EVM implementation in src/
-3. **Identify the root cause**: Determine what's wrong with the implementation
-4. **Fix the issue**: Edit the source files to fix the bug(s)
-5. **Verify the fix**: Run the test suite again to confirm it passes
+2. **Understand the failure type**: Is it a poststate mismatch? Gas difference? Return data issue?
+3. **Read relevant source code**: Use the Read tool to examine the EVM implementation in src/
+4. **Compare with Python reference**: Look at the execution-specs reference implementation
+5. **Identify the root cause**: Determine what's wrong with the implementation
+6. **Fix the issue**: Edit the source files to fix the bug(s)
+7. **Verify the fix**: Run the test suite again to confirm it passes
 
-## Important Guidelines
+## Debugging Strategy
 
-- Focus on fixing the SPECIFIC failures shown above
-- Read the implementation files in src/ (frame.zig, evm.zig, etc.)
-- Check the hardfork-specific logic in src/hardfork.zig
-- Review gas metering in src/primitives/gas_constants.zig if gas-related
-- Look at opcode implementations in src/frame.zig
-- Consider EIP compliance requirements
-- After making changes, run the test command to verify the fix: \`${suite.command}\`
-- If tests still fail after your fix, analyze the new output and iterate
+**Step 1: Understand WHY it's failing**
+- Is the poststate (storage, balance, nonce) incorrect?
+- Is the gas consumption wrong?
+- Is the return data different?
+- Is there an exception that shouldn't happen (or vice versa)?
+
+**Step 2: Read our implementation**
+- Read the relevant code in \`src/frame.zig\` (opcode implementations)
+- Check \`src/evm.zig\` for state management and call handling
+- Review \`src/primitives/gas_constants.zig\` for gas costs
+
+**Step 3: Compare with Python reference implementation**
+
+The Python reference implementations are in the execution-specs submodule:
+- **Location**: \`execution-specs/src/ethereum/forks/<hardfork>/\`
+- **Example paths**:
+  - \`execution-specs/src/ethereum/forks/cancun/vm/instructions/\` - Opcode implementations
+  - \`execution-specs/src/ethereum/forks/cancun/vm/interpreter.py\` - Main interpreter
+  - \`execution-specs/src/ethereum/forks/cancun/vm/gas.py\` - Gas metering
+  - \`execution-specs/src/ethereum/forks/cancun/fork.py\` - State transition logic
+  - \`execution-specs/src/ethereum/forks/cancun/state.py\` - State management
+
+Available hardforks in execution-specs:
+- frontier, homestead, byzantium, constantinople, istanbul
+- berlin, london, paris, shanghai, cancun, prague, osaka
+
+**Step 4: Use tracing when needed**
+
+If you have a gas difference or need to see step-by-step execution, use the Python reference implementation's trace feature:
+
+\`\`\`bash
+cd execution-specs
+uv run -m ethereum_spec_tools.evm_tools t8n \\
+  --input.alloc <alloc.json> \\
+  --input.env <env.json> \\
+  --input.txs <txs.json> \\
+  --state.fork <Cancun|Berlin|etc> \\
+  --trace \\
+  --trace.memory \\
+  --trace.returndata
+\`\`\`
+
+This produces an EIP-3155 compatible trace that you can compare with our trace output.
+
+**Step 5: Filter to a single test**
+
+Don't try to fix all failures at once. Filter to ONE failing test:
+\`\`\`bash
+TEST_FILTER="exact_test_name" ${suite.command}
+\`\`\`
 
 ## Codebase Structure
 
+**Our implementation**:
 - \`src/frame.zig\`: Opcode implementations and bytecode interpreter
 - \`src/evm.zig\`: EVM orchestrator (state, calls, creates)
 - \`src/hardfork.zig\`: Hardfork detection and feature flags
 - \`src/primitives/gas_constants.zig\`: Gas costs per operation
 - \`src/host.zig\`: Host interface for state access
 - \`src/trace.zig\`: EIP-3155 tracing
-- \`test/specs/\`: Test infrastructure
 
-## Debugging tips
+**Python reference** (execution-specs):
+- \`execution-specs/src/ethereum/forks/<hardfork>/vm/\`: VM implementation
+- \`execution-specs/src/ethereum/forks/<hardfork>/vm/instructions/\`: Opcodes
+- \`execution-specs/src/ethereum/forks/<hardfork>/vm/interpreter.py\`: Main loop
+- \`execution-specs/src/ethereum/forks/<hardfork>/vm/gas.py\`: Gas metering
+- \`execution-specs/src/ethereum/forks/<hardfork>/state.py\`: State management
 
-The official specs has a python reference implementation for every hardfork. Comparing and looking at the reference implementation is a good way to find inconsistencies between ours and theirs.
-You can filter for specific tests. I recomend filtering for a single failing test and debugging 1 at a time.
-If you got a gas difference it's worth trying to look at a trace. The python cli in the ethereum specs submodule has the ability to produce a JSON trace. By producing a trace between both our evm and the official python evm you can compare
+## Important Guidelines
+
+- Focus on ONE failing test at a time
+- **Think hard about what the behavior SHOULD be** based on the reference implementation
+- Compare opcode-by-opcode or state change-by-state change with the Python reference
+- After making changes, run the test command to verify: \`${suite.command}\`
+- If tests still fail, analyze the new output and iterate
+- Use traces to pinpoint the exact divergence point
 
 ## Expected Output
 
 Provide a summary of:
-1. What was failing and why
-2. What you changed to fix it
-3. Confirmation that tests now pass (or explanation if they don't)
+1. What was failing and why (be specific: poststate? gas? exception?)
+2. What the Python reference does differently
+3. What you changed to fix it
+4. Confirmation that tests now pass (or explanation if they don't)
 
 Begin your analysis and fix now.`;
 
