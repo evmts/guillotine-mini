@@ -1486,8 +1486,15 @@ pub const Frame = struct {
                 }
                 const call_address = Address{ .bytes = addr_bytes };
 
-                // Base gas cost
-                var gas_cost: u64 = GasConstants.CallGas;
+                // Gas cost calculation based on hardfork
+                var gas_cost: u64 = 0;
+
+                // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat 700 gas
+                // Pre-Berlin: Use flat 700 gas base cost
+                if (evm.hardfork.isBefore(.BERLIN)) {
+                    gas_cost = GasConstants.CallGas; // 700
+                }
+
                 if (value_arg > 0) {
                     gas_cost += GasConstants.CallValueTransferGas;
 
@@ -1514,7 +1521,8 @@ pub const Frame = struct {
                         gas_cost += GasConstants.CallNewAccountGas; // +25000 for creating new account
                     }
                 }
-                // EIP-2929: access target account (warm/cold)
+                // EIP-2929 (Berlin+): access target account (warm/cold)
+                // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
                 const access_cost = try evm.accessAddress(call_address);
                 gas_cost += access_cost;
                 try self.consumeGas(gas_cost);
@@ -1624,12 +1632,20 @@ pub const Frame = struct {
                 }
                 const call_address = Address{ .bytes = addr_bytes };
 
-                // Base gas cost
-                var gas_cost: u64 = GasConstants.CallGas;
+                // Gas cost calculation based on hardfork
+                var gas_cost: u64 = 0;
+
+                // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat 700 gas
+                // Pre-Berlin: Use flat 700 gas base cost
+                if (evm.hardfork.isBefore(.BERLIN)) {
+                    gas_cost = GasConstants.CallGas; // 700
+                }
+
                 if (value_arg > 0) {
                     gas_cost += GasConstants.CallValueTransferGas;
                 }
-                // EIP-2929: access target account (warm/cold)
+                // EIP-2929 (Berlin+): access target account (warm/cold)
+                // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
                 const access_cost = try evm.accessAddress(call_address);
                 gas_cost += access_cost;
                 try self.consumeGas(gas_cost);
@@ -1767,8 +1783,17 @@ pub const Frame = struct {
                 }
                 const call_address = Address{ .bytes = addr_bytes };
 
-                // Base gas cost + EIP-2929 account access
-                var gas_cost: u64 = GasConstants.CallGas;
+                // Gas cost calculation based on hardfork
+                var gas_cost: u64 = 0;
+
+                // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat 700 gas
+                // Pre-Berlin: Use flat 700 gas base cost
+                if (evm.hardfork.isBefore(.BERLIN)) {
+                    gas_cost = GasConstants.CallGas; // 700
+                }
+
+                // EIP-2929 (Berlin+): access target account (warm/cold)
+                // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
                 const access_cost = try evm.accessAddress(call_address);
                 gas_cost += access_cost;
                 try self.consumeGas(gas_cost);
@@ -1951,8 +1976,17 @@ pub const Frame = struct {
                 }
                 const call_address = Address{ .bytes = addr_bytes };
 
-                // Base gas cost + EIP-2929 account access
-                var call_gas_cost: u64 = GasConstants.CallGas;
+                // Gas cost calculation based on hardfork
+                var call_gas_cost: u64 = 0;
+
+                // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat 700 gas
+                // Pre-Berlin: Use flat 700 gas base cost
+                if (evm.hardfork.isBefore(.BERLIN)) {
+                    call_gas_cost = GasConstants.CallGas; // 700
+                }
+
+                // EIP-2929 (Berlin+): access target account (warm/cold)
+                // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
                 const access_cost = try evm.accessAddress(call_address);
                 call_gas_cost += access_cost;
                 try self.consumeGas(call_gas_cost);
