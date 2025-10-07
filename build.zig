@@ -1,4 +1,8 @@
 const std = @import("std");
+const BlstLib = @import("lib/blst.zig");
+const CKzgLib = @import("lib/c-kzg.zig");
+const Bn254Lib = @import("lib/bn254.zig");
+const FoundryLib = @import("lib/foundry.zig");
 
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
@@ -26,6 +30,46 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(usize, "vector_length", 16); // Default vector length for crypto operations
     const build_options_mod = build_options.createModule();
 
+    // Determine Rust target triple based on the build target
+    const rust_target = b: {
+        const os = target.result.os.tag;
+        const arch = target.result.cpu.arch;
+
+        break :b switch (os) {
+            .macos => switch (arch) {
+                .aarch64 => "aarch64-apple-darwin",
+                .x86_64 => "x86_64-apple-darwin",
+                else => "x86_64-apple-darwin",
+            },
+            .linux => switch (arch) {
+                .aarch64 => "aarch64-unknown-linux-gnu",
+                .x86_64 => "x86_64-unknown-linux-gnu",
+                else => "x86_64-unknown-linux-gnu",
+            },
+            .windows => "x86_64-pc-windows-msvc",
+            else => "x86_64-unknown-linux-gnu",
+        };
+    };
+
+    // Build C libraries for cryptographic operations
+    const blst_lib = BlstLib.createBlstLibrary(b, target, optimize);
+    const c_kzg_lib = CKzgLib.createCKzgLibrary(b, target, optimize, blst_lib);
+
+    // Build Rust workspace (ARK BN254 library)
+    const rust_build_step = FoundryLib.createRustBuildStep(b, rust_target, optimize);
+    const bn254_lib = Bn254Lib.createBn254Library(b, target, optimize, .{}, rust_build_step, rust_target);
+
+    // C-KZG module (required by crypto)
+    const c_kzg_mod = b.createModule(.{
+        .root_source_file = b.path("lib/c-kzg-4844/bindings/zig/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    c_kzg_mod.linkLibrary(c_kzg_lib);
+    c_kzg_mod.linkLibrary(blst_lib);
+    c_kzg_mod.addIncludePath(b.path("lib/c-kzg-4844/src"));
+    c_kzg_mod.addIncludePath(b.path("lib/c-kzg-4844/blst/bindings"));
+
     // Create the primitives module first, as it's a dependency
     const primitives_mod = b.addModule("primitives", .{
         .root_source_file = b.path("src/primitives/root.zig"),
@@ -33,12 +77,25 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Create crypto module
+    // Create crypto module with all required dependencies
     const crypto_mod = b.addModule("crypto", .{
         .root_source_file = b.path("src/crypto/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "c_kzg", .module = c_kzg_mod },
+            .{ .name = "build_options", .module = build_options_mod },
+        },
     });
+    // Link BN254 library for BN254 and BLS12-381 precompiles
+    if (bn254_lib) |lib| {
+        crypto_mod.linkLibrary(lib);
+        crypto_mod.addIncludePath(b.path("lib/ark"));
+    }
+
+    // Add crypto import to primitives (circular dependency)
+    primitives_mod.addImport("crypto", crypto_mod);
 
     // Create blake2 module
     const blake2_mod = b.addModule("blake2", .{
@@ -126,6 +183,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "blake2", .module = blake2_mod },
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
 
@@ -187,6 +245,11 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Link BN254 library for precompile support
+    if (bn254_lib) |lib| {
+        spec_tests.root_module.linkLibrary(lib);
+    }
+
     // Make spec test compilation depend on test generation pipeline
     spec_tests.step.dependOn(&update_spec_root.step);
 
@@ -227,6 +290,12 @@ pub fn build(b: *std.Build) void {
                 .mode = .simple,
             },
         });
+
+        // Link BN254 library for precompile support
+        if (bn254_lib) |lib| {
+            fork_tests.root_module.linkLibrary(lib);
+        }
+
         fork_tests.step.dependOn(&update_spec_root.step);
         fork_tests.root_module.addOptions("build_options", log_options);
 
@@ -267,6 +336,12 @@ pub fn build(b: *std.Build) void {
                 .mode = .simple,
             },
         });
+
+        // Link BN254 library for precompile support
+        if (bn254_lib) |lib| {
+            eip_tests.root_module.linkLibrary(lib);
+        }
+
         eip_tests.step.dependOn(&update_spec_root.step);
         eip_tests.root_module.addOptions("build_options", log_options);
 
