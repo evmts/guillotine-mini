@@ -199,13 +199,25 @@ pub fn unaudited_calculateMultiplicationComplexity(x: usize) u64 {
     const x64: u64 = @intCast(x);
 
     if (x <= GAS_QUADRATIC_THRESHOLD) {
+        // For small x (<=64), x^2 fits in u64
         return x64 * x64;
     } else if (x <= GAS_LINEAR_THRESHOLD) {
         // x^2/4 + 96*x - 3072
-        return (x64 * x64) / 4 + 96 * x64 - 3072;
+        const x_squared = x64 * x64;
+        const term1 = x_squared / 4;
+        const term2 = 96 * x64;
+        // All three values can fit in u64 for x <= 1024
+        return term1 + term2 - 3072;
     } else {
         // x^2/16 + 480*x - 199680
-        return (x64 * x64) / 16 + 480 * x64 - 199680;
+        // Use saturating operations to avoid overflow
+        const x_squared = std.math.mul(u64, x64, x64) catch std.math.maxInt(u64);
+        const term1 = x_squared / 16;
+        const term2 = std.math.mul(u64, 480, x64) catch std.math.maxInt(u64);
+        // Use saturating addition
+        const sum = std.math.add(u64, term1, term2) catch std.math.maxInt(u64);
+        // Subtract 199680, but clamp to 0 if it would underflow
+        return if (sum >= 199680) sum - 199680 else 0;
     }
 }
 
