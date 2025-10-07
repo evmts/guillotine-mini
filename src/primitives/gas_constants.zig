@@ -47,6 +47,10 @@ pub const GasSlowStep: u64 = 10;
 /// Operations: BALANCE, EXTCODESIZE, BLOCKHASH
 pub const GasExtStep: u64 = 20;
 
+/// Gas cost per byte for EXP operation exponent (EIP-160)
+/// EXP gas cost = GasSlowStep + ExpByteCost * exponent_byte_size
+pub const ExpByteCost: u64 = 50;
+
 // ============================================================================
 // Hashing Operation Costs
 // ============================================================================

@@ -241,17 +241,27 @@ pub const Frame = struct {
         // At that size, gas cost would be ~125 billion, far exceeding any reasonable gas limit
         const max_memory: u64 = 0x1000000;
         // Return a large value that won't overflow when added to other gas costs
-        // but will still trigger OutOfGas (maxInt(i64) is ~9 quintillion)
-        if (end_bytes > max_memory) return std.math.maxInt(i64);
+        // but will still trigger OutOfGas
+        if (end_bytes > max_memory) return std.math.maxInt(u64);
 
         const current_words = wordCount(current_size);
         const new_words = wordCount(end_bytes);
 
-        // Calculate cost for each size
-        const current_cost = GasConstants.MemoryGas * current_words + (current_words * current_words) / GasConstants.QuadCoeffDiv;
-        const new_cost = GasConstants.MemoryGas * new_words + (new_words * new_words) / GasConstants.QuadCoeffDiv;
+        // Check for overflow in word * word calculation using saturating multiplication
+        // If overflow would occur, return max gas to trigger OutOfGas
+        const current_words_squared = std.math.mul(u64, current_words, current_words) catch return std.math.maxInt(u64);
+        const new_words_squared = std.math.mul(u64, new_words, new_words) catch return std.math.maxInt(u64);
 
-        return new_cost - current_cost;
+        // Calculate cost for each size with overflow protection
+        const current_linear = std.math.mul(u64, GasConstants.MemoryGas, current_words) catch return std.math.maxInt(u64);
+        const current_quadratic = current_words_squared / GasConstants.QuadCoeffDiv;
+        const current_cost = std.math.add(u64, current_linear, current_quadratic) catch return std.math.maxInt(u64);
+
+        const new_linear = std.math.mul(u64, GasConstants.MemoryGas, new_words) catch return std.math.maxInt(u64);
+        const new_quadratic = new_words_squared / GasConstants.QuadCoeffDiv;
+        const new_cost = std.math.add(u64, new_linear, new_quadratic) catch return std.math.maxInt(u64);
+
+        return std.math.sub(u64, new_cost, current_cost) catch return std.math.maxInt(u64);
     }
 
     /// Calculate gas cost for external account operations (EIP-150, EIP-1884, EIP-2929 aware)
@@ -457,7 +467,7 @@ pub const Frame = struct {
                 const exp = try self.popStack();
 
                 // EIP-160: Dynamic gas cost for EXP
-                // Gas cost = GasSlowStep + gas_per_byte * ((log2(exponent) / 8) + 1)
+                // Gas cost = GasSlowStep + ExpByteCost * ((log2(exponent) / 8) + 1)
                 // This calculates the number of bytes needed to represent the exponent
                 const exp_bytes: u32 = if (exp == 0) 0 else blk: {
                     // Find position of highest bit set
@@ -466,11 +476,9 @@ pub const Frame = struct {
                     break :blk @as(u32, bit_position / 8 + 1);
                 };
 
-                // TODO: these constants should be in gas_constants.zig as well
-                // Use modern EIP-160 gas cost (50 gas per byte) for EXP
-                const gas_per_byte: u32 = 50;
+                // EIP-160 gas cost (50 gas per byte) for EXP
                 // Calculate gas cost based on the number of bytes needed to represent the exponent
-                const gas_cost = GasConstants.GasSlowStep + gas_per_byte * exp_bytes;
+                const gas_cost = GasConstants.GasSlowStep + GasConstants.ExpByteCost * exp_bytes;
                 try self.consumeGas(gas_cost);
 
                 // Square-and-multiply algorithm for base^exp
