@@ -1346,9 +1346,13 @@ pub const Frame = struct {
                 if (value_arg > 0) {
                     gas_cost += GasConstants.CallValueTransferGas;
 
+                    // Check if target is a precompile (addresses 0x01-0x0A)
+                    // Precompiles are considered to always exist and should not incur new account cost
+                    const is_precompile = address_u256 >= 1 and address_u256 <= 10;
+
                     // EIP-150: Check if target account exists
                     // If calling non-existent account with value, add account creation cost
-                    const target_exists = blk: {
+                    const target_exists = is_precompile or blk: {
                         if (evm.host) |h| {
                             const has_balance = h.getBalance(call_address) > 0;
                             const has_code = h.getCode(call_address).len > 0;

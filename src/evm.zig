@@ -289,7 +289,6 @@ pub const Evm = struct {
         // Note: intrinsic gas should be deducted by the caller (e.g., test runner)
         // before calling this function. This function receives gas that's already
         // net of intrinsic costs, similar to inner_call().
-        const execution_gas_limit: u64 = @as(u64, @intCast(gas));
 
         // Create and push frame onto stack
         try self.frames.append(self.arena.allocator(), try Frame.init(
@@ -329,25 +328,10 @@ pub const Evm = struct {
         const output = try self.arena.allocator().alloc(u8, frame.output.len);
         @memcpy(output, frame.output);
 
-        var gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-        // Apply gas refund if the call was successful
-        if (!frame.reverted) {
-            // Calculate gas used (note: intrinsic gas is handled by the caller)
-            const execution_gas_used = if (execution_gas_limit > gas_left) execution_gas_limit - gas_left else 0;
-
-            // Pre-London: refund up to half of gas used; post-London: refund up to one fifth of gas used
-            const capped_refund = if (self.hardfork.isBefore(.LONDON)) blk: {
-                @branchHint(.cold);
-                break :blk @min(self.gas_refund, execution_gas_used / 2);
-            } else blk: {
-                @branchHint(.likely);
-                break :blk @min(self.gas_refund, execution_gas_used / 5);
-            };
-
-            // Apply the refund
-            gas_left = gas_left + capped_refund;
-            self.gas_refund = 0;
-        }
+        const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
+        // Note: Gas refunds are NOT applied here. They should be applied by the caller
+        // (test runner) after calculating coinbase payment based on gas actually consumed.
+        // The refund counter is NOT reset here - caller needs access to it.
 
         // Reverse value transfer if transaction reverted
         if (frame.reverted and value > 0 and self.host != null) {
@@ -559,7 +543,12 @@ pub const Evm = struct {
 
                 // Calculate complexity (mult_complexity)
                 const max_len = @max(base_len, mod_len);
-                const mult_complexity = if (max_len <= 64) blk: {
+                const mult_complexity = if (self.hardfork.isAtLeast(.BERLIN)) blk: {
+                    // EIP-2565 (Berlin+): Simplified formula: (ceil(max_len / 8))^2
+                    const words = (max_len + 7) / 8; // ceiling division
+                    break :blk words * words;
+                } else if (max_len <= 64) blk: {
+                    // EIP-198 (Byzantium): Original formula with three branches
                     break :blk (max_len * max_len);
                 } else if (max_len <= 1024) blk: {
                     break :blk ((max_len * max_len) / 4) + (96 * max_len) - 3072;
@@ -590,9 +579,16 @@ pub const Evm = struct {
                 };
                 const iteration_count = @max(adjusted_exp_len, 1);
 
-                // Gas cost = (mult_complexity * iteration_count) / 20
-                const cost = (mult_complexity * iteration_count) / 20;
-                const precompile_gas = @as(u64, @intCast(@min(cost, std.math.maxInt(u64))));
+                // Gas cost calculation depends on hardfork
+                // EIP-198 (Byzantium): divide by 20
+                // EIP-2565 (Berlin): divide by 3, minimum 200 gas
+                const divisor: u256 = if (self.hardfork.isAtLeast(.BERLIN)) 3 else 20;
+                const cost = (mult_complexity * iteration_count) / divisor;
+                const cost_u64 = @as(u64, @intCast(@min(cost, std.math.maxInt(u64))));
+                const precompile_gas = if (self.hardfork.isAtLeast(.BERLIN))
+                    @max(cost_u64, GasConstants.MODEXP_MIN_GAS)
+                else
+                    cost_u64;
 
                 if (gas < precompile_gas) {
                     return CallResult{

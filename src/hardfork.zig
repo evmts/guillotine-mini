@@ -111,6 +111,7 @@ pub const Hardfork = enum {
         if (std.ascii.eqlIgnoreCase(clean_name, "Byzantium")) return .BYZANTIUM;
         if (std.ascii.eqlIgnoreCase(clean_name, "Constantinople")) return .CONSTANTINOPLE;
         if (std.ascii.eqlIgnoreCase(clean_name, "Petersburg")) return .PETERSBURG;
+        if (std.ascii.eqlIgnoreCase(clean_name, "ConstantinopleFix")) return .PETERSBURG; // Alias
         if (std.ascii.eqlIgnoreCase(clean_name, "Istanbul")) return .ISTANBUL;
         if (std.ascii.eqlIgnoreCase(clean_name, "MuirGlacier")) return .MUIR_GLACIER;
         if (std.ascii.eqlIgnoreCase(clean_name, "Berlin")) return .BERLIN;
@@ -118,6 +119,7 @@ pub const Hardfork = enum {
         if (std.ascii.eqlIgnoreCase(clean_name, "ArrowGlacier")) return .ARROW_GLACIER;
         if (std.ascii.eqlIgnoreCase(clean_name, "GrayGlacier")) return .GRAY_GLACIER;
         if (std.ascii.eqlIgnoreCase(clean_name, "Merge")) return .MERGE;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Paris")) return .MERGE; // Alias for Merge
         if (std.ascii.eqlIgnoreCase(clean_name, "Shanghai")) return .SHANGHAI;
         if (std.ascii.eqlIgnoreCase(clean_name, "Cancun")) return .CANCUN;
         if (std.ascii.eqlIgnoreCase(clean_name, "Prague")) return .PRAGUE;

@@ -241,6 +241,32 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
     std.debug.print("\n", .{});
 }
 
+/// Convert hardfork to its string name for JSON lookup
+/// Note: This tries to find the fork-specific key in the JSON.
+/// If not found, the caller should fall back to direct post access.
+fn hardforkToString(hf: Hardfork) []const u8 {
+    return switch (hf) {
+        .FRONTIER => "Frontier",
+        .HOMESTEAD => "Homestead",
+        .DAO => "DAO",
+        .TANGERINE_WHISTLE => "TangerineWhistle",
+        .SPURIOUS_DRAGON => "SpuriousDragon",
+        .BYZANTIUM => "Byzantium",
+        .CONSTANTINOPLE => "Constantinople",
+        .PETERSBURG => "Petersburg", // Note: JSON may use "ConstantinopleFix"
+        .ISTANBUL => "Istanbul",
+        .MUIR_GLACIER => "MuirGlacier",
+        .BERLIN => "Berlin",
+        .LONDON => "London",
+        .ARROW_GLACIER => "ArrowGlacier",
+        .GRAY_GLACIER => "GrayGlacier",
+        .MERGE => "Merge", // Note: JSON may use "Paris"
+        .SHANGHAI => "Shanghai",
+        .CANCUN => "Cancun",
+        .PRAGUE => "Prague",
+    };
+}
+
 /// Extract hardfork from test JSON
 /// Checks post/expect sections and returns the detected hardfork
 fn extractHardfork(test_case: std.json.Value) ?Hardfork {
@@ -248,7 +274,8 @@ fn extractHardfork(test_case: std.json.Value) ?Hardfork {
     if (test_case.object.get("post")) |post| {
         if (post == .object) {
             // Try common hardfork names (in reverse chronological order, preferring older forks for multi-fork tests)
-            inline for (&[_][]const u8{ "Cancun", "Prague", "Shanghai", "Merge", "London", "Berlin", "Istanbul", "Constantinople", "Byzantium" }) |fork_name| {
+            // Include common aliases
+            inline for (&[_][]const u8{ "Cancun", "Prague", "Shanghai", "Paris", "Merge", "London", "Berlin", "Istanbul", "ConstantinopleFix", "Constantinople", "Byzantium", "Homestead" }) |fork_name| {
                 if (post.object.get(fork_name)) |_| {
                     if (Hardfork.fromString(fork_name)) |hf| {
                         return hf;
@@ -411,8 +438,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             &[_]std.json.Value{test_case.object.get("transaction").?};
 
         for (transactions) |tx| {
-            std.debug.print("DEBUG: Processing transaction\n", .{});
-            std.debug.print("DEBUG: Has blobVersionedHashes: {}\n", .{tx.object.get("blobVersionedHashes") != null});
             // Parse transaction data
             const tx_data = if (tx.object.get("data")) |data| blk: {
                 const data_str = if (data == .array) data.array.items[0].string else data.string;
@@ -471,7 +496,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 else
                     0;
                 evm_instance.gas_price = base_fee + priority_fee_per_gas;
-                std.debug.print("DEBUG: base_fee={} max_priority_fee={} priority_fee_per_gas={} gas_price={}\n", .{base_fee, max_priority_fee, priority_fee_per_gas, evm_instance.gas_price});
             }
 
             // Parse gas limit early for affordability checks
@@ -727,16 +751,13 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             }
 
             // Ensure we have enough gas for intrinsic cost
-            std.debug.print("DEBUG GAS CHECK: gas_limit={} intrinsic_gas={}\n", .{gas_limit, intrinsic_gas});
             if (gas_limit < intrinsic_gas) {
                 // Transaction is invalid - out of gas
-                std.debug.print("DEBUG: Transaction skipped - out of gas\n", .{});
                 continue;
             }
 
             // Calculate execution gas (gas available after intrinsic cost)
             const execution_gas = gas_limit - intrinsic_gas;
-            std.debug.print("DEBUG GAS PRE-EXEC: intrinsic={} gas_limit={} execution={}\n", .{intrinsic_gas, gas_limit, execution_gas});
 
             // Calculate blob gas fee upfront for EIP-4844 transactions
             var blob_gas_fee: u256 = 0;
@@ -769,7 +790,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const upfront_gas_cost = @as(u256, gas_limit) * evm_instance.gas_price;
             const sender_balance = test_host.balances.get(sender) orelse 0;
             if (sender_balance < (upfront_gas_cost + blob_gas_fee + value)) {
-                std.debug.print("DEBUG: Transaction skipped - insufficient funds (balance={} < upfront_gas+blob_fee+value={})\n", .{sender_balance, upfront_gas_cost + blob_gas_fee + value});
                 continue;
             }
 
@@ -900,35 +920,51 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 blob_hashes_storage,
             );
 
-            // Calculate gas used (after refunds, which are already applied in result.gas_left)
-            const gas_used = intrinsic_gas + (execution_gas - result.gas_left);
-            std.debug.print("DEBUG GAS: intrinsic={} execution={} gas_left={} gas_used={}\n", .{intrinsic_gas, execution_gas, result.gas_left, gas_used});
+            // Calculate gas used BEFORE applying refunds
+            const execution_gas_used = execution_gas - result.gas_left;
+            const gas_used_before_refunds = intrinsic_gas + execution_gas_used;
+
+            // Apply gas refunds (EIP-3529: capped at 1/2 of gas used pre-London, 1/5 post-London)
+            const gas_refund = evm_instance.gas_refund;
+            const capped_refund = if (evm_instance.hardfork.isBefore(.LONDON))
+                @min(gas_refund, execution_gas_used / 2)
+            else
+                @min(gas_refund, execution_gas_used / 5);
+
+            // Calculate final gas used (after applying capped refunds)
+            const gas_used = gas_used_before_refunds - capped_refund;
 
             // Refund unused gas to sender
-            const gas_unused = gas_limit - gas_used;
-            const gas_refund_amount = gas_unused * evm_instance.gas_price;
+            // Note: The capped_refund has already been subtracted from gas_used above.
+            // We only refund the gas that was NOT used (gas_limit - gas_used).
+            // The sender initially paid: gas_limit * gas_price
+            // The sender should get back: (gas_limit - gas_used) * gas_price
+            // HOWEVER: For very early forks (Frontier/Homestead), it appears NO unused gas is refunded.
+            // The coinbase keeps ALL the gas up to gas_limit.
+            const gas_to_refund = if (evm_instance.hardfork.isBefore(.TANGERINE_WHISTLE))
+                0  // No unused gas refund in early forks
+            else
+                gas_limit - gas_used;
+            const gas_refund_amount = gas_to_refund * evm_instance.gas_price;
             const sender_balance_after_exec = test_host.balances.get(sender) orelse 0;
             try test_host.setBalance(sender, sender_balance_after_exec + gas_refund_amount);
 
-            // Pay coinbase their reward (priority fee portion only for EIP-1559/EIP-4844)
+            // Pay coinbase their reward
             // For EIP-1559/EIP-4844 transactions, only the priority fee goes to coinbase
             // (base fee is burned, not given to coinbase)
             // For blob transactions, access list and blob hash costs don't earn priority fee
+            //
+            // IMPORTANT: In early forks (Frontier/Homestead), the coinbase gets paid for the FULL gas_limit,
+            // not just gas consumed. Later forks (Tangerine Whistle+) only pay for gas actually consumed.
             const blob_hash_cost = if (blob_hashes_storage) |hashes| @as(u64, @intCast(hashes.len)) * 1100 else 0;
-            const gas_for_coinbase = if (blob_gas_fee > 0)
-                gas_used - access_list_gas - blob_hash_cost
+            const gas_for_coinbase = if (evm_instance.hardfork.isBefore(.TANGERINE_WHISTLE))
+                gas_limit  // Early forks: coinbase gets paid for full gas_limit
+            else if (blob_gas_fee > 0)
+                gas_used_before_refunds - access_list_gas - blob_hash_cost
             else
-                gas_used;
+                gas_used_before_refunds;
             const coinbase_reward = gas_for_coinbase * priority_fee_per_gas;
             const coinbase_balance = test_host.balances.get(coinbase) orelse 0;
-
-            // Debug output
-            if (blob_gas_fee > 0) {
-                std.debug.print("DEBUG: gas_limit={} gas_left={} gas_used={} access_list_gas={} gas_for_coinbase={} success={} priority_fee={} coinbase_reward={} blob_gas_fee={}\n", .{
-                    gas_limit, result.gas_left, gas_used, access_list_gas, gas_for_coinbase, result.success, priority_fee_per_gas, coinbase_reward, blob_gas_fee
-                });
-            }
-
             try test_host.setBalance(coinbase, coinbase_balance + coinbase_reward);
         }
     }
@@ -950,17 +986,26 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         // std.debug.print("DEBUG: post type = {}\n", .{post});
 
         // Handle different post formats
-        // Format 1: post -> Cancun/Prague (array) -> [0] -> state -> addresses
+        // Format 1: post -> Cancun/Prague/etc (array) -> [0] -> state -> addresses
         // Format 2: post -> addresses
         const post_state = blk: {
             if (post == .object) {
-                // Check if this is the nested format (has Cancun/Prague keys)
+                // Check if this is the nested format (has hardfork keys)
                 // Use the same hardfork that was detected earlier
-                const fork_data = if (hardfork) |hf| switch (hf) {
-                    .PRAGUE => post.object.get("Prague"),
-                    .CANCUN => post.object.get("Cancun"),
-                    else => post.object.get("Cancun"),
-                } else post.object.get("Cancun");
+                var fork_data: ?std.json.Value = null;
+                if (hardfork) |hf| {
+                    // Try canonical name first
+                    fork_data = post.object.get(hardforkToString(hf));
+
+                    // If not found, try known aliases
+                    if (fork_data == null) {
+                        if (hf == .PETERSBURG) {
+                            fork_data = post.object.get("ConstantinopleFix");
+                        } else if (hf == .MERGE) {
+                            fork_data = post.object.get("Paris");
+                        }
+                    }
+                }
 
                 if (fork_data) |fd| {
                     if (fd == .array and fd.array.items.len > 0) {
@@ -1004,9 +1049,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 if (expected.object.get("balance")) |expected_bal| {
                     const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
                     const actual = test_host.balances.get(address) orelse 0;
-                    if (exp != actual) {
-                        std.debug.print("BALANCE MISMATCH: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
-                    }
                     try testing.expectEqual(exp, actual);
                 }
 
