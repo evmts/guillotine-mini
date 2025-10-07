@@ -17,10 +17,9 @@ interface TestSuite {
 }
 
 const TEST_SUITES: TestSuite[] = [
-  { name: 'paris', command: 'zig build specs-paris', description: 'Paris/Merge hardfork tests' },
-  { name: 'berlin', command: 'zig build specs-berlin', description: 'Berlin hardfork tests (EIP-2929, EIP-2930)' },
-  { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
   { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
+  { name: 'osaka', command: 'zig build specs-osaka', description: 'Osaka hardfork tests' },
+  { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
   { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
   { name: 'homestead', command: 'zig build specs-homestead', description: 'Homestead hardfork tests' },
   { name: 'frontier', command: 'zig build specs-frontier', description: 'Frontier hardfork tests' },
@@ -38,7 +37,8 @@ const TEST_SUITES: TestSuite[] = [
   { name: 'cancun-mcopy', command: 'zig build specs-cancun-mcopy', description: 'Cancun EIP-5656 MCOPY tests' },
   { name: 'cancun-blobs', command: 'zig build specs-cancun-blobs', description: 'Cancun EIP-4844 blob transaction tests' },
   { name: 'cancun-tstore', command: 'zig build specs-cancun-tstore', description: 'Cancun EIP-1153 transient storage tests' },
-  { name: 'osaka', command: 'zig build specs-osaka', description: 'Osaka hardfork tests' },
+  { name: 'berlin', command: 'zig build specs-berlin', description: 'Berlin hardfork tests (EIP-2929, EIP-2930)' },
+  { name: 'paris', command: 'zig build specs-paris', description: 'Paris/Merge hardfork tests' },
 ];
 
 interface TestResult {
