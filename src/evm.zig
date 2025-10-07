@@ -397,15 +397,32 @@ pub const Evm = struct {
             try transient_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
         }
 
-        // Get caller from current frame
-        const caller = if (self.getCurrentFrame()) |frame| frame.address else self.origin;
+        // Get caller and execution context address based on call type
+        // For CALL: caller = current frame's address, execution address = target address
+        // For DELEGATECALL: caller = current frame's caller, execution address = current frame's address (code from target)
+        // For CALLCODE: caller = current frame's address, execution address = current frame's address (code from target)
+        // For STATICCALL: same as CALL but with static mode
+        const current_frame = self.getCurrentFrame();
+        const frame_caller = if (current_frame) |frame| frame.address else self.origin;
+        const frame_caller_caller = if (current_frame) |frame| frame.caller else self.origin;
+
+        const execution_caller: Address = switch (call_type) {
+            .Call, .StaticCall, .Create, .Create2 => frame_caller,
+            .DelegateCall => frame_caller_caller,
+            .CallCode => frame_caller,
+        };
+
+        const execution_address: Address = switch (call_type) {
+            .Call, .StaticCall, .Create, .Create2 => address,
+            .DelegateCall, .CallCode => frame_caller,
+        };
 
         // Handle balance transfer if value > 0 (only for regular CALL)
         if (value > 0 and call_type == .Call) {
-            const caller_balance = if (self.host) |h| h.getBalance(caller) else self.balances.get(caller) orelse 0;
+            const caller_balance = if (self.host) |h| h.getBalance(frame_caller) else self.balances.get(frame_caller) orelse 0;
             if (caller_balance < value) {
                 // Insufficient balance - call fails
-                // std.debug.print("CALL FAILED: insufficient balance (caller={any} needs {} has {})\n", .{caller.bytes, value, caller_balance});
+                // std.debug.print("CALL FAILED: insufficient balance (caller={any} needs {} has {})\n", .{frame_caller.bytes, value, caller_balance});
                 return CallResult{
                     .success = false,
                     .gas_left = gas,
@@ -415,12 +432,12 @@ pub const Evm = struct {
 
             // Transfer balance
             if (self.host) |h| {
-                // std.debug.print("TRANSFER: from={any} to={any} value={} (caller_bal={} callee_bal={})\n", .{caller.bytes, address.bytes, value, caller_balance, h.getBalance(address)});
-                h.setBalance(caller, caller_balance - value);
+                // std.debug.print("TRANSFER: from={any} to={any} value={} (caller_bal={} callee_bal={})\n", .{frame_caller.bytes, address.bytes, value, caller_balance, h.getBalance(address)});
+                h.setBalance(frame_caller, caller_balance - value);
                 const callee_balance = h.getBalance(address);
                 h.setBalance(address, callee_balance + value);
             } else {
-                try self.balances.put(caller, caller_balance - value);
+                try self.balances.put(frame_caller, caller_balance - value);
                 const callee_balance = self.balances.get(address) orelse 0;
                 try self.balances.put(address, callee_balance + value);
             }
@@ -464,17 +481,12 @@ pub const Evm = struct {
         }
 
         // Create and push frame onto stack
-        // For DELEGATECALL and CALLCODE, execute code in caller's context
-        const execution_address = if (call_type == .DelegateCall or call_type == .CallCode)
-            caller  // Execute in caller's context (for storage, balance, etc.)
-        else
-            address;  // Execute in callee's context
-
+        // Use execution_caller and execution_address which are determined by call_type
         try self.frames.append(self.arena.allocator(), try Frame.init(
             self.arena.allocator(),
             code,
             @intCast(gas),
-            caller,
+            execution_caller,
             execution_address,
             value,
             input,
@@ -491,14 +503,14 @@ pub const Evm = struct {
             // Reverse value transfer on failure
             if (value > 0 and call_type == .Call) {
                 if (self.host) |h| {
-                    const caller_balance = h.getBalance(caller);
+                    const caller_balance = h.getBalance(frame_caller);
                     const callee_balance = h.getBalance(address);
-                    h.setBalance(caller, caller_balance + value);
+                    h.setBalance(frame_caller, caller_balance + value);
                     h.setBalance(address, callee_balance - value);
                 } else {
-                    const caller_balance = self.balances.get(caller) orelse 0;
+                    const caller_balance = self.balances.get(frame_caller) orelse 0;
                     const callee_balance = self.balances.get(address) orelse 0;
-                    try self.balances.put(caller, caller_balance + value);
+                    try self.balances.put(frame_caller, caller_balance + value);
                     try self.balances.put(address, callee_balance - value);
                 }
             }
@@ -546,16 +558,16 @@ pub const Evm = struct {
 
         // Reverse value transfer if call reverted
         if (frame.reverted and value > 0 and call_type == .Call) {
-            // std.debug.print("REVERT: reversing transfer from={any} to={any} value={}\n", .{caller.bytes, address.bytes, value});
+            // std.debug.print("REVERT: reversing transfer from={any} to={any} value={}\n", .{frame_caller.bytes, address.bytes, value});
             if (self.host) |h| {
-                const caller_balance = h.getBalance(caller);
+                const caller_balance = h.getBalance(frame_caller);
                 const callee_balance = h.getBalance(address);
-                h.setBalance(caller, caller_balance + value);
+                h.setBalance(frame_caller, caller_balance + value);
                 h.setBalance(address, callee_balance - value);
             } else {
-                const caller_balance = self.balances.get(caller) orelse 0;
+                const caller_balance = self.balances.get(frame_caller) orelse 0;
                 const callee_balance = self.balances.get(address) orelse 0;
-                try self.balances.put(caller, caller_balance + value);
+                try self.balances.put(frame_caller, caller_balance + value);
                 try self.balances.put(address, callee_balance - value);
             }
         }
