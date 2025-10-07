@@ -63,7 +63,7 @@ interface FixAttempt {
 
 class SpecFixerPipeline {
   private reportsDir = join(REPO_ROOT, 'reports', 'spec-fixes');
-  private maxAttemptsPerSuite = 3;
+  private maxAttemptsPerSuite = 5;
   private fixAttempts: FixAttempt[] = [];
 
   constructor() {
@@ -176,7 +176,7 @@ Begin your analysis and fix now.`;
         prompt,
         options: {
           model: 'claude-sonnet-4-5-20250929',
-          maxTurns: 300,
+          maxTurns: 500,
           permissionMode: 'bypassPermissions',
           cwd: REPO_ROOT,
         }
