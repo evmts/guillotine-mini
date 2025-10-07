@@ -249,20 +249,23 @@ pub const Frame = struct {
         return new_cost - current_cost;
     }
 
-    /// Calculate gas cost for external account operations (EIP-150 aware)
+    /// Calculate gas cost for external account operations (EIP-150, EIP-1884, EIP-2929 aware)
     fn externalAccountGasCost(self: *Self, address: Address) !u64 {
         const evm = self.getEvm();
 
         if (self.hardfork.isAtLeast(.BERLIN)) {
-            // Post-Berlin: Cold/warm access pattern
+            // Post-Berlin: Cold/warm access pattern (EIP-2929)
             @branchHint(.likely);
             return try evm.accessAddress(address);
+        } else if (self.hardfork.isAtLeast(.ISTANBUL)) {
+            // EIP-1884 (Istanbul): BALANCE and EXTCODEHASH increased to 700 gas
+            return 700;
         } else if (self.hardfork.isAtLeast(.TANGERINE_WHISTLE)) {
-            // Post-EIP-150, Pre-Berlin: Fixed higher cost
-            return GasConstants.GasExtStep;
+            // EIP-150 (Tangerine Whistle): BALANCE, EXTCODEHASH, etc. cost 400 gas
+            return 400;
         } else {
-            // Pre-EIP-150: Lower cost
-            return GasConstants.GasQuickStep;
+            // Pre-EIP-150: Lower cost (20 gas)
+            return 20;
         }
     }
 

@@ -174,7 +174,12 @@ pub const Evm = struct {
     pub fn accessStorageSlot(self: *Self, contract_address: Address, slot: u256) !u64 {
         if (self.hardfork.isBefore(.BERLIN)) {
             @branchHint(.cold);
-            return GasConstants.SloadGas;
+            // EIP-1884 (Istanbul): SLOAD increased from 200 to 800 gas
+            if (self.hardfork.isAtLeast(.ISTANBUL)) {
+                return 800;
+            } else {
+                return 200;
+            }
         }
 
         const key = StorageSlotKey{ .address = contract_address, .slot = slot };
