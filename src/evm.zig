@@ -219,14 +219,14 @@ pub const Evm = struct {
         // EIP-2929: Precompiles 0x01-0x09 are always warm in Berlin and later
         if (!self.hardfork.isAtLeast(.BERLIN)) return;
 
-        // Pre-warm addresses 0x01 through 0x09
-        var i: u8 = 1;
-        while (i <= 9) : (i += 1) {
-            const precompile_addr = Address.from_u256(i);
-            _ = self.warm_addresses.getOrPut(precompile_addr) catch {
-                return errors.CallError.StorageError;
-            };
+        // Pre-warm all precompiles (addresses 0x01-0x0A for now, more added in later forks)
+        // EIP-2929: Precompiles are always warm at transaction start
+        var precompile_addrs: [10]Address = undefined;
+        var i: usize = 0;
+        while (i < 10) : (i += 1) {
+            precompile_addrs[i] = Address.from_u256(i + 1);
         }
+        try self.preWarmAddresses(&precompile_addrs);
     }
 
     /// Execute bytecode (main entry point like evm.execute)
@@ -573,13 +573,14 @@ pub const Evm = struct {
         init_code: []const u8,
         gas: u64,
         salt: ?u256,
-    ) errors.CallError!struct { address: Address, success: bool, gas_left: u64 } {
+    ) errors.CallError!struct { address: Address, success: bool, gas_left: u64, output: []const u8 } {
         // Check call depth
         if (self.frames.items.len >= 1024) {
             return .{
                 .address = primitives.ZERO_ADDRESS,
                 .success = false,
                 .gas_left = 0,
+                .output = &[_]u8{},
             };
         }
 
@@ -590,6 +591,7 @@ pub const Evm = struct {
                     .address = primitives.ZERO_ADDRESS,
                     .success = false,
                     .gas_left = 0,
+                    .output = &[_]u8{},
                 };
             }
         }
@@ -609,6 +611,7 @@ pub const Evm = struct {
                 .address = primitives.ZERO_ADDRESS,
                 .success = false,
                 .gas_left = gas,
+                .output = &[_]u8{},
             };
         }
 
@@ -621,6 +624,7 @@ pub const Evm = struct {
                     .address = primitives.ZERO_ADDRESS,
                     .success = false,
                     .gas_left = gas,
+                    .output = &[_]u8{},
                 };
             }
             // Note: balance transfer happens after we know the new address
@@ -748,6 +752,7 @@ pub const Evm = struct {
                 .address = primitives.ZERO_ADDRESS,
                 .success = false,
                 .gas_left = gas,
+                .output = &[_]u8{},
             };
         }
 
@@ -790,6 +795,8 @@ pub const Evm = struct {
 
         // Execute frame
         self.frames.items[self.frames.items.len - 1].execute() catch {
+            const failed_frame = &self.frames.items[self.frames.items.len - 1];
+            const error_output = failed_frame.output; // Capture output before popping
             _ = self.frames.pop();
 
             // Revert nonce on execution error
@@ -818,6 +825,7 @@ pub const Evm = struct {
                 .address = primitives.ZERO_ADDRESS,
                 .success = false,
                 .gas_left = 0,
+                .output = error_output,
             };
         };
 
@@ -825,12 +833,13 @@ pub const Evm = struct {
         const frame = &self.frames.items[self.frames.items.len - 1];
         var gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
         var success = !frame.reverted;
+        const frame_output = frame.output; // Capture output
 
         // If successful, check deposit cost and code size, then deploy
         if (success) {
             // Charge code deposit cost (200 gas per byte) if there's output
-            if (frame.output.len > 0) {
-                const deposit_cost = @as(u64, @intCast(frame.output.len)) * GasConstants.CreateDataGas;
+            if (frame_output.len > 0) {
+                const deposit_cost = @as(u64, @intCast(frame_output.len)) * GasConstants.CreateDataGas;
                 if (gas_left < deposit_cost) {
                     // Out of gas during code deposit -> creation fails
                     success = false;
@@ -838,10 +847,10 @@ pub const Evm = struct {
                 }
             }
 
-            if (success and frame.output.len > 0) {
+            if (success and frame_output.len > 0) {
                 // Check code size limit (EIP-170: 24576 bytes)
                 const max_code_size = 24576;
-                if (frame.output.len > max_code_size) {
+                if (frame_output.len > max_code_size) {
                     _ = self.frames.pop();
 
                     // Revert nonce on failure
@@ -870,20 +879,21 @@ pub const Evm = struct {
                         .address = primitives.ZERO_ADDRESS,
                         .success = false,
                         .gas_left = gas_left,
+                        .output = frame_output,
                     };
                 }
 
                 // Deploy code and deduct deposit gas
                 if (self.host) |h| {
                     // When using a host, update host's code directly
-                    h.setCode(new_address, frame.output);
+                    h.setCode(new_address, frame_output);
                 } else {
                     // When not using a host, store in EVM's code map
-                    const code_copy = try self.arena.allocator().alloc(u8, frame.output.len);
-                    @memcpy(code_copy, frame.output);
+                    const code_copy = try self.arena.allocator().alloc(u8, frame_output.len);
+                    @memcpy(code_copy, frame_output);
                     try self.code.put(new_address, code_copy);
                 }
-                const deposit_cost = @as(u64, @intCast(frame.output.len)) * GasConstants.CreateDataGas;
+                const deposit_cost = @as(u64, @intCast(frame_output.len)) * GasConstants.CreateDataGas;
                 gas_left -= deposit_cost;
             } else if (success) {
                 // Deploy empty code (output.len == 0)
@@ -926,10 +936,14 @@ pub const Evm = struct {
         // Pop frame
         _ = self.frames.pop();
 
+        // According to EIP-1014 and CREATE semantics:
+        // - On success: return_data should be empty
+        // - On failure/revert: return_data should contain the child's output
         return .{
             .address = if (success) new_address else primitives.ZERO_ADDRESS,
             .success = success,
             .gas_left = gas_left,
+            .output = if (success) &[_]u8{} else frame_output,
         };
     }
 

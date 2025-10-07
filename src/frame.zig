@@ -1311,6 +1311,15 @@ pub const Frame = struct {
                 const gas_used = max_gas - result.gas_left;
                 self.gas_remaining -= @intCast(gas_used);
 
+                // Set return_data according to CREATE semantics:
+                // - On success: return_data is empty
+                // - On failure: return_data is the child's output
+                if (result.success) {
+                    self.return_data = &[_]u8{};
+                } else {
+                    self.return_data = result.output;
+                }
+
                 // Push address onto stack (0 if failed)
                 const addr_u256 = if (result.success) blk: {
                     var val: u256 = 0;
@@ -1725,6 +1734,15 @@ pub const Frame = struct {
                 // Update gas
                 const gas_used = max_gas - result.gas_left;
                 self.gas_remaining -= @intCast(gas_used);
+
+                // Set return_data according to EIP-1014:
+                // - On success: return_data is empty
+                // - On failure: return_data is the child's output
+                if (result.success) {
+                    self.return_data = &[_]u8{};
+                } else {
+                    self.return_data = result.output;
+                }
 
                 // Push address onto stack (0 if failed)
                 const addr_u256 = if (result.success) blk: {
