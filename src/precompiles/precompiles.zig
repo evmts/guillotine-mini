@@ -351,14 +351,20 @@ pub fn execute_identity(allocator: std.mem.Allocator, input: []const u8, gas_lim
 /// Input: base_len(32) + exp_len(32) + mod_len(32) + base + exp + mod
 /// Output: result of (base^exp) % mod
 pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64, hardfork: @import("../hardfork.zig").Hardfork) PrecompileError!PrecompileOutput {
-    // EIP-7883: Minimum gas cost increased from 200 to 500 in Osaka
-    const min_gas: u64 = if (hardfork.isAtLeast(.OSAKA)) 500 else GasCosts.MODEXP_MIN;
+    // EIP-2565 (Berlin): Minimum gas cost of 200 introduced
+    // EIP-7883 (Osaka): Minimum gas cost increased from 200 to 500
+    const min_gas: u64 = if (hardfork.isAtLeast(.OSAKA))
+        500
+    else if (hardfork.isAtLeast(.BERLIN))
+        GasCosts.MODEXP_MIN
+    else
+        0; // No minimum before Berlin
 
     if (input.len < 96) {
         const empty_output = try allocator.alloc(u8, 0);
         return PrecompileOutput{
             .output = empty_output,
-            .gas_used = min_gas,
+            .gas_used = if (min_gas > 0) min_gas else 0,
             .success = true,
         };
     }
@@ -389,7 +395,7 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
         const empty_output = try allocator.alloc(u8, 0);
         return PrecompileOutput{
             .output = empty_output,
-            .gas_used = min_gas,
+            .gas_used = if (min_gas > 0) min_gas else 0,
             .success = true,
         };
     }
@@ -407,7 +413,7 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
         const empty_output = try allocator.alloc(u8, 0);
         return PrecompileOutput{
             .output = empty_output,
-            .gas_used = min_gas,
+            .gas_used = if (min_gas > 0) min_gas else 0,
             .success = true,
         };
     }
@@ -422,24 +428,40 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
     const exp_head_u256 = bytesToU256(&exp_head);
 
     // Calculate multiplication complexity
+    // EIP-198 (Byzantium): Three-tier formula based on max_length
+    // EIP-2565 (Berlin): Simplified formula ((max_length + 7) / 8)^2
+    // EIP-7883 (Osaka): Different thresholds and multipliers
     const max_len = @max(base_len, mod_len);
     const complexity = if (hardfork.isAtLeast(.OSAKA))
         calculateMultiplicationComplexityOsaka(max_len)
+    else if (hardfork.isAtLeast(.BERLIN))
+        calculateMultiplicationComplexityBerlin(max_len)
     else
         crypto.ModExp.unaudited_calculateMultiplicationComplexity(max_len);
 
     // Calculate iteration count based on adjusted exponent length
+    // EIP-198 (Byzantium): Uses < 32 comparison
+    // EIP-2565 (Berlin): Uses <= 32 comparison and special handling for zero exponent
+    // EIP-7883 (Osaka): Same as Berlin but different byte multiplier
     const iteration_count = if (hardfork.isAtLeast(.OSAKA))
         calculateIterationCountOsaka(exp_len, exp_head_u256)
+    else if (hardfork.isAtLeast(.BERLIN))
+        calculateIterationCountBerlin(exp_len, exp_head_u256)
     else
         calculateIterationCount(exp_len, exp_head_u256);
 
     // Final gas cost calculation
-    // EIP-198: (complexity * iteration_count) / 20 (pre-Osaka)
-    // EIP-7883: (complexity * iteration_count) / 1 (Osaka+)
-    const gas_divisor: u64 = if (hardfork.isAtLeast(.OSAKA)) 1 else 20;
+    // EIP-198 (Byzantium): (complexity * iteration_count) / 20, no minimum
+    // EIP-2565 (Berlin): (complexity * iteration_count) / 3, minimum of 200
+    // EIP-7883 (Osaka): (complexity * iteration_count) / 1, minimum of 500
+    const gas_divisor: u64 = if (hardfork.isAtLeast(.OSAKA))
+        1
+    else if (hardfork.isAtLeast(.BERLIN))
+        3
+    else
+        20;
     const cost = (complexity * iteration_count) / gas_divisor;
-    const required_gas = @max(min_gas, cost);
+    const required_gas = if (min_gas > 0) @max(min_gas, cost) else cost;
 
     if (gas_limit < required_gas) {
         return PrecompileOutput{
@@ -456,12 +478,15 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
     crypto.ModExp.unaudited_modexp(allocator, base, exp, mod, output) catch {
         // On error, return zeros (following EVM spec)
         @memset(output, 0);
+        std.debug.print("MODEXP ERROR: hardfork={s} base_len={} exp_len={} mod_len={} gas={}\n", .{@tagName(hardfork), base_len, exp_len, mod_len, required_gas});
         return PrecompileOutput{
             .output = output,
             .gas_used = required_gas,
             .success = true,
         };
     };
+
+    std.debug.print("MODEXP SUCCESS: hardfork={s} base_len={} exp_len={} mod_len={} output[0]={x} gas={}\n", .{@tagName(hardfork), base_len, exp_len, mod_len, if (output.len > 0) output[0] else 0, required_gas});
 
     return PrecompileOutput{
         .output = output,
@@ -470,10 +495,11 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
     };
 }
 
-/// Calculate iteration count for modexp gas calculation (EIP-198)
+/// Calculate iteration count for modexp gas calculation (EIP-198 - Byzantium)
 /// Based on the adjusted exponent length
+/// Note: Byzantium uses strictly less than 32, not less than or equal to
 fn calculateIterationCount(exp_len: u32, exp_head: u256) u64 {
-    const adjusted_exp_length: u64 = if (exp_len <= 32) blk: {
+    const adjusted_exp_length: u64 = if (exp_len < 32) blk: {
         // For exp_len < 32, adjusted length is based on bit length of exp_head
         if (exp_head == 0) break :blk 0;
         const bit_length = 256 - @clz(exp_head);
@@ -487,6 +513,37 @@ fn calculateIterationCount(exp_len: u32, exp_head: u256) u64 {
 
     // Return at least 1
     return @max(adjusted_exp_length, 1);
+}
+
+/// Calculate multiplication complexity for EIP-2565 (Berlin)
+/// Simplified formula: ((max_length + 7) / 8)^2
+fn calculateMultiplicationComplexityBerlin(max_len: u32) u64 {
+    const words: u64 = (max_len + 7) / 8;
+    return words * words;
+}
+
+/// Calculate iteration count for EIP-2565 (Berlin)
+/// Uses <= 32 comparison and special handling for zero exponent
+fn calculateIterationCountBerlin(exp_len: u32, exp_head: u256) u64 {
+    // Special case: if exp_len <= 32 and exp_head == 0, return 0
+    if (exp_len <= 32 and exp_head == 0) {
+        return 1; // Still return at least 1 due to max at the end
+    }
+
+    const count: u64 = if (exp_len <= 32) blk: {
+        // For exp_len <= 32, use bit length of exp_head
+        if (exp_head == 0) break :blk 0;
+        const bit_length = 256 - @clz(exp_head);
+        break :blk if (bit_length > 0) bit_length - 1 else 0;
+    } else blk: {
+        // For exp_len > 32: 8 * (exp_len - 32) + bit_length - 1
+        const bit_length = if (exp_head == 0) 0 else 256 - @clz(exp_head);
+        const extra_bytes: u64 = exp_len - 32;
+        break :blk 8 * extra_bytes + if (bit_length > 0) bit_length - 1 else 0;
+    };
+
+    // Return at least 1
+    return @max(count, 1);
 }
 
 /// Calculate multiplication complexity for EIP-7883 (Osaka+)
@@ -773,7 +830,8 @@ pub fn execute_blake2f(allocator: std.mem.Allocator, input: []const u8, gas_limi
         std.math.shl(u32, @as(u32, input[2]), 8) |
         @as(u32, input[3]);
 
-    const required_gas = rounds * GasCosts.BLAKE2F_PER_ROUND;
+    // Calculate required gas (rounds * 1), explicitly as u64
+    const required_gas: u64 = @as(u64, rounds) * @as(u64, GasCosts.BLAKE2F_PER_ROUND);
     if (gas_limit < required_gas) {
         return PrecompileOutput{
             .output = &.{},
@@ -1470,10 +1528,10 @@ test "execute_blake2f invalid final flag" {
 
 test "execute_modexp with zero modulus" {
     const testing = std.testing;
-    
+
     // Test: 5^3 mod 0 should fail
     var input: [128]u8 = [_]u8{0} ** 128;
-    
+
     // base_len = 1
     input[31] = 1;
     // exp_len = 1
@@ -1485,14 +1543,55 @@ test "execute_modexp with zero modulus" {
     // exp = 3
     input[97] = 3;
     // mod = 0 (already zero)
-    
+
     const result = try execute_modexp(testing.allocator, &input, 10000);
     defer testing.allocator.free(result.output);
-    
+
     try testing.expect(result.success);
     // Result should be 0 when modulus is 0
     try testing.expectEqual(@as(usize, 1), result.output.len);
     try testing.expectEqual(@as(u8, 0), result.output[0]);
+}
+
+test "execute_blake2f with Istanbul test vector" {
+    const testing = std.testing;
+
+    // Test input from Istanbul test: 16 rounds with "abc" message
+    const hex_input = "0000001048c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b61626300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000001";
+
+    // Convert hex to bytes
+    var input: [213]u8 = undefined;
+    for (0..213) |i| {
+        const hi = try std.fmt.charToDigit(hex_input[i * 2], 16);
+        const lo = try std.fmt.charToDigit(hex_input[i * 2 + 1], 16);
+        input[i] = (hi << 4) | lo;
+    }
+
+    // Call blake2f precompile
+    const result = try execute_blake2f(testing.allocator, &input, 100000);
+    defer testing.allocator.free(result.output);
+
+    try testing.expect(result.success);
+    try testing.expectEqual(@as(usize, 64), result.output.len);
+    try testing.expectEqual(@as(u64, 16), result.gas_used);
+
+    // Expected output (from test storage slots, in little-endian bytes):
+    const expected_hex = "a8ef8236e5f48a74af375df15681d128457891c1cc4706f30747b2d40300b2f49d19f80fbd0945fd87736e1fc1ff10a80fd85a7aa5125154f3aaa3789ddff673";
+    var expected: [64]u8 = undefined;
+    for (0..64) |i| {
+        const hi = try std.fmt.charToDigit(expected_hex[i * 2], 16);
+        const lo = try std.fmt.charToDigit(expected_hex[i * 2 + 1], 16);
+        expected[i] = (hi << 4) | lo;
+    }
+
+    // Compare outputs
+    for (result.output, 0..) |byte, i| {
+        if (byte != expected[i]) {
+            std.debug.print("\nMismatch at byte {}: got 0x{x:0>2}, expected 0x{x:0>2}\n", .{i, byte, expected[i]});
+        }
+    }
+
+    try testing.expectEqualSlices(u8, &expected, result.output);
 }
 
 test "execute_point_evaluation without kzg setup" {
