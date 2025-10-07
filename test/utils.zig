@@ -713,12 +713,14 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
     defer allocator.free(threads);
 
     var next_task_idx: usize = 0;
+    var completed_count: usize = 0;
     var task_mutex = std.Thread.Mutex{};
 
     const WorkerContext = struct {
         tasks_ptr: [*]TestTask,
         tasks_len: usize,
         next_idx: *usize,
+        completed: *usize,
         mutex: *std.Thread.Mutex,
         allocator: std.mem.Allocator,
     };
@@ -746,6 +748,11 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
                 task.mutex.lock();
                 task.result = result;
                 task.mutex.unlock();
+
+                // Update completed count
+                ctx.mutex.lock();
+                ctx.completed.* += 1;
+                ctx.mutex.unlock();
             }
         }
     }.run;
@@ -756,11 +763,83 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
             .tasks_ptr = tasks.ptr,
             .tasks_len = tasks.len,
             .next_idx = &next_task_idx,
+            .completed = &completed_count,
             .mutex = &task_mutex,
             .allocator = allocator,
         }});
         _ = i;
     }
+
+    // Show progress while tests run
+    const stdout = std.fs.File.stdout();
+    const writer = stdout.deprecatedWriter();
+    const start_time = std.time.milliTimestamp();
+    var check_count: usize = 0;
+    var last_check_count: usize = 0;
+
+    // Print initial newline for test result markers
+    try writer.print("\n", .{});
+
+    while (true) {
+        task_mutex.lock();
+        const current = completed_count;
+        task_mutex.unlock();
+
+        if (current >= test_indices.len) break;
+
+        // Count passed/failed for displaying markers
+        var passed: usize = 0;
+        var failed: usize = 0;
+        for (0..tasks.len) |i| {
+            tasks[i].mutex.lock();
+            if (tasks[i].result) |r| {
+                if (r.passed) {
+                    passed += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+            tasks[i].mutex.unlock();
+        }
+
+        // Print new check/cross marks
+        const total_checks = passed + failed;
+        while (check_count < total_checks) {
+            // Determine if this check is pass or fail
+            const is_pass = check_count < passed;
+            if (is_pass) {
+                try writer.print("{s}{s}{s}", .{ Color.green, Icons.check, Color.reset });
+            } else {
+                try writer.print("{s}{s}{s}", .{ Color.red, Icons.cross, Color.reset });
+            }
+            check_count += 1;
+
+            // Add newline every 100 marks to keep output manageable
+            if (check_count % 100 == 0) {
+                try writer.print("\n", .{});
+            }
+        }
+
+        // Only update progress line if we printed new marks
+        if (check_count != last_check_count) {
+            const elapsed_ms = std.time.milliTimestamp() - start_time;
+            const elapsed_sec = @as(f64, @floatFromInt(elapsed_ms)) / 1000.0;
+            const rate = if (elapsed_sec > 0) @as(f64, @floatFromInt(current)) / elapsed_sec else 0;
+
+            try writer.print("  {s}[{d}/{d} - {d:.0} tests/sec]{s}", .{
+                Color.dim,
+                current,
+                test_indices.len,
+                rate,
+                Color.reset,
+            });
+            last_check_count = check_count;
+        }
+
+        std.Thread.sleep(50 * std.time.ns_per_ms); // Update every 50ms for smoother output
+    }
+
+    try writer.print("\n", .{});
 
     // Wait for all workers
     for (threads) |thread| {
