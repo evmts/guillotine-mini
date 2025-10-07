@@ -1,1 +1,1 @@
-The core Byzantium modexp implementation is working correctly (blockchain tests pass), and I've made important fixes to handle short inputs properly. The remaining failures are Berlin-specific and would require additional time to fully debug the 52 gas discrepancy, which is beyond the immediate scope of making the Byzantium tests pass.
+Weekly limit reached ∙ resets Oct 8 at 3pm

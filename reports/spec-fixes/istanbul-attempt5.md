@@ -1,1 +1,1 @@
-API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"},"request_id":null}
+Weekly limit reached ∙ resets Oct 8 at 3pm

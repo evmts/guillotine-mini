@@ -503,21 +503,16 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Parse transaction data
             const tx_data = if (tx.object.get("data")) |data| blk: {
                 const data_str = if (data == .array) data.array.items[0].string else data.string;
-                std.debug.print("DEBUG: tx data length = {d}\n", .{data_str.len});
                 const hex = try parseHexData(allocator, data_str);
                 defer allocator.free(hex);
-                std.debug.print("DEBUG: after parseHexData, hex.len = {d}\n", .{hex.len});
                 if (hex.len > 2) {
                     const bytes = try primitives.Hex.hex_to_bytes(allocator, hex);
-                    std.debug.print("DEBUG: after hex_to_bytes, bytes.len = {d}\n", .{bytes.len});
                     break :blk bytes;
                 } else {
                     break :blk try allocator.alloc(u8, 0);
                 }
             } else try allocator.alloc(u8, 0);
             defer allocator.free(tx_data);
-
-            std.debug.print("DEBUG: tx_data allocated, proceeding to parse value\n", .{});
 
             // Parse value early for sender selection
             const value = if (tx.object.get("value")) |v| blk: {
@@ -822,9 +817,11 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
             }
 
-            // Add initcode word cost for contract creation (EIP-3860, Shanghai+)
-            // NOTE: According to EIP-3860, initcode gas is charged during execution (in CREATE/CREATE2),
-            // NOT in the transaction intrinsic gas. The Python reference implementation is misleading here.
+            // Add initcode word cost for contract creation transactions (EIP-3860, Shanghai+)
+            // NOTE: For contract-creating TRANSACTIONS (tx.to == null), the initcode gas is charged
+            // as part of the intrinsic gas BEFORE execution. This is different from CREATE/CREATE2
+            // opcodes, which charge initcode gas during opcode execution.
+            // Reference: execution-specs/src/ethereum/forks/shanghai/transactions.py:402
             if (to == null) {
                 if (hardfork) |hf| {
                     if (hf.isAtLeast(.SHANGHAI)) {
