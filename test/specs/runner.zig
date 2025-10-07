@@ -1077,11 +1077,12 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const gas_used_before_refunds = intrinsic_gas + execution_gas_used;
 
             // Apply gas refunds (EIP-3529: capped at 1/2 of gas used pre-London, 1/5 post-London)
+            // NOTE: The refund cap is based on TOTAL gas used (including intrinsic gas), not just execution gas
             const gas_refund = evm_instance.gas_refund;
             const capped_refund = if (evm_instance.hardfork.isBefore(.LONDON))
-                @min(gas_refund, execution_gas_used / 2)
+                @min(gas_refund, gas_used_before_refunds / 2)
             else
-                @min(gas_refund, execution_gas_used / 5);
+                @min(gas_refund, gas_used_before_refunds / 5);
 
             // Calculate final gas used (after applying capped refunds)
             const gas_used = gas_used_before_refunds - capped_refund;
@@ -1112,9 +1113,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const gas_for_coinbase = if (evm_instance.hardfork.isBefore(.TANGERINE_WHISTLE))
                 gas_limit  // Early forks: coinbase gets paid for full gas_limit
             else if (blob_gas_fee > 0)
-                gas_used_before_refunds - access_list_gas - blob_hash_cost
+                gas_used - access_list_gas - blob_hash_cost
             else
-                gas_used_before_refunds;
+                gas_used;
             const coinbase_reward = gas_for_coinbase * priority_fee_per_gas;
             const coinbase_balance = test_host.balances.get(coinbase) orelse 0;
             try test_host.setBalance(coinbase, coinbase_balance + coinbase_reward);
