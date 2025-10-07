@@ -430,8 +430,8 @@ pub const Evm = struct {
         const code = self.get_code(address);
         // std.debug.print("DEBUG inner_call: address={any} code.len={} frames={}\n", .{address.bytes, code.len, self.frames.items.len});
         if (code.len == 0) {
-            // Check if this is a precompile address
-            if (precompiles.is_precompile(address)) {
+            // Check if this is a precompile address (hardfork-aware)
+            if (precompiles.is_precompile(address, self.hardfork)) {
                 // Use the precompiles module to handle all precompile execution
                 const result = precompiles.execute_precompile(
                     self.arena.allocator(),

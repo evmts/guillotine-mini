@@ -10,6 +10,7 @@ const Evm = evm_mod.Evm;
 const EvmError = @import("errors.zig").CallError;
 const Hardfork = @import("hardfork.zig").Hardfork;
 const opcode_utils = @import("opcode.zig");
+const precompiles = @import("precompiles/precompiles.zig");
 
 pub const Frame = struct {
     const Self = @This();
@@ -1362,9 +1363,9 @@ pub const Frame = struct {
                 if (value_arg > 0) {
                     gas_cost += GasConstants.CallValueTransferGas;
 
-                    // Check if target is a precompile (addresses 0x01-0x0A)
+                    // Check if target is a precompile (hardfork-aware)
                     // Precompiles are considered to always exist and should not incur new account cost
-                    const is_precompile = address_u256 >= 1 and address_u256 <= 10;
+                    const is_precompile = precompiles.is_precompile(call_address, evm.hardfork);
 
                     // EIP-150: Check if target account exists
                     // If calling non-existent account with value, add account creation cost
