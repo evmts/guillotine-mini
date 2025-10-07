@@ -500,10 +500,12 @@ pub const Evm = struct {
         const parent_is_static = if (self.getCurrentFrame()) |frame| frame.is_static else false;
         const is_static = parent_is_static or call_type == .StaticCall;
 
+        // Safely cast gas to i64 - if it exceeds i64::MAX, cap it (shouldn't happen in practice)
+        const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
         try self.frames.append(self.arena.allocator(), try Frame.init(
             self.arena.allocator(),
             code,
-            @intCast(gas),
+            frame_gas,
             execution_caller,
             execution_address,
             value,
@@ -850,11 +852,12 @@ pub const Evm = struct {
         }
 
         // Execute initialization code
-        std.debug.print("DEBUG: inner_create calling Frame.init with init_code.len = {d}\n", .{init_code.len});
+        // Safely cast gas to i64 - if it exceeds i64::MAX, cap it (shouldn't happen in practice)
+        const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
         try self.frames.append(self.arena.allocator(), try Frame.init(
             self.arena.allocator(),
             init_code,
-            @intCast(gas),
+            frame_gas,
             caller,
             new_address,
             value,
@@ -863,7 +866,6 @@ pub const Evm = struct {
             self.hardfork,
             false, // CREATE/CREATE2 are never static (can't create contracts in static context)
         ));
-        std.debug.print("DEBUG: Frame.init completed successfully\n", .{});
         errdefer _ = self.frames.pop();
 
         // Execute frame
