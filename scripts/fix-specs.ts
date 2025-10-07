@@ -1,6 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { execSync } from "child_process";
-import { writeFileSync, mkdirSync, existsSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -18,73 +18,72 @@ interface TestSuite {
 
 const TEST_SUITES: TestSuite[] = [
   // These pass (commented out)
-  // { name: 'paris', command: 'zig build specs-paris', description: 'Paris/Merge hardfork tests' },
-  // { name: 'homestead', command: 'zig build specs-homestead', description: 'Homestead hardfork tests' },
-  // { name: 'shanghai-withdrawals', command: 'zig build specs-shanghai-withdrawals', description: 'Shanghai EIP-4895 withdrawal tests' },
-  // { name: 'shanghai-push0', command: 'zig build specs-shanghai-push0', description: 'Shanghai EIP-3855 PUSH0 tests' },
+  { name: 'paris', command: 'zig build specs-paris', description: 'Paris/Merge hardfork tests' },
+  { name: 'homestead', command: 'zig build specs-homestead', description: 'Homestead hardfork tests' },
+  { name: 'shanghai-withdrawals', command: 'zig build specs-shanghai-withdrawals', description: 'Shanghai EIP-4895 withdrawal tests' },
+  { name: 'shanghai-push0', command: 'zig build specs-shanghai-push0', description: 'Shanghai EIP-3855 PUSH0 tests' },
 
   // Cancun sub-targets (broken up from large test suite)
-  // { name: 'cancun-tstore-basic', command: 'zig build specs-cancun-tstore-basic', description: 'Cancun EIP-1153 basic TLOAD/TSTORE tests' },
-  // { name: 'cancun-tstore-reentrancy', command: 'zig build specs-cancun-tstore-reentrancy', description: 'Cancun EIP-1153 reentrancy tests' },
-  // { name: 'cancun-tstore-contexts', command: 'zig build specs-cancun-tstore-contexts', description: 'Cancun EIP-1153 execution context tests' },
-  // { name: 'cancun-mcopy', command: 'zig build specs-cancun-mcopy', description: 'Cancun EIP-5656 MCOPY tests' },
-  // { name: 'cancun-selfdestruct', command: 'zig build specs-cancun-selfdestruct', description: 'Cancun EIP-6780 SELFDESTRUCT tests' },
-  // { name: 'cancun-blobbasefee', command: 'zig build specs-cancun-blobbasefee', description: 'Cancun EIP-7516 BLOBBASEFEE tests' },
-  // { name: 'cancun-blob-precompile', command: 'zig build specs-cancun-blob-precompile', description: 'Cancun EIP-4844 point evaluation precompile tests' },
-  // { name: 'cancun-blob-opcodes', command: 'zig build specs-cancun-blob-opcodes', description: 'Cancun EIP-4844 BLOBHASH opcode tests' },
-  // { name: 'cancun-blob-tx-small', command: 'zig build specs-cancun-blob-tx-small', description: 'Cancun EIP-4844 small blob transaction tests' },
-  // { name: 'cancun-blob-tx-subtraction', command: 'zig build specs-cancun-blob-tx-subtraction', description: 'Cancun EIP-4844 blob gas subtraction tests' },
-  // { name: 'cancun-blob-tx-insufficient', command: 'zig build specs-cancun-blob-tx-insufficient', description: 'Cancun EIP-4844 insufficient balance tests' },
-  // { name: 'cancun-blob-tx-sufficient', command: 'zig build specs-cancun-blob-tx-sufficient', description: 'Cancun EIP-4844 sufficient balance tests' },
-  // { name: 'cancun-blob-tx-valid-combos', command: 'zig build specs-cancun-blob-tx-valid-combos', description: 'Cancun EIP-4844 valid combinations tests' },
+  { name: 'cancun-tstore-basic', command: 'zig build specs-cancun-tstore-basic', description: 'Cancun EIP-1153 basic TLOAD/TSTORE tests' },
+  { name: 'cancun-tstore-reentrancy', command: 'zig build specs-cancun-tstore-reentrancy', description: 'Cancun EIP-1153 reentrancy tests' },
+  { name: 'cancun-tstore-contexts', command: 'zig build specs-cancun-tstore-contexts', description: 'Cancun EIP-1153 execution context tests' },
+  { name: 'cancun-mcopy', command: 'zig build specs-cancun-mcopy', description: 'Cancun EIP-5656 MCOPY tests' },
+  { name: 'cancun-selfdestruct', command: 'zig build specs-cancun-selfdestruct', description: 'Cancun EIP-6780 SELFDESTRUCT tests' },
+  { name: 'cancun-blobbasefee', command: 'zig build specs-cancun-blobbasefee', description: 'Cancun EIP-7516 BLOBBASEFEE tests' },
+  { name: 'cancun-blob-precompile', command: 'zig build specs-cancun-blob-precompile', description: 'Cancun EIP-4844 point evaluation precompile tests' },
+  { name: 'cancun-blob-opcodes', command: 'zig build specs-cancun-blob-opcodes', description: 'Cancun EIP-4844 BLOBHASH opcode tests' },
+  { name: 'cancun-blob-tx-small', command: 'zig build specs-cancun-blob-tx-small', description: 'Cancun EIP-4844 small blob transaction tests' },
+  { name: 'cancun-blob-tx-subtraction', command: 'zig build specs-cancun-blob-tx-subtraction', description: 'Cancun EIP-4844 blob gas subtraction tests' },
+  { name: 'cancun-blob-tx-insufficient', command: 'zig build specs-cancun-blob-tx-insufficient', description: 'Cancun EIP-4844 insufficient balance tests' },
+  { name: 'cancun-blob-tx-sufficient', command: 'zig build specs-cancun-blob-tx-sufficient', description: 'Cancun EIP-4844 sufficient balance tests' },
+  { name: 'cancun-blob-tx-valid-combos', command: 'zig build specs-cancun-blob-tx-valid-combos', description: 'Cancun EIP-4844 valid combinations tests' },
 
   // Prague sub-targets (broken up from large test suite)
-  // { name: 'prague-calldata-cost-type0', command: 'zig build specs-prague-calldata-cost-type0', description: 'Prague EIP-7623 calldata cost type 0 tests' },
-  // { name: 'prague-calldata-cost-type1-2', command: 'zig build specs-prague-calldata-cost-type1-2', description: 'Prague EIP-7623 calldata cost type 1/2 tests' },
-  // { name: 'prague-calldata-cost-type3', command: 'zig build specs-prague-calldata-cost-type3', description: 'Prague EIP-7623 calldata cost type 3 tests' },
-  // { name: 'prague-calldata-cost-type4', command: 'zig build specs-prague-calldata-cost-type4', description: 'Prague EIP-7623 calldata cost type 4 tests' },
-  // { name: 'prague-calldata-cost-refunds', command: 'zig build specs-prague-calldata-cost-refunds', description: 'Prague EIP-7623 refunds and gas tests' },
-  // { name: 'prague-bls-g1', command: 'zig build specs-prague-bls-g1', description: 'Prague EIP-2537 BLS12-381 G1 tests' },
-  // { name: 'prague-bls-g2', command: 'zig build specs-prague-bls-g2', description: 'Prague EIP-2537 BLS12-381 G2 tests' },
-  // { name: 'prague-bls-pairing', command: 'zig build specs-prague-bls-pairing', description: 'Prague EIP-2537 BLS12-381 pairing tests' },
-  // { name: 'prague-bls-map', command: 'zig build specs-prague-bls-map', description: 'Prague EIP-2537 BLS12-381 map tests' },
-  // { name: 'prague-bls-misc', command: 'zig build specs-prague-bls-misc', description: 'Prague EIP-2537 BLS12-381 misc tests' },
-  // { name: 'prague-setcode-calls', command: 'zig build specs-prague-setcode-calls', description: 'Prague EIP-7702 set code call tests' },
-  // { name: 'prague-setcode-gas', command: 'zig build specs-prague-setcode-gas', description: 'Prague EIP-7702 set code gas tests' },
-  // { name: 'prague-setcode-txs', command: 'zig build specs-prague-setcode-txs', description: 'Prague EIP-7702 set code transaction tests' },
-  // { name: 'prague-setcode-advanced', command: 'zig build specs-prague-setcode-advanced', description: 'Prague EIP-7702 advanced set code tests' },
-
+  { name: 'prague-calldata-cost-type0', command: 'zig build specs-prague-calldata-cost-type0', description: 'Prague EIP-7623 calldata cost type 0 tests' },
+  { name: 'prague-calldata-cost-type1-2', command: 'zig build specs-prague-calldata-cost-type1-2', description: 'Prague EIP-7623 calldata cost type 1/2 tests' },
+  { name: 'prague-calldata-cost-type3', command: 'zig build specs-prague-calldata-cost-type3', description: 'Prague EIP-7623 calldata cost type 3 tests' },
+  { name: 'prague-calldata-cost-type4', command: 'zig build specs-prague-calldata-cost-type4', description: 'Prague EIP-7623 calldata cost type 4 tests' },
+  { name: 'prague-calldata-cost-refunds', command: 'zig build specs-prague-calldata-cost-refunds', description: 'Prague EIP-7623 refunds and gas tests' },
+  { name: 'prague-bls-g1', command: 'zig build specs-prague-bls-g1', description: 'Prague EIP-2537 BLS12-381 G1 tests' },
+  { name: 'prague-bls-g2', command: 'zig build specs-prague-bls-g2', description: 'Prague EIP-2537 BLS12-381 G2 tests' },
+  { name: 'prague-bls-pairing', command: 'zig build specs-prague-bls-pairing', description: 'Prague EIP-2537 BLS12-381 pairing tests' },
+  { name: 'prague-bls-map', command: 'zig build specs-prague-bls-map', description: 'Prague EIP-2537 BLS12-381 map tests' },
+  { name: 'prague-bls-misc', command: 'zig build specs-prague-bls-misc', description: 'Prague EIP-2537 BLS12-381 misc tests' },
+  { name: 'prague-setcode-calls', command: 'zig build specs-prague-setcode-calls', description: 'Prague EIP-7702 set code call tests' },
+  { name: 'prague-setcode-gas', command: 'zig build specs-prague-setcode-gas', description: 'Prague EIP-7702 set code gas tests' },
+  { name: 'prague-setcode-txs', command: 'zig build specs-prague-setcode-txs', description: 'Prague EIP-7702 set code transaction tests' },
+  { name: 'prague-setcode-advanced', command: 'zig build specs-prague-setcode-advanced', description: 'Prague EIP-7702 advanced set code tests' },
   // Osaka sub-targets (broken up from large test suite)
-  // { name: 'osaka-modexp-variable-gas', command: 'zig build specs-osaka-modexp-variable-gas', description: 'Osaka EIP-7883 modexp variable gas tests' },
-  // { name: 'osaka-modexp-vectors-eip', command: 'zig build specs-osaka-modexp-vectors-eip', description: 'Osaka EIP-7883 modexp vectors from EIP tests' },
-  // { name: 'osaka-modexp-vectors-legacy', command: 'zig build specs-osaka-modexp-vectors-legacy', description: 'Osaka EIP-7883 modexp vectors from legacy tests' },
-  // { name: 'osaka-modexp-misc', command: 'zig build specs-osaka-modexp-misc', description: 'Osaka EIP-7883 modexp misc tests' },
-  // { name: 'osaka-other', command: 'zig build specs-osaka-other', description: 'Osaka other EIP tests' },
+  { name: 'osaka-modexp-variable-gas', command: 'zig build specs-osaka-modexp-variable-gas', description: 'Osaka EIP-7883 modexp variable gas tests' },
+  { name: 'osaka-modexp-vectors-eip', command: 'zig build specs-osaka-modexp-vectors-eip', description: 'Osaka EIP-7883 modexp vectors from EIP tests' },
+  { name: 'osaka-modexp-vectors-legacy', command: 'zig build specs-osaka-modexp-vectors-legacy', description: 'Osaka EIP-7883 modexp vectors from legacy tests' },
+  { name: 'osaka-modexp-misc', command: 'zig build specs-osaka-modexp-misc', description: 'Osaka EIP-7883 modexp misc tests' },
+  { name: 'osaka-other', command: 'zig build specs-osaka-other', description: 'Osaka other EIP tests' },
 
   // Shanghai EIPs
-  // { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
+  { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
 
   // Smaller hardforks (no sub-targets needed)
-  { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
-  { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
-  { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
   { name: 'shanghai-initcode', command: 'zig build specs-shanghai-initcode', description: 'Shanghai EIP-3860 initcode tests' },
+  { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
+  { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
+  { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
   // Berlin sub-targets (broken up from large test suite)
-  // { name: 'berlin-acl', command: 'zig build specs-berlin-acl', description: 'Berlin EIP-2930 access list account storage tests' },
-  // { name: 'berlin-intrinsic-gas-cost', command: 'zig build specs-berlin-intrinsic-gas-cost', description: 'Berlin EIP-2930 transaction intrinsic gas cost tests' },
-  // { name: 'berlin-intrinsic-type0', command: 'zig build specs-berlin-intrinsic-type0', description: 'Berlin EIP-2930 intrinsic gas type 0 transaction tests' },
-  // { name: 'berlin-intrinsic-type1', command: 'zig build specs-berlin-intrinsic-type1', description: 'Berlin EIP-2930 intrinsic gas type 1 transaction tests' },
+  { name: 'berlin-acl', command: 'zig build specs-berlin-acl', description: 'Berlin EIP-2930 access list account storage tests' },
+  { name: 'berlin-intrinsic-gas-cost', command: 'zig build specs-berlin-intrinsic-gas-cost', description: 'Berlin EIP-2930 transaction intrinsic gas cost tests' },
+  { name: 'berlin-intrinsic-type0', command: 'zig build specs-berlin-intrinsic-type0', description: 'Berlin EIP-2930 intrinsic gas type 0 transaction tests' },
+  { name: 'berlin-intrinsic-type1', command: 'zig build specs-berlin-intrinsic-type1', description: 'Berlin EIP-2930 intrinsic gas type 1 transaction tests' },
 
   // Frontier sub-targets (broken up from large test suite)
-  // { name: 'frontier-precompiles', command: 'zig build specs-frontier-precompiles', description: 'Frontier precompile tests' },
-  // { name: 'frontier-identity', command: 'zig build specs-frontier-identity', description: 'Frontier identity precompile tests' },
-  // { name: 'frontier-create', command: 'zig build specs-frontier-create', description: 'Frontier CREATE tests' },
-  // { name: 'frontier-call', command: 'zig build specs-frontier-call', description: 'Frontier CALL/CALLCODE tests' },
-  // { name: 'frontier-calldata', command: 'zig build specs-frontier-calldata', description: 'Frontier calldata opcode tests' },
-  // { name: 'frontier-dup', command: 'zig build specs-frontier-dup', description: 'Frontier DUP tests' },
-  // { name: 'frontier-push', command: 'zig build specs-frontier-push', description: 'Frontier PUSH tests' },
-  // { name: 'frontier-stack', command: 'zig build specs-frontier-stack', description: 'Frontier stack overflow tests' },
-  // { name: 'frontier-opcodes', command: 'zig build specs-frontier-opcodes', description: 'Frontier all opcodes tests' },
+  { name: 'frontier-precompiles', command: 'zig build specs-frontier-precompiles', description: 'Frontier precompile tests' },
+  { name: 'frontier-identity', command: 'zig build specs-frontier-identity', description: 'Frontier identity precompile tests' },
+  { name: 'frontier-create', command: 'zig build specs-frontier-create', description: 'Frontier CREATE tests' },
+  { name: 'frontier-call', command: 'zig build specs-frontier-call', description: 'Frontier CALL/CALLCODE tests' },
+  { name: 'frontier-calldata', command: 'zig build specs-frontier-calldata', description: 'Frontier calldata opcode tests' },
+  { name: 'frontier-dup', command: 'zig build specs-frontier-dup', description: 'Frontier DUP tests' },
+  { name: 'frontier-push', command: 'zig build specs-frontier-push', description: 'Frontier PUSH tests' },
+  { name: 'frontier-stack', command: 'zig build specs-frontier-stack', description: 'Frontier stack overflow tests' },
+  { name: 'frontier-opcodes', command: 'zig build specs-frontier-opcodes', description: 'Frontier all opcodes tests' },
 ];
 
 interface TestResult {
@@ -767,6 +766,13 @@ Create the commit now using git commands.
     writeFileSync(summaryPath, summary, "utf-8");
     console.log(`\n📊 Summary report: ${summaryPath}`);
     console.log(`${"█".repeat(80)}\n`);
+
+    // Run AI narrative summary at the very end
+    try {
+      await this.generateAISummaryFromReports(results, totalCost, pipelineDuration);
+    } catch (err) {
+      console.error("❌ AI summary generation failed:", err);
+    }
   }
 
   generateSummary(
@@ -833,6 +839,117 @@ Create the commit now using git commands.
     return summary;
   }
 
+  // New: AI narrative summary at the very end of the pipeline
+  private async generateAISummaryFromReports(
+    results: { suite: string; passed: boolean }[],
+    totalCost: number,
+    durationMs: number,
+  ): Promise<void> {
+    console.log(`\n${"█".repeat(80)}`);
+    console.log("🧠 Generating AI narrative summary (3–4 paragraphs)...");
+    console.log(`${"█".repeat(80)}`);
+
+    const pipelineSummaryPath = join(this.reportsDir, "pipeline-summary.md");
+    const pipelineSummary = existsSync(pipelineSummaryPath)
+      ? readFileSync(pipelineSummaryPath, "utf-8")
+      : "";
+
+    // Collect latest attempt report per suite (if available), truncated to keep prompt reasonable
+    let attemptBundle = "";
+    try {
+      const files = readdirSync(this.reportsDir).filter((f) => f.endsWith(".md"));
+      const bySuite: Record<string, { attempt: number; file: string }> = {};
+
+      for (const r of results) {
+        const prefix = `${r.suite}-attempt`;
+        for (const f of files) {
+          if (f.startsWith(prefix)) {
+            const m = f.match(/attempt(\d+)\.md$/);
+            const n = m ? parseInt(m[1], 10) : 0;
+            if (!bySuite[r.suite] || n > bySuite[r.suite].attempt) {
+              bySuite[r.suite] = { attempt: n, file: f };
+            }
+          }
+        }
+      }
+
+      for (const [suite, meta] of Object.entries(bySuite)) {
+        const fullPath = join(this.reportsDir, meta.file);
+        if (!existsSync(fullPath)) continue;
+        const content = readFileSync(fullPath, "utf-8");
+        attemptBundle += `\n\n<attempt suite=\"${suite}\" file=\"${meta.file}\">\n`;
+        attemptBundle += truncate(content, 20 * 1024); // 20KB per attempt
+        attemptBundle += `\n</attempt>`;
+      }
+    } catch (_) {
+      // Non-fatal; continue with whatever we have
+    }
+
+    const prompt = `
+<task>
+Read the pipeline summary and latest attempt reports, then write a concise narrative summary (3–4 paragraphs) of what happened in this spec-fixing run.
+</task>
+
+<audience>
+Senior engineers and stakeholders tracking progress toward Ethereum execution-spec compliance.
+</audience>
+
+<style>
+- Narrative prose, no bullet lists.
+- 3–4 paragraphs, 250–500 words.
+- Cover goals, what was attempted, key outcomes, notable blockers, and pragmatic next steps.
+- Avoid code blocks; keep it readable and high level.
+</style>
+
+<context>
+Total cost: $${totalCost.toFixed(4)}; Duration: ${(durationMs / 60000).toFixed(1)} minutes.
+</context>
+
+<pipeline_summary>
+${truncate(pipelineSummary || "(no pipeline summary found)", 60 * 1024)}
+</pipeline_summary>
+
+<attempt_reports>
+${attemptBundle || "(no attempt reports found)"}
+</attempt_reports>
+
+<output_requirements>
+Only return the 3–4 paragraph narrative. Do not include headings, lists, or extraneous commentary.
+</output_requirements>
+`;
+
+    try {
+      const result = query({
+        prompt,
+        options: {
+          model: "claude-sonnet-4-5-20250929",
+          maxTurns: 3,
+          permissionMode: "bypassPermissions",
+          cwd: REPO_ROOT,
+        },
+      });
+
+      let narrative = "";
+      for await (const message of result) {
+        if (message.type === "assistant") {
+          const content = message.message.content;
+          for (const block of content) {
+            if (block.type === "text") {
+              process.stdout.write(block.text);
+              narrative += block.text;
+            }
+          }
+        }
+      }
+
+      const outPath = join(this.reportsDir, "pipeline-summary-ai.md");
+      writeFileSync(outPath, narrative.trim(), "utf-8");
+      console.log(`\n\n📝 AI summary saved to: ${outPath}`);
+    } catch (err) {
+      console.error("Failed to run AI summary:", err);
+    }
+  }
+
   async runSingleSuite(suiteName: string): Promise<void> {
     const suite = TEST_SUITES.find((s) => s.name === suiteName);
     if (!suite) {
@@ -857,6 +974,19 @@ Create the commit now using git commands.
     console.log(`${"█".repeat(80)}\n`);
   }
 }
+
+// Helper: truncate long text safely
+function truncate(text: string, maxBytes: number): string {
+  // Simple truncation by code units is acceptable for markdown inputs
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  let truncated = text;
+  while (Buffer.byteLength(truncated, "utf8") > maxBytes) {
+    truncated = truncated.slice(0, Math.floor(truncated.length * 0.95));
+  }
+  return truncated + "\n\n[...truncated for brevity...]";
+}
+
+// Extend pipeline with AI summarization
 
 // CLI
 async function main() {

@@ -1,42 +1,52 @@
 # Guillotine Spec Fixer Pipeline - Summary Report
 
-**Generated**: 2025-10-07T19:10:26.306Z
+**Generated**: 2025-10-07T20:54:25.803Z
 
 ## Overview
 
 - **Total Test Suites**: 4
-- **Passed**: 2
-- **Failed**: 2
-- **Total Agent Attempts**: 10
-- **Total Cost**: $26.3936
-- **Total Duration**: 127.3 minutes
+- **Passed**: 0
+- **Failed**: 4
+- **Total Agent Attempts**: 20
+- **Total Cost**: $11.3645
+- **Total Duration**: 68.8 minutes
 
 ## Test Suite Results
 
-### ✅ Passed (2)
+### ✅ Passed (0)
 
-- istanbul
-- byzantium
 
-### ❌ Failed (2)
+### ❌ Failed (4)
 
 - shanghai-initcode
+- byzantium
+- istanbul
 - constantinople
 
 ## Agent Fix Attempts
 
 | Suite | Attempt | Success | Cost | Turns | Duration |
 |-------|---------|---------|------|-------|----------|
-| shanghai-initcode | 1 | ✅ | $1.6168 | 102 | 399.6s |
-| shanghai-initcode | 2 | ✅ | $2.6509 | 236 | 685.0s |
-| shanghai-initcode | 3 | ✅ | $3.0640 | 255 | 1049.5s |
-| shanghai-initcode | 4 | ✅ | $1.5764 | 125 | 510.4s |
-| shanghai-initcode | 5 | ✅ | $2.1252 | 173 | 542.1s |
-| constantinople | 1 | ✅ | $3.3243 | 268 | 780.4s |
-| constantinople | 2 | ✅ | $2.4948 | 186 | 759.6s |
-| constantinople | 3 | ✅ | $3.8224 | 308 | 1036.7s |
-| constantinople | 4 | ✅ | $2.4623 | 185 | 691.1s |
-| constantinople | 5 | ✅ | $3.2564 | 319 | 934.0s |
+| shanghai-initcode | 1 | ✅ | $2.9766 | 221 | 773.9s |
+| shanghai-initcode | 2 | ✅ | $2.3266 | 179 | 718.2s |
+| shanghai-initcode | 3 | ✅ | $2.2787 | 182 | 719.6s |
+| shanghai-initcode | 4 | ✅ | $3.7825 | 305 | 1139.1s |
+| shanghai-initcode | 5 | ❌ | $0.0000 | 0 | 398.4s |
+| byzantium | 1 | ❌ | $0.0000 | 0 | 2.3s |
+| byzantium | 2 | ❌ | $0.0000 | 0 | 2.0s |
+| byzantium | 3 | ❌ | $0.0000 | 0 | 2.4s |
+| byzantium | 4 | ❌ | $0.0000 | 0 | 2.0s |
+| byzantium | 5 | ❌ | $0.0000 | 0 | 2.1s |
+| istanbul | 1 | ❌ | $0.0000 | 0 | 2.4s |
+| istanbul | 2 | ❌ | $0.0000 | 0 | 2.0s |
+| istanbul | 3 | ❌ | $0.0000 | 0 | 2.0s |
+| istanbul | 4 | ❌ | $0.0000 | 0 | 2.1s |
+| istanbul | 5 | ❌ | $0.0000 | 0 | 2.2s |
+| constantinople | 1 | ❌ | $0.0000 | 0 | 2.0s |
+| constantinople | 2 | ❌ | $0.0000 | 0 | 1.9s |
+| constantinople | 3 | ❌ | $0.0000 | 0 | 1.8s |
+| constantinople | 4 | ❌ | $0.0000 | 0 | 2.1s |
+| constantinople | 5 | ❌ | $0.0000 | 0 | 2.0s |
 
 ## Next Steps
 
