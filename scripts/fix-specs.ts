@@ -1,13 +1,13 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import { execSync } from 'child_process';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import { execSync } from "child_process";
+import { writeFileSync, mkdirSync, existsSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
 // Get repo root
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const REPO_ROOT = join(__dirname, '..');
+const REPO_ROOT = join(__dirname, "..");
 
 // Test suite configuration
 interface TestSuite {
@@ -63,12 +63,28 @@ const TEST_SUITES: TestSuite[] = [
 
   // Shanghai EIPs
   // { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
-  { name: 'shanghai-initcode', command: 'zig build specs-shanghai-initcode', description: 'Shanghai EIP-3860 initcode tests' },
+  {
+    name: "byzantium",
+    command: "zig build specs-byzantium",
+    description: "Byzantium hardfork tests",
+  },
+  {
+    name: "shanghai-initcode",
+    command: "zig build specs-shanghai-initcode",
+    description: "Shanghai EIP-3860 initcode tests",
+  },
 
   // Smaller hardforks (no sub-targets needed)
-  { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
-  // { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
-  // { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
+  {
+    name: "constantinople",
+    command: "zig build specs-constantinople",
+    description: "Constantinople hardfork tests",
+  },
+  {
+    name: "istanbul",
+    command: "zig build specs-istanbul",
+    description: "Istanbul hardfork tests",
+  },
   // Berlin sub-targets (broken up from large test suite)
   // { name: 'berlin-acl', command: 'zig build specs-berlin-acl', description: 'Berlin EIP-2930 access list account storage tests' },
   // { name: 'berlin-intrinsic-gas-cost', command: 'zig build specs-berlin-intrinsic-gas-cost', description: 'Berlin EIP-2930 transaction intrinsic gas cost tests' },
@@ -105,8 +121,8 @@ interface FixAttempt {
 }
 
 class SpecFixerPipeline {
-  private reportsDir = join(REPO_ROOT, 'reports', 'spec-fixes');
-  private maxAttemptsPerSuite = 8;
+  private reportsDir = join(REPO_ROOT, "reports", "spec-fixes");
+  private maxAttemptsPerSuite = 5;
   private fixAttempts: FixAttempt[] = [];
 
   constructor() {
@@ -116,29 +132,29 @@ class SpecFixerPipeline {
   }
 
   runTest(suite: TestSuite): TestResult {
-    console.log(`\n${'='.repeat(80)}`);
+    console.log(`\n${"=".repeat(80)}`);
     console.log(`🧪 Running: ${suite.description}`);
-    console.log(`${'='.repeat(80)}`);
+    console.log(`${"=".repeat(80)}`);
     console.log(`Command: ${suite.command}\n`);
 
     try {
       const output = execSync(suite.command, {
         cwd: REPO_ROOT,
-        encoding: 'utf-8',
-        stdio: 'pipe',
+        encoding: "utf-8",
+        stdio: "pipe",
         maxBuffer: 10 * 1024 * 1024, // 10MB buffer
       });
 
-      console.log('✅ Tests passed!\n');
+      console.log("✅ Tests passed!\n");
       return {
         suite: suite.name,
         passed: true,
         output,
       };
     } catch (error: any) {
-      const output = error.stdout || '';
-      const errorOutput = error.stderr || '';
-      console.log('❌ Tests failed\n');
+      const output = error.stdout || "";
+      const errorOutput = error.stderr || "";
+      console.log("❌ Tests failed\n");
 
       return {
         suite: suite.name,
@@ -149,11 +165,17 @@ class SpecFixerPipeline {
     }
   }
 
-  async fixWithAgent(suite: TestSuite, testResult: TestResult, attemptNumber: number): Promise<FixAttempt> {
-    console.log(`\n${'█'.repeat(80)}`);
-    console.log(`🤖 Starting Agent Fix - Attempt ${attemptNumber}/${this.maxAttemptsPerSuite}`);
+  async fixWithAgent(
+    suite: TestSuite,
+    testResult: TestResult,
+    attemptNumber: number,
+  ): Promise<FixAttempt> {
+    console.log(`\n${"█".repeat(80)}`);
+    console.log(
+      `🤖 Starting Agent Fix - Attempt ${attemptNumber}/${this.maxAttemptsPerSuite}`,
+    );
     console.log(`Suite: ${suite.description}`);
-    console.log(`${'█'.repeat(80)}\n`);
+    console.log(`${"█".repeat(80)}\n`);
 
     const startTime = Date.now();
 
@@ -485,24 +507,24 @@ Remember: You are an expert debugger. Be systematic, be thorough, and verify eve
       const result = query({
         prompt,
         options: {
-          model: 'claude-sonnet-4-5-20250929',
-          maxTurns: 750,
-          permissionMode: 'bypassPermissions',
+          model: "claude-sonnet-4-5-20250929",
+          maxTurns: 500,
+          permissionMode: "bypassPermissions",
           cwd: REPO_ROOT,
-        }
+        },
       });
 
       // Stream agent output
       for await (const message of result) {
-        if (message.type === 'assistant') {
+        if (message.type === "assistant") {
           const content = message.message.content;
           for (const block of content) {
-            if (block.type === 'text') {
+            if (block.type === "text") {
               process.stdout.write(block.text);
             }
           }
-        } else if (message.type === 'result') {
-          if (message.subtype === 'success') {
+        } else if (message.type === "result") {
+          if (message.subtype === "success") {
             console.log(`\n\n✅ Agent completed`);
             console.log(`💰 Cost: $${message.total_cost_usd.toFixed(4)}`);
             console.log(`🔄 Turns: ${message.num_turns}`);
@@ -511,8 +533,11 @@ Remember: You are an expert debugger. Be systematic, be thorough, and verify eve
             agentSuccess = true;
 
             // Save agent report
-            const reportPath = join(this.reportsDir, `${suite.name}-attempt${attemptNumber}.md`);
-            writeFileSync(reportPath, message.result, 'utf-8');
+            const reportPath = join(
+              this.reportsDir,
+              `${suite.name}-attempt${attemptNumber}.md`,
+            );
+            writeFileSync(reportPath, message.result, "utf-8");
             console.log(`📄 Report saved to: ${reportPath}`);
           } else {
             console.log(`\n\n⚠️  Agent did not complete successfully`);
@@ -531,7 +556,6 @@ Remember: You are an expert debugger. Be systematic, be thorough, and verify eve
         agentTurns: totalTurns,
         agentDuration: duration,
       };
-
     } catch (error) {
       const duration = Date.now() - startTime;
       console.error(`\n❌ Error running agent:`, error);
@@ -549,9 +573,9 @@ Remember: You are an expert debugger. Be systematic, be thorough, and verify eve
   }
 
   async commitWithAgent(suite: TestSuite): Promise<void> {
-    console.log(`\n${'█'.repeat(80)}`);
+    console.log(`\n${"█".repeat(80)}`);
     console.log(`📝 Creating commit for: ${suite.name}`);
-    console.log(`${'█'.repeat(80)}\n`);
+    console.log(`${"█".repeat(80)}\n`);
 
     const prompt = `<task>
 The ${suite.description} test suite is now passing. Create a git commit for the changes that fixed these tests.
@@ -628,24 +652,24 @@ Create the commit now using git commands.
       const result = query({
         prompt,
         options: {
-          model: 'claude-sonnet-4-5-20250929',
+          model: "claude-sonnet-4-5-20250929",
           maxTurns: 10,
-          permissionMode: 'bypassPermissions',
+          permissionMode: "bypassPermissions",
           cwd: REPO_ROOT,
-        }
+        },
       });
 
       // Stream agent output
       for await (const message of result) {
-        if (message.type === 'assistant') {
+        if (message.type === "assistant") {
           const content = message.message.content;
           for (const block of content) {
-            if (block.type === 'text') {
+            if (block.type === "text") {
               process.stdout.write(block.text);
             }
           }
-        } else if (message.type === 'result') {
-          if (message.subtype === 'success') {
+        } else if (message.type === "result") {
+          if (message.subtype === "success") {
             console.log(`\n\n✅ Commit created successfully`);
           } else {
             console.log(`\n\n⚠️  Commit agent did not complete successfully`);
@@ -658,9 +682,9 @@ Create the commit now using git commands.
   }
 
   async processTestSuite(suite: TestSuite): Promise<boolean> {
-    console.log(`\n${'█'.repeat(80)}`);
+    console.log(`\n${"█".repeat(80)}`);
     console.log(`📋 Processing: ${suite.name}`);
-    console.log(`${'█'.repeat(80)}`);
+    console.log(`${"█".repeat(80)}`);
 
     let attemptNumber = 0;
 
@@ -682,7 +706,11 @@ Create the commit now using git commands.
       console.log(`❌ ${suite.name} - Tests failing, launching agent fix...`);
 
       // Try to fix with agent
-      const fixAttempt = await this.fixWithAgent(suite, testResult, attemptNumber);
+      const fixAttempt = await this.fixWithAgent(
+        suite,
+        testResult,
+        attemptNumber,
+      );
       this.fixAttempts.push(fixAttempt);
 
       if (!fixAttempt.success) {
@@ -694,17 +722,19 @@ Create the commit now using git commands.
       console.log(`\n🔄 Re-running tests to verify fix...\n`);
     }
 
-    console.log(`❌ ${suite.name} - Failed after ${this.maxAttemptsPerSuite} attempts`);
+    console.log(
+      `❌ ${suite.name} - Failed after ${this.maxAttemptsPerSuite} attempts`,
+    );
     return false;
   }
 
   async runAll(): Promise<void> {
-    console.log(`\n${'█'.repeat(80)}`);
+    console.log(`\n${"█".repeat(80)}`);
     console.log(`🎯 GUILLOTINE SPEC FIXER PIPELINE`);
-    console.log(`${'█'.repeat(80)}`);
+    console.log(`${"█".repeat(80)}`);
     console.log(`Total Test Suites: ${TEST_SUITES.length}`);
     console.log(`Max Attempts Per Suite: ${this.maxAttemptsPerSuite}`);
-    console.log(`${'█'.repeat(80)}\n`);
+    console.log(`${"█".repeat(80)}\n`);
 
     const pipelineStart = Date.now();
     const results: { suite: string; passed: boolean }[] = [];
@@ -714,19 +744,21 @@ Create the commit now using git commands.
       results.push({ suite: suite.name, passed });
 
       if (!passed) {
-        console.log(`\n⚠️  Continuing to next test suite despite failures in ${suite.name}...\n`);
+        console.log(
+          `\n⚠️  Continuing to next test suite despite failures in ${suite.name}...\n`,
+        );
       }
     }
 
     const pipelineDuration = Date.now() - pipelineStart;
 
     // Final summary
-    console.log(`\n${'█'.repeat(80)}`);
+    console.log(`\n${"█".repeat(80)}`);
     console.log(`🏁 PIPELINE COMPLETE`);
-    console.log(`${'█'.repeat(80)}`);
+    console.log(`${"█".repeat(80)}`);
 
-    const totalPassed = results.filter(r => r.passed).length;
-    const totalFailed = results.filter(r => !r.passed).length;
+    const totalPassed = results.filter((r) => r.passed).length;
+    const totalFailed = results.filter((r) => !r.passed).length;
     const totalCost = this.fixAttempts.reduce((sum, a) => sum + a.agentCost, 0);
     const totalAttempts = this.fixAttempts.length;
 
@@ -735,25 +767,31 @@ Create the commit now using git commands.
     console.log(`  ❌ Failed: ${totalFailed}/${TEST_SUITES.length}`);
     console.log(`  🤖 Agent Attempts: ${totalAttempts}`);
     console.log(`  💰 Total Cost: $${totalCost.toFixed(4)}`);
-    console.log(`  ⏱️  Total Duration: ${(pipelineDuration / 1000 / 60).toFixed(1)} minutes`);
+    console.log(
+      `  ⏱️  Total Duration: ${(pipelineDuration / 1000 / 60).toFixed(1)} minutes`,
+    );
 
     console.log(`\n📋 Detailed Results:`);
     for (const result of results) {
-      const status = result.passed ? '✅' : '❌';
+      const status = result.passed ? "✅" : "❌";
       console.log(`  ${status} ${result.suite}`);
     }
 
     // Save summary
     const summary = this.generateSummary(results, totalCost, pipelineDuration);
-    const summaryPath = join(this.reportsDir, 'pipeline-summary.md');
-    writeFileSync(summaryPath, summary, 'utf-8');
+    const summaryPath = join(this.reportsDir, "pipeline-summary.md");
+    writeFileSync(summaryPath, summary, "utf-8");
     console.log(`\n📊 Summary report: ${summaryPath}`);
-    console.log(`${'█'.repeat(80)}\n`);
+    console.log(`${"█".repeat(80)}\n`);
   }
 
-  generateSummary(results: { suite: string; passed: boolean }[], totalCost: number, duration: number): string {
-    const passed = results.filter(r => r.passed);
-    const failed = results.filter(r => !r.passed);
+  generateSummary(
+    results: { suite: string; passed: boolean }[],
+    totalCost: number,
+    duration: number,
+  ): string {
+    const passed = results.filter((r) => r.passed);
+    const failed = results.filter((r) => !r.passed);
 
     let summary = `# Guillotine Spec Fixer Pipeline - Summary Report
 
@@ -792,7 +830,7 @@ Create the commit now using git commands.
 `;
 
     for (const attempt of this.fixAttempts) {
-      const status = attempt.success ? '✅' : '❌';
+      const status = attempt.success ? "✅" : "❌";
       summary += `| ${attempt.suite} | ${attempt.attempt} | ${status} | $${attempt.agentCost.toFixed(4)} | ${attempt.agentTurns} | ${(attempt.agentDuration / 1000).toFixed(1)}s |\n`;
     }
 
@@ -812,7 +850,7 @@ Create the commit now using git commands.
   }
 
   async runSingleSuite(suiteName: string): Promise<void> {
-    const suite = TEST_SUITES.find(s => s.name === suiteName);
+    const suite = TEST_SUITES.find((s) => s.name === suiteName);
     if (!suite) {
       console.error(`❌ Test suite '${suiteName}' not found`);
       console.log(`\nAvailable suites:`);
@@ -824,13 +862,15 @@ Create the commit now using git commands.
 
     const passed = await this.processTestSuite(suite);
 
-    console.log(`\n${'█'.repeat(80)}`);
+    console.log(`\n${"█".repeat(80)}`);
     if (passed) {
       console.log(`✅ ${suite.name} - All tests passing!`);
     } else {
-      console.log(`❌ ${suite.name} - Tests still failing after ${this.maxAttemptsPerSuite} attempts`);
+      console.log(
+        `❌ ${suite.name} - Tests still failing after ${this.maxAttemptsPerSuite} attempts`,
+      );
     }
-    console.log(`${'█'.repeat(80)}\n`);
+    console.log(`${"█".repeat(80)}\n`);
   }
 }
 
@@ -842,7 +882,7 @@ async function main() {
   if (args.length === 0) {
     // Run all test suites
     await pipeline.runAll();
-  } else if (args[0] === 'suite' && args[1]) {
+  } else if (args[0] === "suite" && args[1]) {
     // Run specific test suite
     await pipeline.runSingleSuite(args[1]);
   } else {
@@ -854,7 +894,7 @@ Usage:
   bun run scripts/fix-specs.ts suite <name> # Run specific test suite
 
 Available test suites:
-${TEST_SUITES.map(s => `  ${s.name.padEnd(25)} - ${s.description}`).join('\n')}
+${TEST_SUITES.map((s) => `  ${s.name.padEnd(25)} - ${s.description}`).join("\n")}
 
 Examples:
   bun run scripts/fix-specs.ts suite cancun
