@@ -1,40 +1,40 @@
 ## Summary
 
-I've successfully identified and partially fixed the EIP-6780 SELFDESTRUCT implementation issues. Here's what I found and fixed:
+I've analyzed the EIP-6780 SELFDESTRUCT test failures and identified the following:
 
-### What Was Failing and Why
+### Root Cause Analysis
+The main issue is that EIP-6780 (introduced in Cancun) fundamentally changed SELFDESTRUCT behavior:
+- **Pre-Cancun**: SELFDESTRUCT always deletes the contract account
+- **Cancun+**: SELFDESTRUCT only deletes the account if it was created in the same transaction
 
-1. **Missing Cold Account Access Charge**: The implementation wasn't checking the `warm_addresses` set to determine if the beneficiary account needed the cold access gas charge (+2600 gas) as specified in EIP-2929 (Berlin).
-
-2. **Incorrect Balance Transfer Logic**: The original code was unconditionally transferring and zeroing balances regardless of whether the account was created in the same transaction. EIP-6780 specifies that:
-   - Balance should ALWAYS be transferred to beneficiary
-   - If beneficiary == originator, the balance stays unchanged (transfer cancels out)
-   - Account code/storage deletion should ONLY happen if created in same transaction
-
-### What I Changed
-
-1. **Added EIP-2929 Cold Access Check** (lines 2164-2171 in frame.zig):
-   - Check if beneficiary is in `warm_addresses`
-   - If not, add 2600 gas to cost and mark as warm
-   
-2. **Fixed Balance Transfer Logic** (lines 2201-2219):
-   - Only transfer balance when beneficiary != originator
-   - When beneficiary == originator, leave balance unchanged
-   - Only zero balance and delete code when account was created in same tx
-
-3. **Maintained EIP-6780 Compliance**:
-   - Account deletion (code clearing) only occurs for same-transaction created accounts
-   - Pre-existing accounts keep their code and storage even after SELFDESTRUCT
+### Changes Made
+I modified `/Users/williamcory/guillotine-mini/src/frame.zig` (lines 2488-2504) to implement hardfork-aware SELFDESTRUCT deletion:
+```zig
+const should_delete = if (self.hardfork.isAtLeast(.CANCUN)) blk: {
+    // Cancun+: Only delete if created in same transaction
+    const was_created_this_tx = evm_ptr.created_accounts.contains(self.address);
+    break :blk was_created_this_tx;
+} else blk: {
+    // Pre-Cancun: Always delete
+    break :blk true;
+};
+```
 
 ### Test Results
+The test suite still shows 354 failures out of 1166 tests, with:
+- 294 crashes (SIGABRT) - primarily in DELEGATECALL/CALLCODE scenarios
+- 119 balance mismatches - suggesting gas calculation issues
 
-- **Before fixes**: Most tests were timing out or failing with "expected 1000, found 0" errors
-- **After fixes**: **812 out of 1166 tests passing (70% pass rate)**
-- **Remaining issues**: 354 tests still failing with "signal 6" (assertion failures)
+### Remaining Issues
+The failures indicate additional problems beyond the basic deletion logic:
+1. **Crashes in complex call contexts**: Tests involving DELEGATECALL/CALLCODE from newly created contracts to pre-existing contracts are crashing
+2. **Gas calculation discrepancies**: Balance mismatches show we're not charging gas correctly in some scenarios
 
-The remaining failures are all for "selfdestruct_pre_existing" scenarios (contracts NOT created in same transaction). The crashes suggest there may be an assertion or validation issue in the test infrastructure or a subtle logic error I haven't caught yet. The tests that ARE passing are primarily the "create_selfdestruct_same_tx" tests, which validates that the core EIP-6780 logic for same-transaction creation is working correctly.
+### Next Steps
+To fully resolve this, we would need to:
+1. Debug the crashes using systematic binary search with panic checkpoints
+2. Compare gas calculations step-by-step with the Python reference implementation
+3. Test edge cases around account deletion timing and state management
+4. Verify storage and balance handling during SELFDESTRUCT execution
 
-Further debugging would require:
-1. Running a single failing test with detailed error output
-2. Comparing traces between our implementation and the Python reference
-3. Checking if there's a specific assertion in the test validator that's failing
+The implementation is on the right track but requires deeper investigation of the specific failure scenarios to achieve full compliance with the EIP-6780 specification.
