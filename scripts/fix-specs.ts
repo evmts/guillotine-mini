@@ -25,6 +25,7 @@ const TEST_SUITES: TestSuite[] = [
   // { name: 'shanghai-push0', command: 'zig build specs-shanghai-push0', description: 'Shanghai EIP-3855 PUSH0 tests' },
   // { name: 'cancun-beacon', command: 'zig build specs-cancun-beacon', description: 'Cancun EIP-4788 beacon root tests' },
   // { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
+  // { name: 'frontier', command: 'zig build specs-frontier', description: 'Frontier hardfork tests' },
 
   // These have failures
   { name: 'cancun-tstore', command: 'zig build specs-cancun-tstore', description: 'Cancun EIP-1153 transient storage tests' },
@@ -40,7 +41,6 @@ const TEST_SUITES: TestSuite[] = [
   { name: 'cancun', command: 'zig build specs-cancun', description: 'Cancun hardfork tests (EIP-1153, EIP-4788, EIP-4844, EIP-5656, EIP-6780, EIP-7516)' },
   { name: 'shanghai', command: 'zig build specs-shanghai', description: 'Shanghai hardfork tests (EIP-3651, EIP-3855, EIP-3860, EIP-4895)' },
   { name: 'berlin', command: 'zig build specs-berlin', description: 'Berlin hardfork tests (EIP-2929, EIP-2930)' },
-  { name: 'frontier', command: 'zig build specs-frontier', description: 'Frontier hardfork tests' },
   { name: 'berlin-accesslist', command: 'zig build specs-berlin-accesslist', description: 'Berlin EIP-2930 access list tests' },
 ];
 
