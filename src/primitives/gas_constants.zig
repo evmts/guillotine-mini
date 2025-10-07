@@ -1347,28 +1347,35 @@ pub fn sstore_gas_cost_with_hardfork(
     is_istanbul_or_later: bool,
 ) u64 {
     var gas: u64 = 0;
-    
+
     // EIP-2929 (Berlin): Add cold access cost if applicable
     if (is_berlin_or_later and is_cold) {
         gas += ColdSloadCost;
     }
-    
+
     // EIP-2200 (Istanbul) storage gas calculation
     if (is_istanbul_or_later) {
         // Istanbul rules
         if (original == current and current == new) {
             // No change
-            gas += if (is_berlin_or_later) WarmStorageReadCost else 200;
+            gas += if (is_berlin_or_later) WarmStorageReadCost else 800;
         } else if (original == current and current != new) {
             // First modification in transaction
             if (original == 0) {
                 gas += SstoreSetGas; // 20000
             } else {
-                gas += SstoreResetGas; // 5000
+                // Modifying existing non-zero value
+                // For Berlin+: Avoid double-charging cold access cost
+                // Total should be 5000, but we already added 2100 if cold
+                if (is_berlin_or_later and is_cold) {
+                    gas += SstoreResetGas - ColdSloadCost; // 5000 - 2100 = 2900
+                } else {
+                    gas += SstoreResetGas; // 5000
+                }
             }
         } else {
             // Subsequent modification
-            gas += if (is_berlin_or_later) WarmStorageReadCost else 200;
+            gas += if (is_berlin_or_later) WarmStorageReadCost else 800;
         }
     } else {
         // Pre-Istanbul simple rules
@@ -1378,7 +1385,7 @@ pub fn sstore_gas_cost_with_hardfork(
             gas += 5000; // Reset existing
         }
     }
-    
+
     return gas;
 }
 

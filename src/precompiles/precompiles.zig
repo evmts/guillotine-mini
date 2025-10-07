@@ -351,53 +351,22 @@ pub fn execute_identity(allocator: std.mem.Allocator, input: []const u8, gas_lim
 /// Input: base_len(32) + exp_len(32) + mod_len(32) + base + exp + mod
 /// Output: result of (base^exp) % mod
 pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64, hardfork: @import("../hardfork.zig").Hardfork) PrecompileError!PrecompileOutput {
-    // Minimum gas cost history:
-    // - Byzantium (EIP-198): No minimum
-    // - Berlin (EIP-2565): 200 gas minimum
-    // - Osaka (EIP-7883): 500 gas minimum
-    const min_gas: u64 = if (hardfork.isAtLeast(.OSAKA))
-        500
-    else if (hardfork.isAtLeast(.BERLIN))
-        GasCosts.MODEXP_MIN  // 200
-    else
-        0;  // No minimum before Berlin
+    // EIP-7883: Minimum gas cost increased from 200 to 500 in Osaka
+    const min_gas: u64 = if (hardfork.isAtLeast(.OSAKA)) 500 else GasCosts.MODEXP_MIN;
 
-    // Parse lengths as u256 (full precision for gas calculation)
-    // Even if input is too short, we need to parse what we can to calculate gas
-    // Per EVM spec, gas is charged based on CLAIMED lengths, even if input is invalid
-    const base_len_u256: u256 = if (input.len >= 32)
-        bytesToU256(input[0..32])
-    else blk: {
-        var padded: [32]u8 = [_]u8{0} ** 32;
-        @memcpy(padded[0..input.len], input[0..input.len]);
-        break :blk bytesToU256(&padded);
-    };
+    if (input.len < 96) {
+        const empty_output = try allocator.alloc(u8, 0);
+        return PrecompileOutput{
+            .output = empty_output,
+            .gas_used = min_gas,
+            .success = true,
+        };
+    }
 
-    const exp_len_u256: u256 = if (input.len >= 64)
-        bytesToU256(input[32..64])
-    else if (input.len > 32) blk: {
-        var padded: [32]u8 = [_]u8{0} ** 32;
-        const available = input.len - 32;
-        @memcpy(padded[0..available], input[32..input.len]);
-        break :blk bytesToU256(&padded);
-    } else
-        0;
-
-    const mod_len_u256: u256 = if (input.len >= 96)
-        bytesToU256(input[64..96])
-    else if (input.len > 64) blk: {
-        var padded: [32]u8 = [_]u8{0} ** 32;
-        const available = input.len - 64;
-        @memcpy(padded[0..available], input[64..input.len]);
-        break :blk bytesToU256(&padded);
-    } else
-        0;
-
-    // For actual data extraction, we need u32 bounds
-    // Saturate to u32::MAX if the value exceeds it
-    const base_len: u32 = if (base_len_u256 > std.math.maxInt(u32)) std.math.maxInt(u32) else @intCast(base_len_u256);
-    const exp_len: u32 = if (exp_len_u256 > std.math.maxInt(u32)) std.math.maxInt(u32) else @intCast(exp_len_u256);
-    const mod_len: u32 = if (mod_len_u256 > std.math.maxInt(u32)) std.math.maxInt(u32) else @intCast(mod_len_u256);
+    // Parse lengths
+    const base_len = bytesToU32(input[0..32]);
+    const exp_len = bytesToU32(input[32..64]);
+    const mod_len = bytesToU32(input[64..96]);
 
     // EIP-7823: Upper bounds check (Prague+)
     // If any of base_len, exp_len, or mod_len exceeds 1024 bytes, the call fails
@@ -413,106 +382,19 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
         }
     }
 
-    // Calculate gas cost FIRST (before validating input length)
-    // Per EVM spec, gas is charged based on the CLAIMED lengths, even if input is too short
-    // This is important for Byzantium where we charge based on lengths in the header
-
-    // For gas calculation, we need to read the exponent head
-    // Per EVM spec (EIP-198), we read min(32, exp_len) bytes from the exponent
-    // and convert directly to U256 without padding.
-    // Examples:
-    // - If exp_len=1 and exp=[0xFF], we read [0xFF] -> U256(255) with bit_length=8
-    // - If exp_len=32 and exp=[0xFF,0x00,...], we read [0xFF,0x00,...] -> huge U256
-    var exp_head_u256: u256 = 0;
-    blk: {
-        // Calculate exp_start with overflow protection
-        const exp_start_result = std.math.add(usize, 96, base_len) catch {
-            // Overflow means exp_start is beyond any reasonable input size
-            break :blk;
-        };
-        const exp_start: usize = exp_start_result;
-
-        // Only read exponent head if we have any exponent data
-        if (input.len > exp_start) {
-            const available_exp_len = @min(input.len - exp_start, exp_len);
-            const exp_head_len = @min(available_exp_len, 32);
-            if (exp_head_len > 0) {
-                const exp_head_bytes = input[exp_start..exp_start + exp_head_len];
-                // Convert bytes directly to U256 (no padding!)
-                // This is equivalent to int.from_bytes(bytes, 'big') in Python
-                exp_head_u256 = 0;
-                for (exp_head_bytes) |byte| {
-                    exp_head_u256 = (exp_head_u256 << 8) | byte;
-                }
-            }
-        }
-        break :blk;
-    }
-
-    // Calculate multiplication complexity (fork-specific)
-    // Use full u256 lengths for gas calculation to properly handle huge values
-    const max_len_u256 = if (base_len_u256 > mod_len_u256) base_len_u256 else mod_len_u256;
-    const complexity = if (hardfork.isAtLeast(.OSAKA))
-        calculateMultiplicationComplexityOsaka256(max_len_u256)
-    else if (hardfork.isAtLeast(.BERLIN))
-        calculateMultiplicationComplexityBerlin256(max_len_u256)  // EIP-2565
-    else
-        calculateMultiplicationComplexityByzantium256(max_len_u256);  // EIP-198
-
-    // Calculate iteration count based on adjusted exponent length
-    // Use u256 for exp_len to handle large values
-    const iteration_count = if (hardfork.isAtLeast(.OSAKA))
-        calculateIterationCountOsaka256(exp_len_u256, exp_head_u256)
-    else
-        calculateIterationCount256(exp_len_u256, exp_head_u256);
-
-    // Final gas cost calculation (fork-specific divisor)
-    // EIP-198 (Byzantium): (complexity * iteration_count) / 20
-    // EIP-2565 (Berlin): (complexity * iteration_count) / 3
-    // EIP-7883 (Osaka): (complexity * iteration_count) / 1
-    const gas_divisor: u64 = if (hardfork.isAtLeast(.OSAKA))
-        1
-    else if (hardfork.isAtLeast(.BERLIN))
-        3  // EIP-2565
-    else
-        20;  // EIP-198
-    // Use saturating multiplication to prevent overflow
-    const product = std.math.mul(u64, complexity, iteration_count) catch std.math.maxInt(u64);
-    const cost = product / gas_divisor;
-    const required_gas = @max(min_gas, cost);
-
-    if (gas_limit < required_gas) {
-        return PrecompileOutput{
-            .output = &.{},
-            .gas_used = gas_limit,
-            .success = false,
-        };
-    }
-
-    // Now validate input length and extract data
-    // Use saturating addition to prevent overflow when lengths are huge
-    const expected_len = blk: {
-        var sum: u64 = 96;
-        // Use saturating addition since lengths might be large
-        sum = std.math.add(u64, sum, base_len) catch std.math.maxInt(u64);
-        if (sum == std.math.maxInt(u64)) break :blk sum;
-        sum = std.math.add(u64, sum, exp_len) catch std.math.maxInt(u64);
-        if (sum == std.math.maxInt(u64)) break :blk sum;
-        sum = std.math.add(u64, sum, mod_len) catch std.math.maxInt(u64);
-        break :blk sum;
-    };
-    if (input.len < expected_len) {
-        // Input is too short, but we already charged gas
-        // Return empty output with success=true and gas charged
+    // Validate input length
+    // Use u64 to avoid overflow when adding large u32 values
+    const expected_len_u64: u64 = 96 + @as(u64, base_len) + @as(u64, exp_len) + @as(u64, mod_len);
+    if (expected_len_u64 > input.len) {
         const empty_output = try allocator.alloc(u8, 0);
         return PrecompileOutput{
             .output = empty_output,
-            .gas_used = required_gas,
+            .gas_used = min_gas,
             .success = true,
         };
     }
 
-    // Extract base, exp, mod from input
+    // Extract base, exp, mod
     var offset: usize = 96;
     const base = input[offset .. offset + base_len];
     offset += base_len;
@@ -520,33 +402,50 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
     offset += exp_len;
     const mod = input[offset .. offset + mod_len];
 
-    // Handle special case: zero modulus length
-    // Per EVM spec, if modulus length is 0, return empty output
+    // Handle special cases
     if (mod_len == 0) {
         const empty_output = try allocator.alloc(u8, 0);
         return PrecompileOutput{
             .output = empty_output,
-            .gas_used = required_gas,
+            .gas_used = min_gas,
             .success = true,
         };
     }
 
-    // Handle special case: modulus value is all zeros
-    // Per EVM spec (EIP-198), any value mod 0 returns 0 (modulus_length bytes of zeros)
-    var modulus_is_zero = true;
-    for (mod) |byte| {
-        if (byte != 0) {
-            modulus_is_zero = false;
-            break;
-        }
+    // Calculate gas cost (EIP-198 / EIP-7883)
+    // Read first 32 bytes of exponent (padded with zeros if shorter)
+    var exp_head: [32]u8 = [_]u8{0} ** 32;
+    const exp_head_len = @min(exp_len, 32);
+    if (exp_head_len > 0) {
+        @memcpy(exp_head[0..exp_head_len], exp[0..exp_head_len]);
     }
-    if (modulus_is_zero) {
-        const zero_output = try allocator.alloc(u8, mod_len);
-        @memset(zero_output, 0);
+    const exp_head_u256 = bytesToU256(&exp_head);
+
+    // Calculate multiplication complexity
+    const max_len = @max(base_len, mod_len);
+    const complexity = if (hardfork.isAtLeast(.OSAKA))
+        calculateMultiplicationComplexityOsaka(max_len)
+    else
+        crypto.ModExp.unaudited_calculateMultiplicationComplexity(max_len);
+
+    // Calculate iteration count based on adjusted exponent length
+    const iteration_count = if (hardfork.isAtLeast(.OSAKA))
+        calculateIterationCountOsaka(exp_len, exp_head_u256)
+    else
+        calculateIterationCount(exp_len, exp_head_u256);
+
+    // Final gas cost calculation
+    // EIP-198: (complexity * iteration_count) / 20 (pre-Osaka)
+    // EIP-7883: (complexity * iteration_count) / 1 (Osaka+)
+    const gas_divisor: u64 = if (hardfork.isAtLeast(.OSAKA)) 1 else 20;
+    const cost = (complexity * iteration_count) / gas_divisor;
+    const required_gas = @max(min_gas, cost);
+
+    if (gas_limit < required_gas) {
         return PrecompileOutput{
-            .output = zero_output,
-            .gas_used = required_gas,
-            .success = true,
+            .output = &.{},
+            .gas_used = gas_limit,
+            .success = false,
         };
     }
 
@@ -574,7 +473,7 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
 /// Calculate iteration count for modexp gas calculation (EIP-198)
 /// Based on the adjusted exponent length
 fn calculateIterationCount(exp_len: u32, exp_head: u256) u64 {
-    const adjusted_exp_length: u64 = if (exp_len < 32) blk: {
+    const adjusted_exp_length: u64 = if (exp_len <= 32) blk: {
         // For exp_len < 32, adjusted length is based on bit length of exp_head
         if (exp_head == 0) break :blk 0;
         const bit_length = 256 - @clz(exp_head);
@@ -588,13 +487,6 @@ fn calculateIterationCount(exp_len: u32, exp_head: u256) u64 {
 
     // Return at least 1
     return @max(adjusted_exp_length, 1);
-}
-
-/// Calculate multiplication complexity for EIP-2565 (Berlin+)
-/// Based on EIP-2565 spec: words^2 where words = ceil(max_len / 8)
-fn calculateMultiplicationComplexityBerlin(max_len: u32) u64 {
-    const words: u64 = (max_len + 7) / 8;  // Ceiling division
-    return words * words;
 }
 
 /// Calculate multiplication complexity for EIP-7883 (Osaka+)
@@ -634,158 +526,6 @@ fn calculateIterationCountOsaka(exp_len: u32, exp_head: u256) u64 {
         const bit_length = if (exp_head == 0) 0 else 256 - @clz(exp_head);
         const extra_bytes: u64 = exp_len - 32;
         break :blk EXPONENT_BYTE_MULTIPLIER * extra_bytes + if (bit_length > 0) bit_length - 1 else 0;
-    };
-
-    // Return at least 1
-    return @max(adjusted_exp_length, 1);
-}
-
-/// Calculate multiplication complexity for EIP-198 (Byzantium) with u256 input
-/// Handles large length values that may exceed u64
-fn calculateMultiplicationComplexityByzantium256(max_len: u256) u64 {
-    // Constants from EIP-198
-    const THRESHOLD_64: u256 = 64;
-    const THRESHOLD_1024: u256 = 1024;
-
-    if (max_len <= THRESHOLD_64) {
-        // For small values, x^2 might fit in u64
-        if (max_len <= 4294967295) {  // sqrt(u64::MAX)
-            const x: u64 = @intCast(max_len);
-            return x * x;
-        }
-        // Value is between sqrt(u64::MAX) and 64, which can't happen, but handle it
-        return std.math.maxInt(u64);
-    } else if (max_len <= THRESHOLD_1024) {
-        // x^2/4 + 96*x - 3072
-        // Use saturating arithmetic to prevent overflow
-        const x: u64 = if (max_len > std.math.maxInt(u64)) std.math.maxInt(u64) else @intCast(max_len);
-        const x_squared = std.math.mul(u64, x, x) catch std.math.maxInt(u64);
-        const term1 = x_squared / 4;
-        const term2 = std.math.mul(u64, 96, x) catch std.math.maxInt(u64);
-        const sum = std.math.add(u64, term1, term2) catch std.math.maxInt(u64);
-        return if (sum >= 3072) sum - 3072 else 0;
-    } else {
-        // x^2/16 + 480*x - 199680
-        // For very large values, this will definitely overflow u64, so we return max
-        const x: u64 = if (max_len > std.math.maxInt(u64)) std.math.maxInt(u64) else @intCast(max_len);
-        const x_squared = std.math.mul(u64, x, x) catch std.math.maxInt(u64);
-        const term1 = x_squared / 16;
-        const term2 = std.math.mul(u64, 480, x) catch std.math.maxInt(u64);
-        const sum = std.math.add(u64, term1, term2) catch std.math.maxInt(u64);
-        return if (sum >= 199680) sum - 199680 else 0;
-    }
-}
-
-/// Calculate multiplication complexity for EIP-2565 (Berlin+) with u256 input
-fn calculateMultiplicationComplexityBerlin256(max_len: u256) u64 {
-    // words = ceil(max_len / 8)
-    // complexity = words^2
-    // Use saturating arithmetic to prevent overflow
-
-    if (max_len == 0) return 0;
-
-    // Calculate words with ceiling division, avoiding overflow
-    // ceil(x / 8) = (x / 8) + (1 if x % 8 != 0 else 0)
-    const words_u256 = max_len / 8 + (if (max_len % 8 != 0) @as(u256, 1) else @as(u256, 0));
-
-    // If words > sqrt(u64::MAX), then words^2 will overflow u64
-    const SQRT_U64_MAX: u256 = 4294967296; // Approximately sqrt(2^64)
-    if (words_u256 >= SQRT_U64_MAX) {
-        return std.math.maxInt(u64);
-    }
-
-    const words: u64 = @intCast(words_u256);
-    return std.math.mul(u64, words, words) catch std.math.maxInt(u64);
-}
-
-/// Calculate multiplication complexity for EIP-7883 (Osaka+) with u256 input
-fn calculateMultiplicationComplexityOsaka256(max_len: u256) u64 {
-    // EIP-7883 constants
-    const WORD_SIZE: u32 = 8;
-    const MAX_LENGTH_THRESHOLD: u256 = 32;
-    const LARGE_BASE_MODULUS_MULTIPLIER: u64 = 2;
-
-    // Ceiling division, avoiding overflow: ceil(x / 8) = (x / 8) + (1 if x % 8 != 0 else 0)
-    const words_u256 = max_len / WORD_SIZE + (if (max_len % WORD_SIZE != 0) @as(u256, 1) else @as(u256, 0));
-
-    if (max_len <= MAX_LENGTH_THRESHOLD) {
-        // For small inputs (<= 32 bytes): fixed cost of 16
-        return 16;
-    } else {
-        // For large inputs (> 32 bytes): 2 * words^2
-        // Check for overflow
-        const SQRT_U64_MAX_DIV_2: u256 = 3037000499; // Approximately sqrt(u64::MAX / 2)
-        if (words_u256 >= SQRT_U64_MAX_DIV_2) {
-            return std.math.maxInt(u64);
-        }
-
-        const words: u64 = @intCast(words_u256);
-        const words_squared = std.math.mul(u64, words, words) catch std.math.maxInt(u64);
-        return std.math.mul(u64, LARGE_BASE_MODULUS_MULTIPLIER, words_squared) catch std.math.maxInt(u64);
-    }
-}
-
-/// Calculate iteration count with u256 input for exp_len
-fn calculateIterationCount256(exp_len: u256, exp_head: u256) u64 {
-    const THRESHOLD_32: u256 = 32;
-
-    const adjusted_exp_length: u64 = if (exp_len < THRESHOLD_32) blk: {
-        // For exp_len < 32, adjusted length is based on bit length of exp_head
-        if (exp_head == 0) break :blk 0;
-        const bit_length = 256 - @clz(exp_head);
-        break :blk if (bit_length > 0) bit_length - 1 else 0;
-    } else blk: {
-        // For exp_len >= 32, adjusted length = 8 * (exp_len - 32) + bit_length_of_first_32_bytes - 1
-        const bit_length = if (exp_head == 0) 0 else 256 - @clz(exp_head);
-
-        // Calculate 8 * (exp_len - 32), watching for overflow
-        const exp_len_minus_32 = exp_len - 32;
-        const eight_times = std.math.mul(u256, 8, exp_len_minus_32) catch {
-            // Overflow, return max u64
-            break :blk std.math.maxInt(u64);
-        };
-
-        // Add bit_length - 1
-        const bit_contribution = if (bit_length > 0) bit_length - 1 else 0;
-        const total = std.math.add(u256, eight_times, bit_contribution) catch {
-            break :blk std.math.maxInt(u64);
-        };
-
-        // Convert to u64, saturating if too large
-        break :blk if (total > std.math.maxInt(u64)) std.math.maxInt(u64) else @intCast(total);
-    };
-
-    // Return at least 1
-    return @max(adjusted_exp_length, 1);
-}
-
-/// Calculate iteration count for Osaka with u256 input
-fn calculateIterationCountOsaka256(exp_len: u256, exp_head: u256) u64 {
-    // EIP-7883 constants
-    const EXPONENT_THRESHOLD: u256 = 32;
-    const EXPONENT_BYTE_MULTIPLIER: u64 = 16; // Changed from 8 to 16
-
-    const adjusted_exp_length: u64 = if (exp_len <= EXPONENT_THRESHOLD) blk: {
-        // For exp_len <= 32, adjusted length is based on bit length of exp_head
-        if (exp_head == 0) break :blk 0;
-        const bit_length = 256 - @clz(exp_head);
-        break :blk if (bit_length > 0) bit_length - 1 else 0;
-    } else blk: {
-        // For exp_len > 32: 16 * (exp_len - 32) + bit_length - 1
-        const bit_length = if (exp_head == 0) 0 else 256 - @clz(exp_head);
-
-        // Calculate 16 * (exp_len - 32), watching for overflow
-        const exp_len_minus_32 = exp_len - 32;
-        const sixteen_times = std.math.mul(u256, EXPONENT_BYTE_MULTIPLIER, exp_len_minus_32) catch {
-            break :blk std.math.maxInt(u64);
-        };
-
-        const bit_contribution = if (bit_length > 0) bit_length - 1 else 0;
-        const total = std.math.add(u256, sixteen_times, bit_contribution) catch {
-            break :blk std.math.maxInt(u64);
-        };
-
-        break :blk if (total > std.math.maxInt(u64)) std.math.maxInt(u64) else @intCast(total);
     };
 
     // Return at least 1
@@ -1329,17 +1069,12 @@ fn bytesToU256(bytes: []const u8) u256 {
 
 fn bytesToU32(bytes: []const u8) u32 {
     // Interpret a big-endian 32-byte field length, retaining only lower 32 bits.
-    // This handles Ethereum's 32-byte length encoding where only the last byte is often set.
-    // If the value would overflow u32, we saturate at u32 max.
-    var result: u64 = 0;  // Use u64 to prevent overflow during calculation
+    // This handles Ethereum’s 32-byte length encoding where only the last byte is often set.
+    var result: u32 = 0;
     for (bytes) |byte| {
-        result = (result << 8) | byte;
-        // If we've exceeded u32 max, saturate immediately
-        if (result > std.math.maxInt(u32)) {
-            return std.math.maxInt(u32);
-        }
+        result = std.math.shl(u32, result, 8) | byte;
     }
-    return @intCast(result);
+    return result;
 }
 
 fn u256ToBytes(value: u256, output: []u8) void {
@@ -1735,11 +1470,10 @@ test "execute_blake2f invalid final flag" {
 
 test "execute_modexp with zero modulus" {
     const testing = std.testing;
-    const Hardfork = @import("../hardfork.zig").Hardfork;
-
-    // Test: 5^3 mod 0 should return 0 (not error)
-    var input: [99]u8 = [_]u8{0} ** 99;
-
+    
+    // Test: 5^3 mod 0 should fail
+    var input: [128]u8 = [_]u8{0} ** 128;
+    
     // base_len = 1
     input[31] = 1;
     // exp_len = 1
@@ -1751,12 +1485,12 @@ test "execute_modexp with zero modulus" {
     // exp = 3
     input[97] = 3;
     // mod = 0 (already zero)
-
-    const result = try execute_modexp(testing.allocator, &input, 10000, Hardfork.BYZANTIUM);
+    
+    const result = try execute_modexp(testing.allocator, &input, 10000);
     defer testing.allocator.free(result.output);
-
+    
     try testing.expect(result.success);
-    // Result should be 0 when modulus value is 0
+    // Result should be 0 when modulus is 0
     try testing.expectEqual(@as(usize, 1), result.output.len);
     try testing.expectEqual(@as(u8, 0), result.output[0]);
 }

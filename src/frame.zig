@@ -1124,16 +1124,16 @@ pub const Frame = struct {
                 // EIP-214: SSTORE cannot modify state in static call context
                 if (self.is_static) return error.StaticCallViolation;
 
-                const key = try self.popStack();
-                const value = try self.popStack();
-
                 // EIP-2200 (Istanbul+): SSTORE sentry gas check
-                // Must have more than 2300 gas remaining to execute SSTORE
+                // SSTORE requires at least GAS_CALL_STIPEND (2300) gas remaining
                 if (evm.hardfork.isAtLeast(.ISTANBUL)) {
                     if (self.gas_remaining <= GasConstants.SstoreSentryGas) {
                         return error.OutOfGas;
                     }
                 }
+
+                const key = try self.popStack();
+                const value = try self.popStack();
 
                 // Debug: log SSTORE operations for slot 0
                 // if (key == 0) {
@@ -1144,32 +1144,25 @@ pub const Frame = struct {
                 const current_value = evm.get_storage(self.address, key);
 
                 // Calculate gas cost based on hardfork
-                const gas_cost = if (evm.hardfork.isAtLeast(.BERLIN)) blk: {
-                    // EIP-2929 (Berlin+): Cold/warm access with EIP-2200 logic
+                const gas_cost = if (evm.hardfork.isAtLeast(.ISTANBUL)) blk: {
+                    // EIP-2200 (Istanbul+): Complex storage gas metering with dirty tracking
                     const original_value = evm.get_original_storage(self.address, key);
 
-                    // Check if storage slot is cold and warm it
+                    // EIP-2929 (Berlin+): Check if storage slot is cold and warm it
                     const access_cost = try evm.accessStorageSlot(self.address, key);
                     const is_cold = access_cost == GasConstants.ColdSloadCost;
 
-                    // Use EIP-2200/EIP-3529 logic
-                    break :blk GasConstants.sstore_gas_cost(current_value, original_value, value, is_cold);
-                } else if (evm.hardfork.isAtLeast(.ISTANBUL)) blk: {
-                    // EIP-2200 (Istanbul-Berlin): Net gas metering without cold/warm tracking
-                    const original_value = evm.get_original_storage(self.address, key);
-
-                    // EIP-2200 gas rules:
-                    // If (original == current && current != new): first modification -> SET or UPDATE cost
-                    // Otherwise: SLOAD cost (800 in Istanbul)
-                    if (original_value == current_value and current_value != value) {
-                        if (original_value == 0) {
-                            break :blk GasConstants.SstoreSetGas;  // 20,000
-                        } else {
-                            break :blk GasConstants.SstoreResetGas;  // 5,000
-                        }
-                    } else {
-                        break :blk 800;  // GAS_SLOAD in Istanbul
-                    }
+                    // Use EIP-2200/EIP-3529 logic with hardfork-aware gas costs
+                    const is_berlin_or_later = evm.hardfork.isAtLeast(.BERLIN);
+                    const is_istanbul_or_later = evm.hardfork.isAtLeast(.ISTANBUL);
+                    break :blk GasConstants.sstore_gas_cost_with_hardfork(
+                        current_value,
+                        original_value,
+                        value,
+                        is_cold,
+                        is_berlin_or_later,
+                        is_istanbul_or_later,
+                    );
                 } else blk: {
                     // Pre-Istanbul (Constantinople, Petersburg): Simple storage gas rules
                     // If setting zero to non-zero: 20,000 gas
@@ -1183,57 +1176,46 @@ pub const Frame = struct {
                 try self.consumeGas(gas_cost);
 
                 // Refund logic (hardfork-dependent)
-                if (evm.hardfork.isAtLeast(.ISTANBUL)) {
-                    // EIP-2200/EIP-3529: Complex refund rules
+                if (evm.hardfork.isAtLeast(.ISTANBUL) and evm.hardfork.isBefore(.LONDON)) {
+                    // EIP-2200 (Istanbul-London): Complex net gas metering refund logic
                     const original_value = evm.get_original_storage(self.address, key);
 
                     if (current_value != value) {
-                        // Value is changing
+                        // Case 1: Clearing storage for the first time in the transaction
                         if (original_value != 0 and current_value != 0 and value == 0) {
-                            // Storage is cleared for the first time in the transaction
-                            if (evm.hardfork.isAtLeast(.LONDON)) {
-                                evm.add_refund(GasConstants.SstoreRefundGas);  // 4,800 (London)
-                            } else {
-                                evm.add_refund(15000);  // Istanbul/Berlin
-                            }
+                            evm.add_refund(15000);  // GAS_STORAGE_CLEAR_REFUND
                         }
 
+                        // Case 2: Reversing a previous clear (was cleared earlier, now non-zero)
                         if (original_value != 0 and current_value == 0) {
-                            // Gas refund issued earlier (when clearing) is being reversed
-                            if (evm.hardfork.isAtLeast(.LONDON)) {
-                                evm.sub_refund(GasConstants.SstoreRefundGas);  // 4,800
-                            } else {
-                                evm.sub_refund(15000);
+                            // Subtract the refund that was given earlier
+                            if (evm.gas_refund >= 15000) {
+                                evm.gas_refund -= 15000;
                             }
                         }
 
+                        // Case 3: Restoring to original value
                         if (original_value == value) {
-                            // Storage slot being restored to its original value
                             if (original_value == 0) {
-                                // Slot was originally empty and was SET earlier
-                                if (evm.hardfork.isAtLeast(.LONDON)) {
-                                    evm.add_refund(GasConstants.SstoreSetGas - 100);  // 20000 - 100 = 19900
-                                } else if (evm.hardfork.isAtLeast(.BERLIN)) {
-                                    evm.add_refund(GasConstants.SstoreSetGas - 100);  // 20000 - 100 = 19900
-                                } else {
-                                    evm.add_refund(GasConstants.SstoreSetGas - 800);  // 20000 - 800 = 19200 (Istanbul)
-                                }
+                                // Slot was originally empty and was SET earlier (cost 20000)
+                                // Now restored to 0, refund the difference: 20000 - 100 = 19900
+                                evm.add_refund(20000 - 100);  // GAS_STORAGE_SET - GAS_SLOAD
                             } else {
-                                // Slot was originally non-empty and was UPDATED earlier
-                                if (evm.hardfork.isAtLeast(.LONDON)) {
-                                    evm.add_refund(GasConstants.SstoreResetGas - 100);  // 5000 - 100 = 4900
-                                } else if (evm.hardfork.isAtLeast(.BERLIN)) {
-                                    evm.add_refund(GasConstants.SstoreResetGas - 100);  // 5000 - 100 = 4900
-                                } else {
-                                    evm.add_refund(GasConstants.SstoreResetGas - 800);  // 5000 - 800 = 4200 (Istanbul)
-                                }
+                                // Slot was originally non-empty and was UPDATED earlier (cost 5000)
+                                // Now restored to original, refund: 5000 - 100 = 4900
+                                evm.add_refund(5000 - 100);  // GAS_STORAGE_UPDATE - GAS_SLOAD
                             }
                         }
                     }
-                } else {
-                    // Pre-Istanbul: Simple refund logic
+                } else if (evm.hardfork.isAtLeast(.LONDON)) {
+                    // EIP-3529 (London+): Simplified refund (only for clearing storage)
                     if (current_value != 0 and value == 0) {
-                        evm.add_refund(15000);
+                        evm.add_refund(GasConstants.SstoreRefundGas);  // 4,800
+                    }
+                } else {
+                    // Pre-Istanbul (Frontier-Constantinople-Petersburg): Simple clear refund
+                    if (current_value != 0 and value == 0) {
+                        evm.add_refund(15000);  // GAS_STORAGE_CLEAR_REFUND
                     }
                 }
 
@@ -1412,6 +1394,9 @@ pub const Frame = struct {
             0xf0 => {
                 // EIP-214: CREATE cannot be executed in static call context
                 if (self.is_static) return error.StaticCallViolation;
+
+                // Clear return_data at the start (per Python reference implementation)
+                self.return_data = &[_]u8{};
 
                 const value = try self.popStack();
                 const offset = try self.popStack();
@@ -1864,6 +1849,9 @@ pub const Frame = struct {
 
                 // EIP-214: CREATE2 cannot be executed in static call context
                 if (self.is_static) return error.StaticCallViolation;
+
+                // Clear return_data at the start (per Python reference implementation)
+                self.return_data = &[_]u8{};
 
                 const value = try self.popStack();
                 const offset = try self.popStack();
