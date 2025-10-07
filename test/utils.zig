@@ -174,8 +174,10 @@ pub fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestRe
 
     const test_start = std.time.nanoTimestamp();
 
-    // Fork to isolate test execution
-    const pid = try std.posix.fork();
+    // Allow disabling fork to get full panic traces when debugging
+    const nofork = std.posix.getenv("TEST_NOFORK") != null;
+    // Fork to isolate test execution (unless TEST_NOFORK is set)
+    const pid = if (!nofork) try std.posix.fork() else 0;
 
     if (pid == 0) {
         // Child process - run the test
@@ -190,6 +192,12 @@ pub fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestRe
 
         std.posix.exit(0); // Success
     } else {
+        if (nofork) {
+            // No fork mode: we already executed in current process.
+            const test_end = std.time.nanoTimestamp();
+            test_result.duration_ns = @intCast(test_end - test_start);
+            return test_result;
+        }
         // Parent process - wait for child with 60 second timeout
         const timeout_ns: i128 = 60 * std.time.ns_per_s;
         const deadline = std.time.nanoTimestamp() + timeout_ns;
