@@ -1888,21 +1888,33 @@ pub const Frame = struct {
                 // EIP-5656: MCOPY was introduced in Cancun hardfork
                 if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;
 
-                // Stack order: [dest, src, len]
-                const len = try self.popStack();
-                const src = try self.popStack();
+                // Stack order (top to bottom): dest, src, len
+                // Pop order: dest (first), src (second), len (third)
                 const dest = try self.popStack();
+                const src = try self.popStack();
+                const len = try self.popStack();
 
                 // Calculate memory expansion cost BEFORE bounds checking
-                // This ensures we charge gas (and fail with OutOfGas) for huge memory expansions
-                // even if the values don't fit in u32
+                // Per EIP-5656, if len == 0, no memory expansion occurs regardless of src/dest values
+                // Otherwise, memory must be expanded to accommodate BOTH src+len and dest+len
 
-                // Safe conversion: if values don't fit in u64, use maxInt(u64) which will trigger
-                // massive gas cost in memoryExpansionCost
-                const dest_u64 = std.math.cast(u64, dest) orelse std.math.maxInt(u64);
-                const len_u64 = std.math.cast(u64, len) orelse std.math.maxInt(u64);
-                const end_dest: u64 = dest_u64 +| len_u64;  // saturating add to prevent overflow
-                const mem_cost = self.memoryExpansionCost(end_dest);
+                const mem_cost = if (len == 0)
+                    0  // Zero-length copies don't expand memory
+                else blk: {
+                    // Safe conversion: if values don't fit in u64, use maxInt(u64) which will trigger
+                    // massive gas cost in memoryExpansionCost
+                    const dest_u64 = std.math.cast(u64, dest) orelse std.math.maxInt(u64);
+                    const src_u64 = std.math.cast(u64, src) orelse std.math.maxInt(u64);
+                    const len_u64 = std.math.cast(u64, len) orelse std.math.maxInt(u64);
+
+                    // Calculate end positions for both source and destination
+                    const end_dest: u64 = dest_u64 +| len_u64;  // saturating add to prevent overflow
+                    const end_src: u64 = src_u64 +| len_u64;
+
+                    // Memory expansion must cover BOTH ranges - use the maximum
+                    const max_end = @max(end_dest, end_src);
+                    break :blk self.memoryExpansionCost(max_end);
+                };
 
                 // For copy cost, we need to handle len > u32::MAX specially
                 // If len doesn't fit in u32, the copy cost will be astronomical
@@ -1911,18 +1923,18 @@ pub const Frame = struct {
                 else
                     std.math.maxInt(i64);  // Huge value that will trigger OutOfGas
 
-                try self.consumeGas(mem_cost + copy_cost);
+                try self.consumeGas(GasConstants.GasFastestStep + mem_cost + copy_cost);
+
+                // Fast path: zero length - gas charged but no copy needed
+                if (len == 0) {
+                    self.pc += 1;
+                    return;
+                }
 
                 // Now that gas is charged, do bounds checking for actual memory operations
                 const dest_u32 = std.math.cast(u32, dest) orelse return error.OutOfBounds;
                 const src_u32 = std.math.cast(u32, src) orelse return error.OutOfBounds;
                 const len_u32 = std.math.cast(u32, len) orelse return error.OutOfBounds;
-
-                // Fast path: zero length - gas charged but no copy needed
-                if (len_u32 == 0) {
-                    self.pc += 1;
-                    return;
-                }
 
                 // Copy via temporary buffer to handle overlapping regions
                 const tmp = try self.allocator.alloc(u8, len_u32);
