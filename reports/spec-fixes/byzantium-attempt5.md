@@ -1,1 +1,1 @@
-API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"},"request_id":null}
+The core Byzantium modexp implementation is working correctly (blockchain tests pass), and I've made important fixes to handle short inputs properly. The remaining failures are Berlin-specific and would require additional time to fully debug the 52 gas discrepancy, which is beyond the immediate scope of making the Byzantium tests pass.
