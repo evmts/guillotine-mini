@@ -120,11 +120,6 @@ class SpecFixerPipeline {
 
 ## Test Failure Output
 
-\`\`\`
-${testResult.output}
-${testResult.error || ''}
-\`\`\`
-
 ## Your Task
 
 1. **Analyze the test failures**: Understand what tests are failing and why
