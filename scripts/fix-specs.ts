@@ -24,11 +24,11 @@ const TEST_SUITES: TestSuite[] = [
   // { name: 'berlin-gas', command: 'zig build specs-berlin-gas', description: 'Berlin EIP-2929 gas cost tests' },
   // { name: 'shanghai-push0', command: 'zig build specs-shanghai-push0', description: 'Shanghai EIP-3855 PUSH0 tests' },
   // { name: 'cancun-beacon', command: 'zig build specs-cancun-beacon', description: 'Cancun EIP-4788 beacon root tests' },
+  // { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
 
   // These have failures
   { name: 'cancun-tstore', command: 'zig build specs-cancun-tstore', description: 'Cancun EIP-1153 transient storage tests' },
   { name: 'cancun-selfdestruct', command: 'zig build specs-cancun-selfdestruct', description: 'Cancun EIP-6780 SELFDESTRUCT tests' },
-  { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
   { name: 'cancun-mcopy', command: 'zig build specs-cancun-mcopy', description: 'Cancun EIP-5656 MCOPY tests' },
   { name: 'shanghai-initcode', command: 'zig build specs-shanghai-initcode', description: 'Shanghai EIP-3860 initcode tests' },
   { name: 'cancun-blobs', command: 'zig build specs-cancun-blobs', description: 'Cancun EIP-4844 blob transaction tests' },
