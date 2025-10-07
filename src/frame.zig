@@ -1918,12 +1918,14 @@ pub const Frame = struct {
 
                 // For copy cost, we need to handle len > u32::MAX specially
                 // If len doesn't fit in u32, the copy cost will be astronomical
-                const copy_cost = if (len <= std.math.maxInt(u32))
+                const copy_cost: u64 = if (len <= std.math.maxInt(u32))
                     copyGasCost(@intCast(len))
                 else
-                    std.math.maxInt(i64);  // Huge value that will trigger OutOfGas
+                    std.math.maxInt(u64);  // Huge value that will trigger OutOfGas
 
-                try self.consumeGas(GasConstants.GasFastestStep + mem_cost + copy_cost);
+                // Use saturating arithmetic to prevent overflow when adding gas costs
+                const total_gas = GasConstants.GasFastestStep +| mem_cost +| copy_cost;
+                try self.consumeGas(total_gas);
 
                 // Fast path: zero length - gas charged but no copy needed
                 if (len == 0) {
@@ -1935,6 +1937,16 @@ pub const Frame = struct {
                 const dest_u32 = std.math.cast(u32, dest) orelse return error.OutOfBounds;
                 const src_u32 = std.math.cast(u32, src) orelse return error.OutOfBounds;
                 const len_u32 = std.math.cast(u32, len) orelse return error.OutOfBounds;
+
+                // Expand memory to cover BOTH source and destination ranges
+                // Per EIP-5656, memory expansion happens before the copy operation
+                const src_end = std.math.cast(u64, src_u32 + len_u32) orelse return error.OutOfBounds;
+                const dest_end = std.math.cast(u64, dest_u32 + len_u32) orelse return error.OutOfBounds;
+                const max_memory_end = @max(src_end, dest_end);
+                const required_size = wordAlignedSize(max_memory_end);
+                if (required_size > self.memory_size) {
+                    self.memory_size = required_size;
+                }
 
                 // Copy via temporary buffer to handle overlapping regions
                 const tmp = try self.allocator.alloc(u8, len_u32);

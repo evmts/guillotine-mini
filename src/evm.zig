@@ -464,12 +464,18 @@ pub const Evm = struct {
         }
 
         // Create and push frame onto stack
+        // For DELEGATECALL and CALLCODE, execute code in caller's context
+        const execution_address = if (call_type == .DelegateCall or call_type == .CallCode)
+            caller  // Execute in caller's context (for storage, balance, etc.)
+        else
+            address;  // Execute in callee's context
+
         try self.frames.append(self.arena.allocator(), try Frame.init(
             self.arena.allocator(),
             code,
             @intCast(gas),
             caller,
-            address,
+            execution_address,
             value,
             input,
             @as(*anyopaque, @ptrCast(self)),
