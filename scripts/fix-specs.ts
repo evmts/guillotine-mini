@@ -158,125 +158,219 @@ class SpecFixerPipeline {
 
     const startTime = Date.now();
 
-    const prompt = `You are an expert EVM implementation debugger. Your task is to fix failing Ethereum specification tests.
+    const prompt = `<task>
+Your goal is to make our EVM ethereum spec compliant by passing the execution tests.
+
+You are an expert EVM implementation debugger tasked with fixing failing Ethereum specification tests.
+</task>
+
+<context>
+The ethereum specification tests are the official tests we are using as a submodule. They are battle-hardened and used by every major EVM implementation (geth, erigon, nethermind, etc.), so we know they are authoritative.
 
 ## Test Suite Information
 
 **Test Suite**: ${suite.description}
-**Command**: ${suite.command}
+**Command**: \`${suite.command}\`
+**Hardfork Context**: This test suite targets specific hardfork rules and EIP requirements that must be satisfied.
+</context>
+
+<test_failure_output>
+The test failures will appear below. Pay careful attention to:
+- Which specific tests are failing (test names often indicate what they're testing)
+- Gas differences (actual vs expected gas usage)
+- State differences (storage, balances, nonces, code)
+- Return values or revert reasons
+- Trace divergence points (if available)
 
 ## Test Failure Output
 
-## Your Task
+[Test output will be provided here]
+</test_failure_output>
 
-1. **Analyze the test failures**: Understand what tests are failing and why
-2. **Understand the failure type**: Is it a poststate mismatch? Gas difference? Return data issue?
-3. **Read relevant source code**: Use the Read tool to examine the EVM implementation in src/
-4. **Compare with Python reference**: Look at the execution-specs reference implementation
-5. **Identify the root cause**: Determine what's wrong with the implementation
-6. **Fix the issue**: Edit the source files to fix the bug(s)
-7. **Verify the fix**: Run the test suite again to confirm it passes
+<methodology>
+Follow this systematic debugging approach:
 
-## Debugging Strategy
+## Phase 1: Understand the Failure
+1. **Identify the failure type**:
+   - Gas calculation error? → Check gas_constants.zig and gas metering logic
+   - Wrong output/state? → Check opcode implementations in frame.zig
+   - Wrong behavior? → Check EVM orchestration in evm.zig
+   - Hardfork-specific? → Check hardfork.zig feature flags
 
-**Step 1: Understand WHY it's failing**
-- Is the poststate (storage, balance, nonce) incorrect?
-- Is the gas consumption wrong?
-- Is the return data different?
-- Is there an exception that shouldn't happen (or vice versa)?
+2. **Analyze test names**: Test names often reveal what they're testing (e.g., "transientStorageReset" tests TSTORE/TLOAD opcodes, "warmCoinbase" tests EIP-3651)
 
-**Step 2: Read our implementation**
-- Read the relevant code in \`src/frame.zig\` (opcode implementations)
-- Check \`src/evm.zig\` for state management and call handling
-- Review \`src/primitives/gas_constants.zig\` for gas costs
+3. **Read the error output carefully**: Look for:
+   - Expected vs actual gas values
+   - Stack differences
+   - Memory/storage differences
+   - Return data mismatches
 
-**Step 3: Compare with Python reference implementation**
+## Phase 2: Locate the Bug
+1. **Use targeted file reading**: Based on the failure type, read the most relevant files first
+2. **Check hardfork activation**: Verify the feature is enabled for the correct hardfork using \`hardfork.isAtLeast()\`
+3. **Review EIP specifications**: If the test relates to a specific EIP, ensure our implementation matches the spec
+4. **Compare with Python reference implementation**:
+   - Location: \`execution-specs/src/ethereum/forks/<hardfork>/\`
+   - Opcode implementations: \`vm/instructions/\`
+   - Main interpreter: \`vm/interpreter.py\`
+   - Gas metering: \`vm/gas.py\`
+   - State management: \`state.py\`
 
-The Python reference implementations are in the execution-specs submodule:
-- **Location**: \`execution-specs/src/ethereum/forks/<hardfork>/\`
-- **Example paths**:
-  - \`execution-specs/src/ethereum/forks/cancun/vm/instructions/\` - Opcode implementations
-  - \`execution-specs/src/ethereum/forks/cancun/vm/interpreter.py\` - Main interpreter
-  - \`execution-specs/src/ethereum/forks/cancun/vm/gas.py\` - Gas metering
-  - \`execution-specs/src/ethereum/forks/cancun/fork.py\` - State transition logic
-  - \`execution-specs/src/ethereum/forks/cancun/state.py\` - State management
+## Phase 3: Fix the Issue
+1. **Make minimal, focused changes**: Fix only what's broken, don't refactor unnecessarily
+2. **Preserve existing behavior**: Ensure your fix doesn't break other hardforks
+3. **Add hardfork guards**: Use \`if (self.hardfork.isAtLeast(.FORK_NAME))\` for fork-specific behavior
+4. **Update gas constants**: If gas costs changed in a hardfork, update gas_constants.zig
 
-Available hardforks in execution-specs:
-- frontier, homestead, byzantium, constantinople, istanbul
-- berlin, london, paris, shanghai, cancun, prague, osaka
-
-**Step 4: Use tracing when needed**
-
-If you have a gas difference or need to see step-by-step execution, use the Python reference implementation's trace feature:
-
-\`\`\`bash
-cd execution-specs
-uv run -m ethereum_spec_tools.evm_tools t8n \\
-  --input.alloc <alloc.json> \\
-  --input.env <env.json> \\
-  --input.txs <txs.json> \\
-  --state.fork <Cancun|Berlin|etc> \\
-  --trace \\
-  --trace.memory \\
-  --trace.returndata
-\`\`\`
-
-This produces an EIP-3155 compatible trace that you can compare with our trace output.
-
-**Step 5: Filter to a single test**
-
-Don't try to fix all failures at once. Use the \`TEST_FILTER\` environment variable to run ONE specific failing test:
-
-\`\`\`bash
-# Filter by exact test name (substring match)
-TEST_FILTER="exact_test_name" ${suite.command}
-
-# Examples:
-TEST_FILTER="transStorageReset" zig build specs-cancun-tstore-basic
-TEST_FILTER="berlin.*tx_type_0" zig build specs-berlin
-TEST_FILTER="push0" zig build specs-shanghai
-
-# The filter does substring matching on the full test name
-# So you can filter by hardfork, EIP, opcode, or specific test case
-\`\`\`
-
-This runs ONLY tests whose name contains the filter string, making debugging much faster.
-
-## Codebase Structure
-
-**Our implementation**:
-- \`src/frame.zig\`: Opcode implementations and bytecode interpreter
-- \`src/evm.zig\`: EVM orchestrator (state, calls, creates)
-- \`src/hardfork.zig\`: Hardfork detection and feature flags
-- \`src/primitives/gas_constants.zig\`: Gas costs per operation
-- \`src/host.zig\`: Host interface for state access
-- \`src/trace.zig\`: EIP-3155 tracing
-
-**Python reference** (execution-specs):
-- \`execution-specs/src/ethereum/forks/<hardfork>/vm/\`: VM implementation
-- \`execution-specs/src/ethereum/forks/<hardfork>/vm/instructions/\`: Opcodes
-- \`execution-specs/src/ethereum/forks/<hardfork>/vm/interpreter.py\`: Main loop
-- \`execution-specs/src/ethereum/forks/<hardfork>/vm/gas.py\`: Gas metering
-- \`execution-specs/src/ethereum/forks/<hardfork>/state.py\`: State management
+## Phase 4: Verify the Fix
+1. **Run the test command**: \`${suite.command}\`
+2. **Check for regressions**: If you fixed one test but broke others, refine your approach
+3. **Iterate if needed**: If tests still fail, analyze the new output and adjust
+4. **Use traces for debugging**: If gas differences persist, compare execution traces
+5. **Filter to single test**: Use \`TEST_FILTER="test_name" ${suite.command}\` to focus on one failing test
 
 ## Important Guidelines
-
 - Focus on ONE failing test at a time
 - **Think hard about what the behavior SHOULD be** based on the reference implementation
 - Compare opcode-by-opcode or state change-by-state change with the Python reference
-- After making changes, run the test command to verify: \`${suite.command}\`
+- After making changes, run the test command to verify
 - If tests still fail, analyze the new output and iterate
 - Use traces to pinpoint the exact divergence point
+</methodology>
 
-## Expected Output
+<codebase_reference>
+## Key Files and Their Responsibilities
 
-Provide a summary of:
-1. What was failing and why (be specific: poststate? gas? exception?)
-2. What the Python reference does differently
-3. What you changed to fix it
-4. Confirmation that tests now pass (or explanation if they don't)
+| File | Primary Purpose | When to Modify |
+|------|----------------|----------------|
+| \`src/frame.zig\` | Opcode implementations, bytecode interpreter, stack/memory management | Fixing opcode logic, instruction behavior, gas metering per instruction |
+| \`src/evm.zig\` | EVM orchestrator, call handling, storage, state transitions | Fixing CALL/CREATE behavior, storage access, account state, gas refunds |
+| \`src/hardfork.zig\` | Hardfork detection and feature flags | Adding new hardfork support, fixing fork-specific activation |
+| \`src/primitives/gas_constants.zig\` | Gas costs per operation and hardfork | Fixing gas cost errors, updating costs for new hardforks |
+| \`src/host.zig\` | Host interface for external state access | Rarely modified (interface definition) |
+| \`src/trace.zig\` | EIP-3155 tracing implementation | Only for debugging/tracing issues |
+| \`src/opcode.zig\` | Opcode definitions and utilities | Adding new opcodes, updating opcode properties |
+| \`test/specs/\` | Test infrastructure and runners | Only when changing test framework itself |
 
-Begin your analysis and fix now.`;
+## Common Bug Patterns
+
+1. **Gas Metering Bugs**:
+   - Missing gas charges (e.g., forgetting memory expansion cost)
+   - Wrong gas constants for hardfork
+   - Incorrect warm/cold access tracking (EIP-2929)
+   - Gas refund calculation errors (capped at 1/5 post-London)
+
+2. **Hardfork Logic Bugs**:
+   - Feature activated on wrong hardfork
+   - Missing \`isAtLeast()\` checks
+   - Incorrect feature flag precedence
+
+3. **Opcode Implementation Bugs**:
+   - Stack underflow/overflow not checked
+   - Wrong arithmetic (e.g., modulo, signed operations)
+   - Memory expansion not calculated correctly
+   - Return data not handled properly
+
+4. **State Management Bugs**:
+   - Storage not persisted correctly
+   - Transient storage not cleared properly (EIP-1153)
+   - Balance transfers not atomic
+   - Nonce increments missing or wrong
+
+5. **Call/Create Bugs**:
+   - Gas stipend not applied (2300 for value transfers)
+   - Call depth not checked (max 1024)
+   - Return data not copied back correctly
+   - Revert not propagated properly
+</codebase_reference>
+
+<debugging_techniques>
+## Advanced Debugging Strategies
+
+### Strategy 1: Single Test Isolation
+If multiple tests fail, filter to ONE failing test for focused debugging:
+\`\`\`bash
+TEST_FILTER="exact_failing_test_name" ${suite.command}
+\`\`\`
+
+### Strategy 2: Trace Comparison
+For gas differences or behavior divergence:
+1. Generate our EVM trace (EIP-3155 format)
+2. Generate reference Python EVM trace
+3. Compare step-by-step to find exact divergence point
+
+The test runner automatically does this for you and shows the divergence point.
+
+### Strategy 3: Reference Implementation Comparison
+Check the official execution-specs Python implementation:
+- Located in \`execution-specs/\` submodule
+- Contains reference implementations for all hardforks
+- Look for the equivalent opcode/function and compare logic
+
+### Strategy 4: Incremental Fixing
+If many tests fail:
+1. Group failures by similarity (same error type, same opcode)
+2. Fix the most fundamental issue first (often a gas constant or missing check)
+3. Re-run to see if it fixes multiple tests
+4. Iterate on remaining failures
+
+### Strategy 5: Gas Calculation Decomposition
+For gas errors, trace the gas calculation step-by-step:
+1. Base instruction cost
+2. Memory expansion cost
+3. Dynamic cost (e.g., SSTORE, CALL)
+4. Warm/cold access cost (post-Berlin)
+5. Gas refunds (check cap)
+</debugging_techniques>
+
+<critical_reminders>
+## Critical Rules - Do Not Violate
+
+1. ❌ **DO NOT** break existing passing tests - always verify your changes don't cause regressions
+2. ❌ **DO NOT** hardcode test-specific logic - fix the underlying implementation
+3. ❌ **DO NOT** skip hardfork checks - use proper \`isAtLeast()\` guards
+4. ❌ **DO NOT** modify test files - only fix the implementation in \`src/\`
+5. ✅ **DO** run the test command after every change to verify
+6. ✅ **DO** make minimal, focused changes that directly address the failure
+7. ✅ **DO** preserve backward compatibility with earlier hardforks
+8. ✅ **DO** use the TodoWrite tool to track your progress through multiple test failures
+9. ✅ **DO** read files before editing them to understand context
+10. ✅ **DO** iterate if the first fix doesn't work - debugging is iterative
+</critical_reminders>
+
+<output_requirements>
+## Expected Final Report
+
+At the end of your debugging session, provide a clear summary:
+
+### Summary Structure:
+\`\`\`markdown
+## Root Cause Analysis
+[Explain what was failing and why - be specific about the bug]
+
+## Changes Made
+[List each file modified and what was changed - be concise but complete]
+
+## Test Results
+[Confirm tests now pass, or explain remaining failures and next steps]
+
+## Technical Details
+[Any important implementation details, EIP references, or gotchas]
+\`\`\`
+
+### Quality Criteria:
+- ✅ Root cause clearly identified and explained
+- ✅ All changes necessary and sufficient (no more, no less)
+- ✅ Test suite passes (or clear explanation of why not)
+- ✅ No regressions introduced
+- ✅ Changes are maintainable and follow codebase style
+</output_requirements>
+
+<execution_directive>
+**Begin your analysis and fix now.**
+
+Remember: You are an expert debugger. Be systematic, be thorough, and verify every change. The tests are correct - our implementation needs to match the specification.
+</execution_directive>`;
 
     try {
       let totalCost = 0;
@@ -354,21 +448,76 @@ Begin your analysis and fix now.`;
     console.log(`📝 Creating commit for: ${suite.name}`);
     console.log(`${'█'.repeat(80)}\n`);
 
-    const prompt = `The ${suite.description} test suite is now passing. Please create a git commit for the changes that fixed these tests.
+    const prompt = `<task>
+The ${suite.description} test suite is now passing. Create a git commit for the changes that fixed these tests.
+</task>
 
-Your task:
-1. Review what files were changed using git status and git diff
-2. Create a descriptive commit message that explains what was fixed
-3. Commit the changes with an appropriate message
+<context>
+This commit represents a significant milestone - a previously failing test suite now passes, bringing us closer to full Ethereum specification compliance.
+</context>
 
-The commit message should:
-- Clearly indicate which test suite is now passing
-- Mention the hardfork or EIP if relevant
-- Be concise but informative
+<instructions>
+## Step 1: Review Changes
+Use \`git status\` and \`git diff\` to understand:
+- Which files were modified
+- What specific changes were made
+- The scope and nature of the fix
 
-Example format: "fix: Pass ${suite.description}"
+## Step 2: Craft Commit Message
+Follow this structure:
 
-Create the commit now.`;
+**Format**: \`<type>: <description>\`
+
+**Type Options**:
+- \`fix\`: Bug fix in implementation (most common for test fixes)
+- \`feat\`: New feature/opcode implementation
+- \`perf\`: Performance improvement
+- \`refactor\`: Code restructuring without behavior change
+
+**Description Guidelines**:
+- Start with "Pass ${suite.description}" or similar
+- Mention specific EIP number if relevant (e.g., "EIP-1153", "EIP-3855")
+- Mention hardfork if suite-specific (e.g., "Cancun", "Shanghai")
+- Be specific about what was fixed (e.g., "Fix TSTORE gas calculation" not just "Fix gas")
+
+**Examples**:
+- \`fix: Pass Cancun EIP-1153 transient storage tests\`
+- \`fix: Pass Shanghai EIP-3855 PUSH0 tests\`
+- \`fix: Pass Istanbul hardfork tests - Fix SELFBALANCE and CHAINID opcodes\`
+- \`fix: Pass Berlin EIP-2929 gas cost tests - Correct warm/cold access tracking\`
+
+## Step 3: Include Body (if needed)
+For complex fixes, add a commit body explaining:
+- Root cause of the failure
+- Key changes made
+- Any important implementation details
+
+Use the standard format:
+\`\`\`
+fix: Pass ${suite.description}
+
+- Root cause: [brief explanation]
+- Changes: [key changes]
+- EIP: [EIP number and name if applicable]
+\`\`\`
+
+## Step 4: Create Commit
+Use the standard commit format with co-author attribution.
+</instructions>
+
+<critical_reminders>
+- ✅ **DO** be specific about what was fixed
+- ✅ **DO** mention EIP numbers when relevant
+- ✅ **DO** use conventional commit format (\`type: description\`)
+- ✅ **DO** keep the first line under 72 characters
+- ❌ **DO NOT** be vague (e.g., "fix tests")
+- ❌ **DO NOT** forget to include the co-author line
+- ❌ **DO NOT** commit unrelated changes
+</critical_reminders>
+
+<execution_directive>
+Create the commit now using git commands.
+</execution_directive>`;
 
     try {
       const result = query({
