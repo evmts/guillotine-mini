@@ -845,6 +845,7 @@ pub const Evm = struct {
         }
 
         // Execute initialization code
+        std.debug.print("DEBUG: inner_create calling Frame.init with init_code.len = {d}\n", .{init_code.len});
         try self.frames.append(self.arena.allocator(), try Frame.init(
             self.arena.allocator(),
             init_code,
@@ -857,6 +858,7 @@ pub const Evm = struct {
             self.hardfork,
             false, // CREATE/CREATE2 are never static (can't create contracts in static context)
         ));
+        std.debug.print("DEBUG: Frame.init completed successfully\n", .{});
         errdefer _ = self.frames.pop();
 
         // Execute frame

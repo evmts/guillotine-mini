@@ -94,6 +94,7 @@ pub const Frame = struct {
         hardfork: Hardfork,
         is_static: bool,
     ) !Self {
+        std.debug.print("DEBUG: Frame.init start, bytecode.len = {d}\n", .{bytecode.len});
         var stack = std.ArrayList(u256){};
         try stack.ensureTotalCapacity(allocator, 1024);
         errdefer stack.deinit(allocator);
@@ -102,9 +103,11 @@ pub const Frame = struct {
         errdefer memory_map.deinit();
 
         // Analyze bytecode to identify valid jump destinations
+        std.debug.print("DEBUG: About to call validateJumpDests with bytecode.len = {d}\n", .{bytecode.len});
         var valid_jumpdests = std.AutoArrayHashMap(u32, void).init(allocator);
         errdefer valid_jumpdests.deinit();
         try validateJumpDests(allocator, bytecode, &valid_jumpdests);
+        std.debug.print("DEBUG: validateJumpDests completed, found {d} jumpdests\n", .{valid_jumpdests.count()});
 
         return Self{
             .stack = stack,
