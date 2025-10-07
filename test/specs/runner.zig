@@ -49,7 +49,7 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
             defer hardforks_to_test.deinit(allocator);
 
             // Check for each hardfork in order
-            inline for (&[_][]const u8{ "Cancun", "Prague", "Shanghai", "Merge", "London", "Berlin" }) |fork_name| {
+            inline for (&[_][]const u8{ "Cancun", "Prague", "Shanghai", "Paris", "Merge", "London", "Berlin" }) |fork_name| {
                 if (p.object.get(fork_name)) |_| {
                     if (Hardfork.fromString(fork_name)) |hf| {
                         try hardforks_to_test.append(allocator, hf);
@@ -411,11 +411,54 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         }
     }
 
-    // Block context is optional - pass null to use EVM's defaults
-    const block_ctx = null;
-
     // Extract hardfork from test JSON (or use forced hardfork for multi-fork tests)
     const hardfork = if (forced_hardfork) |hf| hf else extractHardfork(test_case);
+
+    // Build block context from env section
+    const block_ctx: ?evm_mod.BlockContext = if (test_case.object.get("env")) |env| blk: {
+        break :blk .{
+            .chain_id = if (env.object.get("currentChainId")) |cid|
+                try parseIntFromJson(cid)
+            else
+                1,
+            .block_number = if (env.object.get("currentNumber")) |num|
+                try parseIntFromJson(num)
+            else
+                0,
+            .block_timestamp = if (env.object.get("currentTimestamp")) |ts|
+                try parseIntFromJson(ts)
+            else
+                0,
+            .block_difficulty = if (env.object.get("currentDifficulty")) |diff|
+                try std.fmt.parseInt(u256, diff.string, 0)
+            else
+                0,
+            .block_prevrandao = if (env.object.get("currentRandom")) |rand|
+                try std.fmt.parseInt(u256, rand.string, 0)
+            else
+                0,
+            .block_coinbase = coinbase,
+            .block_gas_limit = if (env.object.get("currentGasLimit")) |gl|
+                try parseIntFromJson(gl)
+            else
+                30_000_000,
+            .block_base_fee = if (env.object.get("currentBaseFee")) |bf|
+                try parseIntFromJson(bf)
+            else
+                0,
+            .blob_base_fee = if (env.object.get("currentExcessBlobGas")) |excess| blk2: {
+                const excess_blob_gas = try parseIntFromJson(excess);
+                // Calculate blob base fee from excess blob gas (EIP-4844)
+                const GAS_PER_BLOB: u256 = 131072;
+                const MIN_BLOB_GASPRICE: u256 = 1;
+                const BLOB_GASPRICE_UPDATE_FRACTION: u256 = 3338477;
+                break :blk2 if (excess_blob_gas == 0)
+                    MIN_BLOB_GASPRICE
+                else
+                    taylorExponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_GASPRICE_UPDATE_FRACTION * GAS_PER_BLOB);
+            } else 0,
+        };
+    } else null;
 
     // Create EVM with test host and detected hardfork
     const host_interface = test_host.hostInterface();
@@ -750,6 +793,23 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
             }
 
+            // Add initcode word cost for contract creation (EIP-3860, Shanghai+)
+            if (to == null) {
+                if (hardfork) |hf| {
+                    if (hf.isAtLeast(.SHANGHAI)) {
+                        // EIP-3860: Check initcode size limit for create transactions
+                        if (tx_data.len > primitives.GasConstants.MaxInitcodeSize) {
+                            // Transaction is invalid - initcode too large
+                            continue;
+                        }
+                        // Contract creation transaction - charge 2 gas per 32-byte word of initcode
+                        const initcode_words = primitives.GasConstants.wordCount(tx_data.len);
+                        const initcode_cost = initcode_words * primitives.GasConstants.InitcodeWordGas;
+                        intrinsic_gas += initcode_cost;
+                    }
+                }
+            }
+
             // Ensure we have enough gas for intrinsic cost
             if (gas_limit < intrinsic_gas) {
                 // Transaction is invalid - out of gas
@@ -908,17 +968,33 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
             }
 
-            // Execute with execution gas (intrinsic gas already deducted)
-            const result = try evm_instance.call(
-                bytecode,
-                @intCast(execution_gas),
-                sender,
-                target_addr,
-                value,
-                tx_data,
-                access_list_param,
-                blob_hashes_storage,
-            );
+            // Execute transaction
+            const result = if (to == null) blk: {
+                // Contract creation transaction - use inner_create
+                const create_result = try evm_instance.inner_create(
+                    value,
+                    tx_data,  // initcode
+                    execution_gas,
+                    null,  // no salt for regular CREATE (only CREATE2 uses salt)
+                );
+                break :blk evm_mod.CallResult{
+                    .success = create_result.success,
+                    .gas_left = create_result.gas_left,
+                    .output = &[_]u8{},  // CREATE doesn't return data, just address on stack
+                };
+            } else blk: {
+                // Regular call - use call method
+                break :blk try evm_instance.call(
+                    bytecode,
+                    @intCast(execution_gas),
+                    sender,
+                    target_addr,
+                    value,
+                    tx_data,
+                    access_list_param,
+                    blob_hashes_storage,
+                );
+            };
 
             // Calculate gas used BEFORE applying refunds
             const execution_gas_used = execution_gas - result.gas_left;

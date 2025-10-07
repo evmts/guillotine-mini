@@ -64,7 +64,7 @@ const StorageSlotKeyContext = struct {
     }
 };
 
-const BlockContext = struct {
+pub const BlockContext = struct {
     chain_id: u64,
     block_number: u64,
     block_timestamp: u64,
@@ -808,7 +808,7 @@ pub const Evm = struct {
                 return .{
                     .address = primitives.ZERO_ADDRESS,
                     .success = false,
-                    .gas_left = gas,
+                    .gas_left = 0,
                 };
             }
         }
