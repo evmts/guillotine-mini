@@ -11,6 +11,7 @@ const host = @import("host.zig");
 const errors = @import("errors.zig");
 const trace = @import("trace.zig");
 const blake2 = @import("blake2.zig");
+const precompiles = @import("precompiles");
 
 const Address = primitives.Address.Address;
 
@@ -430,261 +431,31 @@ pub const Evm = struct {
         // std.debug.print("DEBUG inner_call: address={any} code.len={} frames={}\n", .{address.bytes, code.len, self.frames.items.len});
         if (code.len == 0) {
             // Check if this is a precompile address
-            const addr_num = blk: {
-                var val: u256 = 0;
-                for (address.bytes) |b| {
-                    val = (val << 8) | b;
-                }
-                break :blk val;
-            };
-
-            // Precompile 0x01: ECRECOVER - signature recovery (all forks)
-            if (addr_num == 1) {
-                const precompile_gas: u64 = 3000;
-
-                if (gas < precompile_gas) {
+            if (precompiles.is_precompile(address)) {
+                // Use the precompiles module to handle all precompile execution
+                const result = precompiles.execute_precompile(
+                    self.arena.allocator(),
+                    address,
+                    input,
+                    gas,
+                ) catch |err| {
+                    // On error, return failure
+                    std.debug.print("Precompile execution error: {}\n", .{err});
                     return CallResult{
                         .success = false,
                         .gas_left = 0,
                         .output = &[_]u8{},
                     };
-                }
-
-                // Pad input to 128 bytes if needed
-                var padded_input: [128]u8 = [_]u8{0} ** 128;
-                const copy_len = @min(input.len, 128);
-                @memcpy(padded_input[0..copy_len], input[0..copy_len]);
-
-                // For now, return empty output (20 zero bytes + 12 padding)
-                // TODO: Implement actual ECRECOVER using crypto library
-                const output = try self.arena.allocator().alloc(u8, 32);
-                @memset(output, 0);
+                };
 
                 return CallResult{
-                    .success = true,
-                    .gas_left = gas - precompile_gas,
-                    .output = output,
+                    .success = result.success,
+                    .gas_left = if (result.success) gas - result.gas_used else 0,
+                    .output = result.output,
                 };
             }
 
-            // Precompile 0x02: SHA256 - available in all forks
-            if (addr_num == 2) {
-                const Sha256 = std.crypto.hash.sha2.Sha256;
-                // Gas cost: 60 + 12 * (len(input) / 32) rounded up
-                const input_len = input.len;
-                const word_count = (input_len + 31) / 32;
-                const precompile_gas = 60 + (12 * word_count);
-
-                if (gas < precompile_gas) {
-                    // Out of gas
-                    return CallResult{
-                        .success = false,
-                        .gas_left = 0,
-                        .output = &[_]u8{},
-                    };
-                }
-
-                // Compute SHA256 hash
-                var hash: [32]u8 = undefined;
-                Sha256.hash(input, &hash, .{});
-
-                const output = try self.arena.allocator().alloc(u8, 32);
-                @memcpy(output, &hash);
-
-                return CallResult{
-                    .success = true,
-                    .gas_left = gas - precompile_gas,
-                    .output = output,
-                };
-            }
-
-            // Precompile 0x04: Identity (datacopy) - available in all forks
-            if (addr_num == 4) {
-                // Identity: copy input to output
-                // Gas cost: 15 + 3 * (len(input) / 32) rounded up
-                const input_len = input.len;
-                const word_count = (input_len + 31) / 32;
-                const precompile_gas = 15 + (3 * word_count);
-
-                if (gas < precompile_gas) {
-                    // Out of gas
-                    return CallResult{
-                        .success = false,
-                        .gas_left = 0,
-                        .output = &[_]u8{},
-                    };
-                }
-
-                // Copy input to output
-                const output = try self.arena.allocator().alloc(u8, input_len);
-                @memcpy(output, input);
-
-                return CallResult{
-                    .success = true,
-                    .gas_left = gas - precompile_gas,
-                    .output = output,
-                };
-            }
-
-            // Precompile 0x05: MODEXP - modular exponentiation (Byzantium+, EIP-198)
-            if (addr_num == 5 and self.hardfork.isAtLeast(.BYZANTIUM)) {
-                // Parse lengths from input (first 96 bytes)
-                var base_len: u256 = 0;
-                var exp_len: u256 = 0;
-                var mod_len: u256 = 0;
-
-                if (input.len >= 32) {
-                    for (input[0..32]) |b| base_len = (base_len << 8) | b;
-                }
-                if (input.len >= 64) {
-                    for (input[32..64]) |b| exp_len = (exp_len << 8) | b;
-                }
-                if (input.len >= 96) {
-                    for (input[64..96]) |b| mod_len = (mod_len << 8) | b;
-                }
-
-                // Parse exponent head (first 32 bytes of exponent, for gas calculation)
-                const exp_start = 96 + @as(usize, @intCast(@min(base_len, std.math.maxInt(usize))));
-                var exp_head: u256 = 0;
-                const exp_head_len = @min(@as(usize, @intCast(@min(exp_len, 32))), input.len -| exp_start);
-                if (exp_start < input.len and exp_head_len > 0) {
-                    for (input[exp_start..][0..exp_head_len]) |b| exp_head = (exp_head << 8) | b;
-                }
-
-                // Calculate complexity (mult_complexity)
-                const max_len = @max(base_len, mod_len);
-                const mult_complexity = if (self.hardfork.isAtLeast(.BERLIN)) blk: {
-                    // EIP-2565 (Berlin+): Simplified formula: (ceil(max_len / 8))^2
-                    const words = (max_len + 7) / 8; // ceiling division
-                    break :blk words * words;
-                } else if (max_len <= 64) blk: {
-                    // EIP-198 (Byzantium): Original formula with three branches
-                    break :blk (max_len * max_len);
-                } else if (max_len <= 1024) blk: {
-                    break :blk ((max_len * max_len) / 4) + (96 * max_len) - 3072;
-                } else blk: {
-                    break :blk ((max_len * max_len) / 16) + (480 * max_len) - 199680;
-                };
-
-                // Calculate iterations (iteration_count)
-                const adjusted_exp_len = if (exp_len < 32) blk: {
-                    // bit_length - 1 of exp_head, or 0
-                    if (exp_head == 0) break :blk 0;
-                    var bit_len: u256 = 0;
-                    var temp = exp_head;
-                    var safety: u256 = 0;
-                    while (temp > 0 and safety < 256) : ({temp >>= 1; safety += 1;}) bit_len += 1;
-                    break :blk if (bit_len > 0) bit_len - 1 else 0;
-                } else blk: {
-                    if (exp_head == 0) {
-                        // If exp_head is 0 but exp_len >= 32, the effective bit length is still based on exp_len
-                        break :blk 8 * (exp_len - 32);
-                    }
-                    var bit_len: u256 = 0;
-                    var temp = exp_head;
-                    var safety: u256 = 0;
-                    while (temp > 0 and safety < 256) : ({temp >>= 1; safety += 1;}) bit_len += 1;
-                    const exp_bit_len = if (bit_len > 0) bit_len - 1 else 0;
-                    break :blk 8 * (exp_len - 32) + exp_bit_len;
-                };
-                const iteration_count = @max(adjusted_exp_len, 1);
-
-                // Gas cost calculation depends on hardfork
-                // EIP-198 (Byzantium): divide by 20
-                // EIP-2565 (Berlin): divide by 3, minimum 200 gas
-                const divisor: u256 = if (self.hardfork.isAtLeast(.BERLIN)) 3 else 20;
-                const cost = (mult_complexity * iteration_count) / divisor;
-                const cost_u64 = @as(u64, @intCast(@min(cost, std.math.maxInt(u64))));
-                const precompile_gas = if (self.hardfork.isAtLeast(.BERLIN))
-                    @max(cost_u64, GasConstants.MODEXP_MIN_GAS)
-                else
-                    cost_u64;
-
-                if (gas < precompile_gas) {
-                    return CallResult{
-                        .success = true,  // MODEXP returns success with empty output on OOG (EIP-198)
-                        .gas_left = 0,
-                        .output = &[_]u8{},
-                    };
-                }
-
-                // For now, return zero result (proper implementation would do modular exponentiation)
-                // Output should be mod_len bytes
-                const output_len = @min(@as(usize, @intCast(mod_len)), 8192); // Cap at reasonable size
-                const output = try self.arena.allocator().alloc(u8, output_len);
-                @memset(output, 0);
-
-                return CallResult{
-                    .success = true,
-                    .gas_left = gas - precompile_gas,
-                    .output = output,
-                };
-            }
-
-            // Precompile 0x09: BLAKE2F - available from Istanbul (EIP-152)
-            if (addr_num == 9 and self.hardfork.isAtLeast(.ISTANBUL)) {
-                // BLAKE2F compression function
-                // Input must be exactly 213 bytes
-                if (input.len != 213) {
-                    // Invalid input - precompile fails
-                    return CallResult{
-                        .success = false,
-                        .gas_left = 0,
-                        .output = &[_]u8{},
-                    };
-                }
-
-                // Parse rounds from first 4 bytes (big-endian)
-                const rounds = std.mem.readInt(u32, input[0..4], .big);
-
-                // Gas cost: 1 per round
-                const precompile_gas = @as(u64, rounds);
-
-                if (gas < precompile_gas) {
-                    // Out of gas
-                    return CallResult{
-                        .success = false,
-                        .gas_left = 0,
-                        .output = &[_]u8{},
-                    };
-                }
-
-                // Validate final block flag (last byte must be 0 or 1)
-                const f = input[212];
-                if (f != 0 and f != 1) {
-                    // Invalid final block flag - precompile fails
-                    return CallResult{
-                        .success = false,
-                        .gas_left = 0,
-                        .output = &[_]u8{},
-                    };
-                }
-
-                // Perform BLAKE2F compression
-                var output_buf: [64]u8 = undefined;
-                blake2.compress(input, &output_buf) catch {
-                    // Compression failed - precompile fails
-                    return CallResult{
-                        .success = false,
-                        .gas_left = 0,
-                        .output = &[_]u8{},
-                    };
-                };
-
-                // Copy output to arena
-                const output = try self.arena.allocator().alloc(u8, 64);
-                @memcpy(output, &output_buf);
-
-                return CallResult{
-                    .success = true,
-                    .gas_left = gas - precompile_gas,
-                    .output = output,
-                };
-            }
-
-            // For other precompiles or empty accounts, return success with no output
-            // TODO: Implement other precompiles
-            // std.debug.print("DEBUG: Returning success for empty code (addr_num={})\n", .{addr_num});
+            // For non-precompile empty accounts, return success with no output
             return CallResult{
                 .success = true,
                 .gas_left = gas,
