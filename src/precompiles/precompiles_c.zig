@@ -60,22 +60,26 @@ pub const PRECOMPILE_POINT_EVALUATION: u8 = 10;
 /// Check if an address is a precompile
 /// @param address Pointer to 20-byte address
 /// @return 1 if precompile, 0 otherwise
+/// Note: Uses latest hardfork (PRAGUE) for precompile availability
 pub export fn evm_is_precompile(address: ?*const CAddress) c_int {
     const addr = address orelse return 0;
-    
+    const Hardfork = @import("../hardfork.zig").Hardfork;
+
     const native_addr: Address = addr.bytes;
-    return if (precompiles.is_precompile(native_addr)) 1 else 0;
+    return if (precompiles.is_precompile(native_addr, .PRAGUE)) 1 else 0;
 }
 
 /// Get precompile ID from address (last byte if valid precompile)
 /// @param address Pointer to 20-byte address
 /// @return Precompile ID (1-10), or 0 if not a precompile
+/// Note: Uses latest hardfork (PRAGUE) for precompile availability
 pub export fn evm_get_precompile_id(address: ?*const CAddress) u8 {
     const addr = address orelse return 0;
-    
+    const Hardfork = @import("../hardfork.zig").Hardfork;
+
     const native_addr: Address = addr.bytes;
-    if (!precompiles.is_precompile(native_addr)) return 0;
-    
+    if (!precompiles.is_precompile(native_addr, .PRAGUE)) return 0;
+
     return native_addr[19]; // Last byte is the precompile ID
 }
 

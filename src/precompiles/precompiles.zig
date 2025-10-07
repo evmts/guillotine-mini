@@ -68,31 +68,53 @@ pub const PrecompileOutput = struct {
     success: bool,
 };
 
-/// Check if an address is a precompile
-pub fn is_precompile(address: Address) bool {
-    // Check if the address is one of the known precompile addresses
-    // Precompiles are at addresses:
-    // 0x01-0x0A: Standard precompiles (ECRECOVER through POINT_EVALUATION)
-    // 0x0B-0x12: BLS12-381 precompiles (EIP-2537)
-    
+/// Check if an address is a precompile for the given hardfork
+/// Precompiles were introduced in different hardforks:
+/// - Frontier/Homestead (0x01-0x04): ECRECOVER, SHA256, RIPEMD160, IDENTITY
+/// - Byzantium (0x05-0x08): MODEXP, ECADD, ECMUL, ECPAIRING
+/// - Istanbul (0x09): BLAKE2F
+/// - Cancun (0x0A): POINT_EVALUATION
+/// - Prague (0x0B-0x12): BLS12-381 precompiles
+pub fn is_precompile(address: Address, hardfork: @import("../hardfork.zig").Hardfork) bool {
     // Check if all bytes except the last one are zero
     for (address.bytes[0..19]) |byte| {
         if (byte != 0) return false;
     }
-    // Check if the last byte is between 1 and 18 (0x12)
-    return address.bytes[19] >= 1 and address.bytes[19] <= 0x12;
+
+    const precompile_id = address.bytes[19];
+
+    // Check precompile availability based on hardfork
+    return switch (precompile_id) {
+        // Frontier/Homestead precompiles (always available)
+        1, 2, 3, 4 => true,
+        // Byzantium precompiles (EIP-196, EIP-197, EIP-198)
+        5, 6, 7, 8 => hardfork.isAtLeast(.BYZANTIUM),
+        // Istanbul precompiles (EIP-152)
+        9 => hardfork.isAtLeast(.ISTANBUL),
+        // Cancun precompiles (EIP-4844)
+        10 => hardfork.isAtLeast(.CANCUN),
+        // Prague precompiles (EIP-2537)
+        0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12 => hardfork.isAtLeast(.PRAGUE),
+        else => false,
+    };
 }
 
 /// Execute a precompile based on its address
 /// Not safe to call without checking is_precompile first
+/// Note: This function assumes the caller has already verified the precompile is available
+/// for the current hardfork using is_precompile()
 pub fn execute_precompile(
     allocator: std.mem.Allocator,
     address: Address,
     input: []const u8,
     gas_limit: u64,
 ) PrecompileError!PrecompileOutput {
-    std.debug.assert(is_precompile(address));
+    // Check if address is a precompile address (address must be 0x00...00XX where XX is 1-18)
+    for (address.bytes[0..19]) |byte| {
+        std.debug.assert(byte == 0);
+    }
     const precompile_id = address.bytes[19];
+    std.debug.assert(precompile_id >= 1 and precompile_id <= 0x12);
     return switch (precompile_id) {
         1 => execute_ecrecover(allocator, input, gas_limit),
         2 => execute_sha256(allocator, input, gas_limit),
@@ -371,10 +393,25 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
         };
     }
 
-    // Calculate gas cost (simplified version)
-    const max_len = @max(@max(base_len, exp_len), mod_len);
-    const complexity = (max_len * max_len) / 64;
-    const required_gas = @max(GasCosts.MODEXP_MIN, complexity);
+    // Calculate gas cost (EIP-198 specification)
+    // Read first 32 bytes of exponent (padded with zeros if shorter)
+    var exp_head: [32]u8 = [_]u8{0} ** 32;
+    const exp_head_len = @min(exp_len, 32);
+    if (exp_head_len > 0) {
+        @memcpy(exp_head[0..exp_head_len], exp[0..exp_head_len]);
+    }
+    const exp_head_u256 = bytesToU256(&exp_head);
+
+    // Calculate multiplication complexity
+    const max_len = @max(base_len, mod_len);
+    const complexity = crypto.ModExp.unaudited_calculateMultiplicationComplexity(max_len);
+
+    // Calculate iteration count based on adjusted exponent length
+    const iteration_count = calculateIterationCount(exp_len, exp_head_u256);
+
+    // Final gas cost = (complexity * iteration_count) / 20
+    const cost = (complexity * iteration_count) / 20;
+    const required_gas = @max(GasCosts.MODEXP_MIN, cost);
 
     if (gas_limit < required_gas) {
         return PrecompileOutput{
@@ -403,6 +440,25 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
         .gas_used = required_gas,
         .success = true,
     };
+}
+
+/// Calculate iteration count for modexp gas calculation (EIP-198)
+/// Based on the adjusted exponent length
+fn calculateIterationCount(exp_len: u32, exp_head: u256) u64 {
+    const adjusted_exp_length: u64 = if (exp_len <= 32) blk: {
+        // For exp_len < 32, adjusted length is based on bit length of exp_head
+        if (exp_head == 0) break :blk 0;
+        const bit_length = 256 - @clz(exp_head);
+        break :blk if (bit_length > 0) bit_length - 1 else 0;
+    } else blk: {
+        // For exp_len >= 32, adjusted length = 8 * (exp_len - 32) + bit_length_of_first_32_bytes - 1
+        const bit_length = if (exp_head == 0) 0 else 256 - @clz(exp_head);
+        const extra_bytes: u64 = exp_len - 32;
+        break :blk 8 * extra_bytes + if (bit_length > 0) bit_length - 1 else 0;
+    };
+
+    // Return at least 1
+    return @max(adjusted_exp_length, 1);
 }
 
 /// 0x06: ecAdd - BN254 elliptic curve addition
@@ -951,35 +1007,46 @@ fn u256ToBytes(value: u256, output: []u8) void {
     @memcpy(output, temp[offset..][0..output.len]);
 }
 
-test "is_precompile detects valid precompile addresses" {
+test "is_precompile detects valid precompile addresses with hardfork awareness" {
     const testing = std.testing;
 
-    // Test valid precompile addresses
-    try testing.expect(is_precompile(ECRECOVER_ADDRESS));
-    try testing.expect(is_precompile(SHA256_ADDRESS));
-    try testing.expect(is_precompile(RIPEMD160_ADDRESS));
-    try testing.expect(is_precompile(IDENTITY_ADDRESS));
-    try testing.expect(is_precompile(MODEXP_ADDRESS));
-    try testing.expect(is_precompile(ECADD_ADDRESS));
-    try testing.expect(is_precompile(ECMUL_ADDRESS));
-    try testing.expect(is_precompile(ECPAIRING_ADDRESS));
-    try testing.expect(is_precompile(BLAKE2F_ADDRESS));
-    try testing.expect(is_precompile(POINT_EVALUATION_ADDRESS));
+    // Test Frontier/Homestead precompiles (always available)
+    try testing.expect(is_precompile(ECRECOVER_ADDRESS, .FRONTIER));
+    try testing.expect(is_precompile(SHA256_ADDRESS, .HOMESTEAD));
+    try testing.expect(is_precompile(RIPEMD160_ADDRESS, .HOMESTEAD));
+    try testing.expect(is_precompile(IDENTITY_ADDRESS, .HOMESTEAD));
 
-    // Test BLS12-381 precompile addresses (EIP-2537)
-    try testing.expect(is_precompile(BLS12_381_G1_ADD_ADDRESS));
-    try testing.expect(is_precompile(BLS12_381_G1_MUL_ADDRESS));
-    try testing.expect(is_precompile(BLS12_381_G1_MULTIEXP_ADDRESS));
-    try testing.expect(is_precompile(BLS12_381_G2_ADD_ADDRESS));
-    try testing.expect(is_precompile(BLS12_381_G2_MUL_ADDRESS));
-    try testing.expect(is_precompile(BLS12_381_G2_MULTIEXP_ADDRESS));
-    try testing.expect(is_precompile(BLS12_381_PAIRING_ADDRESS));
-    try testing.expect(is_precompile(BLS12_381_MAP_FP_TO_G1_ADDRESS));
+    // Test Byzantium precompiles (not available before Byzantium)
+    try testing.expect(!is_precompile(MODEXP_ADDRESS, .HOMESTEAD));
+    try testing.expect(is_precompile(MODEXP_ADDRESS, .BYZANTIUM));
+    try testing.expect(is_precompile(ECADD_ADDRESS, .BYZANTIUM));
+    try testing.expect(is_precompile(ECMUL_ADDRESS, .BYZANTIUM));
+    try testing.expect(is_precompile(ECPAIRING_ADDRESS, .BYZANTIUM));
+
+    // Test Istanbul precompiles (not available before Istanbul)
+    try testing.expect(!is_precompile(BLAKE2F_ADDRESS, .BYZANTIUM));
+    try testing.expect(!is_precompile(BLAKE2F_ADDRESS, .CONSTANTINOPLE));
+    try testing.expect(is_precompile(BLAKE2F_ADDRESS, .ISTANBUL));
+
+    // Test Cancun precompiles (not available before Cancun)
+    try testing.expect(!is_precompile(POINT_EVALUATION_ADDRESS, .ISTANBUL));
+    try testing.expect(is_precompile(POINT_EVALUATION_ADDRESS, .CANCUN));
+
+    // Test BLS12-381 precompile addresses (EIP-2537, Prague)
+    try testing.expect(!is_precompile(BLS12_381_G1_ADD_ADDRESS, .CANCUN));
+    try testing.expect(is_precompile(BLS12_381_G1_ADD_ADDRESS, .PRAGUE));
+    try testing.expect(is_precompile(BLS12_381_G1_MUL_ADDRESS, .PRAGUE));
+    try testing.expect(is_precompile(BLS12_381_G1_MULTIEXP_ADDRESS, .PRAGUE));
+    try testing.expect(is_precompile(BLS12_381_G2_ADD_ADDRESS, .PRAGUE));
+    try testing.expect(is_precompile(BLS12_381_G2_MUL_ADDRESS, .PRAGUE));
+    try testing.expect(is_precompile(BLS12_381_G2_MULTIEXP_ADDRESS, .PRAGUE));
+    try testing.expect(is_precompile(BLS12_381_PAIRING_ADDRESS, .PRAGUE));
+    try testing.expect(is_precompile(BLS12_381_MAP_FP_TO_G1_ADDRESS, .PRAGUE));
 
     // Test invalid addresses
-    try testing.expect(!is_precompile(primitives.Address.from_u256(0)));
-    try testing.expect(!is_precompile(primitives.Address.from_u256(0x13))); // Beyond BLS12-381
-    try testing.expect(!is_precompile(primitives.Address.from_u256(100)));
+    try testing.expect(!is_precompile(primitives.Address.from_u256(0), .PRAGUE));
+    try testing.expect(!is_precompile(primitives.Address.from_u256(0x13), .PRAGUE)); // Beyond BLS12-381
+    try testing.expect(!is_precompile(primitives.Address.from_u256(100), .PRAGUE));
 }
 
 test "execute_identity precompile" {
@@ -1369,16 +1436,16 @@ test "execute_point_evaluation without kzg setup" {
 
 test "precompile address boundary checks" {
     const testing = std.testing;
-    
-    // Test addresses at boundaries
-    try testing.expect(is_precompile(ECRECOVER_ADDRESS)); // 0x01
-    try testing.expect(is_precompile(POINT_EVALUATION_ADDRESS)); // 0x0A
-    
+
+    // Test addresses at boundaries (using Prague which has all precompiles)
+    try testing.expect(is_precompile(ECRECOVER_ADDRESS, .PRAGUE)); // 0x01
+    try testing.expect(is_precompile(POINT_EVALUATION_ADDRESS, .PRAGUE)); // 0x0A
+
     // Test addresses outside range
-    try testing.expect(!is_precompile(primitives.Address.ZERO));
-    try testing.expect(is_precompile(Address{ .bytes = [_]u8{0} ** 19 ++ [_]u8{0x0B} })); // 0x0B is a valid BLS12-381 precompile
-    try testing.expect(!is_precompile(Address{ .bytes = [_]u8{0} ** 19 ++ [_]u8{0x13} })); // 0x13 is beyond valid precompiles
-    try testing.expect(!is_precompile(Address{ .bytes = [_]u8{0xFF} ** 20 })); // Max address
+    try testing.expect(!is_precompile(primitives.Address.ZERO, .PRAGUE));
+    try testing.expect(is_precompile(Address{ .bytes = [_]u8{0} ** 19 ++ [_]u8{0x0B} }, .PRAGUE)); // 0x0B is a valid BLS12-381 precompile
+    try testing.expect(!is_precompile(Address{ .bytes = [_]u8{0} ** 19 ++ [_]u8{0x13} }, .PRAGUE)); // 0x13 is beyond valid precompiles
+    try testing.expect(!is_precompile(Address{ .bytes = [_]u8{0xFF} ** 20 }, .PRAGUE)); // Max address
 }
 
 test "execute_all_precompiles smoke test" {
