@@ -67,6 +67,12 @@ pub const Hardfork = enum {
     /// EIP-7251: Increase max effective balance.
     /// EIP-7002: Execution layer triggerable exits.
     PRAGUE,
+    /// Osaka fork (TBD).
+    /// EIP-7883: ModExp gas increase.
+    /// EIP-7823: ModExp upper bounds.
+    /// EIP-7825: Transaction gas limit cap.
+    /// EIP-7934: Block RLP limit.
+    OSAKA,
 
     /// Default hardfork for new chains.
     /// Set to latest stable fork (currently PRAGUE).
@@ -123,6 +129,7 @@ pub const Hardfork = enum {
         if (std.ascii.eqlIgnoreCase(clean_name, "Shanghai")) return .SHANGHAI;
         if (std.ascii.eqlIgnoreCase(clean_name, "Cancun")) return .CANCUN;
         if (std.ascii.eqlIgnoreCase(clean_name, "Prague")) return .PRAGUE;
+        if (std.ascii.eqlIgnoreCase(clean_name, "Osaka")) return .OSAKA;
 
         return null;
     }
