@@ -1,6 +1,6 @@
 /// KZG trusted setup management for EIP-4844 support
 const std = @import("std");
-const crypto = @import("../crypto/root.zig");
+const crypto = @import("crypto");
 const ckzg = crypto.c_kzg;
 
 /// Embedded trusted setup data
