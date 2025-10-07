@@ -69,6 +69,7 @@ pub const TestHost = struct {
                 .getBalance = getBalance,
                 .setBalance = setBalanceVTable,
                 .getCode = getCode,
+                .setCode = setCodeVTable,
                 .getStorage = getStorage,
                 .setStorage = setStorage,
                 .getNonce = getNonceVTable,
@@ -146,6 +147,30 @@ pub const TestHost = struct {
     fn getCode(ptr: *anyopaque, address: Address) []const u8 {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.code.get(address) orelse &[_]u8{};
+    }
+
+    fn setCodeVTable(ptr: *anyopaque, address: Address, code: []const u8) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        // Note: We need to duplicate code to own it, as the passed slice may be temporary
+        // For empty code, just clear the entry
+        if (code.len == 0) {
+            if (self.code.fetchRemove(address)) |kv| {
+                self.allocator.free(kv.value);
+            }
+            return;
+        }
+        // Free existing code if present
+        if (self.code.fetchRemove(address)) |kv| {
+            self.allocator.free(kv.value);
+        }
+        // Store new code (duplicate to own the memory - the caller may free their copy)
+        const owned_code = self.allocator.dupe(u8, code) catch {
+            return; // In a test context, we should not fail silently, but the interface doesn't allow errors
+        };
+        self.code.put(address, owned_code) catch {
+            self.allocator.free(owned_code);
+            return;
+        };
     }
 
     fn getStorage(ptr: *anyopaque, address: Address, slot: u256) u256 {

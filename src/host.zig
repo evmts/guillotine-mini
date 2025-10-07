@@ -13,6 +13,7 @@ pub const HostInterface = struct {
         getBalance: *const fn (ptr: *anyopaque, address: Address) u256,
         setBalance: *const fn (ptr: *anyopaque, address: Address, balance: u256) void,
         getCode: *const fn (ptr: *anyopaque, address: Address) []const u8,
+        setCode: *const fn (ptr: *anyopaque, address: Address, code: []const u8) void,
         getStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256) u256,
         setStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256, value: u256) void,
         getNonce: *const fn (ptr: *anyopaque, address: Address) u64,
@@ -42,6 +43,10 @@ pub const HostInterface = struct {
 
     pub fn getCode(self: HostInterface, address: Address) []const u8 {
         return self.vtable.getCode(self.ptr, address);
+    }
+
+    pub fn setCode(self: HostInterface, address: Address, code: []const u8) void {
+        self.vtable.setCode(self.ptr, address, code);
     }
 
     pub fn getStorage(self: HostInterface, address: Address, slot: u256) u256 {
@@ -85,6 +90,7 @@ pub const Host = struct {
                 .getBalance = getBalance,
                 .setBalance = setBalance,
                 .getCode = getCode,
+                .setCode = setCode,
                 .getStorage = getStorage,
                 .setStorage = setStorage,
                 .getNonce = getNonce,
@@ -123,6 +129,12 @@ pub const Host = struct {
         _ = ptr;
         _ = address;
         return &[_]u8{};
+    }
+
+    fn setCode(ptr: *anyopaque, address: Address, code: []const u8) void {
+        _ = ptr;
+        _ = address;
+        _ = code;
     }
 
     fn getStorage(ptr: *anyopaque, address: Address, slot: u256) u256 {

@@ -719,40 +719,31 @@ pub const Evm = struct {
             break :blk Address{ .bytes = addr_bytes };
         };
 
-        // Check for address collision (EIP-684)
-        // An account is considered to exist if it has code, nonce > 0, or storage
-        const target_nonce = if (self.host) |h|
-            h.getNonce(new_address)
-        else
-            self.nonces.get(new_address) orelse 0;
-
-        const target_code = if (self.host) |h|
-            h.getCode(new_address)
-        else
-            self.code.get(new_address) orelse &[_]u8{};
-
-        // Check if account has storage by iterating storage map
-        var has_storage = false;
-        if (self.host == null) {
-            var storage_iter = self.storage.iterator();
-            while (storage_iter.next()) |entry| {
-                if (std.mem.eql(u8, &entry.key_ptr.address.bytes, &new_address.bytes)) {
-                    has_storage = true;
-                    break;
-                }
+        // Check for address collision (code, nonce, or storage already exists)
+        // Per EIP-684: If account has code or nonce, CREATE fails
+        const has_collision = blk: {
+            if (self.host) |h| {
+                const has_code = h.getCode(new_address).len > 0;
+                const has_nonce = h.getNonce(new_address) > 0;
+                break :blk has_code or has_nonce;
+            } else {
+                const has_code = (self.code.get(new_address) orelse &[_]u8{}).len > 0;
+                const has_nonce = (self.nonces.get(new_address) orelse 0) > 0;
+                break :blk has_code or has_nonce;
             }
-        }
-
-        const has_collision = target_nonce > 0 or target_code.len > 0 or has_storage;
+        };
 
         if (has_collision) {
-            // Collision detected - increment sender's nonce and fail
-            if (self.host) |h| {
-                h.setNonce(caller, sender_nonce + 1);
-            } else {
-                try self.nonces.put(caller, sender_nonce + 1);
+            // Collision detected - increment caller nonce and return failure
+            if (salt == null) {
+                // Only increment nonce for CREATE (not CREATE2, which doesn't increment on collision)
+                const caller_nonce = if (self.host) |h| h.getNonce(caller) else self.nonces.get(caller) orelse 0;
+                if (self.host) |h| {
+                    h.setNonce(caller, caller_nonce + 1);
+                } else {
+                    try self.nonces.put(caller, caller_nonce + 1);
+                }
             }
-
             return .{
                 .address = primitives.ZERO_ADDRESS,
                 .success = false,
@@ -760,12 +751,6 @@ pub const Evm = struct {
             };
         }
 
-        // No collision - increment sender's nonce and proceed
-        if (self.host) |h| {
-            h.setNonce(caller, sender_nonce + 1);
-        } else {
-            try self.nonces.put(caller, sender_nonce + 1);
-        }
 
         // Set nonce of new contract to 1 (EVM spec: contracts start with nonce 1)
         if (self.host) |h| {
@@ -889,14 +874,24 @@ pub const Evm = struct {
                 }
 
                 // Deploy code and deduct deposit gas
-                const code_copy = try self.arena.allocator().alloc(u8, frame.output.len);
-                @memcpy(code_copy, frame.output);
-                try self.code.put(new_address, code_copy);
+                if (self.host) |h| {
+                    // When using a host, update host's code directly
+                    h.setCode(new_address, frame.output);
+                } else {
+                    // When not using a host, store in EVM's code map
+                    const code_copy = try self.arena.allocator().alloc(u8, frame.output.len);
+                    @memcpy(code_copy, frame.output);
+                    try self.code.put(new_address, code_copy);
+                }
                 const deposit_cost = @as(u64, @intCast(frame.output.len)) * GasConstants.CreateDataGas;
                 gas_left -= deposit_cost;
             } else if (success) {
                 // Deploy empty code (output.len == 0)
-                try self.code.put(new_address, &[_]u8{});
+                if (self.host) |h| {
+                    h.setCode(new_address, &[_]u8{});
+                } else {
+                    try self.code.put(new_address, &[_]u8{});
+                }
             }
 
             // Mark account as created in this transaction (EIP-6780) if successful
