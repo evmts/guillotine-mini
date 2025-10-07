@@ -215,8 +215,17 @@ pub const Evm = struct {
         try self.preWarmAddresses(warm[0..count]);
 
         // Pre-warm precompiles if Berlin+
+        // EIP-2929: Precompiles 0x01-0x09 are always warm in Berlin and later
         if (!self.hardfork.isAtLeast(.BERLIN)) return;
-        // TODO: Pre-warm precompiles
+
+        // Pre-warm addresses 0x01 through 0x09
+        var i: u8 = 1;
+        while (i <= 9) : (i += 1) {
+            const precompile_addr = Address.from_u256(i);
+            _ = self.warm_addresses.getOrPut(precompile_addr) catch {
+                return errors.CallError.StorageError;
+            };
+        }
     }
 
     /// Execute bytecode (main entry point like evm.execute)

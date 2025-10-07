@@ -21,6 +21,11 @@ pub fn build(b: *std.Build) void {
     // target and optimize options) will be listed when running `zig build --help`
     // in this directory.
 
+    // Build options module for precompiles
+    const build_options = b.addOptions();
+    build_options.addOption(usize, "vector_length", 16); // Default vector length for crypto operations
+    const build_options_mod = build_options.createModule();
+
     // Create the primitives module first, as it's a dependency
     const primitives_mod = b.addModule("primitives", .{
         .root_source_file = b.path("src/primitives/root.zig"),
@@ -44,13 +49,14 @@ pub fn build(b: *std.Build) void {
 
     // Create precompiles module
     const precompiles_mod = b.addModule("precompiles", .{
-        .root_source_file = b.path("src/precompiles/root.zig"),
+        .root_source_file = b.path("src/precompiles/precompiles.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "blake2", .module = blake2_mod },
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
 
