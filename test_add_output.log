@@ -1,0 +1,35 @@
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Running tests matching: 'add'
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+ [44m[37m RUN [0m [90mv0.15.1[0m
+ [36m›~/guillotine[0m
+
+DEBUG: Transient storage initialized (should be empty), count=0
+expected 999999999999999115110, found 999999999999999093950
+DEBUG: Transient storage initialized (should be empty), count=0
+expected 999999999999999115110, found 999999999999999093950
+
+[33m⚠ Trace Divergence at step 0[0m
+[1mDifference in: trace_length[0m
+
+[36mOur EVM:[0m
+  PC: 0x0  Op: 0x5f (PUSH0)  Gas: 379000
+  Stack depth: 0
+
+DEBUG: Transient storage initialized (should be empty), count=0
+expected 10, found 11
+DEBUG: Transient storage initialized (should be empty), count=0
+expected 10, found 11
+
+[33m⚠ Trace Divergence at step 0[0m
+[1mDifference in: trace_length[0m
+
+[36mOur EVM:[0m
+  PC: 0x0  Op: 0x5f (PUSH0)  Gas: 379000
+  Stack depth: 0
+
+DEBUG: Transient storage initialized (should be empty), count=0
+expected 999999999999765558330, found 999999999999765518210
+DEBUG: Transient storage initialized (should be empty), count=0
