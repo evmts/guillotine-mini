@@ -717,12 +717,12 @@ pub const Frame = struct {
                 // Berlin+: cold/warm access (2600/100)
                 // Tangerine Whistle-Berlin: 400 gas
                 // Pre-Tangerine Whistle: 20 gas
-                const access_cost = if (evm.hardfork.isAtLeast(.BERLIN))
+                const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
                     try evm.accessAddress(addr)
                 else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                    400
+                    @as(u64, 400)
                 else
-                    20;
+                    @as(u64, 20);
                 try self.consumeGas(access_cost);
                 const balance = evm.get_balance(addr);
                 try self.pushStack(balance);
@@ -2016,12 +2016,12 @@ pub const Frame = struct {
                 // Berlin+: cold/warm access (2600/100)
                 // Tangerine Whistle-Berlin: 700 gas
                 // Pre-Tangerine Whistle: 20 gas
-                const access_cost = if (evm.hardfork.isAtLeast(.BERLIN))
+                const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
                     try evm.accessAddress(ext_addr)
                 else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                    700
+                    @as(u64, 700)
                 else
-                    20;
+                    @as(u64, 20);
                 try self.consumeGas(access_cost);
 
                 // For Frame, we don't have access to external code
@@ -2049,12 +2049,12 @@ pub const Frame = struct {
                     // Berlin+: cold/warm access (2600/100) + copy cost
                     // Tangerine Whistle-Berlin: 700 + copy cost
                     // Pre-Tangerine Whistle: 20 + copy cost
-                    const base_access_cost = if (evm.hardfork.isAtLeast(.BERLIN))
+                    const base_access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
                         try evm.accessAddress(ext_addr)
                     else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                        700
+                        @as(u64, 700)
                     else
-                        20;
+                        @as(u64, 20);
                     try self.consumeGas(base_access_cost + copy_cost);
 
                     const dest = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
@@ -2089,10 +2089,10 @@ pub const Frame = struct {
                 // Gas cost: hardfork-aware
                 // Berlin+: cold/warm access (2600/100)
                 // Constantinople-Berlin: 400 gas
-                const access_cost = if (evm.hardfork.isAtLeast(.BERLIN))
+                const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
                     try evm.accessAddress(ext_addr)
                 else
-                    400;
+                    @as(u64, 400);
                 try self.consumeGas(access_cost);
 
                 // For Frame, return empty code hash
