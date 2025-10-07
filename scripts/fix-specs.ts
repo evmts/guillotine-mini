@@ -63,28 +63,12 @@ const TEST_SUITES: TestSuite[] = [
 
   // Shanghai EIPs
   // { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
-  {
-    name: "byzantium",
-    command: "zig build specs-byzantium",
-    description: "Byzantium hardfork tests",
-  },
-  {
-    name: "shanghai-initcode",
-    command: "zig build specs-shanghai-initcode",
-    description: "Shanghai EIP-3860 initcode tests",
-  },
 
   // Smaller hardforks (no sub-targets needed)
-  {
-    name: "constantinople",
-    command: "zig build specs-constantinople",
-    description: "Constantinople hardfork tests",
-  },
-  {
-    name: "istanbul",
-    command: "zig build specs-istanbul",
-    description: "Istanbul hardfork tests",
-  },
+  { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
+  { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
+  { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
+  { name: 'shanghai-initcode', command: 'zig build specs-shanghai-initcode', description: 'Shanghai EIP-3860 initcode tests' },
   // Berlin sub-targets (broken up from large test suite)
   // { name: 'berlin-acl', command: 'zig build specs-berlin-acl', description: 'Berlin EIP-2930 access list account storage tests' },
   // { name: 'berlin-intrinsic-gas-cost', command: 'zig build specs-berlin-intrinsic-gas-cost', description: 'Berlin EIP-2930 transaction intrinsic gas cost tests' },
