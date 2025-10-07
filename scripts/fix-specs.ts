@@ -21,27 +21,71 @@ const TEST_SUITES: TestSuite[] = [
   // { name: 'paris', command: 'zig build specs-paris', description: 'Paris/Merge hardfork tests' },
   // { name: 'homestead', command: 'zig build specs-homestead', description: 'Homestead hardfork tests' },
   // { name: 'shanghai-withdrawals', command: 'zig build specs-shanghai-withdrawals', description: 'Shanghai EIP-4895 withdrawal tests' },
-  // { name: 'berlin-gas', command: 'zig build specs-berlin-gas', description: 'Berlin EIP-2929 gas cost tests' },
   // { name: 'shanghai-push0', command: 'zig build specs-shanghai-push0', description: 'Shanghai EIP-3855 PUSH0 tests' },
-  // { name: 'cancun-beacon', command: 'zig build specs-cancun-beacon', description: 'Cancun EIP-4788 beacon root tests' },
-  // { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
-  // { name: 'frontier', command: 'zig build specs-frontier', description: 'Frontier hardfork tests' },
 
-  // These have failures
-  { name: 'cancun-tstore', command: 'zig build specs-cancun-tstore', description: 'Cancun EIP-1153 transient storage tests' },
-  { name: 'cancun-selfdestruct', command: 'zig build specs-cancun-selfdestruct', description: 'Cancun EIP-6780 SELFDESTRUCT tests' },
+  // Berlin sub-targets (broken up from large test suite)
+  { name: 'berlin-acl', command: 'zig build specs-berlin-acl', description: 'Berlin EIP-2930 access list account storage tests' },
+  { name: 'berlin-intrinsic-gas-cost', command: 'zig build specs-berlin-intrinsic-gas-cost', description: 'Berlin EIP-2930 transaction intrinsic gas cost tests' },
+  { name: 'berlin-intrinsic-type0', command: 'zig build specs-berlin-intrinsic-type0', description: 'Berlin EIP-2930 intrinsic gas type 0 transaction tests' },
+  { name: 'berlin-intrinsic-type1', command: 'zig build specs-berlin-intrinsic-type1', description: 'Berlin EIP-2930 intrinsic gas type 1 transaction tests' },
+
+  // Frontier sub-targets (broken up from large test suite)
+  { name: 'frontier-precompiles', command: 'zig build specs-frontier-precompiles', description: 'Frontier precompile tests' },
+  { name: 'frontier-identity', command: 'zig build specs-frontier-identity', description: 'Frontier identity precompile tests' },
+  { name: 'frontier-create', command: 'zig build specs-frontier-create', description: 'Frontier CREATE tests' },
+  { name: 'frontier-call', command: 'zig build specs-frontier-call', description: 'Frontier CALL/CALLCODE tests' },
+  { name: 'frontier-calldata', command: 'zig build specs-frontier-calldata', description: 'Frontier calldata opcode tests' },
+  { name: 'frontier-dup', command: 'zig build specs-frontier-dup', description: 'Frontier DUP tests' },
+  { name: 'frontier-push', command: 'zig build specs-frontier-push', description: 'Frontier PUSH tests' },
+  { name: 'frontier-stack', command: 'zig build specs-frontier-stack', description: 'Frontier stack overflow tests' },
+  { name: 'frontier-opcodes', command: 'zig build specs-frontier-opcodes', description: 'Frontier all opcodes tests' },
+
+  // Cancun sub-targets (broken up from large test suite)
+  { name: 'cancun-tstore-basic', command: 'zig build specs-cancun-tstore-basic', description: 'Cancun EIP-1153 basic TLOAD/TSTORE tests' },
+  { name: 'cancun-tstore-reentrancy', command: 'zig build specs-cancun-tstore-reentrancy', description: 'Cancun EIP-1153 reentrancy tests' },
+  { name: 'cancun-tstore-contexts', command: 'zig build specs-cancun-tstore-contexts', description: 'Cancun EIP-1153 execution context tests' },
   { name: 'cancun-mcopy', command: 'zig build specs-cancun-mcopy', description: 'Cancun EIP-5656 MCOPY tests' },
+  { name: 'cancun-selfdestruct', command: 'zig build specs-cancun-selfdestruct', description: 'Cancun EIP-6780 SELFDESTRUCT tests' },
+  { name: 'cancun-blobbasefee', command: 'zig build specs-cancun-blobbasefee', description: 'Cancun EIP-7516 BLOBBASEFEE tests' },
+  { name: 'cancun-blob-precompile', command: 'zig build specs-cancun-blob-precompile', description: 'Cancun EIP-4844 point evaluation precompile tests' },
+  { name: 'cancun-blob-opcodes', command: 'zig build specs-cancun-blob-opcodes', description: 'Cancun EIP-4844 BLOBHASH opcode tests' },
+  { name: 'cancun-blob-tx-small', command: 'zig build specs-cancun-blob-tx-small', description: 'Cancun EIP-4844 small blob transaction tests' },
+  { name: 'cancun-blob-tx-subtraction', command: 'zig build specs-cancun-blob-tx-subtraction', description: 'Cancun EIP-4844 blob gas subtraction tests' },
+  { name: 'cancun-blob-tx-insufficient', command: 'zig build specs-cancun-blob-tx-insufficient', description: 'Cancun EIP-4844 insufficient balance tests' },
+  { name: 'cancun-blob-tx-sufficient', command: 'zig build specs-cancun-blob-tx-sufficient', description: 'Cancun EIP-4844 sufficient balance tests' },
+  { name: 'cancun-blob-tx-valid-combos', command: 'zig build specs-cancun-blob-tx-valid-combos', description: 'Cancun EIP-4844 valid combinations tests' },
+
+  // Prague sub-targets (broken up from large test suite)
+  { name: 'prague-calldata-cost-type0', command: 'zig build specs-prague-calldata-cost-type0', description: 'Prague EIP-7623 calldata cost type 0 tests' },
+  { name: 'prague-calldata-cost-type1-2', command: 'zig build specs-prague-calldata-cost-type1-2', description: 'Prague EIP-7623 calldata cost type 1/2 tests' },
+  { name: 'prague-calldata-cost-type3', command: 'zig build specs-prague-calldata-cost-type3', description: 'Prague EIP-7623 calldata cost type 3 tests' },
+  { name: 'prague-calldata-cost-type4', command: 'zig build specs-prague-calldata-cost-type4', description: 'Prague EIP-7623 calldata cost type 4 tests' },
+  { name: 'prague-calldata-cost-refunds', command: 'zig build specs-prague-calldata-cost-refunds', description: 'Prague EIP-7623 refunds and gas tests' },
+  { name: 'prague-bls-g1', command: 'zig build specs-prague-bls-g1', description: 'Prague EIP-2537 BLS12-381 G1 tests' },
+  { name: 'prague-bls-g2', command: 'zig build specs-prague-bls-g2', description: 'Prague EIP-2537 BLS12-381 G2 tests' },
+  { name: 'prague-bls-pairing', command: 'zig build specs-prague-bls-pairing', description: 'Prague EIP-2537 BLS12-381 pairing tests' },
+  { name: 'prague-bls-map', command: 'zig build specs-prague-bls-map', description: 'Prague EIP-2537 BLS12-381 map tests' },
+  { name: 'prague-bls-misc', command: 'zig build specs-prague-bls-misc', description: 'Prague EIP-2537 BLS12-381 misc tests' },
+  { name: 'prague-setcode-calls', command: 'zig build specs-prague-setcode-calls', description: 'Prague EIP-7702 set code call tests' },
+  { name: 'prague-setcode-gas', command: 'zig build specs-prague-setcode-gas', description: 'Prague EIP-7702 set code gas tests' },
+  { name: 'prague-setcode-txs', command: 'zig build specs-prague-setcode-txs', description: 'Prague EIP-7702 set code transaction tests' },
+  { name: 'prague-setcode-advanced', command: 'zig build specs-prague-setcode-advanced', description: 'Prague EIP-7702 advanced set code tests' },
+
+  // Osaka sub-targets (broken up from large test suite)
+  { name: 'osaka-modexp-variable-gas', command: 'zig build specs-osaka-modexp-variable-gas', description: 'Osaka EIP-7883 modexp variable gas tests' },
+  { name: 'osaka-modexp-vectors-eip', command: 'zig build specs-osaka-modexp-vectors-eip', description: 'Osaka EIP-7883 modexp vectors from EIP tests' },
+  { name: 'osaka-modexp-vectors-legacy', command: 'zig build specs-osaka-modexp-vectors-legacy', description: 'Osaka EIP-7883 modexp vectors from legacy tests' },
+  { name: 'osaka-modexp-misc', command: 'zig build specs-osaka-modexp-misc', description: 'Osaka EIP-7883 modexp misc tests' },
+  { name: 'osaka-other', command: 'zig build specs-osaka-other', description: 'Osaka other EIP tests' },
+
+  // Shanghai EIPs
+  { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
   { name: 'shanghai-initcode', command: 'zig build specs-shanghai-initcode', description: 'Shanghai EIP-3860 initcode tests' },
-  { name: 'cancun-blobs', command: 'zig build specs-cancun-blobs', description: 'Cancun EIP-4844 blob transaction tests' },
-  { name: 'osaka', command: 'zig build specs-osaka', description: 'Osaka hardfork tests' },
+
+  // Smaller hardforks (no sub-targets needed)
   { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
   { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
   { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
-  { name: 'prague', command: 'zig build specs-prague', description: 'Prague hardfork tests' },
-  { name: 'cancun', command: 'zig build specs-cancun', description: 'Cancun hardfork tests (EIP-1153, EIP-4788, EIP-4844, EIP-5656, EIP-6780, EIP-7516)' },
-  { name: 'shanghai', command: 'zig build specs-shanghai', description: 'Shanghai hardfork tests (EIP-3651, EIP-3855, EIP-3860, EIP-4895)' },
-  { name: 'berlin', command: 'zig build specs-berlin', description: 'Berlin hardfork tests (EIP-2929, EIP-2930)' },
-  { name: 'berlin-accesslist', command: 'zig build specs-berlin-accesslist', description: 'Berlin EIP-2930 access list tests' },
 ];
 
 interface TestResult {
@@ -126,44 +170,111 @@ class SpecFixerPipeline {
 ## Your Task
 
 1. **Analyze the test failures**: Understand what tests are failing and why
-2. **Read relevant source code**: Use the Read tool to examine the EVM implementation in src/
-3. **Identify the root cause**: Determine what's wrong with the implementation
-4. **Fix the issue**: Edit the source files to fix the bug(s)
-5. **Verify the fix**: Run the test suite again to confirm it passes
+2. **Understand the failure type**: Is it a poststate mismatch? Gas difference? Return data issue?
+3. **Read relevant source code**: Use the Read tool to examine the EVM implementation in src/
+4. **Compare with Python reference**: Look at the execution-specs reference implementation
+5. **Identify the root cause**: Determine what's wrong with the implementation
+6. **Fix the issue**: Edit the source files to fix the bug(s)
+7. **Verify the fix**: Run the test suite again to confirm it passes
 
-## Important Guidelines
+## Debugging Strategy
 
-- Focus on fixing the SPECIFIC failures shown above
-- Read the implementation files in src/ (frame.zig, evm.zig, etc.)
-- Check the hardfork-specific logic in src/hardfork.zig
-- Review gas metering in src/primitives/gas_constants.zig if gas-related
-- Look at opcode implementations in src/frame.zig
-- Consider EIP compliance requirements
-- After making changes, run the test command to verify the fix: \`${suite.command}\`
-- If tests still fail after your fix, analyze the new output and iterate
+**Step 1: Understand WHY it's failing**
+- Is the poststate (storage, balance, nonce) incorrect?
+- Is the gas consumption wrong?
+- Is the return data different?
+- Is there an exception that shouldn't happen (or vice versa)?
+
+**Step 2: Read our implementation**
+- Read the relevant code in \`src/frame.zig\` (opcode implementations)
+- Check \`src/evm.zig\` for state management and call handling
+- Review \`src/primitives/gas_constants.zig\` for gas costs
+
+**Step 3: Compare with Python reference implementation**
+
+The Python reference implementations are in the execution-specs submodule:
+- **Location**: \`execution-specs/src/ethereum/forks/<hardfork>/\`
+- **Example paths**:
+  - \`execution-specs/src/ethereum/forks/cancun/vm/instructions/\` - Opcode implementations
+  - \`execution-specs/src/ethereum/forks/cancun/vm/interpreter.py\` - Main interpreter
+  - \`execution-specs/src/ethereum/forks/cancun/vm/gas.py\` - Gas metering
+  - \`execution-specs/src/ethereum/forks/cancun/fork.py\` - State transition logic
+  - \`execution-specs/src/ethereum/forks/cancun/state.py\` - State management
+
+Available hardforks in execution-specs:
+- frontier, homestead, byzantium, constantinople, istanbul
+- berlin, london, paris, shanghai, cancun, prague, osaka
+
+**Step 4: Use tracing when needed**
+
+If you have a gas difference or need to see step-by-step execution, use the Python reference implementation's trace feature:
+
+\`\`\`bash
+cd execution-specs
+uv run -m ethereum_spec_tools.evm_tools t8n \\
+  --input.alloc <alloc.json> \\
+  --input.env <env.json> \\
+  --input.txs <txs.json> \\
+  --state.fork <Cancun|Berlin|etc> \\
+  --trace \\
+  --trace.memory \\
+  --trace.returndata
+\`\`\`
+
+This produces an EIP-3155 compatible trace that you can compare with our trace output.
+
+**Step 5: Filter to a single test**
+
+Don't try to fix all failures at once. Use the \`TEST_FILTER\` environment variable to run ONE specific failing test:
+
+\`\`\`bash
+# Filter by exact test name (substring match)
+TEST_FILTER="exact_test_name" ${suite.command}
+
+# Examples:
+TEST_FILTER="transStorageReset" zig build specs-cancun-tstore-basic
+TEST_FILTER="berlin.*tx_type_0" zig build specs-berlin
+TEST_FILTER="push0" zig build specs-shanghai
+
+# The filter does substring matching on the full test name
+# So you can filter by hardfork, EIP, opcode, or specific test case
+\`\`\`
+
+This runs ONLY tests whose name contains the filter string, making debugging much faster.
 
 ## Codebase Structure
 
+**Our implementation**:
 - \`src/frame.zig\`: Opcode implementations and bytecode interpreter
 - \`src/evm.zig\`: EVM orchestrator (state, calls, creates)
 - \`src/hardfork.zig\`: Hardfork detection and feature flags
 - \`src/primitives/gas_constants.zig\`: Gas costs per operation
 - \`src/host.zig\`: Host interface for state access
 - \`src/trace.zig\`: EIP-3155 tracing
-- \`test/specs/\`: Test infrastructure
 
-## Debugging tips
+**Python reference** (execution-specs):
+- \`execution-specs/src/ethereum/forks/<hardfork>/vm/\`: VM implementation
+- \`execution-specs/src/ethereum/forks/<hardfork>/vm/instructions/\`: Opcodes
+- \`execution-specs/src/ethereum/forks/<hardfork>/vm/interpreter.py\`: Main loop
+- \`execution-specs/src/ethereum/forks/<hardfork>/vm/gas.py\`: Gas metering
+- \`execution-specs/src/ethereum/forks/<hardfork>/state.py\`: State management
 
-The official specs has a python reference implementation for every hardfork. Comparing and looking at the reference implementation is a good way to find inconsistencies between ours and theirs.
-You can filter for specific tests. I recomend filtering for a single failing test and debugging 1 at a time.
-If you got a gas difference it's worth trying to look at a trace. The python cli in the ethereum specs submodule has the ability to produce a JSON trace. By producing a trace between both our evm and the official python evm you can compare
+## Important Guidelines
+
+- Focus on ONE failing test at a time
+- **Think hard about what the behavior SHOULD be** based on the reference implementation
+- Compare opcode-by-opcode or state change-by-state change with the Python reference
+- After making changes, run the test command to verify: \`${suite.command}\`
+- If tests still fail, analyze the new output and iterate
+- Use traces to pinpoint the exact divergence point
 
 ## Expected Output
 
 Provide a summary of:
-1. What was failing and why
-2. What you changed to fix it
-3. Confirmation that tests now pass (or explanation if they don't)
+1. What was failing and why (be specific: poststate? gas? exception?)
+2. What the Python reference does differently
+3. What you changed to fix it
+4. Confirmation that tests now pass (or explanation if they don't)
 
 Begin your analysis and fix now.`;
 
