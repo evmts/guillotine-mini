@@ -271,6 +271,15 @@ fn hardforkToString(hf: Hardfork) []const u8 {
 /// Extract hardfork from test JSON
 /// Checks post/expect sections and returns the detected hardfork
 fn extractHardfork(test_case: std.json.Value) ?Hardfork {
+    // Check top-level 'network' field first (for blockchain tests)
+    if (test_case.object.get("network")) |network| {
+        if (network == .string) {
+            if (Hardfork.fromString(network.string)) |hf| {
+                return hf;
+            }
+        }
+    }
+
     // Check 'post' section for hardfork keys (Cancun, Prague, etc.)
     if (test_case.object.get("post")) |post| {
         if (post == .object) {
@@ -494,15 +503,21 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Parse transaction data
             const tx_data = if (tx.object.get("data")) |data| blk: {
                 const data_str = if (data == .array) data.array.items[0].string else data.string;
+                std.debug.print("DEBUG: tx data length = {d}\n", .{data_str.len});
                 const hex = try parseHexData(allocator, data_str);
                 defer allocator.free(hex);
+                std.debug.print("DEBUG: after parseHexData, hex.len = {d}\n", .{hex.len});
                 if (hex.len > 2) {
-                    break :blk try primitives.Hex.hex_to_bytes(allocator, hex);
+                    const bytes = try primitives.Hex.hex_to_bytes(allocator, hex);
+                    std.debug.print("DEBUG: after hex_to_bytes, bytes.len = {d}\n", .{bytes.len});
+                    break :blk bytes;
                 } else {
                     break :blk try allocator.alloc(u8, 0);
                 }
             } else try allocator.alloc(u8, 0);
             defer allocator.free(tx_data);
+
+            std.debug.print("DEBUG: tx_data allocated, proceeding to parse value\n", .{});
 
             // Parse value early for sender selection
             const value = if (tx.object.get("value")) |v| blk: {
@@ -1206,6 +1221,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 if (expected.object.get("balance")) |expected_bal| {
                     const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
                     const actual = test_host.balances.get(address) orelse 0;
+                    if (exp != actual) {
+                        std.debug.print("BALANCE MISMATCH: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
+                    }
                     try testing.expectEqual(exp, actual);
                 }
 
