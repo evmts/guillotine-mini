@@ -688,10 +688,10 @@ pub const Evm = struct {
         const new_address = if (salt) |s| blk: {
             // CREATE2: keccak256(0xff ++ caller ++ salt ++ keccak256(init_code))[12:]
             var hash_input = std.ArrayList(u8){};
-            defer hash_input.deinit(self.allocator);
+            defer hash_input.deinit(self.arena.allocator());
 
-            try hash_input.append(self.allocator, 0xff);
-            try hash_input.appendSlice(self.allocator, &caller.bytes);
+            try hash_input.append(self.arena.allocator(), 0xff);
+            try hash_input.appendSlice(self.arena.allocator(), &caller.bytes);
 
             // Add salt (32 bytes, big-endian)
             var salt_bytes: [32]u8 = undefined;
@@ -699,12 +699,12 @@ pub const Evm = struct {
             while (i < 32) : (i += 1) {
                 salt_bytes[31 - i] = @as(u8, @truncate(s >> @intCast(i * 8)));
             }
-            try hash_input.appendSlice(self.allocator, &salt_bytes);
+            try hash_input.appendSlice(self.arena.allocator(), &salt_bytes);
 
             // Add keccak256(init_code)
             var code_hash: [32]u8 = undefined;
             std.crypto.hash.sha3.Keccak256.hash(init_code, &code_hash, .{});
-            try hash_input.appendSlice(self.allocator, &code_hash);
+            try hash_input.appendSlice(self.arena.allocator(), &code_hash);
 
             // Hash and take last 20 bytes
             var addr_hash: [32]u8 = undefined;
@@ -724,17 +724,17 @@ pub const Evm = struct {
             // Manually construct RLP encoding of [address_bytes, nonce]
             // Address is 20 bytes, nonce is variable length
             var rlp_data = std.ArrayList(u8){};
-            defer rlp_data.deinit(self.allocator);
+            defer rlp_data.deinit(self.arena.allocator());
 
             // Encode address (20 bytes, 0x80 + 20 = 0x94)
-            try rlp_data.append(self.allocator, 0x94);
-            try rlp_data.appendSlice(self.allocator, &caller.bytes);
+            try rlp_data.append(self.arena.allocator(), 0x94);
+            try rlp_data.appendSlice(self.arena.allocator(), &caller.bytes);
 
             // Encode nonce (RLP encoding for integers)
             if (nonce == 0) {
-                try rlp_data.append(self.allocator, 0x80); // Empty byte string
+                try rlp_data.append(self.arena.allocator(), 0x80); // Empty byte string
             } else if (nonce < 0x80) {
-                try rlp_data.append(self.allocator, @as(u8, @intCast(nonce)));
+                try rlp_data.append(self.arena.allocator(), @as(u8, @intCast(nonce)));
             } else {
                 // Multi-byte nonce - encode as big-endian bytes with length prefix
                 // First, determine the minimum number of bytes needed
@@ -757,16 +757,16 @@ pub const Evm = struct {
                 const byte_count = 8 - start_idx;
 
                 // RLP: 0x80 + length, then the bytes
-                try rlp_data.append(self.allocator, @as(u8, @intCast(0x80 + byte_count)));
-                try rlp_data.appendSlice(self.allocator, nonce_bytes[start_idx..]);
+                try rlp_data.append(self.arena.allocator(), @as(u8, @intCast(0x80 + byte_count)));
+                try rlp_data.appendSlice(self.arena.allocator(), nonce_bytes[start_idx..]);
             }
 
             // Wrap in list prefix
             const total_len = rlp_data.items.len;
             var final_rlp = std.ArrayList(u8){};
-            defer final_rlp.deinit(self.allocator);
-            try final_rlp.append(self.allocator, @as(u8, @intCast(0xc0 + total_len))); // List with length
-            try final_rlp.appendSlice(self.allocator, rlp_data.items);
+            defer final_rlp.deinit(self.arena.allocator());
+            try final_rlp.append(self.arena.allocator(), @as(u8, @intCast(0xc0 + total_len))); // List with length
+            try final_rlp.appendSlice(self.arena.allocator(), rlp_data.items);
 
             // Hash and take last 20 bytes
             var addr_hash: [32]u8 = undefined;
@@ -912,8 +912,6 @@ pub const Evm = struct {
         errdefer _ = self.frames.pop();
 
         // Execute frame
-        // Debug: trace inner_create gas flow
-        std.debug.print("DEBUG[CREATE]: start child_gas={} init_len={}\n", .{child_gas, init_code.len});
         self.frames.items[self.frames.items.len - 1].execute() catch {
             const failed_frame = &self.frames.items[self.frames.items.len - 1];
             const error_output = failed_frame.output; // Capture output before popping
@@ -960,7 +958,6 @@ pub const Evm = struct {
             // Charge code deposit cost (200 gas per byte) if there's output
             if (frame_output.len > 0) {
                 const deposit_cost = @as(u64, @intCast(frame_output.len)) * GasConstants.CreateDataGas;
-                std.debug.print("DEBUG[CREATE]: frame_ok out_len={} gas_left_before_deposit={} deposit_cost={}\n", .{frame_output.len, gas_left, deposit_cost});
                 if (gas_left < deposit_cost) {
                     // Out of gas during code deposit -> creation fails
                     success = false;
@@ -1016,7 +1013,6 @@ pub const Evm = struct {
                 }
                 const deposit_cost = @as(u64, @intCast(frame_output.len)) * GasConstants.CreateDataGas;
                 gas_left -= deposit_cost;
-                std.debug.print("DEBUG[CREATE]: deposit_applied new_gas_left={}\n", .{gas_left});
             } else if (success) {
                 // Deploy empty code (output.len == 0)
                 if (self.host) |h| {
@@ -1061,7 +1057,6 @@ pub const Evm = struct {
         // According to EIP-1014 and CREATE semantics:
         // - On success: return_data should be empty
         // - On failure/revert: return_data should contain the child's output
-        std.debug.print("DEBUG[CREATE]: end success={} gas_left={}\n", .{success, gas_left});
         return .{
             .address = if (success) new_address else primitives.ZERO_ADDRESS,
             .success = success,
