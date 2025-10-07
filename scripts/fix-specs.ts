@@ -17,27 +17,27 @@ interface TestSuite {
 }
 
 const TEST_SUITES: TestSuite[] = [
-  { name: 'frontier', command: 'zig build specs-frontier', description: 'Frontier hardfork tests' },
-  { name: 'homestead', command: 'zig build specs-homestead', description: 'Homestead hardfork tests' },
-  { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
-  { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
-  { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
-  { name: 'berlin', command: 'zig build specs-berlin', description: 'Berlin hardfork tests (EIP-2929, EIP-2930)' },
-  { name: 'paris', command: 'zig build specs-paris', description: 'Paris/Merge hardfork tests' },
-  { name: 'shanghai', command: 'zig build specs-shanghai', description: 'Shanghai hardfork tests (EIP-3651, EIP-3855, EIP-3860, EIP-4895)' },
-  { name: 'cancun', command: 'zig build specs-cancun', description: 'Cancun hardfork tests (EIP-1153, EIP-4788, EIP-4844, EIP-5656, EIP-6780, EIP-7516)' },
-  { name: 'prague', command: 'zig build specs-prague', description: 'Prague hardfork tests' },
-  { name: 'osaka', command: 'zig build specs-osaka', description: 'Osaka hardfork tests' },
-  { name: 'cancun-tstore', command: 'zig build specs-cancun-tstore', description: 'Cancun EIP-1153 transient storage tests' },
-  { name: 'cancun-blobs', command: 'zig build specs-cancun-blobs', description: 'Cancun EIP-4844 blob transaction tests' },
-  { name: 'cancun-mcopy', command: 'zig build specs-cancun-mcopy', description: 'Cancun EIP-5656 MCOPY tests' },
-  { name: 'cancun-selfdestruct', command: 'zig build specs-cancun-selfdestruct', description: 'Cancun EIP-6780 SELFDESTRUCT tests' },
-  { name: 'cancun-beacon', command: 'zig build specs-cancun-beacon', description: 'Cancun EIP-4788 beacon root tests' },
-  { name: 'berlin-gas', command: 'zig build specs-berlin-gas', description: 'Berlin EIP-2929 gas cost tests' },
-  { name: 'berlin-accesslist', command: 'zig build specs-berlin-accesslist', description: 'Berlin EIP-2930 access list tests' },
-  { name: 'shanghai-push0', command: 'zig build specs-shanghai-push0', description: 'Shanghai EIP-3855 PUSH0 tests' },
-  { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
   { name: 'shanghai-initcode', command: 'zig build specs-shanghai-initcode', description: 'Shanghai EIP-3860 initcode tests' },
+  { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
+  { name: 'shanghai-push0', command: 'zig build specs-shanghai-push0', description: 'Shanghai EIP-3855 PUSH0 tests' },
+  { name: 'berlin-accesslist', command: 'zig build specs-berlin-accesslist', description: 'Berlin EIP-2930 access list tests' },
+  { name: 'berlin-gas', command: 'zig build specs-berlin-gas', description: 'Berlin EIP-2929 gas cost tests' },
+  { name: 'cancun-beacon', command: 'zig build specs-cancun-beacon', description: 'Cancun EIP-4788 beacon root tests' },
+  { name: 'cancun-selfdestruct', command: 'zig build specs-cancun-selfdestruct', description: 'Cancun EIP-6780 SELFDESTRUCT tests' },
+  { name: 'cancun-mcopy', command: 'zig build specs-cancun-mcopy', description: 'Cancun EIP-5656 MCOPY tests' },
+  { name: 'cancun-blobs', command: 'zig build specs-cancun-blobs', description: 'Cancun EIP-4844 blob transaction tests' },
+  { name: 'cancun-tstore', command: 'zig build specs-cancun-tstore', description: 'Cancun EIP-1153 transient storage tests' },
+  { name: 'osaka', command: 'zig build specs-osaka', description: 'Osaka hardfork tests' },
+  { name: 'prague', command: 'zig build specs-prague', description: 'Prague hardfork tests' },
+  { name: 'cancun', command: 'zig build specs-cancun', description: 'Cancun hardfork tests (EIP-1153, EIP-4788, EIP-4844, EIP-5656, EIP-6780, EIP-7516)' },
+  { name: 'shanghai', command: 'zig build specs-shanghai', description: 'Shanghai hardfork tests (EIP-3651, EIP-3855, EIP-3860, EIP-4895)' },
+  { name: 'paris', command: 'zig build specs-paris', description: 'Paris/Merge hardfork tests' },
+  { name: 'berlin', command: 'zig build specs-berlin', description: 'Berlin hardfork tests (EIP-2929, EIP-2930)' },
+  { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
+  { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
+  { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
+  { name: 'homestead', command: 'zig build specs-homestead', description: 'Homestead hardfork tests' },
+  { name: 'frontier', command: 'zig build specs-frontier', description: 'Frontier hardfork tests' },
   { name: 'shanghai-withdrawals', command: 'zig build specs-shanghai-withdrawals', description: 'Shanghai EIP-4895 withdrawal tests' },
 ];
 
@@ -153,6 +153,12 @@ ${testResult.error || ''}
 - \`src/host.zig\`: Host interface for state access
 - \`src/trace.zig\`: EIP-3155 tracing
 - \`test/specs/\`: Test infrastructure
+
+## Debugging tips
+
+The official specs has a python reference implementation for every hardfork. Comparing and looking at the reference implementation is a good way to find inconsistencies between ours and theirs.
+You can filter for specific tests. I recomend filtering for a single failing test and debugging 1 at a time.
+If you got a gas difference it's worth trying to look at a trace. The python cli in the ethereum specs submodule has the ability to produce a JSON trace. By producing a trace between both our evm and the official python evm you can compare
 
 ## Expected Output
 
