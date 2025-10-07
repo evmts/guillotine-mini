@@ -748,6 +748,8 @@ pub const Evm = struct {
         // and BEFORE any nonce increments or child call gas calculation
         // When this check fails, it raises OutOfGasError BEFORE deducting child call gas
         if (self.hardfork.isAtLeast(.SHANGHAI)) {
+            // Check must use >= to match reference implementation exactly
+            // MAX_INITCODE_SIZE is the maximum ALLOWED, so > is correct
             if (init_code.len > primitives.GasConstants.MaxInitcodeSize) {
                 // CREATE/CREATE2 fails - return failure without incrementing nonce
                 // The initcode gas was already charged in frame.zig
@@ -1014,6 +1016,10 @@ pub const Evm = struct {
     /// Add gas refund (called by frame)
     pub fn add_refund(self: *Self, amount: u64) void {
         self.gas_refund += amount;
+    }
+
+    pub fn sub_refund(self: *Self, amount: u64) void {
+        self.gas_refund -= amount;
     }
 
     /// Get balance of an address (called by frame)

@@ -1124,6 +1124,14 @@ pub const Frame = struct {
                 const key = try self.popStack();
                 const value = try self.popStack();
 
+                // EIP-2200 (Istanbul+): SSTORE sentry gas check
+                // Must have more than 2300 gas remaining to execute SSTORE
+                if (evm.hardfork.isAtLeast(.ISTANBUL)) {
+                    if (self.gas_remaining <= GasConstants.SstoreSentryGas) {
+                        return error.OutOfGas;
+                    }
+                }
+
                 // Debug: log SSTORE operations for slot 0
                 // if (key == 0) {
                 //     std.debug.print("SSTORE at pc={} addr={any} storing key={} value={}\n", .{self.pc, self.address.bytes, key, value});
@@ -1133,16 +1141,32 @@ pub const Frame = struct {
                 const current_value = evm.get_storage(self.address, key);
 
                 // Calculate gas cost based on hardfork
-                const gas_cost = if (evm.hardfork.isAtLeast(.ISTANBUL)) blk: {
-                    // EIP-2200 (Istanbul+): Complex storage gas metering with dirty tracking
+                const gas_cost = if (evm.hardfork.isAtLeast(.BERLIN)) blk: {
+                    // EIP-2929 (Berlin+): Cold/warm access with EIP-2200 logic
                     const original_value = evm.get_original_storage(self.address, key);
 
-                    // EIP-2929 (Berlin+): Check if storage slot is cold and warm it
+                    // Check if storage slot is cold and warm it
                     const access_cost = try evm.accessStorageSlot(self.address, key);
                     const is_cold = access_cost == GasConstants.ColdSloadCost;
 
                     // Use EIP-2200/EIP-3529 logic
                     break :blk GasConstants.sstore_gas_cost(current_value, original_value, value, is_cold);
+                } else if (evm.hardfork.isAtLeast(.ISTANBUL)) blk: {
+                    // EIP-2200 (Istanbul-Berlin): Net gas metering without cold/warm tracking
+                    const original_value = evm.get_original_storage(self.address, key);
+
+                    // EIP-2200 gas rules:
+                    // If (original == current && current != new): first modification -> SET or UPDATE cost
+                    // Otherwise: SLOAD cost (800 in Istanbul)
+                    if (original_value == current_value and current_value != value) {
+                        if (original_value == 0) {
+                            break :blk GasConstants.SstoreSetGas;  // 20,000
+                        } else {
+                            break :blk GasConstants.SstoreResetGas;  // 5,000
+                        }
+                    } else {
+                        break :blk 800;  // GAS_SLOAD in Istanbul
+                    }
                 } else blk: {
                     // Pre-Istanbul (Constantinople, Petersburg): Simple storage gas rules
                     // If setting zero to non-zero: 20,000 gas
@@ -1156,18 +1180,56 @@ pub const Frame = struct {
                 try self.consumeGas(gas_cost);
 
                 // Refund logic (hardfork-dependent)
-                if (current_value != 0 and value == 0) {
-                    if (evm.hardfork.isAtLeast(.LONDON)) {
-                        // EIP-3529 (London+): Reduced refund
-                        evm.add_refund(GasConstants.SstoreRefundGas);  // 4,800
-                    } else if (evm.hardfork.isAtLeast(.CONSTANTINOPLE) and evm.hardfork.isBefore(.PETERSBURG)) {
-                        // Constantinople (with EIP-1283): Net gas metering refund of 15,000
-                        evm.add_refund(15000);
-                    } else if (evm.hardfork.isAtLeast(.PETERSBURG) and evm.hardfork.isBefore(.ISTANBUL)) {
-                        // Petersburg: EIP-1283 removed, refund of 15,000
-                        evm.add_refund(15000);
-                    } else if (evm.hardfork.isAtLeast(.ISTANBUL) and evm.hardfork.isBefore(.LONDON)) {
-                        // Istanbul (EIP-2200): Refund of 15,000
+                if (evm.hardfork.isAtLeast(.ISTANBUL)) {
+                    // EIP-2200/EIP-3529: Complex refund rules
+                    const original_value = evm.get_original_storage(self.address, key);
+
+                    if (current_value != value) {
+                        // Value is changing
+                        if (original_value != 0 and current_value != 0 and value == 0) {
+                            // Storage is cleared for the first time in the transaction
+                            if (evm.hardfork.isAtLeast(.LONDON)) {
+                                evm.add_refund(GasConstants.SstoreRefundGas);  // 4,800 (London)
+                            } else {
+                                evm.add_refund(15000);  // Istanbul/Berlin
+                            }
+                        }
+
+                        if (original_value != 0 and current_value == 0) {
+                            // Gas refund issued earlier (when clearing) is being reversed
+                            if (evm.hardfork.isAtLeast(.LONDON)) {
+                                evm.sub_refund(GasConstants.SstoreRefundGas);  // 4,800
+                            } else {
+                                evm.sub_refund(15000);
+                            }
+                        }
+
+                        if (original_value == value) {
+                            // Storage slot being restored to its original value
+                            if (original_value == 0) {
+                                // Slot was originally empty and was SET earlier
+                                if (evm.hardfork.isAtLeast(.LONDON)) {
+                                    evm.add_refund(GasConstants.SstoreSetGas - 100);  // 20000 - 100 = 19900
+                                } else if (evm.hardfork.isAtLeast(.BERLIN)) {
+                                    evm.add_refund(GasConstants.SstoreSetGas - 100);  // 20000 - 100 = 19900
+                                } else {
+                                    evm.add_refund(GasConstants.SstoreSetGas - 800);  // 20000 - 800 = 19200 (Istanbul)
+                                }
+                            } else {
+                                // Slot was originally non-empty and was UPDATED earlier
+                                if (evm.hardfork.isAtLeast(.LONDON)) {
+                                    evm.add_refund(GasConstants.SstoreResetGas - 100);  // 5000 - 100 = 4900
+                                } else if (evm.hardfork.isAtLeast(.BERLIN)) {
+                                    evm.add_refund(GasConstants.SstoreResetGas - 100);  // 5000 - 100 = 4900
+                                } else {
+                                    evm.add_refund(GasConstants.SstoreResetGas - 800);  // 5000 - 800 = 4200 (Istanbul)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Pre-Istanbul: Simple refund logic
+                    if (current_value != 0 and value == 0) {
                         evm.add_refund(15000);
                     }
                 }
