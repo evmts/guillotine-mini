@@ -301,10 +301,10 @@ pub const Frame = struct {
     fn create2GasCost(self: *const Self, init_code_size: u32) u64 {
         var gas_cost: u64 = GasConstants.CreateGas; // Base 32,000 gas
 
-        // Keccak256 hash cost for hashing init_code
-        // CREATE2 charges for the full keccak256 hash (base + per-word cost)
+        // Keccak256 hash cost for hashing init_code (per-word only, no base cost)
+        // According to the reference implementation, CREATE2 only charges per-word cost
         const init_code_word_count = wordCount(@as(u64, init_code_size));
-        gas_cost += GasConstants.Keccak256Gas + (init_code_word_count * GasConstants.Keccak256WordGas);
+        gas_cost += init_code_word_count * GasConstants.Keccak256WordGas;
 
         if (self.hardfork.isAtLeast(.SHANGHAI)) {
             // Additional init code word cost (EIP-3860)
@@ -2045,9 +2045,17 @@ pub const Frame = struct {
                     const size_u32 = std.math.cast(u32, size) orelse return error.OutOfBounds;
                     const copy_cost = copyGasCost(size_u32);
 
-                    // EIP-150/EIP-2929: hardfork-aware account access
-                    const access_cost = try self.externalAccountGasCost(ext_addr);
-                    try self.consumeGas(access_cost + copy_cost);
+                    // Gas cost: hardfork-aware
+                    // Berlin+: cold/warm access (2600/100) + copy cost
+                    // Tangerine Whistle-Berlin: 700 + copy cost
+                    // Pre-Tangerine Whistle: 20 + copy cost
+                    const base_access_cost = if (evm.hardfork.isAtLeast(.BERLIN))
+                        try evm.accessAddress(ext_addr)
+                    else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                        700
+                    else
+                        20;
+                    try self.consumeGas(base_access_cost + copy_cost);
 
                     const dest = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
                     const len = size_u32;
