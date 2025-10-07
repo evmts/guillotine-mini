@@ -513,9 +513,16 @@ pub inline fn sstore_gas_cost(current: u256, original: u256, new: u256, is_cold:
             gas += SstoreSetGas;
         } else {
             // Modifying existing non-zero value
-            // Subtract cold cost since we already added it if applicable
-            // This matches the reference implementation: GAS_STORAGE_UPDATE - GAS_COLD_SLOAD
-            gas += SstoreResetGas - ColdSloadCost; // 5000 - 2100 = 2900
+            // For Berlin+: GAS_STORAGE_UPDATE (5000) includes the cold access cost (2100) already
+            // So we subtract cold cost to avoid double-charging: 5000 - 2100 = 2900
+            // For pre-Berlin: We don't charge cold cost separately, so just use SstoreResetGas (5000)
+            if (is_cold) {
+                // Berlin+ with cold access: Already added 2100, now add 2900 more for total 5000
+                gas += SstoreResetGas - ColdSloadCost; // 5000 - 2100 = 2900
+            } else {
+                // Pre-Berlin or warm access: Just the full reset cost
+                gas += SstoreResetGas; // 5000
+            }
         }
     } else {
         // Subsequent modification (already modified in this transaction)
