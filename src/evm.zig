@@ -455,6 +455,7 @@ pub const Evm = struct {
                     address,
                     input,
                     gas,
+                    self.hardfork,
                 ) catch |err| {
                     // On error, return failure
                     std.debug.print("Precompile execution error: {}\n", .{err});
@@ -741,6 +742,21 @@ pub const Evm = struct {
             break :blk Address{ .bytes = addr_bytes };
         };
 
+        // Increment caller's nonce for CREATE only (not CREATE2 per EIP-1014)
+        // This happens before collision check - the nonce is incremented regardless of CREATE outcome
+        if (salt == null) {
+            const caller_nonce = if (self.host) |h|
+                h.getNonce(caller)
+            else
+                self.nonces.get(caller) orelse 0;
+
+            if (self.host) |h| {
+                h.setNonce(caller, caller_nonce + 1);
+            } else {
+                try self.nonces.put(caller, caller_nonce + 1);
+            }
+        }
+
         // Check for address collision (code, nonce, or storage already exists)
         // Per EIP-684: If account has code or nonce, CREATE fails
         const has_collision = blk: {
@@ -756,16 +772,8 @@ pub const Evm = struct {
         };
 
         if (has_collision) {
-            // Collision detected - increment caller nonce and return failure
-            if (salt == null) {
-                // Only increment nonce for CREATE (not CREATE2, which doesn't increment on collision)
-                const caller_nonce = if (self.host) |h| h.getNonce(caller) else self.nonces.get(caller) orelse 0;
-                if (self.host) |h| {
-                    h.setNonce(caller, caller_nonce + 1);
-                } else {
-                    try self.nonces.put(caller, caller_nonce + 1);
-                }
-            }
+            // Collision detected - return failure
+            // Note: For CREATE, nonce was already incremented above
             return .{
                 .address = primitives.ZERO_ADDRESS,
                 .success = false,
