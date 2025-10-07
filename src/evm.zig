@@ -221,17 +221,20 @@ pub const Evm = struct {
         try self.preWarmAddresses(warm[0..count]);
 
         // Pre-warm precompiles if Berlin+
-        // EIP-2929: Precompiles 0x01-0x09 are always warm in Berlin and later
+        // EIP-2929: Precompiles are always warm at transaction start
         if (!self.hardfork.isAtLeast(.BERLIN)) return;
 
-        // Pre-warm all precompiles (addresses 0x01-0x0A for now, more added in later forks)
-        // EIP-2929: Precompiles are always warm at transaction start
+        // Determine number of precompiles based on hardfork
+        // Berlin-Cancun: 0x01-0x09 (9 precompiles)
+        // Prague+: 0x01-0x0A (10 precompiles, added BLS12-381 operations)
+        const precompile_count: usize = if (self.hardfork.isAtLeast(.PRAGUE)) 10 else 9;
+
         var precompile_addrs: [10]Address = undefined;
         var i: usize = 0;
-        while (i < 10) : (i += 1) {
+        while (i < precompile_count) : (i += 1) {
             precompile_addrs[i] = Address.from_u256(i + 1);
         }
-        try self.preWarmAddresses(&precompile_addrs);
+        try self.preWarmAddresses(precompile_addrs[0..precompile_count]);
     }
 
     /// Execute bytecode (main entry point like evm.execute)
