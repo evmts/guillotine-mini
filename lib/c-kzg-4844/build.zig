@@ -100,17 +100,19 @@ pub fn build(b: *std.Build) void {
         blst_lib.step.dependOn(&cmd.step);
     }
     
-    blst_lib.addCSourceFile(.{
-        .file = b.path("blst/src/server.c"),
+    blst_lib.addCSourceFiles(.{
+        .files = &[_][]const u8{
+            "blst/src/server.c",
+            "blst/src/vect.c",
+        },
         .flags = &[_][]const u8{
             "-std=c99",
             "-O3",
             "-fno-exceptions",
-            "-D__BLST_PORTABLE__",
+            "-D__BLST_NO_ASM__",
         },
     });
-    
-    blst_lib.addAssemblyFile(b.path("blst/build/assembly.S"));
+
     blst_lib.addIncludePath(b.path("blst/bindings"));
     blst_lib.linkLibC();
     
