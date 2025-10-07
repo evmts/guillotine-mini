@@ -160,7 +160,9 @@ pub const Evm = struct {
     pub fn accessAddress(self: *Self, address: Address) !u64 {
         if (self.hardfork.isBefore(.BERLIN)) {
             @branchHint(.cold);
-            return GasConstants.CallCodeCost;
+            // Pre-Berlin: No warm/cold access costs (EIP-2929 introduced in Berlin)
+            // The base call cost is already charged in the CALL opcode
+            return 0;
         }
 
         const entry = try self.warm_addresses.getOrPut(address);
