@@ -87,6 +87,7 @@ pub const Evm = struct {
     original_storage: std.AutoHashMap(StorageSlotKey, u256),
     transient_storage: std.AutoHashMap(StorageSlotKey, u256),
     created_accounts: std.AutoHashMap(Address, void),
+    selfdestructed_accounts: std.AutoHashMap(Address, void),  // EIP-6780: Track accounts marked for deletion
     balances: std.AutoHashMap(Address, u256),
     nonces: std.AutoHashMap(Address, u64),
     code: std.AutoHashMap(Address, []const u8),
@@ -120,6 +121,7 @@ pub const Evm = struct {
             .original_storage = undefined,
             .transient_storage = undefined,
             .created_accounts = undefined,
+            .selfdestructed_accounts = undefined,
             .balances = undefined,
             .nonces = undefined,
             .code = undefined,
@@ -263,6 +265,7 @@ pub const Evm = struct {
         self.original_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
         self.transient_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
         self.created_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
+        self.selfdestructed_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
 
         // Set blob versioned hashes for EIP-4844
         if (blob_versioned_hashes) |hashes| {
@@ -378,6 +381,27 @@ pub const Evm = struct {
 
         // Clear transient storage at end of transaction (EIP-1153)
         self.transient_storage.clearRetainingCapacity();
+
+        // Delete selfdestructed accounts at end of transaction (EIP-6780)
+        // This must happen AFTER transient storage is cleared since transient storage
+        // should be accessible during the transaction even after SELFDESTRUCT
+        var selfdestruct_it = self.selfdestructed_accounts.iterator();
+        while (selfdestruct_it.next()) |entry| {
+            const addr = entry.key_ptr.*;
+            if (self.host) |h| {
+                // Clear all account state: balance (should already be 0), code, and nonce
+                h.setBalance(addr, 0);
+                h.setCode(addr, &[_]u8{});
+                h.setNonce(addr, 0);
+                // Note: permanent storage is also cleared in full implementations
+            } else {
+                // Clear all account state in EVM storage
+                try self.balances.put(addr, 0);
+                try self.code.put(addr, &[_]u8{});
+                try self.nonces.put(addr, 0);
+                // Note: permanent storage would also be cleared in full implementation
+            }
+        }
 
         // No cleanup needed - arena handles it
         return result;
@@ -1118,7 +1142,12 @@ pub const Evm = struct {
             return;
         }
 
-        try self.storage.put(key, value);
+        // EVM spec: storage slots with value 0 should be deleted, not stored
+        if (value == 0) {
+            _ = self.storage.remove(key);
+        } else {
+            try self.storage.put(key, value);
+        }
     }
 
     /// Get original storage value (before transaction modifications)
