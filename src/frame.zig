@@ -298,17 +298,24 @@ pub const Frame = struct {
     /// Calculate CREATE2 gas cost (EIP-3860 aware)
     fn create2GasCost(self: *const Self, init_code_size: u32) u64 {
         var gas_cost: u64 = GasConstants.CreateGas; // Base 32,000 gas
-        
-        // Keccak256 hash cost (always present for CREATE2)
-        const word_count = wordCount(@as(u64, init_code_size));
-        gas_cost += GasConstants.Keccak256Gas + (word_count * GasConstants.Keccak256WordGas);
-        
+
+        // Keccak256 hash cost for hashing init_code
+        // CREATE2 needs to hash init_code first to get its hash
+        const init_code_word_count = wordCount(@as(u64, init_code_size));
+        gas_cost += GasConstants.Keccak256Gas + (init_code_word_count * GasConstants.Keccak256WordGas);
+
+        // Keccak256 hash cost for address calculation
+        // Hash input: 0xff (1 byte) ++ address (20 bytes) ++ salt (32 bytes) ++ keccak256(init_code) (32 bytes) = 85 bytes
+        const address_calc_size = 1 + 20 + 32 + 32;
+        const address_calc_word_count = wordCount(address_calc_size);
+        gas_cost += GasConstants.Keccak256Gas + (address_calc_word_count * GasConstants.Keccak256WordGas);
+
         if (self.hardfork.isAtLeast(.SHANGHAI)) {
-            // Additional init code word cost
+            // Additional init code word cost (EIP-3860)
             @branchHint(.likely);
-            gas_cost += word_count * GasConstants.InitcodeWordGas;
+            gas_cost += init_code_word_count * GasConstants.InitcodeWordGas;
         }
-        
+
         return gas_cost;
     }
 
