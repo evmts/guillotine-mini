@@ -823,6 +823,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             }
 
             // Add initcode word cost for contract creation (EIP-3860, Shanghai+)
+            // NOTE: According to EIP-3860, initcode gas is charged during execution (in CREATE/CREATE2),
+            // NOT in the transaction intrinsic gas. The Python reference implementation is misleading here.
             if (to == null) {
                 if (hardfork) |hf| {
                     if (hf.isAtLeast(.SHANGHAI)) {
