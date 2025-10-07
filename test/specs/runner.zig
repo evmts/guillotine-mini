@@ -468,13 +468,12 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             .blob_base_fee = if (env.object.get("currentExcessBlobGas")) |excess| blk2: {
                 const excess_blob_gas = try parseIntFromJson(excess);
                 // Calculate blob base fee from excess blob gas (EIP-4844)
-                const GAS_PER_BLOB: u256 = 131072;
                 const MIN_BLOB_GASPRICE: u256 = 1;
-                const BLOB_GASPRICE_UPDATE_FRACTION: u256 = 3338477;
+                const BLOB_BASE_FEE_UPDATE_FRACTION: u256 = 3338477;
                 break :blk2 if (excess_blob_gas == 0)
                     MIN_BLOB_GASPRICE
                 else
-                    taylorExponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_GASPRICE_UPDATE_FRACTION * GAS_PER_BLOB);
+                    taylorExponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION);
             } else 0,
         };
     } else null;
@@ -772,7 +771,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 primitives.GasConstants.TxGasContractCreation // 53000 for contract creation
             else
                 primitives.GasConstants.TxGas; // 21000 for regular transactions
-            var access_list_gas: u64 = 0;
 
             // Add calldata cost (4 gas per zero byte, 16 gas per non-zero byte)
             for (tx_data) |byte| {
@@ -802,14 +800,12 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                             // Each entry costs ACCESS_LIST_ADDRESS_COST (2400 gas)
                             const addr_cost = primitives.AccessList.ACCESS_LIST_ADDRESS_COST;
                             intrinsic_gas += addr_cost;
-                            access_list_gas += addr_cost;
 
                             // Add cost for storage keys (1900 gas each)
                             if (entry.object.get("storageKeys")) |keys| {
                                 if (keys == .array) {
                                     const keys_cost = @as(u64, @intCast(keys.array.items.len)) * primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST;
                                     intrinsic_gas += keys_cost;
-                                    access_list_gas += keys_cost;
                                 }
                             }
                         }
@@ -858,12 +854,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
             }
 
-            // Add blob hash cost for blob transactions (EIP-4844, Cancun+)
-            if (blob_hashes_storage) |blob_hashes| {
-                // Each blob hash costs HASH_OPCODE_COST (3 gas) in intrinsic gas
-                const blob_hash_intrinsic_cost = @as(u64, @intCast(blob_hashes.len)) * primitives.GasConstants.BlobHashGas;
-                intrinsic_gas += blob_hash_intrinsic_cost;
-            }
+            // NOTE: For blob transactions (EIP-4844), the blob hashes themselves do NOT
+            // add to intrinsic gas. The BLOBHASH opcode costs 3 gas when executed, but
+            // this is charged during EVM execution, not as part of intrinsic cost.
 
             // Ensure we have enough gas for intrinsic cost
             if (gas_limit < intrinsic_gas) {
@@ -1112,15 +1105,11 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Pay coinbase their reward
             // For EIP-1559/EIP-4844 transactions, only the priority fee goes to coinbase
             // (base fee is burned, not given to coinbase)
-            // For blob transactions, access list and blob hash costs don't earn priority fee
             //
             // IMPORTANT: In early forks (Frontier/Homestead), the coinbase gets paid for the FULL gas_limit,
             // not just gas consumed. Later forks (Tangerine Whistle+) only pay for gas actually consumed.
-            const blob_hash_cost = if (blob_hashes_storage) |hashes| @as(u64, @intCast(hashes.len)) * primitives.GasConstants.BlobHashGas else 0;
             const gas_for_coinbase = if (evm_instance.hardfork.isBefore(.TANGERINE_WHISTLE))
                 gas_limit  // Early forks: coinbase gets paid for full gas_limit
-            else if (blob_gas_fee > 0)
-                gas_used - access_list_gas - blob_hash_cost
             else
                 gas_used;
             const coinbase_reward = gas_for_coinbase * priority_fee_per_gas;
