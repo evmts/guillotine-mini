@@ -11,7 +11,7 @@ const host = @import("host.zig");
 const errors = @import("errors.zig");
 const trace = @import("trace.zig");
 const blake2 = @import("blake2.zig");
-const precompiles = @import("precompiles");
+const precompiles = @import("precompiles/precompiles.zig");
 
 const Address = primitives.Address.Address;
 

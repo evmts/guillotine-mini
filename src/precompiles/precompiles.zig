@@ -17,9 +17,12 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const Address = primitives.Address;
-// Use the real crypto and build_options modules
-const crypto = @import("crypto");
-const build_options = @import("build_options");
+// Use the real crypto module via relative path
+const crypto = @import("../crypto/root.zig");
+// Build options with defaults for standalone use
+const build_options = struct {
+    pub const vector_length: usize = 16;
+};
 
 /// Precompile addresses (Ethereum mainnet)
 pub const ECRECOVER_ADDRESS = primitives.Address.from_u256(1);
