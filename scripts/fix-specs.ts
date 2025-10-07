@@ -67,8 +67,8 @@ const TEST_SUITES: TestSuite[] = [
 
   // Smaller hardforks (no sub-targets needed)
   { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
-  { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
-  { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
+  // { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
+  // { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
   // Berlin sub-targets (broken up from large test suite)
   // { name: 'berlin-acl', command: 'zig build specs-berlin-acl', description: 'Berlin EIP-2930 access list account storage tests' },
   // { name: 'berlin-intrinsic-gas-cost', command: 'zig build specs-berlin-intrinsic-gas-cost', description: 'Berlin EIP-2930 transaction intrinsic gas cost tests' },
@@ -106,7 +106,7 @@ interface FixAttempt {
 
 class SpecFixerPipeline {
   private reportsDir = join(REPO_ROOT, 'reports', 'spec-fixes');
-  private maxAttemptsPerSuite = 5;
+  private maxAttemptsPerSuite = 8;
   private fixAttempts: FixAttempt[] = [];
 
   constructor() {
@@ -486,7 +486,7 @@ Remember: You are an expert debugger. Be systematic, be thorough, and verify eve
         prompt,
         options: {
           model: 'claude-sonnet-4-5-20250929',
-          maxTurns: 500,
+          maxTurns: 750,
           permissionMode: 'bypassPermissions',
           cwd: REPO_ROOT,
         }
