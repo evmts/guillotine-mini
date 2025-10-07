@@ -122,9 +122,9 @@ pub fn execute_precompile(
         3 => execute_ripemd160(allocator, input, gas_limit),
         4 => execute_identity(allocator, input, gas_limit),
         5 => execute_modexp(allocator, input, gas_limit, hardfork),
-        6 => execute_ecadd(allocator, input, gas_limit),
-        7 => execute_ecmul(allocator, input, gas_limit),
-        8 => execute_ecpairing(allocator, input, gas_limit),
+        6 => execute_ecadd(allocator, input, gas_limit, hardfork),
+        7 => execute_ecmul(allocator, input, gas_limit, hardfork),
+        8 => execute_ecpairing(allocator, input, gas_limit, hardfork),
         9 => execute_blake2f(allocator, input, gas_limit),
         10 => execute_point_evaluation(allocator, input, gas_limit),
         0x0B => execute_bls12_381_g1_add(allocator, input, gas_limit),
@@ -534,8 +534,9 @@ fn calculateIterationCountOsaka(exp_len: u32, exp_head: u256) u64 {
 /// 0x06: ecAdd - BN254 elliptic curve addition
 /// Input: 128 bytes (x1, y1, x2, y2 as 32-byte big-endian)
 /// Output: 64 bytes (x, y coordinates of sum)
-pub fn execute_ecadd(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64) PrecompileError!PrecompileOutput {
-    const required_gas = GasCosts.ECADD;
+pub fn execute_ecadd(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64, hardfork: @import("../hardfork.zig").Hardfork) PrecompileError!PrecompileOutput {
+    // EIP-1108 (Istanbul): Reduced from 500 to 150 gas
+    const required_gas: u64 = if (hardfork.isAtLeast(.ISTANBUL)) GasCosts.ECADD else 500;
     if (gas_limit < required_gas) {
         return PrecompileOutput{
             .output = &.{},
@@ -612,8 +613,9 @@ pub fn execute_ecadd(allocator: std.mem.Allocator, input: []const u8, gas_limit:
 /// 0x07: ecMul - BN254 elliptic curve multiplication
 /// Input: 96 bytes (x, y, scalar as 32-byte big-endian)
 /// Output: 64 bytes (x, y coordinates of product)
-pub fn execute_ecmul(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64) PrecompileError!PrecompileOutput {
-    const required_gas = GasCosts.ECMUL;
+pub fn execute_ecmul(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64, hardfork: @import("../hardfork.zig").Hardfork) PrecompileError!PrecompileOutput {
+    // EIP-1108 (Istanbul): Reduced from 40000 to 6000 gas
+    const required_gas: u64 = if (hardfork.isAtLeast(.ISTANBUL)) GasCosts.ECMUL else 40000;
     if (gas_limit < required_gas) {
         return PrecompileOutput{
             .output = &.{},
@@ -679,19 +681,23 @@ pub fn execute_ecmul(allocator: std.mem.Allocator, input: []const u8, gas_limit:
 /// 0x08: ecPairing - BN254 pairing check
 /// Input: pairs of G1 and G2 points (192 bytes per pair)
 /// Output: 32 bytes (1 if pairing is valid, 0 otherwise)
-pub fn execute_ecpairing(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64) PrecompileError!PrecompileOutput {
+pub fn execute_ecpairing(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64, hardfork: @import("../hardfork.zig").Hardfork) PrecompileError!PrecompileOutput {
+    // EIP-1108 (Istanbul): Reduced base cost from 100000 to 45000, per-pair from 80000 to 34000
+    const base_cost: u64 = if (hardfork.isAtLeast(.ISTANBUL)) GasCosts.ECPAIRING_BASE else 100000;
+    const per_pair_cost: u64 = if (hardfork.isAtLeast(.ISTANBUL)) GasCosts.ECPAIRING_PER_PAIR else 80000;
+
     if (input.len % 192 != 0) {
         const output = try allocator.alloc(u8, 32);
         @memset(output, 0);
         return PrecompileOutput{
             .output = output,
-            .gas_used = GasCosts.ECPAIRING_BASE,
+            .gas_used = base_cost,
             .success = true,
         };
     }
 
     const pair_count = input.len / 192;
-    const required_gas = GasCosts.ECPAIRING_BASE + pair_count * GasCosts.ECPAIRING_PER_PAIR;
+    const required_gas = base_cost + pair_count * per_pair_cost;
 
     if (gas_limit < required_gas) {
         return PrecompileOutput{
@@ -751,10 +757,11 @@ pub fn execute_ecpairing(allocator: std.mem.Allocator, input: []const u8, gas_li
 /// Input: rounds(4) + h(64) + m(128) + t(16) + f(1) = 213 bytes
 /// Output: 64 bytes (BLAKE2b state)
 pub fn execute_blake2f(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64) PrecompileError!PrecompileOutput {
+    // Per EIP-152: Invalid input should consume all gas (ExceptionalHalt behavior)
     if (input.len != 213) {
         return PrecompileOutput{
             .output = &.{},
-            .gas_used = 0,
+            .gas_used = gas_limit,
             .success = false,
         };
     }
@@ -775,11 +782,12 @@ pub fn execute_blake2f(allocator: std.mem.Allocator, input: []const u8, gas_limi
     }
 
     // Validate final block indicator (must be 0 or 1)
+    // Per EIP-152: Invalid final flag should consume all gas (ExceptionalHalt behavior)
     const f = input[212];
     if (f != 0 and f != 1) {
         return PrecompileOutput{
             .output = &.{},
-            .gas_used = 0,
+            .gas_used = gas_limit,
             .success = false,
         };
     }
@@ -1252,12 +1260,12 @@ test "execute_ripemd160 precompile" {
 
 test "execute_ecadd precompile" {
     const testing = std.testing;
-    
+
     // Test: identity + identity = identity
     var input = [_]u8{0} ** 128;
     // Both points are identity (all zeros)
-    
-    const result = try execute_ecadd(testing.allocator, &input, GasCosts.ECADD + 100);
+
+    const result = try execute_ecadd(testing.allocator, &input, GasCosts.ECADD + 100, .ISTANBUL);
     defer testing.allocator.free(result.output);
     
     try testing.expect(result.success);
@@ -1270,14 +1278,14 @@ test "execute_ecadd precompile" {
 
 test "execute_ecmul precompile" {
     const testing = std.testing;
-    
+
     // Test: identity * 5 = identity
     var input = [_]u8{0} ** 96;
     // Point is identity (first 64 bytes all zeros)
     // Scalar is 5 (last 32 bytes)
     input[95] = 5;
-    
-    const result = try execute_ecmul(testing.allocator, &input, GasCosts.ECMUL + 100);
+
+    const result = try execute_ecmul(testing.allocator, &input, GasCosts.ECMUL + 100, .ISTANBUL);
     defer testing.allocator.free(result.output);
     
     try testing.expect(result.success);
@@ -1290,10 +1298,10 @@ test "execute_ecmul precompile" {
 
 test "execute_ecpairing precompile - empty input" {
     const testing = std.testing;
-    
+
     // Empty input should return success with 1 (true)
     const input = &[_]u8{};
-    const result = try execute_ecpairing(testing.allocator, input, GasCosts.ECPAIRING_BASE);
+    const result = try execute_ecpairing(testing.allocator, input, GasCosts.ECPAIRING_BASE, .ISTANBUL);
     defer testing.allocator.free(result.output);
     
     try testing.expect(result.success);
@@ -1408,42 +1416,42 @@ test "execute_ecrecover valid signature" {
 
 test "execute_ecadd invalid point" {
     const testing = std.testing;
-    
+
     // Test with invalid point (not on curve)
     var input = [_]u8{0} ** 128;
     // Set x coordinate to 1, y coordinate to 1 (not on curve)
     input[31] = 1;
     input[63] = 1;
-    
-    const result = try execute_ecadd(testing.allocator, &input, GasCosts.ECADD + 100);
-    
+
+    const result = try execute_ecadd(testing.allocator, &input, GasCosts.ECADD + 100, .ISTANBUL);
+
     // Should fail with invalid point
     try testing.expect(!result.success);
 }
 
 test "execute_ecmul invalid scalar" {
     const testing = std.testing;
-    
+
     // Test with scalar larger than curve order
     var input = [_]u8{0} ** 96;
     // Set all scalar bytes to 0xFF (larger than curve order)
     @memset(input[64..96], 0xFF);
-    
-    const result = try execute_ecmul(testing.allocator, &input, GasCosts.ECMUL + 100);
+
+    const result = try execute_ecmul(testing.allocator, &input, GasCosts.ECMUL + 100, .ISTANBUL);
     defer testing.allocator.free(result.output);
-    
+
     // Should still work (scalar is reduced modulo curve order)
     try testing.expect(result.success);
 }
 
 test "execute_ecpairing wrong input length" {
     const testing = std.testing;
-    
+
     // Input length must be multiple of 192 bytes
     var input = [_]u8{0} ** 100; // Invalid length
-    
-    const result = try execute_ecpairing(testing.allocator, &input, 100000);
-    
+
+    const result = try execute_ecpairing(testing.allocator, &input, 100000, .ISTANBUL);
+
     try testing.expect(!result.success);
 }
 

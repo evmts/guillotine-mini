@@ -255,6 +255,8 @@ pub const Frame = struct {
     }
 
     /// Calculate gas cost for external account operations (EIP-150, EIP-1884, EIP-2929 aware)
+    /// Note: This returns 700 for Tangerine Whistle+ (EXTCODESIZE/EXTCODECOPY use this)
+    /// BALANCE and EXTCODEHASH have their own gas cost calculations
     fn externalAccountGasCost(self: *Self, address: Address) !u64 {
         const evm = self.getEvm();
 
@@ -262,12 +264,9 @@ pub const Frame = struct {
             // Post-Berlin: Cold/warm access pattern (EIP-2929)
             @branchHint(.likely);
             return try evm.accessAddress(address);
-        } else if (self.hardfork.isAtLeast(.ISTANBUL)) {
-            // EIP-1884 (Istanbul): BALANCE and EXTCODEHASH increased to 700 gas
-            return 700;
         } else if (self.hardfork.isAtLeast(.TANGERINE_WHISTLE)) {
-            // EIP-150 (Tangerine Whistle): BALANCE, EXTCODEHASH, etc. cost 400 gas
-            return 400;
+            // EIP-150 (Tangerine Whistle): EXTCODESIZE/EXTCODECOPY cost 700 gas
+            return 700;
         } else {
             // Pre-EIP-150: Lower cost (20 gas)
             return 20;
@@ -619,7 +618,12 @@ pub const Frame = struct {
                 // Pop shift (TOS), then value
                 const shift = try self.popStack();
                 const value = try self.popStack();
-                const result = if (shift >= 256) 0 else value << @intCast(shift);
+                // For shifts >= 256, result is always 0
+                // Otherwise, shift left and wrap to 256 bits
+                const result = if (shift >= 256)
+                    0
+                else
+                    value << @as(u8, @intCast(shift));
                 try self.pushStack(result);
                 self.pc += 1;
             },
@@ -633,7 +637,11 @@ pub const Frame = struct {
                 // Pop shift (TOS), then value
                 const shift = try self.popStack();
                 const value = try self.popStack();
-                const result = if (shift >= 256) 0 else value >> @intCast(shift);
+                // For shifts >= 256, result is always 0
+                const result = if (shift >= 256)
+                    0
+                else
+                    value >> @as(u8, @intCast(shift));
                 try self.pushStack(result);
                 self.pc += 1;
             },
@@ -648,10 +656,15 @@ pub const Frame = struct {
                 const shift = try self.popStack();
                 const value = try self.popStack();
                 const value_signed = @as(i256, @bitCast(value));
+                // For shifts >= 256, result depends on sign bit
                 const result = if (shift >= 256) blk: {
-                    break :blk if (value_signed < 0) @as(u256, @bitCast(@as(i256, -1))) else 0;
+                    // If negative, result is all 1s (-1); if positive, result is 0
+                    break :blk if (value_signed < 0)
+                        @as(u256, @bitCast(@as(i256, -1)))
+                    else
+                        0;
                 } else blk: {
-                    break :blk @as(u256, @bitCast(value_signed >> @intCast(shift)));
+                    break :blk @as(u256, @bitCast(value_signed >> @as(u8, @intCast(shift))));
                 };
                 try self.pushStack(result);
                 self.pc += 1;
@@ -723,10 +736,13 @@ pub const Frame = struct {
 
                 // Gas cost: hardfork-aware
                 // Berlin+: cold/warm access (2600/100)
-                // Tangerine Whistle-Berlin: 400 gas
+                // Istanbul-Berlin: 700 gas (EIP-1884)
+                // Tangerine Whistle-Petersburg: 400 gas
                 // Pre-Tangerine Whistle: 20 gas
                 const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
                     try evm.accessAddress(addr)
+                else if (evm.hardfork.isAtLeast(.ISTANBUL))
+                    @as(u64, 700)
                 else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
                     @as(u64, 400)
                 else
@@ -955,7 +971,7 @@ pub const Frame = struct {
                 if (evm.hardfork.isBefore(.ISTANBUL)) return error.InvalidOpcode;
 
                 try self.consumeGas(GasConstants.GasQuickStep);
-                try self.pushStack(@as(u256, evm.block_context.chain_id));
+                try self.pushStack(evm.block_context.chain_id);
                 self.pc += 1;
             },
 
@@ -1113,21 +1129,47 @@ pub const Frame = struct {
                 //     std.debug.print("SSTORE at pc={} addr={any} storing key={} value={}\n", .{self.pc, self.address.bytes, key, value});
                 // }
 
-                // Get current and original values for gas calculation
+                // Get current value for gas calculation
                 const current_value = evm.get_storage(self.address, key);
-                const original_value = evm.get_original_storage(self.address, key);
 
-                // EIP-2929: Check if storage slot is cold and warm it
-                const access_cost = try evm.accessStorageSlot(self.address, key);
-                const is_cold = access_cost == GasConstants.ColdSloadCost;
+                // Calculate gas cost based on hardfork
+                const gas_cost = if (evm.hardfork.isAtLeast(.ISTANBUL)) blk: {
+                    // EIP-2200 (Istanbul+): Complex storage gas metering with dirty tracking
+                    const original_value = evm.get_original_storage(self.address, key);
 
-                // Calculate SSTORE gas cost using proper EIP-2200/EIP-3529 logic
-                const gas_cost = GasConstants.sstore_gas_cost(current_value, original_value, value, is_cold);
+                    // EIP-2929 (Berlin+): Check if storage slot is cold and warm it
+                    const access_cost = try evm.accessStorageSlot(self.address, key);
+                    const is_cold = access_cost == GasConstants.ColdSloadCost;
+
+                    // Use EIP-2200/EIP-3529 logic
+                    break :blk GasConstants.sstore_gas_cost(current_value, original_value, value, is_cold);
+                } else blk: {
+                    // Pre-Istanbul (Constantinople, Petersburg): Simple storage gas rules
+                    // If setting zero to non-zero: 20,000 gas
+                    // Otherwise: 5,000 gas
+                    break :blk if (current_value == 0 and value != 0)
+                        GasConstants.SstoreSetGas  // 20,000
+                    else
+                        GasConstants.SstoreResetGas;  // 5,000
+                };
+
                 try self.consumeGas(gas_cost);
 
-                // EIP-3529: Only clearing (non-zero -> zero) is eligible for refund
+                // Refund logic (hardfork-dependent)
                 if (current_value != 0 and value == 0) {
-                    evm.add_refund(GasConstants.SstoreRefundGas);
+                    if (evm.hardfork.isAtLeast(.LONDON)) {
+                        // EIP-3529 (London+): Reduced refund
+                        evm.add_refund(GasConstants.SstoreRefundGas);  // 4,800
+                    } else if (evm.hardfork.isAtLeast(.CONSTANTINOPLE) and evm.hardfork.isBefore(.PETERSBURG)) {
+                        // Constantinople (with EIP-1283): Net gas metering refund of 15,000
+                        evm.add_refund(15000);
+                    } else if (evm.hardfork.isAtLeast(.PETERSBURG) and evm.hardfork.isBefore(.ISTANBUL)) {
+                        // Petersburg: EIP-1283 removed, refund of 15,000
+                        evm.add_refund(15000);
+                    } else if (evm.hardfork.isAtLeast(.ISTANBUL) and evm.hardfork.isBefore(.LONDON)) {
+                        // Istanbul (EIP-2200): Refund of 15,000
+                        evm.add_refund(15000);
+                    }
                 }
 
                 try evm.set_storage(self.address, key, value);
@@ -2040,7 +2082,7 @@ pub const Frame = struct {
 
                 // Gas cost: hardfork-aware
                 // Berlin+: cold/warm access (2600/100)
-                // Tangerine Whistle-Berlin: 700 gas
+                // Tangerine Whistle-Berlin: 700 gas (EIP-150)
                 // Pre-Tangerine Whistle: 20 gas
                 const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
                     try evm.accessAddress(ext_addr)
@@ -2073,7 +2115,7 @@ pub const Frame = struct {
 
                     // Gas cost: hardfork-aware
                     // Berlin+: cold/warm access (2600/100) + copy cost
-                    // Tangerine Whistle-Berlin: 700 + copy cost
+                    // Tangerine Whistle-Berlin: 700 + copy cost (EIP-150)
                     // Pre-Tangerine Whistle: 20 + copy cost
                     const base_access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
                         try evm.accessAddress(ext_addr)
@@ -2114,9 +2156,12 @@ pub const Frame = struct {
 
                 // Gas cost: hardfork-aware
                 // Berlin+: cold/warm access (2600/100)
-                // Constantinople-Berlin: 400 gas
+                // Istanbul-Berlin: 700 gas (EIP-1884)
+                // Constantinople-Petersburg: 400 gas
                 const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
                     try evm.accessAddress(ext_addr)
+                else if (evm.hardfork.isAtLeast(.ISTANBUL))
+                    @as(u64, 700)
                 else
                     @as(u64, 400);
                 try self.consumeGas(access_cost);

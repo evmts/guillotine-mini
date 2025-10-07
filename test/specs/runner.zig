@@ -415,11 +415,20 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
     // Extract hardfork from test JSON (or use forced hardfork for multi-fork tests)
     const hardfork = if (forced_hardfork) |hf| hf else extractHardfork(test_case);
 
+    // Debug: print hardfork for shift tests
+    if (test_case.object.get("_info")) |info| {
+        if (info.object.get("test-name")) |name| {
+            if (std.mem.indexOf(u8, name.string, "shift") != null or std.mem.indexOf(u8, name.string, "SHL") != null) {
+                std.debug.print("DEBUG SHIFT TEST: hardfork={?}\n", .{hardfork});
+            }
+        }
+    }
+
     // Build block context from env section
     const block_ctx: ?evm_mod.BlockContext = if (test_case.object.get("env")) |env| blk: {
         break :blk .{
             .chain_id = if (env.object.get("currentChainId")) |cid|
-                try parseIntFromJson(cid)
+                try parseU256FromJson(cid)
             else
                 1,
             .block_number = if (env.object.get("currentNumber")) |num|
@@ -748,7 +757,11 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             defer if (blob_hashes_storage) |hashes| allocator.free(hashes);
 
             // Calculate intrinsic gas cost
-            var intrinsic_gas: u64 = primitives.GasConstants.TxGas; // 21000
+            // Contract creation transactions cost 53000 base gas, regular transactions cost 21000
+            var intrinsic_gas: u64 = if (to == null)
+                primitives.GasConstants.TxGasContractCreation // 53000 for contract creation
+            else
+                primitives.GasConstants.TxGas; // 21000 for regular transactions
             var access_list_gas: u64 = 0;
 
             // Add calldata cost (4 gas per zero byte, 16 gas per non-zero byte)
@@ -801,7 +814,34 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                         // EIP-3860: Check initcode size limit for create transactions
                         if (tx_data.len > primitives.GasConstants.MaxInitcodeSize) {
                             // Transaction is invalid - initcode too large
-                            continue;
+                            // Check if test expects this exception
+                            if (test_case.object.get("post")) |post| {
+                                const fork_data = if (hardfork) |fork| switch (fork) {
+                                    .PRAGUE => post.object.get("Prague"),
+                                    .CANCUN => post.object.get("Cancun"),
+                                    .SHANGHAI => post.object.get("Shanghai"),
+                                    .MERGE => post.object.get("Merge") orelse post.object.get("Paris"),
+                                    .LONDON => post.object.get("London"),
+                                    .BERLIN => post.object.get("Berlin"),
+                                    else => post.object.get(hardforkToString(fork)),
+                                } else null;
+
+                                if (fork_data) |fd| {
+                                    if (fd == .array and fd.array.items.len > 0) {
+                                        const first_item = fd.array.items[0];
+                                        if (first_item.object.get("expectException")) |exception| {
+                                            const exception_str = exception.string;
+                                            // If test expects INITCODE_SIZE_EXCEEDED exception, skip execution
+                                            if (std.mem.indexOf(u8, exception_str, "INITCODE_SIZE_EXCEEDED") != null) {
+                                                // Transaction is invalid as expected, don't execute
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // If we get here, the test doesn't expect this exception, so fail
+                            return error.InitcodeSizeExceeded;
                         }
                         // Contract creation transaction - charge 2 gas per 32-byte word of initcode
                         const initcode_words = primitives.GasConstants.wordCount(tx_data.len);
@@ -1139,7 +1179,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         };
 
         if (post_state == .object) {
-            // std.debug.print("DEBUG: post_state is object, iterating keys\n", .{});
             var it = post_state.object.iterator();
             while (it.next()) |kv| {
                 const address = try parseAddress(kv.key_ptr.*);
@@ -1205,7 +1244,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                             const slot_key = StorageSlotKey{ .address = address, .slot = key };
                             const actual_value = test_host.storage.get(slot_key) orelse 0;
                             if (exp_value != actual_value) {
-                                // std.debug.print("STORAGE MISMATCH: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
+                                std.debug.print("STORAGE MISMATCH: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
                             }
                             try testing.expectEqual(exp_value, actual_value);
                         }
@@ -1307,6 +1346,15 @@ fn parseIntFromJson(value: std.json.Value) !u64 {
         .string => |s| if (s.len == 0) 0 else try std.fmt.parseInt(u64, s, 0),
         .integer => |i| @intCast(i),
         .number_string => |s| if (s.len == 0) 0 else try std.fmt.parseInt(u64, s, 0),
+        else => 1,
+    };
+}
+
+fn parseU256FromJson(value: std.json.Value) !u256 {
+    return switch (value) {
+        .string => |s| if (s.len == 0) 0 else try std.fmt.parseInt(u256, s, 0),
+        .integer => |i| @intCast(i),
+        .number_string => |s| if (s.len == 0) 0 else try std.fmt.parseInt(u256, s, 0),
         else => 1,
     };
 }

@@ -67,7 +67,7 @@ const StorageSlotKeyContext = struct {
 };
 
 pub const BlockContext = struct {
-    chain_id: u64,
+    chain_id: u256,
     block_number: u64,
     block_timestamp: u64,
     block_difficulty: u256,
@@ -616,18 +616,6 @@ pub const Evm = struct {
             };
         }
 
-        // EIP-3860: Check init code size limit (Shanghai and later)
-        if (self.hardfork.isAtLeast(.SHANGHAI)) {
-            if (init_code.len > GasConstants.MaxInitcodeSize) {
-                return .{
-                    .address = primitives.ZERO_ADDRESS,
-                    .success = false,
-                    .gas_left = 0,
-                    .output = &[_]u8{},
-                };
-            }
-        }
-
         // Get caller from current frame
         const caller = if (self.getCurrentFrame()) |frame| frame.address else self.origin;
 
@@ -755,19 +743,30 @@ pub const Evm = struct {
             break :blk Address{ .bytes = addr_bytes };
         };
 
-        // Increment caller's nonce for CREATE only (not CREATE2 per EIP-1014)
-        // This happens before collision check - the nonce is incremented regardless of CREATE outcome
-        if (salt == null) {
-            const caller_nonce = if (self.host) |h|
-                h.getNonce(caller)
-            else
-                self.nonces.get(caller) orelse 0;
-
-            if (self.host) |h| {
-                h.setNonce(caller, caller_nonce + 1);
-            } else {
-                try self.nonces.put(caller, caller_nonce + 1);
+        // EIP-3860: Check init code size limit (Shanghai and later)
+        // Per Python reference (line 81-82): This check happens IMMEDIATELY after reading call_data
+        // and BEFORE any nonce increments or child call gas calculation
+        // When this check fails, it raises OutOfGasError BEFORE deducting child call gas
+        if (self.hardfork.isAtLeast(.SHANGHAI)) {
+            if (init_code.len > primitives.GasConstants.MaxInitcodeSize) {
+                // CREATE/CREATE2 fails - return failure without incrementing nonce
+                // The initcode gas was already charged in frame.zig
+                // Return all the child call gas unused (gas) since OutOfGasError happens
+                // before max_message_call_gas is deducted
+                return .{
+                    .address = primitives.ZERO_ADDRESS,
+                    .success = false,
+                    .gas_left = gas,
+                    .output = &[_]u8{},
+                };
             }
+        }
+
+        // EIP-2929 (Berlin): Mark created address as warm
+        // Per Python reference: accessed_addresses.add(contract_address) happens
+        // BEFORE collision check and nonce increment
+        if (self.hardfork.isAtLeast(.BERLIN)) {
+            _ = try self.warm_addresses.getOrPut(new_address);
         }
 
         // Check for address collision (code, nonce, or storage already exists)
@@ -785,14 +784,39 @@ pub const Evm = struct {
         };
 
         if (has_collision) {
-            // Collision detected - return failure
-            // Note: For CREATE, nonce was already incremented above
+            // Collision detected - increment caller's nonce and return failure
+            // Per Python reference (line 107-110): nonce is incremented even on collision
+            // This applies to BOTH CREATE and CREATE2
+            const caller_nonce = if (self.host) |h|
+                h.getNonce(caller)
+            else
+                self.nonces.get(caller) orelse 0;
+
+            if (self.host) |h| {
+                h.setNonce(caller, caller_nonce + 1);
+            } else {
+                try self.nonces.put(caller, caller_nonce + 1);
+            }
+
             return .{
                 .address = primitives.ZERO_ADDRESS,
                 .success = false,
                 .gas_left = gas,
                 .output = &[_]u8{},
             };
+        }
+
+        // No collision - increment caller's nonce before proceeding
+        // Per Python reference (line 113): nonce is incremented for both CREATE and CREATE2
+        const caller_nonce = if (self.host) |h|
+            h.getNonce(caller)
+        else
+            self.nonces.get(caller) orelse 0;
+
+        if (self.host) |h| {
+            h.setNonce(caller, caller_nonce + 1);
+        } else {
+            try self.nonces.put(caller, caller_nonce + 1);
         }
 
 
