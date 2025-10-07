@@ -28,6 +28,32 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Create crypto module
+    const crypto_mod = b.addModule("crypto", .{
+        .root_source_file = b.path("src/crypto/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Create blake2 module
+    const blake2_mod = b.addModule("blake2", .{
+        .root_source_file = b.path("src/blake2.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Create precompiles module
+    const precompiles_mod = b.addModule("precompiles", .{
+        .root_source_file = b.path("src/precompiles/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "blake2", .module = blake2_mod },
+        },
+    });
+
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
     // Zig modules are the preferred way of making Zig code available to consumers.
@@ -48,6 +74,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{
             .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "precompiles", .module = precompiles_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "blake2", .module = blake2_mod },
         },
     });
 
@@ -88,6 +117,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "precompiles", .module = precompiles_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "blake2", .module = blake2_mod },
         },
     });
 
