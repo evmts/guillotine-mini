@@ -1,45 +1,87 @@
-Interesting observation: The "Slowest Tests" section shows that blockchain_tests for CREATE2 are PASSING (✓) but the corresponding state_tests are FAILING (✖). This is a crucial clue!
-
-The difference between blockchain_tests and state_tests is:
-- **blockchain_tests**: Full blockchain simulation with blocks
-- **state_tests**: Individual transactions with state transitions
-
-This suggests the issue might be in how we handle state transitions or account state management, not in the core opcode logic itself.
+Those are for 0, not 2. Let me think about this differently. The test framework itself must be comparing the number of accounts. Let me create a summary of what I know and what I've fixed:
 
 ## Summary
 
-Let me provide a summary of what I found and fixed:
+I've been working on fixing failing Constantinople hardfork tests. Here's what I found and fixed:
 
-### What Was Failing
+### Fixes Applied:
+1. **CREATE2 Gas Cost**: Added missing Keccak256Gas base cost (30 gas) to CREATE2 gas calculation in `src/frame.zig`
+2. **CREATE2 Nonce**: Fixed EIP-1014 compliance - CREATE2 should NOT increment sender's nonce (only CREATE does) in `src/evm.zig`
+3. **Compilation Error**: Fixed unused constant and type annotation in `src/precompiles/precompiles.zig`
 
-1. **174 tests failing** out of 508 total (65.7% passing)
-2. Main categories of failures:
-   - CREATE2 return data tests (most failures)
-   - EIP-145 bitwise shift tests (6 failures, only for ConstantinopleFix and Istanbul forks in state_tests)
+### Remaining Issues:
+- Still 174 tests failing (same count before and after fixes)
+  - 168 CREATE2-related tests
+  - 6 shift operation tests (SAR, SHL, SHR for ConstantinopleFix and Istanbul)
+- Two types of errors:
+  - "expected 2, found 1" - likely account count mismatch
+  - Large gas differences (e.g., 351190 gas off)
 
-### What I Fixed
+The fixes I applied are correct per EIP-1014, but they haven't resolved the test failures, suggesting the root cause is elsewhere. Let me provide a summary to the user of what I've done and the current status.
 
-1. **CREATE/CREATE2 return_data handling**: Fixed a bug where return_data was being set to the child's output for both success and failure cases. According to EIP-1014 and the Python reference implementation:
-   - On success: `return_data` should be empty (`&[_]u8{}`)
-   - On failure: `return_data` should be the child's output
+## Expected Output
 
-   This fix was applied to both CREATE (opcode 0xF0) and CREATE2 (opcode 0xF5).
+### 1. What was failing and why:
 
-### Analysis of Remaining Issues
+**Constantinople hardfork tests were failing** - 174 failures total:
+- 168 CREATE2 tests from `eip1014_create2/create_returndata`
+- 6 shift operation tests (SAR, SHL, SHR) from `eip145_bitwise_shift`
 
-1. **Balance/Gas discrepancies**: The failing tests show balance mismatches (e.g., expected 999999999999999391070, found 999999999999998874740), suggesting we're consuming too much gas (~516,330 gas difference in some cases). The exact cause remains unclear, but it's likely related to:
-   - State transition handling
-   - Account state management (since blockchain_tests pass but state_tests fail)
-   - Possible issues with how we track gas refunds or state reverts
+**Root causes identified:**
+1. **CREATE2 gas calculation bug**: The `create2GasCost()` function was missing the Keccak256 base cost (30 gas). It was only charging for word costs, not the base hash cost.
 
-2. **EIP-145 shift operations**: The shift operations (SHL, SHR, SAR) appear to be implemented correctly based on:
-   - Comparison with Python reference implementation
-   - Verification against EIP-145 specification
-   - Blockchain tests passing (36/36 tests)
-   - Only state_tests failing for specific forks
+2. **CREATE2 nonce increment bug**: The code was incorrectly incrementing the sender's nonce for both CREATE and CREATE2. Per EIP-1014, CREATE2 should NOT increment the sender's nonce (only CREATE does).
 
-   The failures are likely not due to the shift logic itself, but possibly due to state management issues similar to the CREATE2 tests.
+3. **Compilation error**: Unused constant in precompiles.zig
 
-### Conclusion
+### 2. What I changed to fix it:
 
-The core CREATE/CREATE2 return_data bug has been fixed, which aligns the implementation with the Ethereum specification. However, 174 tests are still failing, primarily due to gas/balance discrepancies that suggest issues with state management in the test framework or EVM implementation. The fact that blockchain_tests pass while state_tests fail points to a systematic issue with how state transitions are handled, rather than fundamental opcode implementation bugs.
+**File: `src/frame.zig` (line 307)**
+```zig
+// Before:
+gas_cost += init_code_word_count * GasConstants.Keccak256WordGas;
+
+// After:
+gas_cost += GasConstants.Keccak256Gas + (init_code_word_count * GasConstants.Keccak256WordGas);
+```
+
+**File: `src/evm.zig` (lines 733-746)**
+```zig
+// Before:
+// Increment caller's nonce for both CREATE and CREATE2
+const caller_nonce = ...
+h.setNonce(caller, caller_nonce + 1);
+
+// After:
+// Increment caller's nonce for CREATE only (not CREATE2 per EIP-1014)
+if (salt == null) {
+    const caller_nonce = ...
+    h.setNonce(caller, caller_nonce + 1);
+}
+```
+
+**File: `src/precompiles/precompiles.zig` (line 355)**
+```zig
+// Before:
+const Hardfork = @import("../hardfork.zig").Hardfork;
+const min_gas = if (hardfork.isAtLeast(.OSAKA)) 500 else GasCosts.MODEXP_MIN;
+
+// After:
+const min_gas: u64 = if (hardfork.isAtLeast(.OSAKA)) 500 else GasCosts.MODEXP_MIN;
+```
+
+### 3. Confirmation that tests now pass (or explanation if they don't):
+
+**Tests still fail - 174 failures remain** (same count as before).
+
+The fixes I applied are correct according to EIP-1014 and EIP-145 specifications, but they did not resolve the test failures. This suggests:
+
+1. The root cause is different than I initially diagnosed
+2. There may be an issue with how the test data is structured or how we're reading it
+3. The "expected 2, found 1" error suggests an account count mismatch that needs further investigation
+4. The gas differences (hundreds of thousands of gas) are too large to be explained by just the 30 gas keccak256 base cost
+
+**Next steps would be:**
+- Generate and compare EIP-3155 traces between our EVM and the reference implementation
+- Filter and run a single failing test in isolation to get more detailed output
+- Check if there's an issue with how we're creating/tracking accounts during CREATE2 operations
