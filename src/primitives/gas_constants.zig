@@ -513,7 +513,9 @@ pub inline fn sstore_gas_cost(current: u256, original: u256, new: u256, is_cold:
             gas += SstoreSetGas;
         } else {
             // Modifying existing non-zero value
-            gas += SstoreResetGas;
+            // Subtract cold cost since we already added it if applicable
+            // This matches the reference implementation: GAS_STORAGE_UPDATE - GAS_COLD_SLOAD
+            gas += SstoreResetGas - ColdSloadCost; // 5000 - 2100 = 2900
         }
     } else {
         // Subsequent modification (already modified in this transaction)
