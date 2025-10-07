@@ -1300,9 +1300,14 @@ pub const Frame = struct {
                     init_code = code;
                 }
 
-                // Calculate available gas (EIP-150: all but 1/64th)
+                // Calculate available gas
                 const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                const max_gas = remaining_gas - (remaining_gas / 64);
+                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
+                // Before EIP-150: forward all remaining gas
+                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    remaining_gas - (remaining_gas / 64)
+                else
+                    remaining_gas;
 
                 // Perform CREATE
                 const result = try evm.inner_create(value, init_code, max_gas, null);
@@ -1415,7 +1420,12 @@ pub const Frame = struct {
                 // Calculate available gas
                 const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
                 const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                const max_gas = remaining_gas - (remaining_gas / 64);
+                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
+                // Before EIP-150: forward all remaining gas
+                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    remaining_gas - (remaining_gas / 64)
+                else
+                    remaining_gas;
                 const available_gas_without_stipend = @min(gas_limit, max_gas);
 
                 // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
@@ -1525,7 +1535,12 @@ pub const Frame = struct {
                 // Calculate available gas
                 const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
                 const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                const max_gas = remaining_gas - (remaining_gas / 64);
+                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
+                // Before EIP-150: forward all remaining gas
+                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    remaining_gas - (remaining_gas / 64)
+                else
+                    remaining_gas;
                 const available_gas_without_stipend = @min(gas_limit, max_gas);
 
                 // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
@@ -1604,6 +1619,9 @@ pub const Frame = struct {
 
             // DELEGATECALL
             0xf4 => {
+                // EIP-7: DELEGATECALL was introduced in Homestead hardfork
+                if (evm.hardfork.isBefore(.HOMESTEAD)) return error.InvalidOpcode;
+
                 // Pop all 6 arguments (no value)
                 const gas = try self.popStack();
                 const address_u256 = try self.popStack();
@@ -1656,7 +1674,12 @@ pub const Frame = struct {
                 // Calculate available gas
                 const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
                 const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                const max_gas = remaining_gas - (remaining_gas / 64);
+                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
+                // Before EIP-150: forward all remaining gas
+                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    remaining_gas - (remaining_gas / 64)
+                else
+                    remaining_gas;
                 const available_gas = @min(gas_limit, max_gas);
 
                 // Perform the inner call (DELEGATECALL)
@@ -1724,9 +1747,14 @@ pub const Frame = struct {
                     init_code = code;
                 }
 
-                // Calculate available gas (EIP-150: all but 1/64th)
+                // Calculate available gas
                 const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                const max_gas = remaining_gas - (remaining_gas / 64);
+                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
+                // Before EIP-150: forward all remaining gas
+                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    remaining_gas - (remaining_gas / 64)
+                else
+                    remaining_gas;
 
                 // Perform CREATE2 with salt
                 const result = try evm.inner_create(value, init_code, max_gas, salt);
@@ -1814,7 +1842,12 @@ pub const Frame = struct {
                 // Calculate available gas
                 const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
                 const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                const max_gas = remaining_gas - (remaining_gas / 64);
+                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
+                // Before EIP-150: forward all remaining gas
+                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    remaining_gas - (remaining_gas / 64)
+                else
+                    remaining_gas;
                 const available_gas = @min(gas_limit, max_gas);
 
                 // Perform the inner call (STATICCALL)

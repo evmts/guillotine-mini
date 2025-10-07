@@ -5,7 +5,10 @@ pub fn createBlstLibrary(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Step.Compile {
-    // Build blst library
+    // Build blst library - using portable C implementation
+    // Note: We define __uint128_t to work around a blst bug where llimb_t is not defined for 64-bit platforms
+    // server.c is a unity build that includes all other .c files including vect.c
+    // We define both __BLST_NO_ASM__ and __BLST_PORTABLE__ to ensure the C implementation is used everywhere
     const lib = b.addLibrary(.{
         .name = "blst",
         .linkage = .static,
@@ -18,10 +21,7 @@ pub fn createBlstLibrary(
 
     lib.linkLibC();
 
-    // Add blst source files - using portable C implementation
-    // Note: We define __uint128_t to work around a blst bug where llimb_t is not defined for 64-bit platforms
-    // server.c is a unity build that includes all other .c files including vect.c
-    // We define both __BLST_NO_ASM__ and __BLST_PORTABLE__ to ensure the C implementation is used everywhere
+    // Add blst source files (using portable mode without assembly)
     lib.addCSourceFiles(.{
         .files = &.{
             "lib/c-kzg-4844/blst/src/server.c",
