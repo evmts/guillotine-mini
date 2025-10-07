@@ -132,8 +132,9 @@ pub export fn evm_execute_precompile(
     const native_addr: Address = addr.bytes;
     const input_slice = if (input) |ptr| ptr[0..input_len] else &[_]u8{};
     
-    // Execute precompile
-    const output = precompiles.execute_precompile(allocator, native_addr, input_slice, gas_limit) catch |err| {
+    // Execute precompile (hardcode CANCUN for C API)
+    const Hardfork = @import("../hardfork.zig").Hardfork;
+    const output = precompiles.execute_precompile(allocator, native_addr, input_slice, gas_limit, Hardfork.CANCUN) catch |err| {
         res.error_code = switch (err) {
             error.InvalidInput => EVM_PRECOMPILE_ERROR_INVALID_INPUT,
             error.OutOfGas => EVM_PRECOMPILE_ERROR_OUT_OF_GAS,
