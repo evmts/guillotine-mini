@@ -7,7 +7,8 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const Address = primitives.Address;
-const blake2 = @import("../blake2.zig");
+const blake2 = @import("blake2");
+const crypto = @import("crypto");
 
 /// Precompile error types
 pub const PrecompileError = error{
@@ -157,11 +158,35 @@ fn execute_sha256(allocator: std.mem.Allocator, input: []const u8, gas_limit: u6
     };
 }
 
+/// 0x03: ripemd160 - RIPEMD-160 hash function
+/// Input: arbitrary bytes
+/// Output: 32-byte result (20-byte RIPEMD-160 hash + 12 zero bytes padding)
 fn execute_ripemd160(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64) PrecompileError!PrecompileOutput {
-    _ = allocator;
-    _ = input;
-    _ = gas_limit;
-    return PrecompileError.NotImplemented;
+    const word_count = (input.len + 31) / 32;
+    const required_gas = GasCosts.RIPEMD160_BASE + word_count * GasCosts.RIPEMD160_PER_WORD;
+
+    if (gas_limit < required_gas) {
+        return PrecompileOutput{
+            .output = &.{},
+            .gas_used = gas_limit,
+            .success = false,
+        };
+    }
+
+    const output = try allocator.alloc(u8, 32);
+    @memset(output, 0);
+
+    // Use RIPEMD160 implementation
+    const hash = crypto.Ripemd160.unaudited_hash(input);
+
+    // Copy the 20-byte hash to the output with 12 bytes of padding at the front
+    @memcpy(output[12..32], &hash);
+
+    return PrecompileOutput{
+        .output = output,
+        .gas_used = required_gas,
+        .success = true,
+    };
 }
 
 /// 0x04: identity - Data copy function
@@ -305,4 +330,74 @@ test "is_precompile detects valid precompile addresses" {
     try testing.expect(!is_precompile(Address.ZERO));
     try testing.expect(!is_precompile(Address.from_u256(0x13))); // Beyond valid range
     try testing.expect(!is_precompile(Address.from_u256(100)));
+}
+
+test "execute_identity precompile" {
+    const testing = std.testing;
+
+    const input = "Hello, World!";
+    const result = try execute_identity(testing.allocator, input, 1000);
+    defer testing.allocator.free(result.output);
+
+    try testing.expect(result.success);
+    try testing.expectEqualSlices(u8, input, result.output);
+    try testing.expect(result.gas_used == GasCosts.IDENTITY_BASE + GasCosts.IDENTITY_PER_WORD);
+}
+
+test "execute_sha256 precompile" {
+    const testing = std.testing;
+
+    const input = "abc";
+    const result = try execute_sha256(testing.allocator, input, 1000);
+    defer testing.allocator.free(result.output);
+
+    try testing.expect(result.success);
+    try testing.expectEqual(@as(usize, 32), result.output.len);
+
+    // Expected SHA-256 hash of "abc"
+    const expected = [_]u8{
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+        0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+    };
+    try testing.expectEqualSlices(u8, &expected, result.output);
+}
+
+test "execute_ripemd160 precompile" {
+    const testing = std.testing;
+
+    const input = "abc";
+    const result = try execute_ripemd160(testing.allocator, input, 1000);
+    defer testing.allocator.free(result.output);
+
+    try testing.expect(result.success);
+    try testing.expectEqual(@as(usize, 32), result.output.len);
+
+    // Expected RIPEMD-160 hash of "abc" (20 bytes hash + 12 zero padding)
+    const expected = [_]u8{
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x8e, 0xb2, 0x08, 0xf7, 0xe0, 0x5d, 0x98, 0x7a, 0x9b, 0x04,
+        0x4a, 0x8e, 0x98, 0xc6, 0xb0, 0x87, 0xf1, 0x5a, 0x0b, 0xfc,
+    };
+    try testing.expectEqualSlices(u8, &expected, result.output);
+}
+
+test "execute_blake2f precompile" {
+    const testing = std.testing;
+
+    // Valid blake2f input (213 bytes)
+    var input = [_]u8{0} ** 213;
+    // rounds (4 bytes) - 12 rounds
+    input[3] = 12;
+    // h (64 bytes) - initial hash values (zeros for this test)
+    // m (128 bytes) - message block (zeros for this test)
+    // t (16 bytes) - offset counters (zeros for this test)
+    // f (1 byte) - final block flag
+    input[212] = 1;
+
+    const result = try execute_blake2f(testing.allocator, &input, 1000);
+    defer testing.allocator.free(result.output);
+
+    try testing.expect(result.success);
+    try testing.expectEqual(@as(usize, 64), result.output.len);
+    try testing.expectEqual(@as(u64, 12), result.gas_used); // 12 rounds * 1 gas per round
 }
