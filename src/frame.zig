@@ -94,7 +94,6 @@ pub const Frame = struct {
         hardfork: Hardfork,
         is_static: bool,
     ) !Self {
-        std.debug.print("DEBUG: Frame.init start, bytecode.len = {d}\n", .{bytecode.len});
         var stack = std.ArrayList(u256){};
         try stack.ensureTotalCapacity(allocator, 1024);
         errdefer stack.deinit(allocator);
@@ -103,11 +102,9 @@ pub const Frame = struct {
         errdefer memory_map.deinit();
 
         // Analyze bytecode to identify valid jump destinations
-        std.debug.print("DEBUG: About to call validateJumpDests with bytecode.len = {d}\n", .{bytecode.len});
         var valid_jumpdests = std.AutoArrayHashMap(u32, void).init(allocator);
         errdefer valid_jumpdests.deinit();
         try validateJumpDests(allocator, bytecode, &valid_jumpdests);
-        std.debug.print("DEBUG: validateJumpDests completed, found {d} jumpdests\n", .{valid_jumpdests.count()});
 
         return Self{
             .stack = stack,
@@ -1438,7 +1435,12 @@ pub const Frame = struct {
 
                 // Update gas
                 const gas_used = max_gas - result.gas_left;
-                self.gas_remaining -= @intCast(gas_used);
+                // Safely cast gas_used - if it exceeds i64::MAX, clamp gas_remaining to 0
+                const gas_used_i64 = std.math.cast(i64, gas_used) orelse {
+                    self.gas_remaining = 0;
+                    return error.OutOfGas;
+                };
+                self.gas_remaining -= gas_used_i64;
 
                 // Set return_data according to CREATE semantics:
                 // - On success: return_data is empty
@@ -1837,7 +1839,12 @@ pub const Frame = struct {
 
                 // Update gas
                 const gas_used = available_gas - result.gas_left;
-                self.gas_remaining -= @intCast(gas_used);
+                // Safely cast gas_used - if it exceeds i64::MAX, clamp gas_remaining to 0
+                const gas_used_i64 = std.math.cast(i64, gas_used) orelse {
+                    self.gas_remaining = 0;
+                    return error.OutOfGas;
+                };
+                self.gas_remaining -= gas_used_i64;
 
                 self.pc += 1;
             },
@@ -1894,7 +1901,12 @@ pub const Frame = struct {
 
                 // Update gas
                 const gas_used = max_gas - result.gas_left;
-                self.gas_remaining -= @intCast(gas_used);
+                // Safely cast gas_used - if it exceeds i64::MAX, clamp gas_remaining to 0
+                const gas_used_i64 = std.math.cast(i64, gas_used) orelse {
+                    self.gas_remaining = 0;
+                    return error.OutOfGas;
+                };
+                self.gas_remaining -= gas_used_i64;
 
                 // Set return_data according to EIP-1014:
                 // - On success: return_data is empty
@@ -2011,7 +2023,12 @@ pub const Frame = struct {
 
                 // Update gas
                 const gas_used = available_gas - result.gas_left;
-                self.gas_remaining -= @intCast(gas_used);
+                // Safely cast gas_used - if it exceeds i64::MAX, clamp gas_remaining to 0
+                const gas_used_i64 = std.math.cast(i64, gas_used) orelse {
+                    self.gas_remaining = 0;
+                    return error.OutOfGas;
+                };
+                self.gas_remaining -= gas_used_i64;
 
                 self.pc += 1;
             },
