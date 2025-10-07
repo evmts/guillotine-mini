@@ -633,10 +633,8 @@ pub const Evm = struct {
         }
 
         // EIP-3860: Check init code size limit (Shanghai and later)
-        std.debug.print("DEBUG inner_create: hardfork={} init_code.len={} max={}\n", .{self.hardfork, init_code.len, GasConstants.MaxInitcodeSize});
         if (self.hardfork.isAtLeast(.SHANGHAI)) {
             if (init_code.len > GasConstants.MaxInitcodeSize) {
-                std.debug.print("EIP-3860: Init code size {} exceeds limit {}, CREATE2 failing\n", .{init_code.len, GasConstants.MaxInitcodeSize});
                 return .{
                     .address = primitives.ZERO_ADDRESS,
                     .success = false,
@@ -761,6 +759,13 @@ pub const Evm = struct {
             break :blk Address{ .bytes = addr_bytes };
         };
 
+        // Set nonce of new contract to 1 (EVM spec: contracts start with nonce 1)
+        if (self.host) |h| {
+            h.setNonce(new_address, 1);
+        } else {
+            try self.nonces.put(new_address, 1);
+        }
+
         // Transfer balance if value > 0
         if (value > 0) {
             if (self.host) |h| {
@@ -794,6 +799,13 @@ pub const Evm = struct {
         self.frames.items[self.frames.items.len - 1].execute() catch {
             _ = self.frames.pop();
 
+            // Revert nonce on execution error
+            if (self.host) |h| {
+                h.setNonce(new_address, 0);
+            } else {
+                _ = self.nonces.remove(new_address);
+            }
+
             // Reverse value transfer on error
             if (value > 0) {
                 if (self.host) |h| {
@@ -821,56 +833,78 @@ pub const Evm = struct {
         var gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
         var success = !frame.reverted;
 
-        // If successful, deploy the code
-        if (success and frame.output.len > 0) {
-            // Charge code deposit cost (200 gas per byte)
-            const deposit_cost = @as(u64, @intCast(frame.output.len)) * GasConstants.CreateDataGas;
-            if (gas_left < deposit_cost) {
-                // Out of gas during code deposit -> creation fails
-                success = false;
-                gas_left = 0;
+        // If successful, check deposit cost and code size, then deploy
+        if (success) {
+            // Charge code deposit cost (200 gas per byte) if there's output
+            if (frame.output.len > 0) {
+                const deposit_cost = @as(u64, @intCast(frame.output.len)) * GasConstants.CreateDataGas;
+                if (gas_left < deposit_cost) {
+                    // Out of gas during code deposit -> creation fails
+                    success = false;
+                    gas_left = 0;
+                }
             }
-        }
 
-        if (success and frame.output.len > 0) {
-            // Check code size limit (EIP-170: 24576 bytes)
-            const max_code_size = 24576;
-            if (frame.output.len > max_code_size) {
-                _ = self.frames.pop();
+            if (success and frame.output.len > 0) {
+                // Check code size limit (EIP-170: 24576 bytes)
+                const max_code_size = 24576;
+                if (frame.output.len > max_code_size) {
+                    _ = self.frames.pop();
 
-                // Reverse value transfer on code size failure
-                if (value > 0) {
+                    // Revert nonce on failure
                     if (self.host) |h| {
-                        const caller_balance = h.getBalance(caller);
-                        const new_addr_balance = h.getBalance(new_address);
-                        h.setBalance(caller, caller_balance + value);
-                        h.setBalance(new_address, new_addr_balance - value);
+                        h.setNonce(new_address, 0);
                     } else {
-                        const caller_balance = self.balances.get(caller) orelse 0;
-                        const new_addr_balance = self.balances.get(new_address) orelse 0;
-                        try self.balances.put(caller, caller_balance + value);
-                        try self.balances.put(new_address, new_addr_balance - value);
+                        _ = self.nonces.remove(new_address);
                     }
+
+                    // Reverse value transfer on code size failure
+                    if (value > 0) {
+                        if (self.host) |h| {
+                            const caller_balance = h.getBalance(caller);
+                            const new_addr_balance = h.getBalance(new_address);
+                            h.setBalance(caller, caller_balance + value);
+                            h.setBalance(new_address, new_addr_balance - value);
+                        } else {
+                            const caller_balance = self.balances.get(caller) orelse 0;
+                            const new_addr_balance = self.balances.get(new_address) orelse 0;
+                            try self.balances.put(caller, caller_balance + value);
+                            try self.balances.put(new_address, new_addr_balance - value);
+                        }
+                    }
+
+                    return .{
+                        .address = primitives.ZERO_ADDRESS,
+                        .success = false,
+                        .gas_left = gas_left,
+                    };
                 }
 
-                return .{
-                    .address = primitives.ZERO_ADDRESS,
-                    .success = false,
-                    .gas_left = gas_left,
-                };
+                // Deploy code and deduct deposit gas
+                const code_copy = try self.arena.allocator().alloc(u8, frame.output.len);
+                @memcpy(code_copy, frame.output);
+                try self.code.put(new_address, code_copy);
+                const deposit_cost = @as(u64, @intCast(frame.output.len)) * GasConstants.CreateDataGas;
+                gas_left -= deposit_cost;
+            } else if (success) {
+                // Deploy empty code (output.len == 0)
+                try self.code.put(new_address, &[_]u8{});
             }
 
-            // Deploy code and deduct deposit gas
-            const code_copy = try self.arena.allocator().alloc(u8, frame.output.len);
-            @memcpy(code_copy, frame.output);
-            try self.code.put(new_address, code_copy);
-            const deposit_cost = @as(u64, @intCast(frame.output.len)) * GasConstants.CreateDataGas;
-            gas_left -= deposit_cost;
+            // Mark account as created in this transaction (EIP-6780) if successful
+            if (success) {
+                try self.created_accounts.put(new_address, {});
+            }
+        } else {
+            // Reverse state changes on revert
+            // Revert nonce to 0
+            if (self.host) |h| {
+                h.setNonce(new_address, 0);
+            } else {
+                _ = self.nonces.remove(new_address);
+            }
 
-            // Mark account as created in this transaction (EIP-6780)
-            try self.created_accounts.put(new_address, {});
-        } else if (!success) {
-            // Reverse value transfer on revert
+            // Reverse value transfer
             if (value > 0) {
                 if (self.host) |h| {
                     const caller_balance = h.getBalance(caller);
