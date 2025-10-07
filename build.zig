@@ -521,18 +521,75 @@ pub fn build(b: *std.Build) void {
     interactive_test_step.dependOn(&run_interactive_tests.step);
 
     // WASM build target with ReleaseSmall optimization
+    // TODO: Change to wasm32-freestanding once we remove libc dependency.
+    // Currently using wasi because crypto_mod links C libraries (bn254_wrapper.a, c-kzg-4844.a, blst.a)
+    // which require libc. The dependency chain is: wasm_mod -> primitives_mod -> crypto_mod -> C libraries.
+    // To fix: Either rewrite crypto functions in pure Zig or conditionally exclude crypto from WASM builds.
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
-        .os_tag = .freestanding,
+        .os_tag = .wasi,
     });
 
-    // Create WASM module with primitives dependency
+    // Create WASM-specific build options (disable C library features)
+    const wasm_build_options = b.addOptions();
+    wasm_build_options.addOption(bool, "use_bn254", false); // Disable BN254 for WASM (requires C library)
+    wasm_build_options.addOption(bool, "use_c_kzg", false); // Disable C-KZG for WASM (requires C library)
+    const wasm_build_options_mod = wasm_build_options.createModule();
+
+    // Create WASM-specific primitives first (without crypto to avoid circular dependency)
+    const wasm_primitives_mod = b.addModule("wasm_primitives", .{
+        .root_source_file = b.path("src/primitives/root.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+
+    // Create WASM-specific crypto module (needs primitives, NO C libraries)
+    const wasm_crypto_mod = b.addModule("wasm_crypto", .{
+        .root_source_file = b.path("src/crypto/root.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "primitives", .module = wasm_primitives_mod },
+            .{ .name = "build_options", .module = wasm_build_options_mod },
+        },
+    });
+    // NOTE: Intentionally NOT linking C libraries (bn254_lib, c_kzg_mod) for WASM
+    // These are native libraries and can't be linked into WASM builds
+
+    // Add crypto import to primitives (circular dependency)
+    wasm_primitives_mod.addImport("crypto", wasm_crypto_mod);
+
+    // Create WASM blake2 module
+    const wasm_blake2_mod = b.addModule("wasm_blake2", .{
+        .root_source_file = b.path("src/blake2.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+
+    // Create WASM precompiles module
+    const wasm_precompiles_mod = b.addModule("wasm_precompiles", .{
+        .root_source_file = b.path("src/precompiles/precompiles.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "primitives", .module = wasm_primitives_mod },
+            .{ .name = "crypto", .module = wasm_crypto_mod },
+            .{ .name = "blake2", .module = wasm_blake2_mod },
+            .{ .name = "build_options", .module = wasm_build_options_mod },
+        },
+    });
+
+    // Create WASM module with all necessary dependencies
     const wasm_mod = b.addModule("guillotine_mini_wasm", .{
         .root_source_file = b.path("src/root_c.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "primitives", .module = wasm_primitives_mod },
+            .{ .name = "crypto", .module = wasm_crypto_mod },
+            .{ .name = "precompiles", .module = wasm_precompiles_mod },
+            .{ .name = "blake2", .module = wasm_blake2_mod },
+            .{ .name = "build_options", .module = wasm_build_options_mod },
         },
     });
 
