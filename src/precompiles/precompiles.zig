@@ -108,6 +108,7 @@ pub fn execute_precompile(
     address: Address,
     input: []const u8,
     gas_limit: u64,
+    hardfork: @import("../hardfork.zig").Hardfork,
 ) PrecompileError!PrecompileOutput {
     // Check if address is a precompile address (address must be 0x00...00XX where XX is 1-18)
     for (address.bytes[0..19]) |byte| {
@@ -120,7 +121,7 @@ pub fn execute_precompile(
         2 => execute_sha256(allocator, input, gas_limit),
         3 => execute_ripemd160(allocator, input, gas_limit),
         4 => execute_identity(allocator, input, gas_limit),
-        5 => execute_modexp(allocator, input, gas_limit),
+        5 => execute_modexp(allocator, input, gas_limit, hardfork),
         6 => execute_ecadd(allocator, input, gas_limit),
         7 => execute_ecmul(allocator, input, gas_limit),
         8 => execute_ecpairing(allocator, input, gas_limit),
@@ -349,12 +350,15 @@ pub fn execute_identity(allocator: std.mem.Allocator, input: []const u8, gas_lim
 /// 0x05: modexp - Modular exponentiation
 /// Input: base_len(32) + exp_len(32) + mod_len(32) + base + exp + mod
 /// Output: result of (base^exp) % mod
-pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64) PrecompileError!PrecompileOutput {
+pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64, hardfork: @import("../hardfork.zig").Hardfork) PrecompileError!PrecompileOutput {
+    // EIP-7883: Minimum gas cost increased from 200 to 500 in Osaka
+    const min_gas: u64 = if (hardfork.isAtLeast(.OSAKA)) 500 else GasCosts.MODEXP_MIN;
+
     if (input.len < 96) {
         const empty_output = try allocator.alloc(u8, 0);
         return PrecompileOutput{
             .output = empty_output,
-            .gas_used = GasCosts.MODEXP_MIN,
+            .gas_used = min_gas,
             .success = true,
         };
     }
@@ -363,6 +367,20 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
     const base_len = bytesToU32(input[0..32]);
     const exp_len = bytesToU32(input[32..64]);
     const mod_len = bytesToU32(input[64..96]);
+
+    // EIP-7823: Upper bounds check (Prague+)
+    // If any of base_len, exp_len, or mod_len exceeds 1024 bytes, the call fails
+    const MAX_LENGTH_BYTES: u32 = 1024;
+    if (hardfork.isAtLeast(.PRAGUE)) {
+        if (base_len > MAX_LENGTH_BYTES or exp_len > MAX_LENGTH_BYTES or mod_len > MAX_LENGTH_BYTES) {
+            // Return failure with empty output
+            return PrecompileOutput{
+                .output = &.{},
+                .gas_used = gas_limit,
+                .success = false,
+            };
+        }
+    }
 
     // Validate input length
     const expected_len = 96 + base_len + exp_len + mod_len;
@@ -388,12 +406,12 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
         const empty_output = try allocator.alloc(u8, 0);
         return PrecompileOutput{
             .output = empty_output,
-            .gas_used = GasCosts.MODEXP_MIN,
+            .gas_used = min_gas,
             .success = true,
         };
     }
 
-    // Calculate gas cost (EIP-198 specification)
+    // Calculate gas cost (EIP-198 / EIP-7883)
     // Read first 32 bytes of exponent (padded with zeros if shorter)
     var exp_head: [32]u8 = [_]u8{0} ** 32;
     const exp_head_len = @min(exp_len, 32);
@@ -404,14 +422,23 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
 
     // Calculate multiplication complexity
     const max_len = @max(base_len, mod_len);
-    const complexity = crypto.ModExp.unaudited_calculateMultiplicationComplexity(max_len);
+    const complexity = if (hardfork.isAtLeast(.OSAKA))
+        calculateMultiplicationComplexityOsaka(max_len)
+    else
+        crypto.ModExp.unaudited_calculateMultiplicationComplexity(max_len);
 
     // Calculate iteration count based on adjusted exponent length
-    const iteration_count = calculateIterationCount(exp_len, exp_head_u256);
+    const iteration_count = if (hardfork.isAtLeast(.OSAKA))
+        calculateIterationCountOsaka(exp_len, exp_head_u256)
+    else
+        calculateIterationCount(exp_len, exp_head_u256);
 
-    // Final gas cost = (complexity * iteration_count) / 20
-    const cost = (complexity * iteration_count) / 20;
-    const required_gas = @max(GasCosts.MODEXP_MIN, cost);
+    // Final gas cost calculation
+    // EIP-198: (complexity * iteration_count) / 20 (pre-Osaka)
+    // EIP-7883: (complexity * iteration_count) / 1 (Osaka+)
+    const gas_divisor: u64 = if (hardfork.isAtLeast(.OSAKA)) 1 else 20;
+    const cost = (complexity * iteration_count) / gas_divisor;
+    const required_gas = @max(min_gas, cost);
 
     if (gas_limit < required_gas) {
         return PrecompileOutput{
@@ -455,6 +482,49 @@ fn calculateIterationCount(exp_len: u32, exp_head: u256) u64 {
         const bit_length = if (exp_head == 0) 0 else 256 - @clz(exp_head);
         const extra_bytes: u64 = exp_len - 32;
         break :blk 8 * extra_bytes + if (bit_length > 0) bit_length - 1 else 0;
+    };
+
+    // Return at least 1
+    return @max(adjusted_exp_length, 1);
+}
+
+/// Calculate multiplication complexity for EIP-7883 (Osaka+)
+/// Based on EIP-7883 spec with new constants
+fn calculateMultiplicationComplexityOsaka(max_len: u32) u64 {
+    // EIP-7883 constants
+    const WORD_SIZE: u32 = 8;
+    const MAX_LENGTH_THRESHOLD: u32 = 32;
+    const LARGE_BASE_MODULUS_MULTIPLIER: u64 = 2;
+
+    // Ceiling division: (max_len + WORD_SIZE - 1) / WORD_SIZE
+    const words: u64 = (max_len + WORD_SIZE - 1) / WORD_SIZE;
+
+    if (max_len <= MAX_LENGTH_THRESHOLD) {
+        // For small inputs (<= 32 bytes): fixed cost of 16
+        return 16;
+    } else {
+        // For large inputs (> 32 bytes): 2 * words^2
+        return LARGE_BASE_MODULUS_MULTIPLIER * words * words;
+    }
+}
+
+/// Calculate iteration count for EIP-7883 (Osaka+)
+/// Based on EIP-7883 spec with new EXPONENT_BYTE_MULTIPLIER
+fn calculateIterationCountOsaka(exp_len: u32, exp_head: u256) u64 {
+    // EIP-7883 constants
+    const EXPONENT_THRESHOLD: u32 = 32;
+    const EXPONENT_BYTE_MULTIPLIER: u64 = 16; // Changed from 8 to 16
+
+    const adjusted_exp_length: u64 = if (exp_len <= EXPONENT_THRESHOLD) blk: {
+        // For exp_len <= 32, adjusted length is based on bit length of exp_head
+        if (exp_head == 0) break :blk 0;
+        const bit_length = 256 - @clz(exp_head);
+        break :blk if (bit_length > 0) bit_length - 1 else 0;
+    } else blk: {
+        // For exp_len > 32: 16 * (exp_len - 32) + bit_length - 1
+        const bit_length = if (exp_head == 0) 0 else 256 - @clz(exp_head);
+        const extra_bytes: u64 = exp_len - 32;
+        break :blk EXPONENT_BYTE_MULTIPLIER * extra_bytes + if (bit_length > 0) bit_length - 1 else 0;
     };
 
     // Return at least 1
@@ -1466,9 +1536,9 @@ test "execute_all_precompiles smoke test" {
     };
     
     for (addresses) |addr| {
-        const result = try execute_precompile(testing.allocator, addr, &[_]u8{}, 100000);
+        const result = try execute_precompile(testing.allocator, addr, &[_]u8{}, 100000, .CANCUN);
         defer if (result.output.len > 0) testing.allocator.free(result.output);
-        
+
         // All should at least not error (may fail due to invalid input)
         try testing.expect(result.gas_used <= 100000);
     }
