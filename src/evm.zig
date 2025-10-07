@@ -317,6 +317,7 @@ pub const Evm = struct {
             calldata,
             @as(*anyopaque, @ptrCast(self)),
             self.hardfork,
+            false, // Top-level transaction is never static
         ));
         defer _ = self.frames.pop();
 
@@ -488,6 +489,12 @@ pub const Evm = struct {
 
         // Create and push frame onto stack
         // Use execution_caller and execution_address which are determined by call_type
+
+        // Determine if this call should be static
+        // STATICCALL creates a static context, and static context propagates to all nested calls
+        const parent_is_static = if (self.getCurrentFrame()) |frame| frame.is_static else false;
+        const is_static = parent_is_static or call_type == .StaticCall;
+
         try self.frames.append(self.arena.allocator(), try Frame.init(
             self.arena.allocator(),
             code,
@@ -498,6 +505,7 @@ pub const Evm = struct {
             input,
             @as(*anyopaque, @ptrCast(self)),
             self.hardfork,
+            is_static,
         ));
         errdefer _ = self.frames.pop();
 
@@ -821,6 +829,7 @@ pub const Evm = struct {
             &[_]u8{}, // no calldata for CREATE
             @as(*anyopaque, @ptrCast(self)),
             self.hardfork,
+            false, // CREATE/CREATE2 are never static (can't create contracts in static context)
         ));
         errdefer _ = self.frames.pop();
 

@@ -53,9 +53,12 @@ pub const Frame = struct {
     // EIP-3074 AUTH state
     authorized: ?u256,
     call_depth: u32,
-    
+
     // Active hardfork configuration for gas rules
     hardfork: Hardfork,
+
+    // Static call flag (for STATICCALL - EIP-214)
+    is_static: bool,
 
     /// Analyze bytecode to identify valid JUMPDEST locations
     fn validateJumpDests(_: std.mem.Allocator, bytecode: []const u8, valid_jumpdests: *std.AutoArrayHashMap(u32, void)) !void {
@@ -89,6 +92,7 @@ pub const Frame = struct {
         calldata: []const u8,
         evm_ptr: *anyopaque,
         hardfork: Hardfork,
+        is_static: bool,
     ) !Self {
         var stack = std.ArrayList(u256){};
         try stack.ensureTotalCapacity(allocator, 1024);
@@ -123,6 +127,7 @@ pub const Frame = struct {
             .authorized = null,
             .call_depth = 0,
             .hardfork = hardfork,
+            .is_static = is_static,
         };
     }
 
@@ -1097,6 +1102,9 @@ pub const Frame = struct {
 
             // SSTORE
             0x55 => {
+                // EIP-214: SSTORE cannot modify state in static call context
+                if (self.is_static) return error.StaticCallViolation;
+
                 const key = try self.popStack();
                 const value = try self.popStack();
 
@@ -1201,6 +1209,9 @@ pub const Frame = struct {
                 // EIP-1153: TSTORE was introduced in Cancun hardfork
                 if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;
 
+                // EIP-1153: TSTORE cannot modify state in static call context
+                if (self.is_static) return error.StaticCallViolation;
+
                 try self.consumeGas(GasConstants.TStoreGas);
                 const key = try self.popStack();
                 const value = try self.popStack();
@@ -1267,6 +1278,9 @@ pub const Frame = struct {
 
             // LOG0-LOG4
             0xa0...0xa4 => {
+                // EIP-214: LOG opcodes cannot be executed in static call context
+                if (self.is_static) return error.StaticCallViolation;
+
                 const topic_count = opcode - 0xa0;
                 const offset = try self.popStack();
                 const length = try self.popStack();
@@ -1289,6 +1303,9 @@ pub const Frame = struct {
 
             // CREATE
             0xf0 => {
+                // EIP-214: CREATE cannot be executed in static call context
+                if (self.is_static) return error.StaticCallViolation;
+
                 const value = try self.popStack();
                 const offset = try self.popStack();
                 const length = try self.popStack();
@@ -1363,6 +1380,9 @@ pub const Frame = struct {
                 const in_length = try self.popStack();
                 const out_offset = try self.popStack();
                 const out_length = try self.popStack();
+
+                // EIP-214: CALL with non-zero value cannot be executed in static call context
+                if (self.is_static and value_arg > 0) return error.StaticCallViolation;
 
                 // Convert address
                 var addr_bytes: [20]u8 = undefined;
@@ -1734,6 +1754,9 @@ pub const Frame = struct {
             0xf5 => {
                 // EIP-1014: CREATE2 opcode was introduced in Constantinople hardfork
                 if (evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
+
+                // EIP-214: CREATE2 cannot be executed in static call context
+                if (self.is_static) return error.StaticCallViolation;
 
                 const value = try self.popStack();
                 const offset = try self.popStack();
@@ -2253,6 +2276,9 @@ pub const Frame = struct {
 
             // SELFDESTRUCT
             0xff => {
+                // EIP-214: SELFDESTRUCT cannot be executed in static call context
+                if (self.is_static) return error.StaticCallViolation;
+
                 const beneficiary_u256 = try self.popStack();
 
                 // Convert beneficiary to address
