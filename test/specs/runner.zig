@@ -817,11 +817,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
             }
 
-            // Add initcode word cost for contract creation transactions (EIP-3860, Shanghai+)
-            // NOTE: For contract-creating TRANSACTIONS (tx.to == null), the initcode gas is charged
-            // as part of the intrinsic gas BEFORE execution. This is different from CREATE/CREATE2
-            // opcodes, which charge initcode gas during opcode execution.
-            // Reference: execution-specs/src/ethereum/forks/shanghai/transactions.py:402
+            // EIP-3860: For contract-creation transactions (to == null), enforce initcode size limit here.
+            // The per-word initcode gas is charged at execution time in inner_create for top-level creates.
             if (to == null) {
                 if (hardfork) |hf| {
                     if (hf.isAtLeast(.SHANGHAI)) {
@@ -857,10 +854,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                             // If we get here, the test doesn't expect this exception, so fail
                             return error.InitcodeSizeExceeded;
                         }
-                        // Contract creation transaction - charge 2 gas per 32-byte word of initcode
-                        const initcode_words = primitives.GasConstants.wordCount(tx_data.len);
-                        const initcode_cost = initcode_words * primitives.GasConstants.InitcodeWordGas;
-                        intrinsic_gas += initcode_cost;
                     }
                 }
             }
