@@ -111,7 +111,7 @@ pub const Hardfork = enum {
         if (std.ascii.eqlIgnoreCase(clean_name, "Byzantium")) return .BYZANTIUM;
         if (std.ascii.eqlIgnoreCase(clean_name, "Constantinople")) return .CONSTANTINOPLE;
         if (std.ascii.eqlIgnoreCase(clean_name, "Petersburg")) return .PETERSBURG;
-        if (std.ascii.eqlIgnoreCase(clean_name, "ConstantinopleFix")) return .PETERSBURG; // Alias
+        if (std.ascii.eqlIgnoreCase(clean_name, "ConstantinopleFix")) return .PETERSBURG; // Alias for Petersburg
         if (std.ascii.eqlIgnoreCase(clean_name, "Istanbul")) return .ISTANBUL;
         if (std.ascii.eqlIgnoreCase(clean_name, "MuirGlacier")) return .MUIR_GLACIER;
         if (std.ascii.eqlIgnoreCase(clean_name, "Berlin")) return .BERLIN;

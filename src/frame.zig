@@ -1,6 +1,7 @@
 /// Frame implementation for tracing
 /// This mirrors the architecture of frame/frame.zig but simplified for validation
 const std = @import("std");
+const log = @import("logger.zig");
 const primitives = @import("primitives");
 const evm_mod = @import("evm.zig");
 const GasConstants = primitives.GasConstants;
@@ -298,17 +299,18 @@ pub const Frame = struct {
     /// Calculate CREATE2 gas cost (EIP-3860 aware)
     fn create2GasCost(self: *const Self, init_code_size: u32) u64 {
         var gas_cost: u64 = GasConstants.CreateGas; // Base 32,000 gas
-        
-        // Keccak256 hash cost (always present for CREATE2)
-        const word_count = wordCount(@as(u64, init_code_size));
-        gas_cost += GasConstants.Keccak256Gas + (word_count * GasConstants.Keccak256WordGas);
-        
+
+        // Keccak256 hash cost for hashing init_code
+        // CREATE2 only charges for the keccak256 of init_code, not for the address calculation
+        const init_code_word_count = wordCount(@as(u64, init_code_size));
+        gas_cost += init_code_word_count * GasConstants.Keccak256WordGas;
+
         if (self.hardfork.isAtLeast(.SHANGHAI)) {
-            // Additional init code word cost
+            // Additional init code word cost (EIP-3860)
             @branchHint(.likely);
-            gas_cost += word_count * GasConstants.InitcodeWordGas;
+            gas_cost += init_code_word_count * GasConstants.InitcodeWordGas;
         }
-        
+
         return gas_cost;
     }
 
@@ -1683,7 +1685,7 @@ pub const Frame = struct {
 
             // CREATE2
             0xf5 => {
-                std.debug.print("DEBUG: Executing CREATE2 opcode\n", .{});
+                log.debug("DEBUG: Executing CREATE2 opcode\n", .{});
                 // EIP-1014: CREATE2 opcode was introduced in Constantinople hardfork
                 if (evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
 
@@ -1692,10 +1694,10 @@ pub const Frame = struct {
                 const length = try self.popStack();
                 const salt = try self.popStack();
 
-                std.debug.print("DEBUG: CREATE2 params: length={} offset={} value={} salt={}\n", .{length, offset, value, salt});
+                log.debug("DEBUG: CREATE2 params: length={} offset={} value={} salt={}\n", .{length, offset, value, salt});
                 const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
                 const gas_cost = self.create2GasCost(len);
-                std.debug.print("DEBUG: CREATE2 gas_cost={}\n", .{gas_cost});
+                log.debug("DEBUG: CREATE2 gas_cost={}\n", .{gas_cost});
                 try self.consumeGas(gas_cost);
 
                 // Read init code from memory

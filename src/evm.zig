@@ -2,6 +2,7 @@
 /// This is a simplified, unoptimized EVM that orchestrates execution.
 /// Architecture mirrors evm.zig - Evm orchestrates, Frame executes
 const std = @import("std");
+const log = @import("logger.zig");
 const primitives = @import("primitives");
 const GasConstants = primitives.GasConstants;
 const Frame = @import("frame.zig").Frame;
@@ -816,6 +817,21 @@ pub const Evm = struct {
         // Get caller from current frame
         const caller = if (self.getCurrentFrame()) |frame| frame.address else self.origin;
 
+        // Check sender's nonce for overflow (max nonce is 2^64 - 1)
+        const sender_nonce = if (self.host) |h|
+            h.getNonce(caller)
+        else
+            self.nonces.get(caller) orelse 0;
+
+        if (sender_nonce == std.math.maxInt(u64)) {
+            // Nonce overflow - CREATE fails, return gas
+            return .{
+                .address = primitives.ZERO_ADDRESS,
+                .success = false,
+                .gas_left = gas,
+            };
+        }
+
         // Handle balance transfer if value > 0
         if (value > 0) {
             const caller_balance = if (self.host) |h| h.getBalance(caller) else self.balances.get(caller) orelse 0;
@@ -861,17 +877,11 @@ pub const Evm = struct {
             break :blk Address{ .bytes = addr_bytes };
         } else blk: {
             // CREATE: keccak256(rlp([sender, nonce]))[12:]
-            // Get caller's nonce and increment it
+            // Get caller's nonce (don't increment yet - that happens after collision check)
             const nonce = if (self.host) |h|
                 h.getNonce(caller)
             else
                 self.nonces.get(caller) orelse 0;
-
-            if (self.host) |h| {
-                h.setNonce(caller, nonce + 1);
-            } else {
-                try self.nonces.put(caller, nonce + 1);
-            }
 
             // Manually construct RLP encoding of [address_bytes, nonce]
             // Address is 20 bytes, nonce is variable length
@@ -928,6 +938,54 @@ pub const Evm = struct {
             @memcpy(&addr_bytes, addr_hash[12..32]);
             break :blk Address{ .bytes = addr_bytes };
         };
+
+        // Check for address collision (EIP-684)
+        // An account is considered to exist if it has code, nonce > 0, or storage
+        const target_nonce = if (self.host) |h|
+            h.getNonce(new_address)
+        else
+            self.nonces.get(new_address) orelse 0;
+
+        const target_code = if (self.host) |h|
+            h.getCode(new_address)
+        else
+            self.code.get(new_address) orelse &[_]u8{};
+
+        // Check if account has storage by iterating storage map
+        var has_storage = false;
+        if (self.host == null) {
+            var storage_iter = self.storage.iterator();
+            while (storage_iter.next()) |entry| {
+                if (std.mem.eql(u8, &entry.key_ptr.address.bytes, &new_address.bytes)) {
+                    has_storage = true;
+                    break;
+                }
+            }
+        }
+
+        const has_collision = target_nonce > 0 or target_code.len > 0 or has_storage;
+
+        if (has_collision) {
+            // Collision detected - increment sender's nonce and fail
+            if (self.host) |h| {
+                h.setNonce(caller, sender_nonce + 1);
+            } else {
+                try self.nonces.put(caller, sender_nonce + 1);
+            }
+
+            return .{
+                .address = primitives.ZERO_ADDRESS,
+                .success = false,
+                .gas_left = gas,
+            };
+        }
+
+        // No collision - increment sender's nonce and proceed
+        if (self.host) |h| {
+            h.setNonce(caller, sender_nonce + 1);
+        } else {
+            try self.nonces.put(caller, sender_nonce + 1);
+        }
 
         // Set nonce of new contract to 1 (EVM spec: contracts start with nonce 1)
         if (self.host) |h| {
