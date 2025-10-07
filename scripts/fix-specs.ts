@@ -225,10 +225,22 @@ This produces an EIP-3155 compatible trace that you can compare with our trace o
 
 **Step 5: Filter to a single test**
 
-Don't try to fix all failures at once. Filter to ONE failing test:
+Don't try to fix all failures at once. Use the \`TEST_FILTER\` environment variable to run ONE specific failing test:
+
 \`\`\`bash
+# Filter by exact test name (substring match)
 TEST_FILTER="exact_test_name" ${suite.command}
+
+# Examples:
+TEST_FILTER="transStorageReset" zig build specs-cancun-tstore-basic
+TEST_FILTER="berlin.*tx_type_0" zig build specs-berlin
+TEST_FILTER="push0" zig build specs-shanghai
+
+# The filter does substring matching on the full test name
+# So you can filter by hardfork, EIP, opcode, or specific test case
 \`\`\`
+
+This runs ONLY tests whose name contains the filter string, making debugging much faster.
 
 ## Codebase Structure
 
