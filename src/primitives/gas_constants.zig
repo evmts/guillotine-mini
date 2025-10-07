@@ -131,10 +131,11 @@ pub const LogTopicGas: u64 = 375;
 /// High cost reflects the expense of deploying new contracts
 pub const CreateGas: u64 = 32000;
 
-/// Base gas cost for CALL operations
-/// This is the minimum cost before additional charges
-// Base CALL cost is modeled via warm/cold access (EIP-2929); keep base at 0 here
-pub const CallGas: u64 = 0;
+/// Base gas cost for CALL operations (not used directly, see accessAddress in evm.zig)
+/// This is kept for backwards compatibility and documentation
+/// Pre-Berlin: 700 gas (returned by accessAddress as CallCodeCost)
+/// Berlin+: warm/cold costs from EIP-2929 (returned by accessAddress)
+pub const CallGas: u64 = 700;
 
 /// Gas stipend provided to called contract when transferring value
 /// Ensures called contract has minimum gas to execute basic operations
