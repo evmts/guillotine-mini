@@ -264,6 +264,7 @@ fn hardforkToString(hf: Hardfork) []const u8 {
         .SHANGHAI => "Shanghai",
         .CANCUN => "Cancun",
         .PRAGUE => "Prague",
+        .OSAKA => "Osaka",
     };
 }
 
