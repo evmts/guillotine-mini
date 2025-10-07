@@ -613,6 +613,9 @@ pub const Evm = struct {
         gas: u64,
         salt: ?u256,
     ) errors.CallError!struct { address: Address, success: bool, gas_left: u64, output: []const u8 } {
+        // Track if this is a top-level create (contract-creation transaction)
+        // We detect this when there is no active frame yet.
+        const is_top_level_create = self.frames.items.len == 0;
         // Check call depth
         if (self.frames.items.len >= 1024) {
             return .{
@@ -771,6 +774,24 @@ pub const Evm = struct {
             }
         }
 
+        // For top-level creates in Shanghai+, charge EIP-3860 initcode per-word gas here
+        // CREATE/CREATE2 opcodes already charge this in frame.zig before calling inner_create.
+        var child_gas: u64 = gas;
+        if (is_top_level_create and self.hardfork.isAtLeast(.SHANGHAI)) {
+            const words = primitives.GasConstants.wordCount(init_code.len);
+            const initcode_word_cost = words * GasConstants.InitcodeWordGas;
+            if (child_gas <= initcode_word_cost) {
+                // Not enough gas to cover initcode word cost
+                return .{
+                    .address = primitives.ZERO_ADDRESS,
+                    .success = false,
+                    .gas_left = 0,
+                    .output = &[_]u8{},
+                };
+            }
+            child_gas -= initcode_word_cost;
+        }
+
         // EIP-2929 (Berlin): Mark created address as warm
         // Per Python reference: accessed_addresses.add(contract_address) happens
         // BEFORE collision check and nonce increment
@@ -852,12 +873,10 @@ pub const Evm = struct {
         }
 
         // Execute initialization code
-        // Safely cast gas to i64 - if it exceeds i64::MAX, cap it (shouldn't happen in practice)
-        const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
         try self.frames.append(self.arena.allocator(), try Frame.init(
             self.arena.allocator(),
             init_code,
-            frame_gas,
+            @intCast(child_gas),
             caller,
             new_address,
             value,
@@ -869,6 +888,8 @@ pub const Evm = struct {
         errdefer _ = self.frames.pop();
 
         // Execute frame
+        // Debug: trace inner_create gas flow
+        std.debug.print("DEBUG[CREATE]: start child_gas={} init_len={}\n", .{child_gas, init_code.len});
         self.frames.items[self.frames.items.len - 1].execute() catch {
             const failed_frame = &self.frames.items[self.frames.items.len - 1];
             const error_output = failed_frame.output; // Capture output before popping
@@ -915,6 +936,7 @@ pub const Evm = struct {
             // Charge code deposit cost (200 gas per byte) if there's output
             if (frame_output.len > 0) {
                 const deposit_cost = @as(u64, @intCast(frame_output.len)) * GasConstants.CreateDataGas;
+                std.debug.print("DEBUG[CREATE]: frame_ok out_len={} gas_left_before_deposit={} deposit_cost={}\n", .{frame_output.len, gas_left, deposit_cost});
                 if (gas_left < deposit_cost) {
                     // Out of gas during code deposit -> creation fails
                     success = false;
@@ -970,6 +992,7 @@ pub const Evm = struct {
                 }
                 const deposit_cost = @as(u64, @intCast(frame_output.len)) * GasConstants.CreateDataGas;
                 gas_left -= deposit_cost;
+                std.debug.print("DEBUG[CREATE]: deposit_applied new_gas_left={}\n", .{gas_left});
             } else if (success) {
                 // Deploy empty code (output.len == 0)
                 if (self.host) |h| {
@@ -1014,6 +1037,7 @@ pub const Evm = struct {
         // According to EIP-1014 and CREATE semantics:
         // - On success: return_data should be empty
         // - On failure/revert: return_data should contain the child's output
+        std.debug.print("DEBUG[CREATE]: end success={} gas_left={}\n", .{success, gas_left});
         return .{
             .address = if (success) new_address else primitives.ZERO_ADDRESS,
             .success = success,
