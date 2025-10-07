@@ -308,20 +308,21 @@ pub fn build(b: *std.Build) void {
     };
 
     // Cancun has 20k+ lines in sufficient_balance_blob_tx.zig
+    // NOTE: Filters use simple substring matching, not regex
     const cancun_sub_targets = [_]SubTarget{
-        .{ .name = "cancun-tstore-basic", .filter = "cancun.*tstore.*(basic_tload|tstorage[^_])", .desc = "Cancun EIP-1153 basic TLOAD/TSTORE tests" },
-        .{ .name = "cancun-tstore-reentrancy", .filter = "cancun.*tstore.*(reentrancy|reentrant)", .desc = "Cancun EIP-1153 reentrancy tests" },
-        .{ .name = "cancun-tstore-contexts", .filter = "cancun.*tstore.*(contexts|selfdestruct)", .desc = "Cancun EIP-1153 execution context tests" },
-        .{ .name = "cancun-mcopy", .filter = "cancun.*mcopy", .desc = "Cancun EIP-5656 MCOPY tests" },
-        .{ .name = "cancun-selfdestruct", .filter = "cancun.*selfdestruct", .desc = "Cancun EIP-6780 SELFDESTRUCT tests" },
-        .{ .name = "cancun-blobbasefee", .filter = "cancun.*blobgasfee", .desc = "Cancun EIP-7516 BLOBBASEFEE tests" },
-        .{ .name = "cancun-blob-precompile", .filter = "cancun.*point_evaluation", .desc = "Cancun EIP-4844 point evaluation precompile tests" },
-        .{ .name = "cancun-blob-opcodes", .filter = "cancun.*blobhash", .desc = "Cancun EIP-4844 BLOBHASH opcode tests" },
-        .{ .name = "cancun-blob-tx-small", .filter = "cancun.*blob_txs.*(attribute|invalid|blob_type_tx_pre_fork)", .desc = "Cancun EIP-4844 small blob transaction tests" },
-        .{ .name = "cancun-blob-tx-subtraction", .filter = "cancun.*blob_gas_subtraction_tx", .desc = "Cancun EIP-4844 blob gas subtraction tests" },
-        .{ .name = "cancun-blob-tx-insufficient", .filter = "cancun.*insufficient_balance_blob_tx", .desc = "Cancun EIP-4844 insufficient balance tests" },
-        .{ .name = "cancun-blob-tx-sufficient", .filter = "cancun.*sufficient_balance_blob_tx", .desc = "Cancun EIP-4844 sufficient balance tests" },
-        .{ .name = "cancun-blob-tx-valid-combos", .filter = "cancun.*valid_blob_tx_combinations", .desc = "Cancun EIP-4844 valid combinations tests" },
+        .{ .name = "cancun-tstore-basic", .filter = "eip1153_tstore_test_tstorage_py", .desc = "Cancun EIP-1153 basic TLOAD/TSTORE tests" },
+        .{ .name = "cancun-tstore-reentrancy", .filter = "eip1153_tstore_test_tstore_reentrancy", .desc = "Cancun EIP-1153 reentrancy tests" },
+        .{ .name = "cancun-tstore-contexts", .filter = "eip1153_tstore_test_tstorage_", .desc = "Cancun EIP-1153 execution context tests" },
+        .{ .name = "cancun-mcopy", .filter = "eip5656_mcopy", .desc = "Cancun EIP-5656 MCOPY tests" },
+        .{ .name = "cancun-selfdestruct", .filter = "eip6780_selfdestruct", .desc = "Cancun EIP-6780 SELFDESTRUCT tests" },
+        .{ .name = "cancun-blobbasefee", .filter = "eip7516_blobgasfee", .desc = "Cancun EIP-7516 BLOBBASEFEE tests" },
+        .{ .name = "cancun-blob-precompile", .filter = "point_evaluation_precompile", .desc = "Cancun EIP-4844 point evaluation precompile tests" },
+        .{ .name = "cancun-blob-opcodes", .filter = "blobhash_opcode", .desc = "Cancun EIP-4844 BLOBHASH opcode tests" },
+        .{ .name = "cancun-blob-tx-small", .filter = "blob_tx_attribute", .desc = "Cancun EIP-4844 small blob transaction tests" },
+        .{ .name = "cancun-blob-tx-subtraction", .filter = "blob_gas_subtraction_tx", .desc = "Cancun EIP-4844 blob gas subtraction tests" },
+        .{ .name = "cancun-blob-tx-insufficient", .filter = "insufficient_balance_blob_tx", .desc = "Cancun EIP-4844 insufficient balance tests" },
+        .{ .name = "cancun-blob-tx-sufficient", .filter = "sufficient_balance_blob_tx", .desc = "Cancun EIP-4844 sufficient balance tests" },
+        .{ .name = "cancun-blob-tx-valid-combos", .filter = "valid_blob_tx_combinations", .desc = "Cancun EIP-4844 valid combinations tests" },
     };
 
     // Prague has 4540 lines in transaction_validity_type_1_type_2.zig and many BLS12-381 tests

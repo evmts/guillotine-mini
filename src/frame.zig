@@ -2502,29 +2502,16 @@ pub const Frame = struct {
                     }
                 }
 
-                // EIP-6780: Only delete account if created in same transaction
+                // EIP-6780: Mark account for deletion if created in same transaction
+                // Actual deletion happens at the END of the transaction to allow code to persist
+                // during the transaction (important for reentrancy with transient storage)
                 const was_created_this_tx = evm_ptr.created_accounts.contains(self.address);
 
                 if (was_created_this_tx) {
-                    // When account was created in same tx, fully delete the account (EIP-6780)
-                    // This happens after move_ether above
-                    // If beneficiary == originator: balance was increased then set to 0 (burning ether)
-                    // If beneficiary != originator: balance was already set to 0 in move_ether
-                    if (evm_ptr.host) |h| {
-                        // Clear all account state: balance, code, and nonce
-                        h.setBalance(self.address, 0);
-                        h.setCode(self.address, &[_]u8{});
-                        h.setNonce(self.address, 0);
-                        // Note: storage would also be cleared in full implementation
-                    } else {
-                        // Clear all account state in EVM storage
-                        try evm_ptr.balances.put(self.address, 0);
-                        try evm_ptr.code.put(self.address, &[_]u8{});
-                        try evm_ptr.nonces.put(self.address, 0);
-                        // Note: storage would also be cleared in full implementation
-                    }
+                    // Mark for deletion - actual deletion at end of transaction
+                    try evm_ptr.selfdestructed_accounts.put(self.address, {});
                 }
-                // Otherwise: Balance already transferred above, code persists per EIP-6780
+                // Balance already transferred above, code persists until end of transaction per EIP-6780
 
                 // Apply refund to EVM's gas_refund counter
                 const refund = self.selfdestructRefund();
