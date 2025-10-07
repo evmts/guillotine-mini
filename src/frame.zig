@@ -1685,7 +1685,6 @@ pub const Frame = struct {
 
             // CREATE2
             0xf5 => {
-                log.debug("DEBUG: Executing CREATE2 opcode\n", .{});
                 // EIP-1014: CREATE2 opcode was introduced in Constantinople hardfork
                 if (evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
 
@@ -1694,10 +1693,8 @@ pub const Frame = struct {
                 const length = try self.popStack();
                 const salt = try self.popStack();
 
-                log.debug("DEBUG: CREATE2 params: length={} offset={} value={} salt={}\n", .{length, offset, value, salt});
                 const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
                 const gas_cost = self.create2GasCost(len);
-                log.debug("DEBUG: CREATE2 gas_cost={}\n", .{gas_cost});
                 try self.consumeGas(gas_cost);
 
                 // Read init code from memory
@@ -2155,17 +2152,32 @@ pub const Frame = struct {
                 }
                 const beneficiary = Address{ .bytes = beneficiary_bytes };
 
-                // Calculate gas cost (EIP-150: 5000 base + 25000 if creating new account)
-                var gas_cost = self.selfdestructGasCost();
                 const evm_ptr = self.getEvm();
+
+                // Calculate gas cost (EIP-6780/Berlin)
+                // Base: 5000 gas
+                // +2600 if beneficiary is cold (EIP-2929/Berlin)
+                // +25000 if beneficiary doesn't exist and we have balance
+                var gas_cost = self.selfdestructGasCost();
+
+                // EIP-2929 (Berlin): Check if beneficiary is warm, add cold access cost if needed
+                if (self.hardfork.isAtLeast(.BERLIN)) {
+                    const is_warm = evm_ptr.warm_addresses.contains(beneficiary);
+                    if (!is_warm) {
+                        gas_cost += GasConstants.ColdAccountAccessCost; // +2600
+                        try evm_ptr.warm_addresses.put(beneficiary, {});
+                    }
+                }
+
                 const self_balance = if (evm_ptr.host) |h|
                     h.getBalance(self.address)
                 else
                     evm_ptr.balances.get(self.address) orelse 0;
 
-                // Check if beneficiary exists (has code, balance, or nonce)
-                if (self.hardfork.isAtLeast(.TANGERINE_WHISTLE) and self_balance > 0) {
-                    const beneficiary_exists = blk: {
+                // Check if beneficiary is alive (has code, balance, or nonce)
+                // Add new account cost if not alive and we have balance
+                if (self_balance > 0) {
+                    const beneficiary_is_alive = blk: {
                         if (evm_ptr.host) |h| {
                             const has_balance = h.getBalance(beneficiary) > 0;
                             const has_code = h.getCode(beneficiary).len > 0;
@@ -2178,32 +2190,29 @@ pub const Frame = struct {
                             break :blk has_balance or has_code or has_nonce;
                         }
                     };
-                    if (!beneficiary_exists) {
+                    if (!beneficiary_is_alive) {
                         gas_cost += GasConstants.CallNewAccountGas; // +25000 for creating new account
                     }
                 }
 
                 try self.consumeGas(gas_cost);
 
-                // Transfer balance to beneficiary
+                // EIP-6780: Move ether from originator to beneficiary
+                // This is ALWAYS done regardless of whether account was created in same tx
+                // Per spec: move_ether is called unconditionally, even when sender == recipient
                 if (self_balance > 0) {
-                    // Special case: self-destruct to self should just zero the balance
-                    if (self.address.equals(beneficiary)) {
-                        if (evm_ptr.host) |h| {
-                            h.setBalance(self.address, 0);
-                        } else {
-                            try evm_ptr.balances.put(self.address, 0);
-                        }
+                    if (evm_ptr.host) |h| {
+                        // Reduce originator balance first
+                        h.setBalance(self.address, 0);
+                        // Then increase beneficiary balance (read AFTER reducing originator)
+                        const beneficiary_balance = h.getBalance(beneficiary);
+                        h.setBalance(beneficiary, beneficiary_balance + self_balance);
                     } else {
-                        if (evm_ptr.host) |h| {
-                            const beneficiary_balance = h.getBalance(beneficiary);
-                            h.setBalance(self.address, 0);
-                            h.setBalance(beneficiary, beneficiary_balance + self_balance);
-                        } else {
-                            const beneficiary_balance = evm_ptr.balances.get(beneficiary) orelse 0;
-                            try evm_ptr.balances.put(self.address, 0);
-                            try evm_ptr.balances.put(beneficiary, beneficiary_balance + self_balance);
-                        }
+                        // Reduce originator balance first
+                        try evm_ptr.balances.put(self.address, 0);
+                        // Then increase beneficiary balance (read AFTER reducing originator)
+                        const beneficiary_balance = evm_ptr.balances.get(beneficiary) orelse 0;
+                        try evm_ptr.balances.put(beneficiary, beneficiary_balance + self_balance);
                     }
                 }
 
@@ -2211,9 +2220,23 @@ pub const Frame = struct {
                 const was_created_this_tx = evm_ptr.created_accounts.contains(self.address);
 
                 if (was_created_this_tx) {
-                    // Full destruction: clear code (only in EVM storage, not in host)
-                    // Note: When using a host, code deletion would be managed externally
-                    try evm_ptr.code.put(self.address, &[_]u8{});
+                    // When account was created in same tx, fully delete the account (EIP-6780)
+                    // This happens after move_ether above
+                    // If beneficiary == originator: balance was increased then set to 0 (burning ether)
+                    // If beneficiary != originator: balance was already set to 0 in move_ether
+                    if (evm_ptr.host) |h| {
+                        // Clear all account state: balance, code, and nonce
+                        h.setBalance(self.address, 0);
+                        h.setCode(self.address, &[_]u8{});
+                        h.setNonce(self.address, 0);
+                        // Note: storage would also be cleared in full implementation
+                    } else {
+                        // Clear all account state in EVM storage
+                        try evm_ptr.balances.put(self.address, 0);
+                        try evm_ptr.code.put(self.address, &[_]u8{});
+                        try evm_ptr.nonces.put(self.address, 0);
+                        // Note: storage would also be cleared in full implementation
+                    }
                 }
                 // Otherwise: Balance already transferred above, code persists per EIP-6780
 
