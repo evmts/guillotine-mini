@@ -939,7 +939,7 @@ pub fn execute_blake2f(allocator: std.mem.Allocator, input: []const u8, gas_limi
 /// 0x0A: pointEvaluation - KZG point evaluation (EIP-4844)
 /// Input: 192 bytes (versioned_hash + z + y + commitment + proof)
 /// Output: 64 bytes (FIELD_ELEMENTS_PER_BLOB + BLS_MODULUS)
-pub fn execute_point_evaluation(_: std.mem.Allocator, input: []const u8, gas_limit: u64) PrecompileError!PrecompileOutput {
+pub fn execute_point_evaluation(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64) PrecompileError!PrecompileOutput {
     const required_gas = GasCosts.POINT_EVALUATION;
     if (gas_limit < required_gas) {
         return PrecompileOutput{ .output = &.{}, .gas_used = gas_limit, .success = false };
@@ -978,32 +978,40 @@ pub fn execute_point_evaluation(_: std.mem.Allocator, input: []const u8, gas_lim
     }
 
     // Perform KZG verification
-    
+
     // Convert inputs to c_kzg types
     var z: crypto.c_kzg.Bytes32 = undefined;
     var y: crypto.c_kzg.Bytes32 = undefined;
     var commitment: crypto.c_kzg.KZGCommitment = undefined;
     var proof: crypto.c_kzg.KZGProof = undefined;
-    
+
     @memcpy(&z, z_bytes);
     @memcpy(&y, y_bytes);
     @memcpy(&commitment, commitment_bytes);
     @memcpy(&proof, proof_bytes);
-    
+
     // Verify the KZG proof
     const valid = crypto.c_kzg.verifyKZGProof(&commitment, &z, &y, &proof) catch {
         return PrecompileOutput{ .output = &.{}, .gas_used = required_gas, .success = false };
     };
-    
+
     if (!valid) {
         return PrecompileOutput{ .output = &.{}, .gas_used = required_gas, .success = false };
     }
-    
-    // Success - return empty output
-    return PrecompileOutput{ 
-        .output = &.{}, 
-        .gas_used = required_gas, 
-        .success = true 
+
+    // Success - return FIELD_ELEMENTS_PER_BLOB and BLS_MODULUS as 32-byte big-endian values
+    // Per EIP-4844 spec and execution-specs/src/ethereum/forks/cancun/vm/precompiled_contracts/point_evaluation.py
+    const FIELD_ELEMENTS_PER_BLOB: u256 = 4096;
+    const BLS_MODULUS: u256 = 52435875175126190479447740508185965837690552500527637822603658699938581184513;
+
+    const output = try allocator.alloc(u8, 64);
+    u256ToBytes(FIELD_ELEMENTS_PER_BLOB, output[0..32]);
+    u256ToBytes(BLS_MODULUS, output[32..64]);
+
+    return PrecompileOutput{
+        .output = output,
+        .gas_used = required_gas,
+        .success = true
     };
 }
 

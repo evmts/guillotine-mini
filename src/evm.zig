@@ -282,11 +282,17 @@ pub const Evm = struct {
         if (!self.hardfork.isAtLeast(.BERLIN)) return;
 
         // Determine number of precompiles based on hardfork
-        // Berlin-Cancun: 0x01-0x09 (9 precompiles)
-        // Prague+: 0x01-0x0A (10 precompiles, added BLS12-381 operations)
-        const precompile_count: usize = if (self.hardfork.isAtLeast(.PRAGUE)) 10 else 9;
+        // Berlin-Istanbul: 0x01-0x09 (9 precompiles: ECRECOVER through BLAKE2F)
+        // Cancun+: 0x01-0x0A (10 precompiles, added KZG point evaluation at 0x0A via EIP-4844)
+        // Prague+: 0x01-0x12 (19 precompiles, added BLS12-381 operations at 0x0B-0x12 via EIP-2537)
+        const precompile_count: usize = if (self.hardfork.isAtLeast(.PRAGUE))
+            0x12 // Prague: All precompiles including BLS12-381
+        else if (self.hardfork.isAtLeast(.CANCUN))
+            0x0A // Cancun: Includes KZG point evaluation
+        else
+            0x09; // Berlin-Istanbul: Up to BLAKE2F
 
-        var precompile_addrs: [10]Address = undefined;
+        var precompile_addrs: [0x12]Address = undefined;
         var i: usize = 0;
         while (i < precompile_count) : (i += 1) {
             precompile_addrs[i] = Address.from_u256(i + 1);
