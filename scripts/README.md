@@ -1,6 +1,6 @@
-# Test Scripts
+# Test + Agent Scripts
 
-This directory contains helper scripts for running and debugging execution-spec tests.
+This directory contains helper scripts for running and debugging execution-spec tests, plus TypeScript agents to assist with automated fixing and auditing.
 
 ## Available Scripts
 
@@ -351,9 +351,49 @@ For TypeScript utilities:
 
 ```bash
 # Install dependencies
-bun install
+cd scripts && bun install
 
 # Run individual scripts
 bun run scripts/fix-specs.ts
 bun run scripts/compare-traces.ts "test_name"
 ```
+### 🧠 `fix-specs.ts` - Spec Fixer Pipeline (AI-assisted)
+
+Runs hardfork/EIP-specific test suites and, on failure, launches an agent to propose and apply fixes. Saves per-attempt reports to `reports/spec-fixes/` and a final pipeline summary.
+
+Prerequisites:
+- `bun` installed (`brew install bun`)
+- Dependencies installed in `scripts/` (`cd scripts && bun install`)
+- Anthropic API key in env: `export ANTHROPIC_API_KEY=sk-ant-...`
+
+Usage:
+```bash
+# Run all suites (can be long)
+bun run scripts/fix-specs.ts
+
+# Run one suite
+bun run scripts/fix-specs.ts suite shanghai-push0
+
+# List of suite names (see output if you pass an unknown suite)
+```
+
+Notes:
+- If `ANTHROPIC_API_KEY` is not set, the script still runs tests but skips auto-fix attempts and exits quickly with a clear message.
+- The EVM may legitimately fail a small number of tests; focus is on runner stability, trace/diff quality, and actionable reports.
+
+
+Agent pipeline (auditors):
+```bash
+# Run all agents across phases
+bun run scripts/index.ts
+
+# Run a specific phase
+bun run scripts/index.ts phase 2
+
+# Run a single agent
+bun run scripts/index.ts agent agent12
+```
+
+Environment:
+- Set `ANTHROPIC_API_KEY` in your shell or a `.env` file at repo root (Bun loads it automatically).
+- See `CLAUDE.md` for more details and safe usage notes.

@@ -59,6 +59,12 @@ src/
 | **Trace tests** | EIP-3155 trace capture/comparison | `zig build test-trace` |
 | **Watch mode** | Auto-reload on changes | `zig build test-watch` |
 
+**Prerequisites:**
+- Zig 0.15.1 or later
+- Python 3.8+ (for test generation and reference implementation)
+- uv (Python package manager) for spec fixture generation: `brew install uv`
+- Bun (for TS helpers/agents): `brew install bun`
+
 ### Helper Scripts
 
 <details>
@@ -80,10 +86,86 @@ bun scripts/isolate-test.ts "exact_test_name"
 <details>
 <summary><b>🎯 test-subset.ts</b> - Test Subset Runner</summary>
 
-```bash
+# Using helper scripts
 bun scripts/test-subset.ts Cancun
 bun scripts/test-subset.ts transientStorage
 bun scripts/test-subset.ts MCOPY
+
+# Or using shell scripts
+./scripts/test-subset.sh Cancun
+./scripts/test-subset.sh "exact_test_name"
+
+# Direct filtering with zig build
+TEST_FILTER="Cancun" zig build specs
+TEST_FILTER="transientStorage" zig build specs
+TEST_FILTER="push0" zig build specs
+```
+
+#### Granular Spec Targets
+
+Large hardforks are split into smaller sub-targets for faster iteration:
+
+```bash
+# Berlin
+zig build specs-berlin-acl
+zig build specs-berlin-intrinsic-gas-cost
+zig build specs-berlin-intrinsic-type0
+zig build specs-berlin-intrinsic-type1
+
+# Frontier
+zig build specs-frontier-precompiles
+zig build specs-frontier-identity
+zig build specs-frontier-create
+zig build specs-frontier-call
+zig build specs-frontier-calldata
+zig build specs-frontier-dup
+zig build specs-frontier-push
+zig build specs-frontier-stack
+zig build specs-frontier-opcodes
+
+# Shanghai
+zig build specs-shanghai-push0
+zig build specs-shanghai-warmcoinbase
+zig build specs-shanghai-initcode
+zig build specs-shanghai-withdrawals
+
+# Cancun
+zig build specs-cancun-tstore-basic
+zig build specs-cancun-tstore-reentrancy
+zig build specs-cancun-tstore-contexts
+zig build specs-cancun-mcopy
+zig build specs-cancun-selfdestruct
+zig build specs-cancun-blobbasefee
+zig build specs-cancun-blob-precompile
+zig build specs-cancun-blob-opcodes
+zig build specs-cancun-blob-tx-small
+zig build specs-cancun-blob-tx-subtraction
+zig build specs-cancun-blob-tx-insufficient
+zig build specs-cancun-blob-tx-sufficient
+zig build specs-cancun-blob-tx-valid-combos
+
+# Prague
+zig build specs-prague-calldata-cost-type0
+zig build specs-prague-calldata-cost-type1-2
+zig build specs-prague-calldata-cost-type3
+zig build specs-prague-calldata-cost-type4
+zig build specs-prague-calldata-cost-refunds
+zig build specs-prague-bls-g1
+zig build specs-prague-bls-g2
+zig build specs-prague-bls-pairing
+zig build specs-prague-bls-map
+zig build specs-prague-bls-misc
+zig build specs-prague-setcode-calls
+zig build specs-prague-setcode-gas
+zig build specs-prague-setcode-txs
+zig build specs-prague-setcode-advanced
+
+# Osaka
+zig build specs-osaka-modexp-variable-gas
+zig build specs-osaka-modexp-vectors-eip
+zig build specs-osaka-modexp-vectors-legacy
+zig build specs-osaka-modexp-misc
+zig build specs-osaka-other
 ```
 
 **Use for:** Running entire test categories by hardfork, EIP, or pattern
@@ -129,6 +211,25 @@ bun scripts/isolate-test.ts "transStorageReset"
 - **Category**: `vmArithmeticTest`, `vmBitwiseLogicOperation`, `vmIOandFlowOperations`
 
 ---
+
+### Spec Fixer (AI-Assisted)
+
+Use an agent to iterate on failing specs and generate focused reports:
+
+Prereqs:
+- `bun` installed and `cd scripts && bun install`
+- `ANTHROPIC_API_KEY` exported in your shell (or `.env` at repo root)
+
+Run:
+```bash
+# All suites
+bun run scripts/fix-specs.ts
+
+# One suite
+bun run scripts/fix-specs.ts suite shanghai-push0
+```
+
+The script runs tests, invokes the agent on failure, and saves reports in `reports/spec-fixes/` with a summary at the end. If no API key is set, it skips auto-fix and just runs the tests.
 
 ## Core Components
 

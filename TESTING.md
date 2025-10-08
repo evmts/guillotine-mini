@@ -14,40 +14,82 @@ zig build specs-homestead          # 1 test - Homestead hardfork
 zig build specs-byzantium          # 1 test - Byzantium hardfork
 zig build specs-constantinople     # 3 tests - Constantinople hardfork
 zig build specs-istanbul           # 6 tests - Istanbul hardfork
-zig build specs-berlin             # 4 tests - Berlin hardfork (EIP-2929, EIP-2930)
-zig build specs-paris              # 1 test - Paris/Merge hardfork
-zig build specs-shanghai           # 19 tests - Shanghai hardfork
-zig build specs-cancun             # 105 tests - Cancun hardfork (~1-2 minutes)
-zig build specs-prague             # 169 tests - Prague hardfork (~2-3 minutes)
-zig build specs-osaka              # 10 tests - Osaka hardfork
+zig build specs-berlin             # Aggregates all berlin-* sub-targets
+zig build specs-paris              # Paris/Merge hardfork
+zig build specs-shanghai           # Aggregates Shanghai EIPs
+zig build specs-cancun             # Aggregates all cancun-* sub-targets
+zig build specs-prague             # Aggregates all prague-* sub-targets
+zig build specs-osaka              # Aggregates all osaka-* sub-targets
 ```
 
-### Run EIP-Specific Tests (Faster than full hardfork)
+### Granular Sub-Targets (Fastest)
 
-#### Berlin (4 tests total)
+Use these for tight feedback loops on specific features:
+
 ```bash
-zig build specs-berlin-gas          # EIP-2929: Gas cost increases for state access
-zig build specs-berlin-accesslist   # EIP-2930: Access lists
+# Berlin
+zig build specs-berlin-acl
+zig build specs-berlin-intrinsic-gas-cost
+zig build specs-berlin-intrinsic-type0
+zig build specs-berlin-intrinsic-type1
+
+# Frontier
+zig build specs-frontier-precompiles
+zig build specs-frontier-identity
+zig build specs-frontier-create
+zig build specs-frontier-call
+zig build specs-frontier-calldata
+zig build specs-frontier-dup
+zig build specs-frontier-push
+zig build specs-frontier-stack
+zig build specs-frontier-opcodes
+
+# Shanghai
+zig build specs-shanghai-push0
+zig build specs-shanghai-warmcoinbase
+zig build specs-shanghai-initcode
+zig build specs-shanghai-withdrawals
+
+# Cancun
+zig build specs-cancun-tstore-basic
+zig build specs-cancun-tstore-reentrancy
+zig build specs-cancun-tstore-contexts
+zig build specs-cancun-mcopy
+zig build specs-cancun-selfdestruct
+zig build specs-cancun-blobbasefee
+zig build specs-cancun-blob-precompile
+zig build specs-cancun-blob-opcodes
+zig build specs-cancun-blob-tx-small
+zig build specs-cancun-blob-tx-subtraction
+zig build specs-cancun-blob-tx-insufficient
+zig build specs-cancun-blob-tx-sufficient
+zig build specs-cancun-blob-tx-valid-combos
+
+# Prague
+zig build specs-prague-calldata-cost-type0
+zig build specs-prague-calldata-cost-type1-2
+zig build specs-prague-calldata-cost-type3
+zig build specs-prague-calldata-cost-type4
+zig build specs-prague-calldata-cost-refunds
+zig build specs-prague-bls-g1
+zig build specs-prague-bls-g2
+zig build specs-prague-bls-pairing
+zig build specs-prague-bls-map
+zig build specs-prague-bls-misc
+zig build specs-prague-setcode-calls
+zig build specs-prague-setcode-gas
+zig build specs-prague-setcode-txs
+zig build specs-prague-setcode-advanced
+
+# Osaka
+zig build specs-osaka-modexp-variable-gas
+zig build specs-osaka-modexp-vectors-eip
+zig build specs-osaka-modexp-vectors-legacy
+zig build specs-osaka-modexp-misc
+zig build specs-osaka-other
 ```
 
-#### Shanghai (19 tests total)
-```bash
-zig build specs-shanghai-push0         # EIP-3855: PUSH0 instruction
-zig build specs-shanghai-warmcoinbase  # EIP-3651: Warm coinbase
-zig build specs-shanghai-initcode      # EIP-3860: Limit init code size
-zig build specs-shanghai-withdrawals   # EIP-4895: Withdrawals
-```
-
-#### Cancun (105 tests total)
-```bash
-zig build specs-cancun-tstore        # EIP-1153: Transient storage (TLOAD/TSTORE) - 21 tests
-zig build specs-cancun-blobs         # EIP-4844: Blob transactions - 50 tests
-zig build specs-cancun-mcopy         # EIP-5656: MCOPY instruction - 6 tests
-zig build specs-cancun-selfdestruct  # EIP-6780: SELFDESTRUCT only in same tx - 16 tests
-zig build specs-cancun-beacon        # EIP-4788: Beacon root contract - 11 tests
-```
-
-## Test Distribution
+## Test Distribution (approximate)
 
 | Hardfork        | Tests | Notes                                                  |
 |-----------------|-------|--------------------------------------------------------|
@@ -58,11 +100,11 @@ zig build specs-cancun-beacon        # EIP-4788: Beacon root contract - 11 tests
 | Istanbul        | 6     | Gas repricing, new opcodes                             |
 | Berlin          | 4     | EIP-2929 (warm/cold access), EIP-2930 (access lists)   |
 | Paris           | 1     | Merge transition                                       |
-| Shanghai        | 19    | PUSH0, warm coinbase, init code limits, withdrawals    |
-| Cancun          | 105   | Transient storage, blob txs, MCOPY, SELFDESTRUCT       |
-| Prague          | 169   | Latest hardfork features                               |
-| Osaka           | 10    | Future hardfork                                        |
-| **Total**       | **338** |                                                      |
+| Shanghai        | ~19   | PUSH0, warm coinbase, init code limits, withdrawals    |
+| Cancun          | many  | Transient storage, blob txs, MCOPY, SELFDESTRUCT       |
+| Prague          | many  | Latest hardfork features incl. BLS                     |
+| Osaka           | some  | Future hardfork                                        |
+| **Total**       | 300+  | Varies as specs evolve                                 |
 
 ## Development Workflow
 
@@ -92,6 +134,21 @@ TEST_FILTER="tstore" zig build specs
 TEST_FILTER="Shanghai" zig build specs
 TEST_FILTER="eip4844" zig build specs
 ```
+
+## AI-Assisted Spec Fixing
+
+To run the AI-assisted spec fixer:
+
+```bash
+cd scripts && bun install
+export ANTHROPIC_API_KEY=sk-ant-...
+
+bun run ../scripts/fix-specs.ts           # from scripts/ dir
+# or from repo root
+bun run scripts/fix-specs.ts suite cancun-blob-opcodes
+```
+
+If `ANTHROPIC_API_KEY` is not set, the fixer will still run tests but skip agent attempts.
 
 ## Build Targets Summary
 
