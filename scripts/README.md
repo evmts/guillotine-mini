@@ -30,14 +30,14 @@ TEST_FILTER=Shanghai ./scripts/test-subset.sh
 - Support for both CLI args and env vars
 - Built-in test category listing
 
-### 🔬 `isolate-test.sh` - Test Isolation Helper ⭐ RECOMMENDED ⭐
+### 🔬 `isolate-test.ts` - Test Isolation Helper ⭐ RECOMMENDED ⭐
 
 Run a single test with maximum debugging output and intelligent failure analysis.
 
 ```bash
-./scripts/isolate-test.sh "transientStorageReset"
-./scripts/isolate-test.sh "push0" specs-shanghai-push0
-./scripts/isolate-test.sh "MCOPY" specs-cancun-mcopy
+bun scripts/isolate-test.ts "transientStorageReset"
+bun scripts/isolate-test.ts "push0" specs-shanghai-push0
+bun scripts/isolate-test.ts "MCOPY" specs-cancun-mcopy
 ```
 
 **Features:**
@@ -54,26 +54,26 @@ Run a single test with maximum debugging output and intelligent failure analysis
 - After making fixes to verify they work
 - You need detailed trace comparison
 
-### 🔍 `debug-test.sh` - Single Test Debugger
+### 🔍 `debug-test.ts` - Single Test Debugger
 
 Debug a specific test with full trace output.
 
 ```bash
-./scripts/debug-test.sh transStorageOK
-./scripts/debug-test.sh push0Gas
+bun scripts/debug-test.ts transStorageOK
+bun scripts/debug-test.ts push0Gas
 ```
 
 **Use this when:**
 - You know the exact test name
 - You want detailed execution traces
-- Simpler alternative to isolate-test.sh
+- Simpler alternative to isolate-test.ts
 
-### ⚡ `quick-test.sh` - Smoke Tests
+### ⚡ `quick-test.ts` - Smoke Tests
 
 Run a quick smoke test suite for rapid iteration.
 
 ```bash
-./scripts/quick-test.sh
+bun scripts/quick-test.ts
 ```
 
 **Features:**
@@ -81,16 +81,16 @@ Run a quick smoke test suite for rapid iteration.
 - Fast feedback (< 30 seconds)
 - Good for checking basic functionality
 
-### 📋 `run-filtered-tests.sh` - Simple Filter Runner
+### 📋 `run-filtered-tests.ts` - Simple Filter Runner
 
 Basic wrapper around `zig build specs` with filtering.
 
 ```bash
-./scripts/run-filtered-tests.sh push0
-./scripts/run-filtered-tests.sh Cancun
+bun scripts/run-filtered-tests.ts push0
+bun scripts/run-filtered-tests.ts Cancun
 ```
 
-**Simpler alternative to `test-subset.sh`** with minimal formatting.
+**Simpler alternative to `test-subset.ts`** with minimal formatting.
 
 ## Common Workflows
 
@@ -100,18 +100,18 @@ Basic wrapper around `zig build specs` with filtering.
 # 1. Make changes to src/evm.zig or src/frame.zig
 
 # 2. Run quick smoke tests
-./scripts/quick-test.sh
+bun scripts/quick-test.ts
 
 # 3. Run tests for the feature you're working on
-./scripts/test-subset.sh transientStorage
+bun scripts/test-subset.ts transientStorage
 
 # 4. If a test fails, debug it with the isolation helper
-./scripts/isolate-test.sh "specific_failing_test"
+bun scripts/isolate-test.ts "specific_failing_test"
 
 # 5. Review trace divergence, fix the issue
 
 # 6. Verify fix
-./scripts/isolate-test.sh "specific_failing_test"
+bun scripts/isolate-test.ts "specific_failing_test"
 ```
 
 ### Before Committing

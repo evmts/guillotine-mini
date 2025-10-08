@@ -74,22 +74,24 @@ zig build specs
 zig build test-watch
 
 # Debug a failing test (RECOMMENDED)
-./scripts/isolate-test.sh "test_name"
+bun scripts/isolate-test.ts "test_name"
 ```
 
 ### Helper Scripts
 
 The project includes powerful helper scripts for debugging and testing:
 
-**🔬 `isolate-test.sh`** - Test Isolation Helper (⭐ RECOMMENDED)
+**🔬 `isolate-test.ts`** - Test Isolation Helper (⭐ RECOMMENDED)
 - Run a single test with maximum debugging output
 - Automatic failure type detection (crash vs gas vs behavior)
 - Trace divergence analysis with exact PC, opcode, gas details
 - Next-step debugging guidance
+- Usage: `bun scripts/isolate-test.ts "test_name"`
 
-**🎯 `test-subset.sh`** - Test Subset Runner
+**🎯 `test-subset.ts`** - Test Subset Runner
 - Run filtered groups of tests by hardfork, EIP, or pattern
 - Useful for testing entire categories
+- Usage: `bun scripts/test-subset.ts pattern`
 
 **🤖 `fix-specs.ts`** - Automated Spec Fixer
 - AI-powered pipeline for systematic test fixing
@@ -113,18 +115,18 @@ TEST_FILTER="Cancun" zig build specs
 TEST_FILTER="transientStorage" zig build specs
 TEST_FILTER="push0" zig build specs
 
-# Using helper scripts (RECOMMENDED: isolate-test.sh)
+# Using helper scripts (RECOMMENDED: isolate-test.ts)
 
 # Test Isolation Helper - Maximum debugging output with intelligent analysis
-./scripts/isolate-test.sh "exact_test_name"
-./scripts/isolate-test.sh "transientStorageReset"
-./scripts/isolate-test.sh "push0" specs-shanghai-push0
+bun scripts/isolate-test.ts "exact_test_name"
+bun scripts/isolate-test.ts "transientStorageReset"
+bun scripts/isolate-test.ts "push0" specs-shanghai-push0
 
 # Test Subset Runner - Run multiple tests in a category
-./scripts/test-subset.sh Cancun
-./scripts/test-subset.sh Shanghai
-./scripts/test-subset.sh transientStorage
-./scripts/test-subset.sh MCOPY
+bun scripts/test-subset.ts Cancun
+bun scripts/test-subset.ts Shanghai
+bun scripts/test-subset.ts transientStorage
+bun scripts/test-subset.ts MCOPY
 ```
 
 #### Test Filtering Patterns
@@ -146,10 +148,10 @@ When a test fails, the runner automatically:
 **Recommended workflow** using the test isolation helper:
 ```bash
 # 1. Run category to find failures
-./scripts/test-subset.sh transientStorage
+bun scripts/test-subset.ts transientStorage
 
 # 2. Isolate and debug specific failing test with maximum output
-./scripts/isolate-test.sh "transStorageReset"
+bun scripts/isolate-test.ts "transStorageReset"
 
 # The helper automatically:
 # - Runs test in isolation with verbose tracing
@@ -161,7 +163,7 @@ When a test fails, the runner automatically:
 # 3. Review the analysis output to identify root cause
 # 4. Fix the issue in src/frame.zig or src/evm.zig
 # 5. Verify fix with the same helper
-./scripts/isolate-test.sh "transStorageReset"
+bun scripts/isolate-test.ts "transStorageReset"
 ```
 
 ### Build Targets
@@ -411,11 +413,11 @@ zig build test
 # Work on a specific EIP/feature
 TEST_FILTER="transientStorage" zig build specs
 
-# Debug a failing test (RECOMMENDED: use isolate-test.sh)
-./scripts/isolate-test.sh "specific_test_name"
+# Debug a failing test (RECOMMENDED: use isolate-test.ts)
+bun scripts/isolate-test.ts "specific_test_name"
 
-# Alternative: test-subset.sh for multiple tests
-./scripts/test-subset.sh "test_pattern"
+# Alternative: test-subset.ts for multiple tests
+bun scripts/test-subset.ts "test_pattern"
 
 # Build WASM and check size
 zig build wasm
@@ -440,10 +442,10 @@ zig build
 **Use the test isolation helper** for efficient debugging:
 ```bash
 # First, run to see failures
-./scripts/test-subset.sh transientStorage
+bun scripts/test-subset.ts transientStorage
 
 # Then isolate and debug specific test
-./scripts/isolate-test.sh "transientStorageReset"
+bun scripts/isolate-test.ts "transientStorageReset"
 
 # The helper provides:
 # - Automatic failure type detection
