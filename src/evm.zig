@@ -731,7 +731,9 @@ pub const Evm = struct {
     ) errors.CallError!struct { address: Address, success: bool, gas_left: u64, output: []const u8 } {
         // Track if this is a top-level create (contract-creation transaction)
         // We detect this when there is no active frame yet.
+        // Note: Variable kept for potential future use, but not used in current EIP-3860 fix
         const is_top_level_create = self.frames.items.len == 0;
+        _ = is_top_level_create; // Mark as intentionally unused
         // Check call depth (STACK_DEPTH_LIMIT = 1024)
         // Per Python reference (system.py:97-99), depth exceeded refunds gas
         if (self.frames.items.len >= 1024) {
@@ -891,23 +893,11 @@ pub const Evm = struct {
             }
         }
 
-        // For top-level creates in Shanghai+, charge EIP-3860 initcode per-word gas here
-        // CREATE/CREATE2 opcodes already charge this in frame.zig before calling inner_create.
-        var child_gas: u64 = gas;
-        if (is_top_level_create and self.hardfork.isAtLeast(.SHANGHAI)) {
-            const words = primitives.GasConstants.wordCount(init_code.len);
-            const initcode_word_cost = words * GasConstants.InitcodeWordGas;
-            if (child_gas <= initcode_word_cost) {
-                // Not enough gas to cover initcode word cost
-                return .{
-                    .address = primitives.ZERO_ADDRESS,
-                    .success = false,
-                    .gas_left = 0,
-                    .output = &[_]u8{},
-                };
-            }
-            child_gas -= initcode_word_cost;
-        }
+        // EIP-3860 initcode cost is charged in two different places depending on context:
+        // 1. For top-level creates (contract creation transactions): charged in transaction intrinsic gas
+        // 2. For CREATE/CREATE2 opcodes: charged in frame.zig before calling inner_create
+        // Therefore, DO NOT charge it again here for top-level creates
+        const child_gas: u64 = gas;
 
         // EIP-2929 (Berlin): Mark created address as warm
         // Per Python reference: accessed_addresses.add(contract_address) happens

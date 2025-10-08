@@ -91,8 +91,8 @@ def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path) -> N
         zig_code.append("    // Get the specific test case")
         zig_code.append(f'    const test_case = parsed.value.object.get("{test_name}") orelse return error.TestNotFound;')
         zig_code.append("")
-        zig_code.append("    // Run the test")
-        zig_code.append("    try runner.runJsonTest(allocator, test_case);")
+        zig_code.append("    // Run the test with path for trace generation")
+        zig_code.append("    try runner.runJsonTestWithPath(allocator, test_case, json_path);")
         zig_code.append("}")
         zig_code.append("")
 
