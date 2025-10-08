@@ -452,6 +452,16 @@ Review the following reports for critical issues:
 // CLI
 async function main() {
   const args = process.argv.slice(2);
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.log(
+      "ℹ️  ANTHROPIC_API_KEY not set. Agent pipeline requires an Anthropic API key.\n" +
+        "    Set it in your environment, e.g.:\n" +
+        "      export ANTHROPIC_API_KEY=sk-ant-...\n" +
+        "    Or create a .env file at repo root (Bun loads it automatically).\n" +
+        "    See scripts/README.md for setup.\n",
+    );
+    // Still allow printing usage/help without failing hard
+  }
   const pipeline = new AgentPipeline();
 
   if (args.length === 0) {
