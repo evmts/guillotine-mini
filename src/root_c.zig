@@ -1,9 +1,63 @@
 /// C wrapper for Evm - minimal interface for WASM
 const std = @import("std");
 const evm = @import("evm.zig");
-const Evm = evm.Evm;
-const CallResult = evm.CallResult;
-const CallParams = evm.CallParams;
+const evm_config_mod = @import("evm_config.zig");
+const EvmConfig = evm_config_mod.EvmConfig;
+const OpcodeOverride = evm_config_mod.OpcodeOverride;
+const PrecompileOverride = evm_config_mod.PrecompileOverride;
+const PrecompileOutput = evm_config_mod.PrecompileOutput;
+
+// External JavaScript callback functions (provided as WASM imports)
+// These are called BY WASM to execute custom handlers defined in JavaScript
+
+/// JavaScript callback for custom opcode handlers
+/// Returns 1 if a custom handler was found and executed, 0 otherwise
+extern "env" fn js_opcode_callback(opcode: u8, frame_ptr: usize) c_int;
+
+/// JavaScript callback for custom precompile handlers
+/// Returns 1 if a custom handler was found and executed, 0 otherwise
+extern "env" fn js_precompile_callback(
+    address_ptr: [*]const u8,
+    input_ptr: [*]const u8,
+    input_len: usize,
+    gas_limit: u64,
+    output_len: *usize,
+    output_ptr: *[*]u8,
+    gas_used: *u64,
+) c_int;
+
+/// Public wrapper to check if JavaScript opcode callback exists and call it
+pub fn tryCallJsOpcodeHandler(opcode: u8, frame_ptr: usize) bool {
+    const result = js_opcode_callback(opcode, frame_ptr);
+    return result != 0;
+}
+
+/// Public wrapper to check if JavaScript precompile callback exists and call it
+pub fn tryCallJsPrecompileHandler(
+    address_ptr: [*]const u8,
+    input_ptr: [*]const u8,
+    input_len: usize,
+    gas_limit: u64,
+    output_len: *usize,
+    output_ptr: *[*]u8,
+    gas_used: *u64,
+) bool {
+    const result = js_precompile_callback(
+        address_ptr,
+        input_ptr,
+        input_len,
+        gas_limit,
+        output_len,
+        output_ptr,
+        gas_used,
+    );
+    return result != 0;
+}
+
+// Use default config for C API (hardfork specified at runtime in evm_create)
+const Evm = evm.Evm(.{});
+const CallResult = Evm.CallResult;
+const CallParams = Evm.CallParams;
 const StorageSlotKey = evm.StorageSlotKey;
 const primitives = @import("primitives");
 const Address = primitives.Address.Address;
@@ -15,6 +69,9 @@ var allocator = gpa.allocator();
 
 // Opaque handle for EVM instance
 const EvmHandle = opaque {};
+
+// Note: Custom handlers are now registered via JavaScript imports (js_opcode_callback, js_precompile_callback)
+// No runtime storage needed in Zig since JavaScript manages the handler registry
 
 // Store execution context for later use
 const ExecutionContext = struct {
@@ -31,7 +88,7 @@ const ExecutionContext = struct {
     result: ?CallResult,
 };
 
-/// Create a new Evm instance with optional hardfork name (null/empty = default Prague)
+/// Create a new Evm instance with optional hardfork name (null/empty = default from config)
 export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize) ?*EvmHandle {
     const ctx = allocator.create(ExecutionContext) catch return null;
 
@@ -393,6 +450,10 @@ export fn evm_get_output(handle: ?*EvmHandle, buffer: [*]u8, buffer_len: usize) 
     }
     return 0;
 }
+
+// Custom handlers are now registered via JavaScript import callbacks
+// (js_opcode_callback and js_precompile_callback defined at top of file)
+// No registration functions needed - JavaScript provides the callbacks at WASM instantiation
 
 /// Set storage value for an address
 export fn evm_set_storage(

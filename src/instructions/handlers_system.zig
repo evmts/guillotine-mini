@@ -4,6 +4,8 @@ const primitives = @import("primitives");
 const GasConstants = primitives.GasConstants;
 const Address = primitives.Address.Address;
 const evm_mod = @import("../evm.zig");
+const Evm = evm_mod.DefaultEvm;
+const CallParams = Evm.CallParams;
 const precompiles = @import("../precompiles/precompiles.zig");
 
 /// Handlers struct - provides system operation handlers for a Frame type
@@ -233,7 +235,7 @@ pub fn Handlers(FrameType: type) type {
             // Note: No defer free needed - arena allocator will clean up
 
             // Perform the inner call (regular CALL)
-            const params = evm_mod.CallParams{ .call = .{
+            const params = CallParams{ .call = .{
                 .caller = frame.address,
                 .to = call_address,
                 .value = value_arg,
@@ -372,7 +374,7 @@ pub fn Handlers(FrameType: type) type {
             // Note: No defer free needed - arena allocator will clean up
 
             // Perform the inner call (CALLCODE)
-            const params = evm_mod.CallParams{ .callcode = .{
+            const params = CallParams{ .callcode = .{
                 .caller = frame.address,
                 .to = call_address,
                 .value = value_arg,
@@ -495,7 +497,7 @@ pub fn Handlers(FrameType: type) type {
             // Note: No defer free needed - arena allocator will clean up
 
             // Perform the inner call (DELEGATECALL)
-            const params = evm_mod.CallParams{ .delegatecall = .{
+            const params = CallParams{ .delegatecall = .{
                 .caller = frame.caller,
                 .to = call_address,
                 .input = input_data,
@@ -621,7 +623,7 @@ pub fn Handlers(FrameType: type) type {
             // Note: No defer free needed - arena allocator will clean up
 
             // Perform the inner call (STATICCALL)
-            const params = evm_mod.CallParams{ .staticcall = .{
+            const params = CallParams{ .staticcall = .{
                 .caller = frame.address,
                 .to = call_address,
                 .input = input_data,

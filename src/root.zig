@@ -1,9 +1,17 @@
 //! Guillotine Mini - EVM implementation
 const std = @import("std");
 
+// Export configuration
+pub const evm_config = @import("evm_config.zig");
+pub const EvmConfig = evm_config.EvmConfig;
+pub const OpcodeOverride = evm_config.OpcodeOverride;
+pub const PrecompileOverride = evm_config.PrecompileOverride;
+pub const PrecompileOutput = evm_config.PrecompileOutput;
+
 // Export the main EVM module
 pub const evm = @import("evm.zig");
 pub const Evm = evm.Evm;
+pub const DefaultEvm = evm.DefaultEvm;
 pub const StorageSlotKey = evm.StorageSlotKey;
 pub const AccessListParam = evm.AccessListParam;
 pub const AccessListStorageKey = evm.AccessListStorageKey;
@@ -12,9 +20,8 @@ pub const BlockContext = evm.BlockContext;
 // Export CallParams and CallResult (polymorphic API with guillotine core)
 pub const call_params = @import("call_params.zig");
 pub const call_result = @import("call_result.zig");
-const default_config = struct {};
-pub const CallParams = call_params.CallParams(default_config);
-pub const CallResult = call_result.CallResult(default_config);
+pub const CallParams = DefaultEvm.CallParams;
+pub const CallResult = DefaultEvm.CallResult;
 pub const Log = call_result.Log;
 pub const SelfDestructRecord = call_result.SelfDestructRecord;
 pub const StorageAccess = call_result.StorageAccess;
