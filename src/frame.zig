@@ -1665,7 +1665,15 @@ pub const Frame = struct {
                 // Note: No defer free needed - arena allocator will clean up
 
                 // Perform the inner call (regular CALL)
-                const result = try evm.inner_call(call_address, value_arg, input_data, available_gas, .Call);
+                const result = evm.inner_call(.{
+                    .call = .{
+                        .caller = self.address,
+                        .to = call_address,
+                        .value = value_arg,
+                        .input = input_data,
+                        .gas = available_gas,
+                    },
+                });
 
                 // Write output to memory
                 // Note: Memory expansion cost was already charged upfront (lines 1572-1582)
@@ -1806,7 +1814,15 @@ pub const Frame = struct {
                 // Note: No defer free needed - arena allocator will clean up
 
                 // Perform the inner call (CALLCODE)
-                const result = try evm.inner_call(call_address, value_arg, input_data, available_gas, .CallCode);
+                const result = evm.inner_call(.{
+                    .callcode = .{
+                        .caller = self.address,
+                        .to = call_address,
+                        .value = value_arg,
+                        .input = input_data,
+                        .gas = available_gas,
+                    },
+                });
 
                 // Write output to memory
                 // Note: Memory expansion cost was already charged upfront (lines 1697-1707)
@@ -1963,7 +1979,14 @@ pub const Frame = struct {
                 // Note: No defer free needed - arena allocator will clean up
 
                 // Perform the inner call (DELEGATECALL)
-                const result = try evm.inner_call(call_address, self.value, input_data, available_gas, .DelegateCall);
+                const result = evm.inner_call(.{
+                    .delegatecall = .{
+                        .caller = self.caller,
+                        .to = call_address,
+                        .input = input_data,
+                        .gas = available_gas,
+                    },
+                });
 
                 // Write output to memory
                 // Note: Memory expansion cost was already charged upfront (lines 1852-1862)
@@ -2171,7 +2194,14 @@ pub const Frame = struct {
                 // Note: No defer free needed - arena allocator will clean up
 
                 // Perform the inner call (STATICCALL)
-                const result = try evm.inner_call(call_address, 0, input_data, available_gas, .StaticCall);
+                const result = evm.inner_call(.{
+                    .staticcall = .{
+                        .caller = self.address,
+                        .to = call_address,
+                        .input = input_data,
+                        .gas = available_gas,
+                    },
+                });
 
                 // Write output to memory
                 // Note: Memory expansion cost was already charged upfront (lines 2052-2062)
