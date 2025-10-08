@@ -469,10 +469,12 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
 
     // Calculate gas cost (EIP-198 / EIP-7883)
     // Read first 32 bytes of exponent (padded with zeros if shorter)
+    // Copy to the RIGHT end of the array for correct big-endian interpretation
     var exp_head: [32]u8 = [_]u8{0} ** 32;
     const exp_head_len = @min(exp_len, 32);
     if (exp_head_len > 0) {
-        @memcpy(exp_head[0..exp_head_len], exp[0..exp_head_len]);
+        const exp_head_offset = 32 - exp_head_len;
+        @memcpy(exp_head[exp_head_offset..32], exp[0..exp_head_len]);
     }
     const exp_head_u256 = bytesToU256(&exp_head);
 
