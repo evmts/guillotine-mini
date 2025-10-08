@@ -140,6 +140,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "blake2", .module = blake2_mod },
+            // Ensure nested modules can access build options (e.g., precompiles)
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
 
@@ -198,7 +200,7 @@ pub fn build(b: *std.Build) void {
             "sh",
             "-c",
             // Force refresh: always run fill (with --clean) for all deployed forks
-            "cd /Users/williamcory/guillotine-mini/execution-specs && "
+            "cd execution-specs && "
             ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean",
         })
     else
@@ -206,10 +208,10 @@ pub fn build(b: *std.Build) void {
             "sh",
             "-c",
             // No-op only if all fork fixtures are present; otherwise fill all
-            "OUT_DIR=/Users/williamcory/guillotine-mini/execution-specs/tests/eest/static/state_tests; "
+            "OUT_DIR=execution-specs/tests/eest/static/state_tests; "
             ++ "if [ -d \"$OUT_DIR\" ] && find \"$OUT_DIR\" -type f -name '*.json' | grep -q .; then "
             ++ "echo 'Specs already built, skipping fill'; "
-            ++ "else cd /Users/williamcory/guillotine-mini/execution-specs && "
+            ++ "else cd execution-specs && "
             ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean; fi",
         });
 
