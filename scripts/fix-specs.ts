@@ -122,7 +122,7 @@ interface FixAttempt {
 
 class SpecFixerPipeline {
   private reportsDir = join(REPO_ROOT, "reports", "spec-fixes");
-  private maxAttemptsPerSuite = 5;
+  private maxAttemptsPerSuite = 1;
   private fixAttempts: FixAttempt[] = [];
   private knownIssues: KnownIssuesDatabase;
   private agentEnabled: boolean;
@@ -535,7 +535,8 @@ Begin analysis now. Complete ALL checkpoints with ACTUAL data before any code ch
         prompt,
         options: {
           model: "claude-sonnet-4-5-20250929",
-          maxTurns: 500,
+          maxTurns: 2000,
+          maxThinkingTokens: 16000,
           permissionMode: "bypassPermissions",
           cwd: REPO_ROOT,
         },
