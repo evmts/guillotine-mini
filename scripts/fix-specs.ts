@@ -8,12 +8,28 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const REPO_ROOT = join(__dirname, "..");
+const KNOWN_ISSUES_PATH = join(__dirname, "known-issues.json");
 
 // Test suite configuration
 interface TestSuite {
   name: string;
   command: string;
   description: string;
+}
+
+// Known issues database
+interface KnownIssue {
+  test_suite: string;
+  description: string;
+  common_causes: string[];
+  relevant_files: string[];
+  python_ref: string;
+  key_invariants: string[];
+  gas_costs?: Record<string, number>;
+}
+
+interface KnownIssuesDatabase {
+  issues: Record<string, KnownIssue>;
 }
 
 const TEST_SUITES: TestSuite[] = [
@@ -108,11 +124,62 @@ class SpecFixerPipeline {
   private reportsDir = join(REPO_ROOT, "reports", "spec-fixes");
   private maxAttemptsPerSuite = 5;
   private fixAttempts: FixAttempt[] = [];
+  private knownIssues: KnownIssuesDatabase;
 
   constructor() {
     if (!existsSync(this.reportsDir)) {
       mkdirSync(this.reportsDir, { recursive: true });
     }
+
+    // Load known issues database
+    this.knownIssues = this.loadKnownIssues();
+  }
+
+  private loadKnownIssues(): KnownIssuesDatabase {
+    try {
+      if (existsSync(KNOWN_ISSUES_PATH)) {
+        const content = readFileSync(KNOWN_ISSUES_PATH, "utf-8");
+        return JSON.parse(content);
+      }
+    } catch (error) {
+      console.warn(`⚠️  Could not load known issues database: ${error}`);
+    }
+    return { issues: {} };
+  }
+
+  private getKnownIssueContext(suiteName: string): string {
+    const issue = this.knownIssues.issues[suiteName];
+    if (!issue) {
+      return "";
+    }
+
+    return `
+<known_issues>
+## Known Issues for ${suiteName}
+
+**Description**: ${issue.description}
+
+### Common Causes
+${issue.common_causes.map((cause, i) => `${i + 1}. ${cause}`).join("\n")}
+
+### Relevant Files to Check
+${issue.relevant_files.map((file) => `- \`${file}\``).join("\n")}
+
+### Python Reference Location
+\`${issue.python_ref}\`
+
+### Key Invariants
+${issue.key_invariants.map((inv) => `- ${inv}`).join("\n")}
+
+${issue.gas_costs ? `### Expected Gas Costs
+${Object.entries(issue.gas_costs)
+  .map(([op, cost]) => `- **${op}**: ${cost} gas`)
+  .join("\n")}
+` : ""}
+
+**Note**: This historical context is based on previous debugging sessions. Use it as a guide, but always verify against the current test output and Python reference implementation.
+</known_issues>
+`;
   }
 
   runTest(suite: TestSuite): TestResult {
@@ -163,22 +230,327 @@ class SpecFixerPipeline {
 
     const startTime = Date.now();
 
-    const prompt = `<task>
-Goal: make EVM ethereum spec compliant by passing the execution tests.
+    // Include known issues context if available
+    const knownIssueContext = this.getKnownIssueContext(suite.name);
+
+    const prompt = `🚨 CRITICAL: Complete ALL checkpoints with ACTUAL data before ANY code changes. NO placeholders/TBDs.
+
+<task>
+Make EVM spec-compliant by passing ${suite.description} tests.
 </task>
 
 <context>
-The ethereum specification tests are the official tests we are using as a submodule. They are battle-hardened and used by every major EVM implementation (geth, erigon, nethermind, etc.), so we know they are authoritative.
-
-## Test Suite Information
-
-**Test Suite**: ${suite.description}
-**Command**: \`${suite.command}\`
-**Hardfork Context**: This test suite targets specific hardfork rules and EIP requirements that must be satisfied.
+Suite: ${suite.description}
+Command: \`${suite.command}\`
+Tests: ethereum/tests (authoritative reference used by geth, erigon, nethermind)
 </context>
+${knownIssueContext}
 
 <methodology>
-Follow this systematic debugging approach:
+🔴 MANDATORY WORKFLOW - NEVER SKIP STEPS 🔴
+
+## ⚡ PRE-ANALYSIS PHASE (COMPLETE BEFORE CODE CHANGES)
+
+⚠️ FAILURE TO COMPLETE = WASTED EFFORT. Provide ACTUAL data for each checkpoint (no "[TBD]", "[value]").
+
+You must complete each checkpoint in order and explicitly confirm completion before moving to the next step. Each checkpoint requires ACTUAL data (not placeholders).
+
+---
+
+### ✅ CHECKPOINT 1: Run Test and Confirm Failure
+
+**Required Actions**:
+1. Run the test suite command: \`${suite.command}\`
+2. Capture the complete failure output
+3. Identify how many tests failed and their names
+4. Record any error messages, stack traces, or crash information
+
+**Checkpoint Confirmation** (you MUST provide this):
+\`\`\`
+✅ CHECKPOINT 1 COMPLETE
+- Command executed: ${suite.command}
+- Tests failed: [exact number]
+- Test names: [exact list of failing tests]
+- Failure type: [gas error | wrong output | crash | other]
+\`\`\`
+
+**DO NOT PROCEED** until you have confirmed this checkpoint with actual data.
+
+---
+
+### ✅ CHECKPOINT 2: Generate Trace Comparison and Identify Divergence
+
+**Required Actions**:
+
+**BEST PRACTICE**: Use the dedicated trace comparison tool for detailed divergence analysis:
+\`\`\`bash
+bun run scripts/compare-traces.ts "exact_test_name"
+\`\`\`
+
+This tool provides:
+- Automatic trace capture and comparison
+- Side-by-side divergence visualization
+- Exact PC, opcode, gas, and stack details at divergence point
+- Context showing steps before divergence
+- Detailed markdown report with next-step guidance
+- Saved reports in traces/<test_name>_analysis.md
+
+**Alternative approach** - Use the test isolation helper:
+\`\`\`bash
+./scripts/isolate-test.sh "exact_test_name"
+\`\`\`
+
+This helper automatically:
+- Sets TEST_FILTER to the exact test
+- Runs with verbose tracing enabled
+- Analyzes failure type (crash vs behavior divergence vs gas error)
+- Extracts divergence details
+- Provides next-step guidance
+
+**Manual fallback** (if helpers unavailable):
+\`\`\`bash
+TEST_FILTER="exact_test_name" ${suite.command}
+\`\`\`
+
+**If tests are crashing** (segfault, panic, etc.):
+1. Note that crash debugging will be required (see Phase 2, Strategy 6)
+2. Skip to Checkpoint 4 with crash information
+3. Mark this checkpoint as "SKIPPED (crash detected)"
+
+**If tests are failing** with incorrect behavior/gas:
+1. Pick ONE specific failing test to analyze
+2. Run that single test in isolation using the helper script
+3. The test runner automatically generates trace comparison
+4. Identify the EXACT divergence point from the output
+
+**Checkpoint Confirmation** (you MUST paste actual divergence output):
+\`\`\`
+✅ CHECKPOINT 2 COMPLETE
+- Isolated test: [exact test name]
+- Divergence PC: [actual PC value from trace]
+- Diverging opcode: [actual opcode from trace]
+- Expected gas: [actual value from trace]
+- Actual gas: [actual value from trace]
+- Gas difference: [calculated: expected - actual]
+- Stack at divergence: [paste actual stack if different, or "no divergence"]
+- Memory at divergence: [paste actual memory if different, or "no divergence"]
+- Storage at divergence: [paste actual storage if different, or "no divergence"]
+\`\`\`
+
+OR (if crashing):
+\`\`\`
+✅ CHECKPOINT 2 SKIPPED (crash detected)
+- Crash type: [segfault | panic | unreachable | other]
+- Crash message: [paste actual error message]
+- Stack trace: [paste relevant stack trace if available]
+- Suspected location: [file/function if identifiable]
+\`\`\`
+
+**DO NOT PROCEED** until you have confirmed this checkpoint with ACTUAL data (no placeholders like "[TBD]" or "[Will check]").
+
+---
+
+### ✅ CHECKPOINT 3: Read Python Reference Implementation
+
+**Required Actions**:
+1. Navigate to \`execution-specs/src/ethereum/forks/<hardfork>/\`
+2. Based on the divergence point, identify the relevant Python file:
+   - Opcode logic: \`vm/instructions/*.py\`
+   - Gas calculation: \`vm/gas.py\`
+   - State changes: \`state.py\`
+   - Call/Create: \`vm/instructions/system.py\`
+3. Read the COMPLETE function implementation for the diverging operation
+4. Quote the relevant Python code (not just summaries)
+
+**Checkpoint Confirmation** (you MUST quote actual Python code):
+\`\`\`
+✅ CHECKPOINT 3 COMPLETE
+- Reference file: [exact path in execution-specs, e.g., execution-specs/src/ethereum/forks/cancun/vm/instructions/storage.py]
+- Function name: [exact function name, e.g., sstore]
+- Relevant Python code (quote the actual implementation):
+  ---
+  [paste the actual Python function or relevant lines]
+  ---
+- Gas calculation order (from Python code, with line references):
+  1. [First gas charge: quote Python line]
+  2. [Second gas charge: quote Python line]
+  3. [etc.]
+- Hardfork guards: [quote any if/fork checks from Python, or "none"]
+- Error conditions: [quote any raise statements from Python, or "none"]
+\`\`\`
+
+**DO NOT PROCEED** until you have quoted ACTUAL Python code (no summaries or paraphrases).
+
+---
+
+### ✅ CHECKPOINT 4: Locate and Compare Zig Implementation
+
+**Required Actions**:
+1. Based on the failure type, identify which Zig file to examine:
+   - Opcodes: \`src/frame.zig\`
+   - Call/Create: \`src/evm.zig\`
+   - Storage: \`src/evm.zig\`
+   - Gas constants: \`src/primitives/gas_constants.zig\`
+2. Read the current Zig implementation
+3. Compare line-by-line with Python reference from Checkpoint 3
+
+**Checkpoint Confirmation** (you MUST identify SPECIFIC discrepancies):
+\`\`\`
+✅ CHECKPOINT 4 COMPLETE
+- Zig file: [exact path, e.g., src/frame.zig]
+- Zig function/section: [exact location with line numbers, e.g., SSTORE implementation lines 450-480]
+- Current Zig implementation (quote relevant lines):
+  ---
+  [paste actual Zig code]
+  ---
+- Discrepancies identified (compare Python vs Zig line-by-line):
+  1. Python does: [quote Python line from Checkpoint 3]
+     Zig does: [quote Zig line from above]
+     Problem: [explain the specific difference]
+  2. [additional discrepancies with same format]
+  3. [etc.]
+- If no discrepancies: [explain why tests still fail despite matching logic]
+\`\`\`
+
+**DO NOT PROCEED** until you have identified CONCRETE discrepancies with actual code quotes.
+
+---
+
+### ✅ CHECKPOINT 5: Diagnose Root Cause and Propose Fix
+
+**Required Actions**:
+1. Based on the evidence from checkpoints 1-4, diagnose the root cause
+2. Propose a specific fix that aligns Zig with Python reference
+3. List all files that need modification with specific line ranges
+
+**Checkpoint Confirmation** (you MUST provide clear diagnosis):
+\`\`\`
+✅ CHECKPOINT 5 COMPLETE
+
+### Root Cause Diagnosis
+[Explain in 2-4 sentences what is wrong, referencing specific evidence from checkpoints 2-4. Be specific about what diverges and why.]
+
+### Proposed Fix
+[Explain what will change to match Python reference. Be specific:
+- What code will be added/removed/modified
+- What gas values/logic will change
+- Why this matches the Python reference]
+
+### Files to Modify
+- \`src/<file1>.zig\` (lines X-Y) - [specific change]
+- \`src/<file2>.zig\` (lines X-Y) - [specific change] (if applicable)
+
+### Expected Outcome
+[What should happen after the fix:
+- Expected gas value
+- Expected behavior
+- Which tests should pass]
+\`\`\`
+
+**DO NOT PROCEED** to implementation until you have provided this diagnosis.
+
+---
+
+### ✅ CHECKPOINT 6: Implement Fix
+
+**Required Actions**:
+1. Make the minimal changes identified in Checkpoint 5
+2. Preserve existing behavior for other hardforks
+3. Use proper hardfork guards if needed (e.g., \`if (self.hardfork.isAtLeast(.CANCUN))\`)
+4. Do not make unrelated changes
+
+**Checkpoint Confirmation**:
+\`\`\`
+✅ CHECKPOINT 6 COMPLETE
+- Files modified: [list with line numbers]
+- Changes made: [brief summary matching Checkpoint 5 proposal]
+- Hardfork guards added: [yes/no, if yes quote the guard]
+\`\`\`
+
+---
+
+### ✅ CHECKPOINT 7: Verify Fix
+
+**Required Actions**:
+1. Run the test command: \`${suite.command}\`
+2. Confirm tests pass or identify new failures
+3. If tests still fail, capture NEW failure output and return to Checkpoint 2
+
+**Checkpoint Confirmation**:
+\`\`\`
+✅ CHECKPOINT 7 COMPLETE
+- Command executed: ${suite.command}
+- Tests passing: [yes/no]
+- Number of tests passing: [exact count]
+- Number of tests still failing: [exact count]
+
+[IF TESTS STILL FAIL]:
+- New failure type: [gas error | wrong output | crash | other]
+- New divergence point: [paste new trace divergence]
+- Action: Returning to Checkpoint 2 for iteration
+\`\`\`
+
+If tests still fail after the fix, you MUST iterate by returning to Checkpoint 2 with the NEW failure output.
+
+---
+
+## PRE-ANALYSIS REPORT (Final Summary)
+
+After completing all checkpoints (or after Checkpoint 7 if iterating), provide this summary report:
+
+\`\`\`markdown
+## PRE-ANALYSIS REPORT
+
+### Test Failure Summary
+- **Total tests failed**: [from Checkpoint 1]
+- **Test name(s)**: [from Checkpoint 1]
+- **Failure type**: [from Checkpoint 1]
+
+### Trace Divergence Analysis
+[IF APPLICABLE - from Checkpoint 2]
+- **Divergence PC**: [from Checkpoint 2]
+- **Diverging opcode**: [from Checkpoint 2]
+- **Expected gas**: [from Checkpoint 2]
+- **Actual gas**: [from Checkpoint 2]
+- **Gas difference**: [from Checkpoint 2]
+
+OR
+
+[IF CRASHING - from Checkpoint 2]
+- **Crash type**: [from Checkpoint 2]
+- **Crash location**: [from Checkpoint 2]
+- **Crash message**: [from Checkpoint 2]
+
+### Python Reference Behavior
+- **Reference file**: [from Checkpoint 3]
+- **Function name**: [from Checkpoint 3]
+- **Key behavior**: [summarize from Checkpoint 3 Python code]
+- **Gas calculation order**: [from Checkpoint 3]
+
+### Zig Implementation Analysis
+- **Current file**: [from Checkpoint 4]
+- **Discrepancies identified**: [from Checkpoint 4]
+
+### Root Cause and Fix
+- **Root cause**: [from Checkpoint 5]
+- **Proposed fix**: [from Checkpoint 5]
+- **Files modified**: [from Checkpoint 6]
+- **Verification result**: [from Checkpoint 7]
+
+---
+**Analysis complete. All checkpoints confirmed.**
+\`\`\`
+
+**Validation Rules**:
+- ✅ ALL checkpoints MUST be explicitly confirmed before proceeding to the next
+- ✅ Each checkpoint MUST include actual data (test output, code quotes, trace output)
+- ✅ NO placeholders like "[TODO]", "[TBD]", "[Will investigate]", "[value]"
+- ✅ If you cannot complete a checkpoint, STOP and explain what information is missing
+- ✅ If tests fail after implementation, iterate by returning to Checkpoint 2
+- ❌ DO NOT skip checkpoints
+- ❌ DO NOT proceed to fixes without completing analysis checkpoints 1-5
+- ❌ DO NOT use summaries instead of actual code/output quotes
+- ❌ DO NOT guess values or use placeholders
 
 ## Phase 1: Understand the Failure
 1. **Identify the failure type**:
@@ -303,8 +675,21 @@ Follow this systematic debugging approach:
 <debugging_techniques>
 ## Advanced Debugging Strategies
 
-### Strategy 1: Single Test Isolation
-If multiple tests fail, filter to ONE failing test for focused debugging:
+### Strategy 1: Single Test Isolation ⭐ USE THE HELPER SCRIPT ⭐
+
+**Recommended approach** - Use the test isolation helper:
+\`\`\`bash
+./scripts/isolate-test.sh "exact_failing_test_name"
+\`\`\`
+
+This helper script provides:
+- Automatic test filtering
+- Verbose trace output
+- Failure type detection
+- Divergence analysis
+- Next-step guidance
+
+**Manual approach** (if helper unavailable):
 \`\`\`bash
 TEST_FILTER="exact_failing_test_name" ${suite.command}
 \`\`\`
