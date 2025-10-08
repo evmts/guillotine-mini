@@ -29,4 +29,12 @@ pub const CallError = error{
     CreateInitCodeSizeLimit,
     CreateContractSizeLimit,
     ExecutionTimeout,
+    // CallParams validation errors
+    GasZeroError,
+    InvalidInputSize,
+    InvalidInitCodeSize,
+    InvalidCreateValue,
+    InvalidStaticCallValue,
+    // IO errors
+    NoSpaceLeft,
 };
