@@ -176,8 +176,16 @@ pub const Evm = struct {
         self.selfdestructed_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
 
         // Set blob versioned hashes for EIP-4844
+        // CRITICAL: Must copy blob hashes into arena to ensure correct lifetime
+        // The caller may free the hashes after passing them to us, so we need our own copy
         if (blob_versioned_hashes) |hashes| {
-            self.blob_versioned_hashes = hashes;
+            // Allocate space in arena for blob hashes
+            const hashes_copy = try arena_allocator.alloc([32]u8, hashes.len);
+            // Copy each hash
+            for (hashes, 0..) |hash, i| {
+                hashes_copy[i] = hash;
+            }
+            self.blob_versioned_hashes = hashes_copy;
         } else {
             self.blob_versioned_hashes = &[_][32]u8{};
         }
