@@ -1,7 +1,7 @@
 /**
  * Simple example showing how to use the Guillotine Mini EVM SDK
  */
-import { createEvm, hexToBytes, addressToBytes } from '../src/index.js';
+import { createEvm } from '../src/index.js';
 
 async function main() {
   console.log('Creating EVM instance with Cancun hardfork...');
@@ -9,17 +9,16 @@ async function main() {
   console.log('✓ EVM ready');
 
   // Simple program: PUSH1 1 PUSH1 1 ADD (returns 2)
-  const bytecode = hexToBytes('6001600101');
-  await evm.setBytecode(bytecode);
+  await evm.setBytecode('0x6001600101');
   console.log('✓ Bytecode set');
 
   // Set execution context
   await evm.setExecutionContext({
     gas: 100000n,
-    caller: addressToBytes('0x1234567890123456789012345678901234567890'),
-    address: addressToBytes('0x0000000000000000000000000000000000000001'),
+    caller: '0x1234567890123456789012345678901234567890',
+    address: '0x0000000000000000000000000000000000000001',
     value: 0n,
-    calldata: new Uint8Array(),
+    calldata: '0x',
   });
   console.log('✓ Execution context set');
 
@@ -30,7 +29,7 @@ async function main() {
     blockTimestamp: BigInt(Date.now() / 1000),
     blockDifficulty: 0n,  // Use 0 for PoS
     blockPrevrandao: 0n,
-    blockCoinbase: addressToBytes('0x0000000000000000000000000000000000000000'),
+    blockCoinbase: '0x0000000000000000000000000000000000000000',
     blockGasLimit: 30000000n,
     blockBaseFee: 10n ** 9n,  // 1 gwei
     blobBaseFee: 1n,
