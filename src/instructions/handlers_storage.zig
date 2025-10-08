@@ -7,7 +7,7 @@ const GasConstants = primitives.GasConstants;
 /// The FrameType must have methods: consumeGas, popStack, pushStack
 /// and fields: pc, address, is_static, evm_ptr
 pub fn Handlers(FrameType: type) type {
-    const Evm = @import("../evm.zig").Evm;
+    const Evm = @import("../evm.zig").DefaultEvm;
 
     return struct {
         /// SLOAD opcode (0x54) - Load word from storage
