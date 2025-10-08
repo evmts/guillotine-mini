@@ -977,6 +977,12 @@ pub const Evm = struct {
             try self.nonces.put(new_address, 1);
         }
 
+        // EIP-6780 (Cancun): Mark account as created BEFORE execution
+        // Per Python reference (interpreter.py:174): mark_account_created happens BEFORE process_message
+        // "The marker is not removed even if the account creation reverts"
+        // This is required for SELFDESTRUCT to correctly identify same-tx creations
+        try self.created_accounts.put(new_address, {});
+
         // Transfer balance if value > 0
         if (value > 0) {
             if (self.host) |h| {
@@ -1131,11 +1137,6 @@ pub const Evm = struct {
                 } else {
                     try self.code.put(new_address, &[_]u8{});
                 }
-            }
-
-            // Mark account as created in this transaction (EIP-6780) if successful
-            if (success) {
-                try self.created_accounts.put(new_address, {});
             }
         } else {
             // Reverse state changes on revert
