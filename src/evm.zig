@@ -457,10 +457,12 @@ pub const Evm = struct {
         gas: u64,
         call_type: HostInterface.CallType,
     ) errors.CallError!CallResult {
+        // Check call depth (STACK_DEPTH_LIMIT = 1024)
+        // Per Python reference (system.py:297-300), depth exceeded refunds gas
         if (self.frames.items.len >= 1024) {
             return CallResult{
                 .success = false,
-                .gas_left = 0,
+                .gas_left = gas,
                 .output = &[_]u8{},
             };
         }
@@ -480,6 +482,14 @@ pub const Evm = struct {
         var it = self.transient_storage.iterator();
         while (it.next()) |entry| {
             try transient_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+
+        // Snapshot selfdestructed_accounts before the call (EIP-6780 revert handling)
+        // On revert, accounts marked for deletion during the reverted call must be removed
+        var selfdestruct_snapshot = std.AutoHashMap(Address, void).init(self.arena.allocator());
+        var selfdestruct_it = self.selfdestructed_accounts.iterator();
+        while (selfdestruct_it.next()) |entry| {
+            try selfdestruct_snapshot.put(entry.key_ptr.*, {});
         }
 
         // Snapshot balances before the call (for SELFDESTRUCT revert handling)
@@ -665,6 +675,16 @@ pub const Evm = struct {
             }
         }
 
+        // Restore selfdestructed_accounts on revert (EIP-6780)
+        // This ensures that SELFDESTRUCT operations in reverted calls don't affect the final state
+        if (frame.reverted) {
+            self.selfdestructed_accounts.clearRetainingCapacity();
+            var restore_selfdestruct_it = selfdestruct_snapshot.iterator();
+            while (restore_selfdestruct_it.next()) |entry| {
+                try self.selfdestructed_accounts.put(entry.key_ptr.*, {});
+            }
+        }
+
         // Restore balances on revert (handles SELFDESTRUCT balance transfers and value transfers)
         if (frame.reverted) {
             if (self.host) |h| {
@@ -706,12 +726,13 @@ pub const Evm = struct {
         // Track if this is a top-level create (contract-creation transaction)
         // We detect this when there is no active frame yet.
         const is_top_level_create = self.frames.items.len == 0;
-        // Check call depth
+        // Check call depth (STACK_DEPTH_LIMIT = 1024)
+        // Per Python reference (system.py:97-99), depth exceeded refunds gas
         if (self.frames.items.len >= 1024) {
             return .{
                 .address = primitives.ZERO_ADDRESS,
                 .success = false,
-                .gas_left = 0,
+                .gas_left = gas,
                 .output = &[_]u8{},
             };
         }
@@ -918,10 +939,13 @@ pub const Evm = struct {
                 try self.nonces.put(caller, caller_nonce + 1);
             }
 
+            // Per Python reference (system.py:105-112): On collision, the gas is NOT refunded.
+            // Line 86 deducts create_message_gas, and line 111-112 returns without refunding.
+            // Therefore, we return gas_left = 0 to indicate all gas was consumed.
             return .{
                 .address = primitives.ZERO_ADDRESS,
                 .success = false,
-                .gas_left = gas,
+                .gas_left = 0,
                 .output = &[_]u8{},
             };
         }
@@ -960,6 +984,14 @@ pub const Evm = struct {
                 const new_addr_balance = self.balances.get(new_address) orelse 0;
                 try self.balances.put(new_address, new_addr_balance + value);
             }
+        }
+
+        // Snapshot selfdestructed_accounts before executing init code (EIP-6780 revert handling)
+        // If CREATE fails, any SELFDESTRUCTs in the init code must be reverted
+        var create_selfdestruct_snapshot = std.AutoHashMap(Address, void).init(self.arena.allocator());
+        var create_selfdestruct_it = self.selfdestructed_accounts.iterator();
+        while (create_selfdestruct_it.next()) |entry| {
+            try create_selfdestruct_snapshot.put(entry.key_ptr.*, {});
         }
 
         // Execute initialization code
@@ -1059,6 +1091,13 @@ pub const Evm = struct {
                         }
                     }
 
+                    // Restore selfdestructed_accounts on failure (EIP-6780)
+                    self.selfdestructed_accounts.clearRetainingCapacity();
+                    var restore_create_selfdestruct_it = create_selfdestruct_snapshot.iterator();
+                    while (restore_create_selfdestruct_it.next()) |entry| {
+                        try self.selfdestructed_accounts.put(entry.key_ptr.*, {});
+                    }
+
                     return .{
                         .address = primitives.ZERO_ADDRESS,
                         .success = false,
@@ -1114,6 +1153,13 @@ pub const Evm = struct {
                     try self.balances.put(caller, caller_balance + value);
                     try self.balances.put(new_address, new_addr_balance - value);
                 }
+            }
+
+            // Restore selfdestructed_accounts on failure (EIP-6780)
+            self.selfdestructed_accounts.clearRetainingCapacity();
+            var restore_create_selfdestruct_it = create_selfdestruct_snapshot.iterator();
+            while (restore_create_selfdestruct_it.next()) |entry| {
+                try self.selfdestructed_accounts.put(entry.key_ptr.*, {});
             }
         }
 

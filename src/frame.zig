@@ -187,11 +187,16 @@ pub const Frame = struct {
         return self.memory.get(offset) orelse 0;
     }
 
+    /// Safe add helper for u32 indices
+    inline fn add_u32(a: u32, b: u32) EvmError!u32 {
+        return std.math.add(u32, a, b) catch return error.OutOfBounds;
+    }
+
     /// Write byte to memory
     pub fn writeMemory(self: *Self, offset: u32, value: u8) EvmError!void {
         try self.memory.put(offset, value);
         // EVM memory expands to word-aligned (32-byte) boundaries
-        const end_offset = std.math.cast(u64, offset + 1) orelse return error.OutOfBounds;
+        const end_offset: u64 = @as(u64, offset) + 1;
         const word_aligned_size = wordAlignedSize(end_offset);
         if (word_aligned_size > self.memory_size) self.memory_size = word_aligned_size;
     }
@@ -206,14 +211,17 @@ pub const Frame = struct {
 
     /// Read immediate data for PUSH operations
     pub fn readImmediate(self: *const Self, size: u8) ?u256 {
-        if (self.pc + 1 + size > self.bytecode.len) {
+        const pc_usize: usize = @intCast(self.pc);
+        const size_usize: usize = size;
+        if (pc_usize + 1 + size_usize > self.bytecode.len) {
             return null;
         }
 
         var result: u256 = 0;
         var i: u8 = 0;
         while (i < size) : (i += 1) {
-            result = (result << 8) | self.bytecode[self.pc + 1 + i];
+            const idx: usize = pc_usize + 1 + i;
+            result = (result << 8) | self.bytecode[idx];
         }
         return result;
     }
@@ -710,7 +718,8 @@ pub const Frame = struct {
 
                     var i: u32 = 0;
                     while (i < size_u32) : (i += 1) {
-                        data[i] = self.readMemory(offset_u32 + i);
+                        const addr = try add_u32(offset_u32, i);
+                        data[i] = self.readMemory(addr);
                     }
 
                     // Compute Keccak-256 hash using std library
@@ -795,7 +804,8 @@ pub const Frame = struct {
                     var result: u256 = 0;
                     var i: u32 = 0;
                     while (i < 32) : (i += 1) {
-                        const idx = off + i;
+                        const idx_u32 = try add_u32(off, i);
+                        const idx: usize = @intCast(idx_u32);
                         const byte = if (idx < self.calldata.len) self.calldata[idx] else 0;
                         result = (result << 8) | byte;
                     }
@@ -830,9 +840,11 @@ pub const Frame = struct {
                 // Copy calldata to memory
                 var i: u32 = 0;
                 while (i < len) : (i += 1) {
-                    const src_idx = src_off + i;
+                    const src_idx_u32 = try add_u32(src_off, i);
+                    const src_idx: usize = @intCast(src_idx_u32);
                     const byte = if (src_idx < self.calldata.len) self.calldata[src_idx] else 0;
-                    try self.writeMemory(dest_off + i, byte);
+                    const dst_idx = try add_u32(dest_off, i);
+                    try self.writeMemory(dst_idx, byte);
                 }
                 self.pc += 1;
             },
@@ -862,9 +874,11 @@ pub const Frame = struct {
                 // Copy code to memory
                 var i: u32 = 0;
                 while (i < len) : (i += 1) {
-                    const src_idx = src_off + i;
+                    const src_idx_u32 = try add_u32(src_off, i);
+                    const src_idx: usize = @intCast(src_idx_u32);
                     const byte = if (src_idx < self.bytecode.len) self.bytecode[src_idx] else 0;
-                    try self.writeMemory(dest_off + i, byte);
+                    const dst_idx = try add_u32(dest_off, i);
+                    try self.writeMemory(dst_idx, byte);
                 }
                 self.pc += 1;
             },
@@ -899,8 +913,11 @@ pub const Frame = struct {
                 const src_off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
                 const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
 
-                // Check bounds
-                if (src_off + len > self.return_data.len) {
+                // Check bounds with overflow-safety
+                const rd_len: usize = self.return_data.len;
+                const src_usize: usize = @intCast(src_off);
+                const len_usize: usize = @intCast(len);
+                if (src_usize > rd_len or len_usize > rd_len - src_usize) {
                     return error.OutOfBounds;
                 }
 
@@ -912,8 +929,10 @@ pub const Frame = struct {
                 // Copy return data to memory
                 var i: u32 = 0;
                 while (i < len) : (i += 1) {
-                    const byte = self.return_data[src_off + i];
-                    try self.writeMemory(dest_off + i, byte);
+                    const src_idx = @as(usize, @intCast(src_off)) + @as(usize, @intCast(i));
+                    const byte = self.return_data[src_idx];
+                    const dst_idx = try add_u32(dest_off, i);
+                    try self.writeMemory(dst_idx, byte);
                 }
                 self.pc += 1;
             },
@@ -1068,7 +1087,8 @@ pub const Frame = struct {
                 var result: u256 = 0;
                 var idx: u32 = 0;
                 while (idx < 32) : (idx += 1) {
-                    const byte = self.readMemory(off + idx);
+                    const addr = try add_u32(off, idx);
+                    const byte = self.readMemory(addr);
                     result = (result << 8) | byte;
                 }
                 try self.pushStack(result);
@@ -1091,7 +1111,8 @@ pub const Frame = struct {
                 var idx: u32 = 0;
                 while (idx < 32) : (idx += 1) {
                     const byte = @as(u8, @truncate(value >> @intCast((31 - idx) * 8)));
-                    try self.writeMemory(off + idx, byte);
+                    const addr = try add_u32(off, idx);
+                    try self.writeMemory(addr, byte);
                 }
                 self.pc += 1;
             },
@@ -1329,14 +1350,16 @@ pub const Frame = struct {
                 const push_size = opcode - 0x5f;
 
                 // Check bounds - need to read push_size bytes after the opcode
-                if (self.pc + push_size >= self.bytecode.len) {
+                const pc_usize: usize = @intCast(self.pc);
+                const ps_usize: usize = push_size;
+                if (pc_usize + ps_usize >= self.bytecode.len) {
                     return error.InvalidPush;
                 }
 
                 // Read immediate value from bytecode
                 var value: u256 = 0;
                 for (0..push_size) |i| {
-                    value = (value << 8) | self.bytecode[self.pc + 1 + i];
+                    value = (value << 8) | self.bytecode[pc_usize + 1 + i];
                 }
 
                 try self.pushStack(value);
@@ -1385,13 +1408,20 @@ pub const Frame = struct {
                     _ = try self.popStack();
                 }
 
-                // Gas cost
+                // Gas cost + memory expansion for log data
+                const off_u32 = std.math.cast(u32, offset) orelse return error.OutOfBounds;
                 const length_u32 = std.math.cast(u32, length) orelse return error.OutOfBounds;
                 const log_cost = logGasCost(topic_count, length_u32);
                 try self.consumeGas(log_cost);
+                if (length_u32 > 0) {
+                    const end_bytes: u64 = @as(u64, off_u32) + @as(u64, length_u32);
+                    const mem_cost = self.memoryExpansionCost(end_bytes);
+                    try self.consumeGas(mem_cost);
+                    const aligned = wordAlignedSize(end_bytes);
+                    if (aligned > self.memory_size) self.memory_size = aligned;
+                }
 
                 // In minimal implementation, we don't actually emit logs
-                _ = offset;
                 self.pc += 1;
             },
 
@@ -1421,10 +1451,15 @@ pub const Frame = struct {
                     const mem_cost = self.memoryExpansionCost(end_bytes);
                     try self.consumeGas(mem_cost);
 
+                    // Update logical memory size
+                    const aligned = wordAlignedSize(end_bytes);
+                    if (aligned > self.memory_size) self.memory_size = aligned;
+
                     const code = try self.allocator.alloc(u8, len);
                     var j: u32 = 0;
                     while (j < len) : (j += 1) {
-                        code[j] = self.readMemory(off + j);
+                        const addr = try add_u32(off, j);
+                        code[j] = self.readMemory(addr);
                     }
                     init_code = code;
                 }
@@ -1554,7 +1589,8 @@ pub const Frame = struct {
                         const data = try self.allocator.alloc(u8, in_len);
                         var j: u32 = 0;
                         while (j < in_len) : (j += 1) {
-                            data[j] = self.readMemory(in_off + j);
+                            const addr = try add_u32(in_off, j);
+                            data[j] = self.readMemory(addr);
                         }
                         input_data = data;
                     }
@@ -1595,7 +1631,8 @@ pub const Frame = struct {
 
                     var k: u32 = 0;
                     while (k < copy_len) : (k += 1) {
-                        try self.writeMemory(out_off + k, result.output[k]);
+                        const addr = try add_u32(out_off, k);
+                        try self.writeMemory(addr, result.output[k]);
                     }
                 }
 
@@ -1677,7 +1714,8 @@ pub const Frame = struct {
                         const data = try self.allocator.alloc(u8, in_len);
                         var j: u32 = 0;
                         while (j < in_len) : (j += 1) {
-                            data[j] = self.readMemory(in_off + j);
+                            const addr = try add_u32(in_off, j);
+                            data[j] = self.readMemory(addr);
                         }
                         input_data = data;
                     }
@@ -1718,7 +1756,8 @@ pub const Frame = struct {
 
                     var k: u32 = 0;
                     while (k < copy_len) : (k += 1) {
-                        try self.writeMemory(out_off + k, result.output[k]);
+                        const addr = try add_u32(out_off, k);
+                        try self.writeMemory(addr, result.output[k]);
                     }
                 }
 
@@ -1762,7 +1801,8 @@ pub const Frame = struct {
                     self.output = try self.allocator.alloc(u8, len);
                     var idx: u32 = 0;
                     while (idx < len) : (idx += 1) {
-                        self.output[idx] = self.readMemory(off + idx);
+                        const addr = try add_u32(off, idx);
+                        self.output[idx] = self.readMemory(addr);
                     }
                 }
 
@@ -1825,7 +1865,8 @@ pub const Frame = struct {
                         const data = try self.allocator.alloc(u8, in_len);
                         var j: u32 = 0;
                         while (j < in_len) : (j += 1) {
-                            data[j] = self.readMemory(in_off + j);
+                            const addr = try add_u32(in_off, j);
+                            data[j] = self.readMemory(addr);
                         }
                         input_data = data;
                     }
@@ -1860,7 +1901,8 @@ pub const Frame = struct {
 
                     var k: u32 = 0;
                     while (k < copy_len) : (k += 1) {
-                        try self.writeMemory(out_off + k, result.output[k]);
+                        const addr = try add_u32(out_off, k);
+                        try self.writeMemory(addr, result.output[k]);
                     }
                 }
 
@@ -1912,10 +1954,15 @@ pub const Frame = struct {
                     const mem_cost = self.memoryExpansionCost(end_bytes);
                     try self.consumeGas(mem_cost);
 
+                    // Update logical memory size
+                    const aligned = wordAlignedSize(end_bytes);
+                    if (aligned > self.memory_size) self.memory_size = aligned;
+
                     const code = try self.allocator.alloc(u8, len);
                     var j: u32 = 0;
                     while (j < len) : (j += 1) {
-                        code[j] = self.readMemory(off + j);
+                        const addr = try add_u32(off, j);
+                        code[j] = self.readMemory(addr);
                     }
                     init_code = code;
                 }
@@ -2018,7 +2065,8 @@ pub const Frame = struct {
                         const data = try self.allocator.alloc(u8, in_len);
                         var j: u32 = 0;
                         while (j < in_len) : (j += 1) {
-                            data[j] = self.readMemory(in_off + j);
+                            const addr = try add_u32(in_off, j);
+                            data[j] = self.readMemory(addr);
                         }
                         input_data = data;
                     }
@@ -2053,7 +2101,8 @@ pub const Frame = struct {
 
                     var k: u32 = 0;
                     while (k < copy_len) : (k += 1) {
-                        try self.writeMemory(out_off + k, result.output[k]);
+                        const addr = try add_u32(out_off, k);
+                        try self.writeMemory(addr, result.output[k]);
                     }
                 }
 
@@ -2132,8 +2181,8 @@ pub const Frame = struct {
 
                 // Expand memory to cover BOTH source and destination ranges
                 // Per EIP-5656, memory expansion happens before the copy operation
-                const src_end = std.math.cast(u64, src_u32 + len_u32) orelse return error.OutOfBounds;
-                const dest_end = std.math.cast(u64, dest_u32 + len_u32) orelse return error.OutOfBounds;
+                const src_end: u64 = @as(u64, src_u32) + @as(u64, len_u32);
+                const dest_end: u64 = @as(u64, dest_u32) + @as(u64, len_u32);
                 const max_memory_end = @max(src_end, dest_end);
                 const required_size = wordAlignedSize(max_memory_end);
                 if (required_size > self.memory_size) {
@@ -2146,11 +2195,13 @@ pub const Frame = struct {
 
                 var i: u32 = 0;
                 while (i < len_u32) : (i += 1) {
-                    tmp[i] = self.readMemory(src_u32 + i);
+                    const s = try add_u32(src_u32, i);
+                    tmp[i] = self.readMemory(s);
                 }
                 i = 0;
                 while (i < len_u32) : (i += 1) {
-                    try self.writeMemory(dest_u32 + i, tmp[i]);
+                    const d = try add_u32(dest_u32, i);
+                    try self.writeMemory(d, tmp[i]);
                 }
 
                 self.pc += 1;
@@ -2178,7 +2229,8 @@ pub const Frame = struct {
                     self.output = try self.allocator.alloc(u8, len);
                     var idx: u32 = 0;
                     while (idx < len) : (idx += 1) {
-                        self.output[idx] = self.readMemory(off + idx);
+                        const addr = try add_u32(off, idx);
+                        self.output[idx] = self.readMemory(addr);
                     }
                 }
 
@@ -2247,7 +2299,8 @@ pub const Frame = struct {
                     _ = offset;
                     var i: u32 = 0;
                     while (i < len) : (i += 1) {
-                        try self.writeMemory(dest + i, 0);
+                        const addr = try add_u32(dest, i);
+                        try self.writeMemory(addr, 0);
                     }
                 } else {
                     // EIP-150/EIP-2929: charge account access cost even if size is zero
@@ -2433,9 +2486,6 @@ pub const Frame = struct {
 
             // SELFDESTRUCT
             0xff => {
-                // EIP-214: SELFDESTRUCT cannot be executed in static call context
-                if (self.is_static) return error.StaticCallViolation;
-
                 const beneficiary_u256 = try self.popStack();
 
                 // Convert beneficiary to address
@@ -2490,6 +2540,10 @@ pub const Frame = struct {
                 }
 
                 try self.consumeGas(gas_cost);
+
+                // EIP-214: SELFDESTRUCT cannot be executed in static call context
+                // This check must happen AFTER gas charging (Python reference line 525)
+                if (self.is_static) return error.StaticCallViolation;
 
                 // Transfer balance from originator to beneficiary
                 // Pre-Cancun vs Cancun+ have different balance transfer semantics
