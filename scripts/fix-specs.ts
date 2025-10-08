@@ -233,729 +233,188 @@ ${Object.entries(issue.gas_costs)
     // Include known issues context if available
     const knownIssueContext = this.getKnownIssueContext(suite.name);
 
-    const prompt = `🚨 CRITICAL: Complete ALL checkpoints with ACTUAL data before ANY code changes. NO placeholders/TBDs.
+    const prompt = `🚨 CRITICAL: Complete ALL 7 checkpoints with ACTUAL data before ANY code changes. NO placeholders/TBDs allowed.
 
 <task>
-Make EVM spec-compliant by passing ${suite.description} tests.
+Pass ${suite.description} tests (spec-compliant EVM implementation).
+Command: \`${suite.command}\`
 </task>
 
-<context>
-Suite: ${suite.description}
-Command: \`${suite.command}\`
-Tests: ethereum/tests (authoritative reference used by geth, erigon, nethermind)
-</context>
 ${knownIssueContext}
 
+<common_mistakes>
+## ❌ ANTI-PATTERNS (Real Failures from Past Attempts)
+
+**1. Skipping Trace Analysis**
+❌ BAD: "The gas is wrong, let me check gas_constants.zig"
+✅ GOOD: "Running trace comparison first to see EXACT divergence point → PC 42, SSTORE, expected 22100 got 20000 → 2100 diff = missing cold access cost"
+
+**2. Guessing Without Python Reference**
+❌ BAD: "TSTORE should be 100 gas based on my understanding"
+✅ GOOD: "Read cancun/vm/instructions/storage.py line 89: charge_gas(evm, GAS_WARM_ACCESS) confirms 100 gas"
+
+**3. Making Changes Without Diagnosis**
+❌ BAD: "Let me try changing this gas constant and see if it works"
+✅ GOOD: "Root cause: Missing cold access charge before SSTORE dynamic cost. Python charges GAS_COLD_SLOAD first (line 156), we skip it. Fix: Add accessStorageSlot() before gas calculation."
+
+**4. Using Placeholders in Checkpoints**
+❌ BAD: "✅ CHECKPOINT 2: Divergence PC: [TBD]"
+✅ GOOD: "✅ CHECKPOINT 2: Divergence PC: 42, Opcode: SSTORE (0x55), Expected gas: 22100, Actual: 20000, Diff: 2100"
+
+**5. Not Iterating After Failed Fix**
+❌ BAD: "Fix didn't work. Moving on to next approach." [makes random changes]
+✅ GOOD: "Fix didn't work. Returning to CHECKPOINT 2 with NEW trace output → new divergence at PC 58..."
+</common_mistakes>
+
 <methodology>
-🔴 MANDATORY WORKFLOW - NEVER SKIP STEPS 🔴
+## 🔴 MANDATORY 7-CHECKPOINT WORKFLOW 🔴
 
-## ⚡ PRE-ANALYSIS PHASE (COMPLETE BEFORE CODE CHANGES)
+### ✅ CP1: Run Test & Capture Failure
+\`${suite.command}\` → Confirm: Failed: [N tests], Names: [...], Type: [gas/output/crash]
 
-⚠️ FAILURE TO COMPLETE = WASTED EFFORT. Provide ACTUAL data for each checkpoint (no "[TBD]", "[value]").
-
-You must complete each checkpoint in order and explicitly confirm completion before moving to the next step. Each checkpoint requires ACTUAL data (not placeholders).
-
----
-
-### ✅ CHECKPOINT 1: Run Test and Confirm Failure
-
-**Required Actions**:
-1. Run the test suite command: \`${suite.command}\`
-2. Capture the complete failure output
-3. Identify how many tests failed and their names
-4. Record any error messages, stack traces, or crash information
-
-**Checkpoint Confirmation** (you MUST provide this):
-\`\`\`
-✅ CHECKPOINT 1 COMPLETE
-- Command executed: ${suite.command}
-- Tests failed: [exact number]
-- Test names: [exact list of failing tests]
-- Failure type: [gas error | wrong output | crash | other]
-\`\`\`
-
-**DO NOT PROCEED** until you have confirmed this checkpoint with actual data.
-
----
-
-### ✅ CHECKPOINT 2: Generate Trace Comparison and Identify Divergence
-
-**Required Actions**:
-
-**BEST PRACTICE**: Use the dedicated trace comparison tool for detailed divergence analysis:
+### ✅ CP2: 🎯 Trace Divergence (DO THIS FIRST)
 \`\`\`bash
-bun run scripts/compare-traces.ts "exact_test_name"
+bun scripts/isolate-test.ts "exact_test_name"  # Auto-analyzes divergence
+\`\`\`
+**Confirm** (actual trace data required):
+\`\`\`
+Test: [name] | PC: [N] | Opcode: [NAME]
+Gas: Expected [N] vs Actual [N] = Diff [N]
+Stack/Memory/Storage: [paste or "matched"]
+\`\`\`
+*Crash? Mark "CP2 SKIPPED (crash)" + Type: [segfault/panic] + Message: [paste]*
+
+### ✅ CP3: Read Python Reference (IS THE SPEC)
+Navigate: \`execution-specs/src/ethereum/forks/<hardfork>/vm/instructions/\`
+**Confirm** (quote actual Python code):
+\`\`\`
+File: [exact path]
+Function: [name]
+Python code: [paste actual function, NOT summary]
+Gas order: 1.[line X], 2.[line Y], 3.[line Z]
 \`\`\`
 
-This tool provides:
-- Automatic trace capture and comparison
-- Side-by-side divergence visualization
-- Exact PC, opcode, gas, and stack details at divergence point
-- Context showing steps before divergence
-- Detailed markdown report with next-step guidance
-- Saved reports in traces/<test_name>_analysis.md
+### ✅ CP4: Compare Zig Implementation
+File: \`src/frame.zig\` (opcodes) or \`src/evm.zig\` (calls/storage)
+**Confirm** (line-by-line comparison):
+\`\`\`
+Zig location: [file:lines]
+Zig code: [paste actual code]
+Discrepancies:
+  1. Python: [quote] | Zig: [quote] | Problem: [explain]
+  2. [repeat for each]
+\`\`\`
 
-**Alternative approach** - Use the test isolation helper:
+### ✅ CP5: Diagnose Root Cause & Propose Fix
+**Confirm**:
+\`\`\`
+Root Cause: [2-3 sentences referencing CP2-4 evidence]
+Proposed Fix: [what changes + why matches Python]
+Files: src/X.zig (lines Y-Z) - [specific change]
+\`\`\`
+
+### ✅ CP6: Implement Fix
+Make minimal changes from CP5. Use \`hardfork.isAtLeast()\` guards if fork-specific.
+**Confirm**: Files modified: [list] | Changes: [brief summary]
+
+### ✅ CP7: Verify Fix
+\`${suite.command}\` → **Confirm**: Passing: [Y/N] | Count: [N/total]
+*If failing: Return to CP2 with NEW failure output for iteration*
+
+## 🚨 VALIDATION RULES 🚨
+✅ ALL checkpoints require ACTUAL data (test output, code quotes, trace values)
+✅ NO placeholders: "[TODO]", "[TBD]", "[Will check]", "[value]"
+✅ MUST iterate if tests fail after fix (return to CP2)
+❌ NEVER skip checkpoints or make changes before CP1-5 complete
+❌ NEVER guess - use traces (CP2) + Python ref (CP3)
+
+## 📋 File Location Quick Reference
+
+| Failure Type | Python Reference | Zig Implementation |
+|--------------|------------------|-------------------|
+| Opcode logic | forks/<fork>/vm/instructions/*.py | src/frame.zig |
+| Gas calculation | forks/<fork>/vm/gas.py | src/primitives/gas_constants.zig + src/frame.zig |
+| CALL/CREATE | forks/<fork>/vm/instructions/system.py | src/evm.zig (inner_call, inner_create) |
+| Storage (SLOAD/SSTORE) | forks/<fork>/vm/instructions/storage.py | src/evm.zig (get_storage, set_storage) |
+| Transient storage (TLOAD/TSTORE) | forks/cancun/vm/instructions/storage.py | src/evm.zig (get_transient_storage, set_transient_storage) |
+| Warm/cold tracking | forks/<fork>/vm/__init__.py (Evm class) | src/evm.zig (warm_addresses, warm_storage_slots) |
+
+## 🎯 Critical Invariants
+
+**Gas Metering:**
+- Order matters: Check stipend → Cold access → Dynamic cost → Refunds
+- SSTORE: Must track original_storage (tx start) ≠ storage (current)
+- Transient: ALWAYS warm (100 gas), NEVER cold, NO refunds
+
+**Hardfork Guards:**
+- Berlin+: Warm/cold tracking (2600/100 gas split)
+- London+: Refund cap = gasUsed/5 (was gasUsed/2)
+- Cancun+: TLOAD/TSTORE (transient storage)
+Use: \`if (self.hardfork.isAtLeast(.BERLIN))\`
+
+**Architecture Differences:**
+Python: Single \`Evm\` class (stack, memory, pc, gas, state all in one)
+Zig: Split \`Evm\` (state, storage, refunds) + \`Frame\` (stack, memory, pc, gas)
+→ Python \`evm.stack\` = Zig \`frame.stack\`
+→ Python \`evm.message.block_env.state\` = Zig \`evm.storage\`
+
+## 💡 Debugging Strategies
+
+**Strategy 1: Trace Comparison** (USE FIRST)
+Automated: \`bun scripts/isolate-test.ts "test_name"\`
+Shows: EXACT divergence (PC, opcode, gas, stack) → eliminates guesswork
+
+**Strategy 2: Python Reference** (REQUIRED FOR EVERY FIX)
+Location: \`execution-specs/src/ethereum/forks/<hardfork>/\`
+Rule: If our code differs from Python, WE ARE WRONG
+Read line-by-line, match gas order exactly
+
+**Strategy 3: Crash Debugging** (Systematic Binary Search)
+1. Isolate: \`TEST_FILTER="test" ${suite.command}\`
+2. Binary search: Add \`@panic("CP")\` halfway, run, move marker
+3. Find exact crash line before attempting fix
+4. Add assertions BEFORE crash line to inspect values
+Never: Add prints at crash site (output swallowed)
+
+## ⚡ Quick Commands
+
 \`\`\`bash
-./scripts/isolate-test.sh "exact_test_name"
+# Isolate single test with auto-analysis
+bun scripts/isolate-test.ts "test_name"
+
+# Run test suite
+${suite.command}
+
+# Filter to single test (manual)
+TEST_FILTER="test_name" ${suite.command}
+
+# Find Python reference
+cd execution-specs/src/ethereum/forks/<hardfork>/vm/instructions/
+grep -r "def sstore" .
 \`\`\`
-
-This helper automatically:
-- Sets TEST_FILTER to the exact test
-- Runs with verbose tracing enabled
-- Analyzes failure type (crash vs behavior divergence vs gas error)
-- Extracts divergence details
-- Provides next-step guidance
-
-**Manual fallback** (if helpers unavailable):
-\`\`\`bash
-TEST_FILTER="exact_test_name" ${suite.command}
-\`\`\`
-
-**If tests are crashing** (segfault, panic, etc.):
-1. Note that crash debugging will be required (see Phase 2, Strategy 6)
-2. Skip to Checkpoint 4 with crash information
-3. Mark this checkpoint as "SKIPPED (crash detected)"
-
-**If tests are failing** with incorrect behavior/gas:
-1. Pick ONE specific failing test to analyze
-2. Run that single test in isolation using the helper script
-3. The test runner automatically generates trace comparison
-4. Identify the EXACT divergence point from the output
-
-**Checkpoint Confirmation** (you MUST paste actual divergence output):
-\`\`\`
-✅ CHECKPOINT 2 COMPLETE
-- Isolated test: [exact test name]
-- Divergence PC: [actual PC value from trace]
-- Diverging opcode: [actual opcode from trace]
-- Expected gas: [actual value from trace]
-- Actual gas: [actual value from trace]
-- Gas difference: [calculated: expected - actual]
-- Stack at divergence: [paste actual stack if different, or "no divergence"]
-- Memory at divergence: [paste actual memory if different, or "no divergence"]
-- Storage at divergence: [paste actual storage if different, or "no divergence"]
-\`\`\`
-
-OR (if crashing):
-\`\`\`
-✅ CHECKPOINT 2 SKIPPED (crash detected)
-- Crash type: [segfault | panic | unreachable | other]
-- Crash message: [paste actual error message]
-- Stack trace: [paste relevant stack trace if available]
-- Suspected location: [file/function if identifiable]
-\`\`\`
-
-**DO NOT PROCEED** until you have confirmed this checkpoint with ACTUAL data (no placeholders like "[TBD]" or "[Will check]").
-
----
-
-### ✅ CHECKPOINT 3: Read Python Reference Implementation
-
-**Required Actions**:
-1. Navigate to \`execution-specs/src/ethereum/forks/<hardfork>/\`
-2. Based on the divergence point, identify the relevant Python file:
-   - Opcode logic: \`vm/instructions/*.py\`
-   - Gas calculation: \`vm/gas.py\`
-   - State changes: \`state.py\`
-   - Call/Create: \`vm/instructions/system.py\`
-3. Read the COMPLETE function implementation for the diverging operation
-4. Quote the relevant Python code (not just summaries)
-
-**Checkpoint Confirmation** (you MUST quote actual Python code):
-\`\`\`
-✅ CHECKPOINT 3 COMPLETE
-- Reference file: [exact path in execution-specs, e.g., execution-specs/src/ethereum/forks/cancun/vm/instructions/storage.py]
-- Function name: [exact function name, e.g., sstore]
-- Relevant Python code (quote the actual implementation):
-  ---
-  [paste the actual Python function or relevant lines]
-  ---
-- Gas calculation order (from Python code, with line references):
-  1. [First gas charge: quote Python line]
-  2. [Second gas charge: quote Python line]
-  3. [etc.]
-- Hardfork guards: [quote any if/fork checks from Python, or "none"]
-- Error conditions: [quote any raise statements from Python, or "none"]
-\`\`\`
-
-**DO NOT PROCEED** until you have quoted ACTUAL Python code (no summaries or paraphrases).
-
----
-
-### ✅ CHECKPOINT 4: Locate and Compare Zig Implementation
-
-**Required Actions**:
-1. Based on the failure type, identify which Zig file to examine:
-   - Opcodes: \`src/frame.zig\`
-   - Call/Create: \`src/evm.zig\`
-   - Storage: \`src/evm.zig\`
-   - Gas constants: \`src/primitives/gas_constants.zig\`
-2. Read the current Zig implementation
-3. Compare line-by-line with Python reference from Checkpoint 3
-
-**Checkpoint Confirmation** (you MUST identify SPECIFIC discrepancies):
-\`\`\`
-✅ CHECKPOINT 4 COMPLETE
-- Zig file: [exact path, e.g., src/frame.zig]
-- Zig function/section: [exact location with line numbers, e.g., SSTORE implementation lines 450-480]
-- Current Zig implementation (quote relevant lines):
-  ---
-  [paste actual Zig code]
-  ---
-- Discrepancies identified (compare Python vs Zig line-by-line):
-  1. Python does: [quote Python line from Checkpoint 3]
-     Zig does: [quote Zig line from above]
-     Problem: [explain the specific difference]
-  2. [additional discrepancies with same format]
-  3. [etc.]
-- If no discrepancies: [explain why tests still fail despite matching logic]
-\`\`\`
-
-**DO NOT PROCEED** until you have identified CONCRETE discrepancies with actual code quotes.
-
----
-
-### ✅ CHECKPOINT 5: Diagnose Root Cause and Propose Fix
-
-**Required Actions**:
-1. Based on the evidence from checkpoints 1-4, diagnose the root cause
-2. Propose a specific fix that aligns Zig with Python reference
-3. List all files that need modification with specific line ranges
-
-**Checkpoint Confirmation** (you MUST provide clear diagnosis):
-\`\`\`
-✅ CHECKPOINT 5 COMPLETE
-
-### Root Cause Diagnosis
-[Explain in 2-4 sentences what is wrong, referencing specific evidence from checkpoints 2-4. Be specific about what diverges and why.]
-
-### Proposed Fix
-[Explain what will change to match Python reference. Be specific:
-- What code will be added/removed/modified
-- What gas values/logic will change
-- Why this matches the Python reference]
-
-### Files to Modify
-- \`src/<file1>.zig\` (lines X-Y) - [specific change]
-- \`src/<file2>.zig\` (lines X-Y) - [specific change] (if applicable)
-
-### Expected Outcome
-[What should happen after the fix:
-- Expected gas value
-- Expected behavior
-- Which tests should pass]
-\`\`\`
-
-**DO NOT PROCEED** to implementation until you have provided this diagnosis.
-
----
-
-### ✅ CHECKPOINT 6: Implement Fix
-
-**Required Actions**:
-1. Make the minimal changes identified in Checkpoint 5
-2. Preserve existing behavior for other hardforks
-3. Use proper hardfork guards if needed (e.g., \`if (self.hardfork.isAtLeast(.CANCUN))\`)
-4. Do not make unrelated changes
-
-**Checkpoint Confirmation**:
-\`\`\`
-✅ CHECKPOINT 6 COMPLETE
-- Files modified: [list with line numbers]
-- Changes made: [brief summary matching Checkpoint 5 proposal]
-- Hardfork guards added: [yes/no, if yes quote the guard]
-\`\`\`
-
----
-
-### ✅ CHECKPOINT 7: Verify Fix
-
-**Required Actions**:
-1. Run the test command: \`${suite.command}\`
-2. Confirm tests pass or identify new failures
-3. If tests still fail, capture NEW failure output and return to Checkpoint 2
-
-**Checkpoint Confirmation**:
-\`\`\`
-✅ CHECKPOINT 7 COMPLETE
-- Command executed: ${suite.command}
-- Tests passing: [yes/no]
-- Number of tests passing: [exact count]
-- Number of tests still failing: [exact count]
-
-[IF TESTS STILL FAIL]:
-- New failure type: [gas error | wrong output | crash | other]
-- New divergence point: [paste new trace divergence]
-- Action: Returning to Checkpoint 2 for iteration
-\`\`\`
-
-If tests still fail after the fix, you MUST iterate by returning to Checkpoint 2 with the NEW failure output.
-
----
-
-## PRE-ANALYSIS REPORT (Final Summary)
-
-After completing all checkpoints (or after Checkpoint 7 if iterating), provide this summary report:
-
-\`\`\`markdown
-## PRE-ANALYSIS REPORT
-
-### Test Failure Summary
-- **Total tests failed**: [from Checkpoint 1]
-- **Test name(s)**: [from Checkpoint 1]
-- **Failure type**: [from Checkpoint 1]
-
-### Trace Divergence Analysis
-[IF APPLICABLE - from Checkpoint 2]
-- **Divergence PC**: [from Checkpoint 2]
-- **Diverging opcode**: [from Checkpoint 2]
-- **Expected gas**: [from Checkpoint 2]
-- **Actual gas**: [from Checkpoint 2]
-- **Gas difference**: [from Checkpoint 2]
-
-OR
-
-[IF CRASHING - from Checkpoint 2]
-- **Crash type**: [from Checkpoint 2]
-- **Crash location**: [from Checkpoint 2]
-- **Crash message**: [from Checkpoint 2]
-
-### Python Reference Behavior
-- **Reference file**: [from Checkpoint 3]
-- **Function name**: [from Checkpoint 3]
-- **Key behavior**: [summarize from Checkpoint 3 Python code]
-- **Gas calculation order**: [from Checkpoint 3]
-
-### Zig Implementation Analysis
-- **Current file**: [from Checkpoint 4]
-- **Discrepancies identified**: [from Checkpoint 4]
-
-### Root Cause and Fix
-- **Root cause**: [from Checkpoint 5]
-- **Proposed fix**: [from Checkpoint 5]
-- **Files modified**: [from Checkpoint 6]
-- **Verification result**: [from Checkpoint 7]
-
----
-**Analysis complete. All checkpoints confirmed.**
-\`\`\`
-
-**Validation Rules**:
-- ✅ ALL checkpoints MUST be explicitly confirmed before proceeding to the next
-- ✅ Each checkpoint MUST include actual data (test output, code quotes, trace output)
-- ✅ NO placeholders like "[TODO]", "[TBD]", "[Will investigate]", "[value]"
-- ✅ If you cannot complete a checkpoint, STOP and explain what information is missing
-- ✅ If tests fail after implementation, iterate by returning to Checkpoint 2
-- ❌ DO NOT skip checkpoints
-- ❌ DO NOT proceed to fixes without completing analysis checkpoints 1-5
-- ❌ DO NOT use summaries instead of actual code/output quotes
-- ❌ DO NOT guess values or use placeholders
-
-## Phase 1: Understand the Failure
-1. **Identify the failure type**:
-   - Gas calculation error? → Check gas_constants.zig and gas metering logic
-   - Wrong output/state? → Check opcode implementations in frame.zig
-   - Wrong behavior? → Check EVM orchestration in evm.zig
-   - Hardfork-specific? → Check hardfork.zig feature flags
-
-2. **Analyze test names**: Test names often reveal what they're testing (e.g., "transientStorageReset" tests TSTORE/TLOAD opcodes, "warmCoinbase" tests EIP-3651)
-
-3. **Read the error output carefully**: Look for:
-   - Expected vs actual gas values
-   - Stack differences
-   - Memory/storage differences
-   - Return data mismatches
-
-## Phase 2: Locate the Bug
-
-**CRITICAL**: Before making ANY changes, you MUST:
-
-1. **Generate and compare traces**: Use the test runner's built-in trace comparison to see EXACTLY where our implementation diverges from the reference
-   - The test runner automatically captures EIP-3155 traces
-   - It shows the exact PC, opcode, gas, and stack state where divergence occurs
-   - This is your PRIMARY debugging tool - use it FIRST, not as a last resort
-
-2. **Study the Python reference implementation**: This is the authoritative specification
-   - Location: \`execution-specs/src/ethereum/forks/<hardfork>/\`
-   - Opcode implementations: \`vm/instructions/\`
-   - Main interpreter: \`vm/interpreter.py\`
-   - Gas metering: \`vm/gas.py\`
-   - State management: \`state.py\`
-   - Read the ACTUAL Python code - don't guess what it should do
-   - The Python reference is battle-tested and correct; trust it over your intuition
-
-3. **Use targeted file reading**: Based on the failure type AND trace divergence point, read the most relevant files
-
-4. **Check hardfork activation**: Verify the feature is enabled for the correct hardfork using \`hardfork.isAtLeast()\`
-
-**Why this order matters**:
-- Traces show you the EXACT divergence point (saves hours of guessing)
-- Python reference shows you the CORRECT behavior (eliminates ambiguity)
-- Making changes without these two sources is effectively guessing
-
-## Phase 3: Fix the Issue
-1. **Make minimal, focused changes**: Fix only what's broken, don't refactor unnecessarily
-2. **Preserve existing behavior**: Ensure your fix doesn't break other hardforks
-3. **Add hardfork guards**: Use \`if (self.hardfork.isAtLeast(.FORK_NAME))\` for fork-specific behavior
-4. **Update gas constants**: If gas costs changed in a hardfork, update gas_constants.zig
-
-## Phase 4: Verify the Fix
-1. **Run the test command**: \`${suite.command}\`
-2. **Check for regressions**: If you fixed one test but broke others, refine your approach
-3. **Iterate if needed**: If tests still fail, analyze the new output and adjust
-4. **Use traces for debugging**: If gas differences persist, compare execution traces
-5. **Filter to single test**: Use \`TEST_FILTER="test_name" ${suite.command}\` to focus on one failing test
-
-## Important Guidelines
-
-**MANDATORY DEBUGGING PROCESS**:
-1. **ALWAYS generate traces FIRST** - Run the failing test and examine the trace divergence output
-2. **ALWAYS read the Python reference** - Find the corresponding opcode/function in execution-specs
-3. **ALWAYS compare step-by-step** - Match our Zig implementation against the Python reference line-by-line
-4. **NEVER guess** - If you don't see trace divergence, you don't know what's wrong
-5. **NEVER skip the reference** - The Python code IS the specification; trust it completely
-
-**Debugging workflow**:
-- Focus on ONE failing test at a time
-- Generate trace comparison to see exact divergence point
-- Read the Python reference implementation for that operation
-- Compare our Zig code opcode-by-opcode or state change-by-state change
-- Make minimal changes based on what the Python reference actually does
-- Re-run test to verify fix
-- If still failing, repeat with new trace divergence
 </methodology>
 
-<codebase_reference>
-## Key Files and Their Responsibilities
-
-| File | Primary Purpose | When to Modify |
-|------|----------------|----------------|
-| \`src/frame.zig\` | Opcode implementations, bytecode interpreter, stack/memory management | Fixing opcode logic, instruction behavior, gas metering per instruction |
-| \`src/evm.zig\` | EVM orchestrator, call handling, storage, state transitions | Fixing CALL/CREATE behavior, storage access, account state, gas refunds |
-| \`src/hardfork.zig\` | Hardfork detection and feature flags | Adding new hardfork support, fixing fork-specific activation |
-| \`src/primitives/gas_constants.zig\` | Gas costs per operation and hardfork | Fixing gas cost errors, updating costs for new hardforks |
-| \`src/host.zig\` | Host interface for external state access | Rarely modified (interface definition) |
-| \`src/trace.zig\` | EIP-3155 tracing implementation | Only for debugging/tracing issues |
-| \`src/opcode.zig\` | Opcode definitions and utilities | Adding new opcodes, updating opcode properties |
-| \`test/specs/\` | Test infrastructure and runners | Only when changing test framework itself |
-
-## Common Bug Patterns
-
-1. **Gas Metering Bugs**:
-   - Missing gas charges (e.g., forgetting memory expansion cost)
-   - Wrong gas constants for hardfork
-   - Incorrect warm/cold access tracking (EIP-2929)
-   - Gas refund calculation errors (capped at 1/5 post-London)
-
-2. **Hardfork Logic Bugs**:
-   - Feature activated on wrong hardfork
-   - Missing \`isAtLeast()\` checks
-   - Incorrect feature flag precedence
-
-3. **Opcode Implementation Bugs**:
-   - Stack underflow/overflow not checked
-   - Wrong arithmetic (e.g., modulo, signed operations)
-   - Memory expansion not calculated correctly
-   - Return data not handled properly
-
-4. **State Management Bugs**:
-   - Storage not persisted correctly
-   - Transient storage not cleared properly (EIP-1153)
-   - Balance transfers not atomic
-   - Nonce increments missing or wrong
-
-5. **Call/Create Bugs**:
-   - Gas stipend not applied (2300 for value transfers)
-   - Call depth not checked (max 1024)
-   - Return data not copied back correctly
-   - Revert not propagated properly
-</codebase_reference>
-
-<debugging_techniques>
-## Advanced Debugging Strategies
-
-### Strategy 1: Single Test Isolation ⭐ USE THE HELPER SCRIPT ⭐
-
-**Recommended approach** - Use the test isolation helper:
-\`\`\`bash
-./scripts/isolate-test.sh "exact_failing_test_name"
-\`\`\`
-
-This helper script provides:
-- Automatic test filtering
-- Verbose trace output
-- Failure type detection
-- Divergence analysis
-- Next-step guidance
-
-**Manual approach** (if helper unavailable):
-\`\`\`bash
-TEST_FILTER="exact_failing_test_name" ${suite.command}
-\`\`\`
-
-### Strategy 2: Trace Comparison ⭐ PRIMARY DEBUGGING TOOL ⭐
-
-**This should be your FIRST step for any failing test.**
-
-For gas differences or behavior divergence:
-1. The test runner **automatically generates both traces** (yours and Python reference)
-2. It **automatically compares them step-by-step**
-3. It **shows the exact divergence point** with:
-   - Program counter (PC)
-   - Opcode being executed
-   - Gas remaining
-   - Stack contents
-   - Memory state
-   - Storage changes
-
-**Why this is critical**:
-- Eliminates guesswork - you see EXACTLY where behavior differs
-- Shows you which opcode or gas calculation is wrong
-- Reveals the exact state (stack, memory, storage) at divergence
-- Saves hours compared to reading code and guessing
-
-**How to use it**:
-\`\`\`bash
-# Run the failing test - trace comparison happens automatically
-TEST_FILTER="exact_test_name" ${suite.command}
-
-# Look for output like:
-# "Trace divergence at step N:"
-# "PC: 42, Opcode: SSTORE"
-# "Expected gas: 20000, Got: 22100"
-# "Stack divergence: [...]"
-\`\`\`
-
-Once you see the divergence, read the Python reference for that specific opcode/operation.
-
-### Strategy 3: Reference Implementation Comparison ⭐ REQUIRED FOR EVERY FIX ⭐
-
-**NEVER skip this step. The Python code IS the specification.**
-
-The official execution-specs Python implementation:
-- Located in \`execution-specs/src/ethereum/forks/<hardfork>/\` submodule
-- Contains the **authoritative, battle-tested** reference implementations
-- Used by geth, nethermind, erigon, and all major clients
-- If our code differs from Python, **we are wrong**
-
-**How to use it**:
-1. Identify the divergence point from trace comparison
-2. Navigate to \`execution-specs/src/ethereum/forks/<hardfork>/\`
-3. Find the relevant file:
-   - Opcode logic: \`vm/instructions/*.py\`
-   - Gas calculation: \`vm/gas.py\`
-   - State changes: \`state.py\`
-   - Interpreter loop: \`vm/interpreter.py\`
-4. Read the Python function line-by-line
-5. Compare with our Zig implementation
-6. Adjust our code to match Python behavior EXACTLY
-
-**Example**:
-\`\`\`bash
-# Trace shows SSTORE gas calculation is wrong at PC 42
-# Navigate to:
-cd execution-specs/src/ethereum/forks/cancun/vm/instructions/
-# Read storage.py and find sstore() function
-# Compare gas calculation with our src/frame.zig implementation
-# Match the Python logic exactly
-\`\`\`
-
-### Strategy 4: Incremental Fixing
-If many tests fail:
-1. Group failures by similarity (same error type, same opcode)
-2. Fix the most fundamental issue first (often a gas constant or missing check)
-3. Re-run to see if it fixes multiple tests
-4. Iterate on remaining failures
-
-### Strategy 5: Gas Calculation Decomposition
-For gas errors, trace the gas calculation step-by-step:
-1. Base instruction cost
-2. Memory expansion cost
-3. Dynamic cost (e.g., SSTORE, CALL)
-4. Warm/cold access cost (post-Berlin)
-5. Gas refunds (check cap)
-
-### Strategy 6: Crash Debugging (Systematic Approach)
-
-⚠️ **CRITICAL**: Crash debugging requires a systematic, methodical approach. DO NOT guess, skip steps, or make assumptions. Crashes are often Zig-specific (memory safety, undefined behavior) and may not be obvious from Python reference code.
-
-**Key Principles:**
-- Crashes often swallow all output, including logs and debug prints
-- DO NOT add logging to crashing code - it won't appear before the crash
-- ALWAYS run crashing tests in complete isolation by themselves
-- NEVER attempt to fix the bug until you know the EXACT line where it crashes
-- Be methodical and patient - systematic debugging is faster than guessing
-
-#### Step 1: Isolate the Crashing Test
-**BEFORE ANYTHING ELSE**, run ONLY the crashing test:
-\`\`\`bash
-TEST_FILTER="exact_crashing_test_name" ${suite.command}
-\`\`\`
-
-This ensures:
-- Faster iteration cycles
-- No interference from other tests
-- Clear, focused crash output
-
-#### Step 2: Binary Search for Crash Location
-Your ONLY goal is to find the exact line of code where the crash occurs.
-
-**Method**: Use \`@panic("CHECKPOINT")\` as a binary search marker:
-
-1. Add \`@panic("CHECKPOINT")\` halfway through the suspected code region
-2. Run the test:
-   - If you see "CHECKPOINT" panic → crash happens AFTER this line
-   - If you see the original crash → crash happens BEFORE this line
-3. Move the panic checkpoint and repeat
-4. Continue binary search until you narrow it down to the exact line
-
-**Example**:
-\`\`\`zig
-// Suspected region
-line1();
-line2();
-@panic("CHECKPOINT");  // Add this
-line3();
-line4();
-\`\`\`
-
-Keep moving \`@panic("CHECKPOINT")\` until you identify the exact crashing line.
-
-#### Step 3: Understand the Crash Type
-Once you know WHERE it crashes, determine WHY:
-
-**Common Zig crash types:**
-- **Segmentation fault**: Invalid memory access (null pointer, out of bounds)
-- **Integer overflow**: Arithmetic operation exceeded bounds (check \`@addWithOverflow\`, etc.)
-- **Unreachable**: Code path marked unreachable was hit
-- **Index out of bounds**: Array/slice access beyond length
-- **Division by zero**: Self-explanatory
-- **Stack overflow**: Recursion or excessive stack allocation
-
-Read the crash message carefully to identify the type.
-
-#### Step 4: Capture the Crashing Value
-Now that you know the exact line, determine WHAT VALUE causes the crash:
-
-1. **Add assertions BEFORE the crash line** to inspect values:
-   \`\`\`zig
-   std.debug.print("DEBUG: value = {}, len = {}\\n", .{value, slice.len});
-   std.debug.assert(value < slice.len); // Will trigger with clear message
-   const item = slice[value]; // This was crashing
-   \`\`\`
-
-2. **Temporarily convert crash to error return** (optional):
-   - If you need to see more context, temporarily make it return an error
-   - Pick a rarely-used error (e.g., \`error.TemporaryDebugError\`)
-   - Add a comment: \`// TODO: TEMPORARY - Remove after debugging crash\`
-   - This lets execution continue so you can see more state
-
-#### Step 5: Add Preventive Assertions
-Before fixing, add assertions that SHOULD have caught this:
-
-\`\`\`zig
-std.debug.assert(index < array.len); // Prevent out of bounds
-std.debug.assert(denominator != 0);   // Prevent division by zero
-std.debug.assert(ptr != null);        // Prevent null dereference
-\`\`\`
-
-These make future crashes easier to debug and document invariants.
-
-#### Step 6: Fix the Root Cause
-ONLY NOW should you fix the actual bug. Consider:
-
-- **Bounds checking**: Add proper checks before array access
-- **Null checking**: Verify pointers/optionals before dereferencing
-- **Overflow handling**: Use checked arithmetic or validate ranges
-- **Logic error**: Fix the algorithm if the crash reveals incorrect logic
-
-**Zig-specific considerations:**
-- Use \`@intCast\` carefully - can cause overflow crashes
-- Check slice lengths before indexing
-- Validate \`std.mem.readInt\` doesn't read past buffer end
-- Ensure allocations succeeded before dereferencing
-
-#### Step 7: Verify the Fix
-After fixing:
-1. Run the isolated test: \`TEST_FILTER="exact_test_name" ${suite.command}\`
-2. Verify it passes
-3. Run the full test suite to check for regressions
-4. Remove any temporary debug code (search for "TODO: TEMPORARY")
-
-#### Common Pitfalls to Avoid
-❌ **DON'T** add \`std.debug.print\` at the crash site - output will be swallowed
-❌ **DON'T** skip the binary search - guessing wastes time
-❌ **DON'T** try to fix before knowing the exact crash line
-❌ **DON'T** assume the Python reference shows the issue - this may be Zig-specific
-❌ **DON'T** run multiple tests while debugging a crash - isolate it
-
-✅ **DO** be systematic and methodical
-✅ **DO** use binary search with \`@panic\`
-✅ **DO** run tests in isolation
-✅ **DO** add assertions to document invariants
-✅ **DO** understand WHY before attempting to fix
-
-</debugging_techniques>
-
-<critical_reminders>
-## Critical Rules - Do Not Violate
-
-### Mandatory Process Rules (NEVER skip these):
-1. ✅ **DO** generate and analyze trace comparison BEFORE making any changes
-2. ✅ **DO** read the Python reference implementation for the diverging operation
-3. ✅ **DO** compare your Zig code line-by-line with Python reference
-4. ✅ **DO** trust the Python reference completely - if it differs from your intuition, the Python is correct
-
-### Code Quality Rules:
-5. ❌ **DO NOT** guess what the behavior should be - read traces and Python reference
-6. ❌ **DO NOT** break existing passing tests - always verify your changes don't cause regressions
-7. ❌ **DO NOT** hardcode test-specific logic - fix the underlying implementation
-8. ❌ **DO NOT** skip hardfork checks - use proper \`isAtLeast()\` guards
-9. ❌ **DO NOT** modify test files - only fix the implementation in \`src/\`
-10. ✅ **DO** run the test command after every change to verify
-11. ✅ **DO** make minimal, focused changes that directly address the failure
-12. ✅ **DO** preserve backward compatibility with earlier hardforks
-13. ✅ **DO** use the TodoWrite tool to track your progress through multiple test failures
-14. ✅ **DO** read files before editing them to understand context
-15. ✅ **DO** iterate if the first fix doesn't work - debugging is iterative
-
-### The Golden Rule:
-**Traces tell you WHERE the problem is. Python reference tells you WHAT the correct behavior is. Use both, always.**
-</critical_reminders>
-
 <output_requirements>
-## Expected Final Report
+## Final Report Structure
 
-At the end of your debugging session, provide a clear summary:
-
-### Summary Structure:
 \`\`\`markdown
-## Root Cause Analysis
-[Explain what was failing and why - be specific about the bug]
+## Root Cause
+[Specific bug referencing CP2-4 evidence]
 
-## Changes Made
-[List each file modified and what was changed - be concise but complete]
+## Changes
+- \`src/file.zig:lines\` - [change]
 
-## Test Results
-[Confirm tests now pass, or explain remaining failures and next steps]
+## Results
+Tests: [N/total passing]
+Regressions: [none/list]
 
-## Technical Details
-[Any important implementation details, EIP references, or gotchas]
+## Technical Notes
+[EIP refs, implementation details, gotchas]
 \`\`\`
-
-### Quality Criteria:
-- ✅ Root cause clearly identified and explained
-- ✅ All changes necessary and sufficient (no more, no less)
-- ✅ Test suite passes (or clear explanation of why not)
-- ✅ No regressions introduced
-- ✅ Changes are maintainable and follow codebase style
 </output_requirements>
 
 <execution_directive>
-**Begin your analysis and fix now.**
-
-Remember: You are an expert debugger. Be systematic, be thorough, and verify every change. The tests are correct - our implementation needs to match the specification.
+Begin analysis now. Complete ALL checkpoints with ACTUAL data before any code changes. Be systematic, verify every change.
 </execution_directive>`;
 
     try {
