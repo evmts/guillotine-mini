@@ -17,8 +17,14 @@ const Address = primitives.Address.Address;
 
 // Re-export host types for compatibility
 pub const HostInterface = host.HostInterface;
-pub const CallResult = host.CallResult;
 pub const Host = host.Host;
+
+// Import new API types
+const call_params = @import("call_params.zig");
+const call_result = @import("call_result.zig");
+const default_config = struct {};
+pub const CallParams = call_params.CallParams(default_config);
+pub const CallResult = call_result.CallResult(default_config);
 
 /// Access list storage key slot type
 pub const AccessListStorageKey = struct {
@@ -116,6 +122,9 @@ pub const Evm = struct {
         .blob_base_fee = 0,
     },
     blob_versioned_hashes: []const [32]u8 = &[_][32]u8{},
+    // Stored state for call() - set via setter methods
+    pending_bytecode: []const u8 = &[_]u8{},
+    pending_access_list: ?AccessListParam = null,
 
     pub fn init(allocator: std.mem.Allocator, h: ?HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext) !Self {
         return Self{
@@ -264,6 +273,98 @@ pub const Evm = struct {
         }
     }
 
+    /// Get nonce for an address
+    fn getNonce(self: *Self, address: Address) u64 {
+        if (self.host) |h| {
+            return h.getNonce(address);
+        }
+        return self.nonces.get(address) orelse 0;
+    }
+
+    /// Compute CREATE address: keccak256(rlp([sender, nonce]))[12:]
+    fn computeCreateAddress(self: *Self, sender: Address, nonce: u64) !Address {
+        _ = self;
+        // RLP encoding of [sender (20 bytes), nonce]
+        // For simplicity, use a fixed buffer (max size for nonce encoding is small)
+        var buffer: [64]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&buffer);
+        const writer = fbs.writer();
+
+        // Calculate nonce encoding length
+        const nonce_len: usize = blk: {
+            if (nonce == 0) break :blk 1;
+            if (nonce < 128) break :blk 1;
+            var n = nonce;
+            var len: usize = 0;
+            while (n > 0) : (n >>= 8) {
+                len += 1;
+            }
+            break :blk len + 1; // +1 for length prefix
+        };
+
+        // RLP list prefix
+        const list_len = 21 + nonce_len;
+        try writer.writeByte(0xc0 + @as(u8, @intCast(list_len)));
+
+        // RLP encode sender address (20 bytes, so 0x80 + 20 = 0x94)
+        try writer.writeByte(0x94);
+        try writer.writeAll(&sender.bytes);
+
+        // RLP encode nonce
+        if (nonce == 0) {
+            try writer.writeByte(0x80);
+        } else if (nonce < 128) {
+            try writer.writeByte(@intCast(nonce));
+        } else {
+            var nonce_bytes: [8]u8 = undefined;
+            std.mem.writeInt(u64, &nonce_bytes, nonce, .big);
+            var start: usize = 0;
+            while (start < 8 and nonce_bytes[start] == 0) : (start += 1) {}
+            const nonce_byte_len = 8 - start;
+            try writer.writeByte(0x80 + @as(u8, @intCast(nonce_byte_len)));
+            try writer.writeAll(nonce_bytes[start..]);
+        }
+
+        const rlp_data = fbs.getWritten();
+
+        // Compute keccak256 hash
+        var hash: [32]u8 = undefined;
+        std.crypto.hash.sha3.Keccak256.hash(rlp_data, &hash, .{});
+
+        // Take last 20 bytes as address
+        var addr: Address = undefined;
+        @memcpy(&addr.bytes, hash[12..32]);
+        return addr;
+    }
+
+    /// Compute CREATE2 address: keccak256(0xff ++ sender ++ salt ++ keccak256(init_code))[12:]
+    fn computeCreate2Address(self: *Self, sender: Address, salt: u256, init_code: []const u8) !Address {
+        _ = self;
+        // Compute keccak256(init_code)
+        var init_code_hash: [32]u8 = undefined;
+        std.crypto.hash.sha3.Keccak256.hash(init_code, &init_code_hash, .{});
+
+        // Compute keccak256(0xff ++ sender ++ salt ++ init_code_hash)
+        var buffer: [85]u8 = undefined; // 1 + 20 + 32 + 32
+        buffer[0] = 0xff;
+        @memcpy(buffer[1..21], &sender.bytes);
+
+        // Convert salt to bytes (big-endian)
+        var salt_bytes: [32]u8 = undefined;
+        std.mem.writeInt(u256, &salt_bytes, salt, .big);
+        @memcpy(buffer[21..53], &salt_bytes);
+
+        @memcpy(buffer[53..85], &init_code_hash);
+
+        var hash: [32]u8 = undefined;
+        std.crypto.hash.sha3.Keccak256.hash(&buffer, &hash, .{});
+
+        // Take last 20 bytes as address
+        var addr: Address = undefined;
+        @memcpy(&addr.bytes, hash[12..32]);
+        return addr;
+    }
+
     pub fn preWarmTransaction(self: *Self, target: Address) errors.CallError!void {
         var warm: [3]Address = undefined;
         var count: usize = 0;
@@ -308,28 +409,95 @@ pub const Evm = struct {
         try self.preWarmAddresses(precompile_addrs[0..precompile_count]);
     }
 
+    /// Set bytecode for the next call() invocation
+    pub fn setBytecode(self: *Self, bytecode: []const u8) void {
+        self.pending_bytecode = bytecode;
+    }
+
+    /// Set access list for the next call() invocation
+    pub fn setAccessList(self: *Self, access_list: ?AccessListParam) void {
+        self.pending_access_list = access_list;
+    }
+
+    /// Set blob versioned hashes for the next call() invocation
+    pub fn setBlobVersionedHashes(self: *Self, hashes: []const [32]u8) void {
+        self.blob_versioned_hashes = hashes;
+    }
+
     /// Execute bytecode (main entry point like evm.execute)
     pub fn call(
         self: *Self,
-        bytecode: []const u8,
-        gas: i64,
-        caller: Address,
-        address: Address,
-        value: u256,
-        calldata: []const u8,
-        access_list: ?AccessListParam,
-        blob_versioned_hashes: ?[]const [32]u8,
-    ) errors.CallError!CallResult {
+        params: CallParams,
+    ) CallResult {
+        // Helper to return failure - if allocation fails, return static failure
+        const makeFailure = struct {
+            fn call(allocator: std.mem.Allocator, gas_left: u64) CallResult {
+                return CallResult.failure(allocator, gas_left) catch CallResult{
+                    .success = false,
+                    .gas_left = gas_left,
+                    .output = &.{},
+                };
+            }
+        }.call;
+
+        // Validate parameters
+        params.validate() catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
+
+        // Extract common parameters
+        const caller = params.getCaller();
+        const gas = @as(i64, @intCast(params.getGas()));
+        const is_create = params.isCreate();
+
+        // Determine target address and value
+        const address: Address = if (is_create) blk: {
+            // For CREATE operations, compute the new contract address
+            if (params == .create2) {
+                // CREATE2: address = keccak256(0xff ++ caller ++ salt ++ keccak256(init_code))[12:]
+                const init_code = params.getInput();
+                const salt = params.create2.salt;
+                break :blk self.computeCreate2Address(caller, salt, init_code) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
+            } else {
+                // CREATE: address = keccak256(rlp([caller, nonce]))[12:]
+                const nonce = self.getNonce(caller);
+                break :blk self.computeCreateAddress(caller, nonce) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
+            }
+        } else params.get_to().?;
+
+        const value = switch (params) {
+            .call => |p| p.value,
+            .callcode => |p| p.value,
+            .create => |p| p.value,
+            .create2 => |p| p.value,
+            .delegatecall, .staticcall => 0,
+        };
+
+        const calldata = params.getInput();
+        const bytecode = self.pending_bytecode;
+        const blob_versioned_hashes = if (self.blob_versioned_hashes.len > 0) self.blob_versioned_hashes else null;
+        const access_list = self.pending_access_list;
+
         // Initialize transaction state
-        try self.initTransactionState(blob_versioned_hashes);
+        self.initTransactionState(blob_versioned_hashes) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
 
-        try self.preWarmTransaction(address);
+        self.preWarmTransaction(address) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
 
-        // Pre-warm access list (EIP-2930)
+        // Pre-warm access list (EIP-2929)
         if (access_list) |list| {
             // Pre-warm all addresses in access list
             for (list.addresses) |addr| {
-                _ = try self.warm_addresses.getOrPut(addr);
+                _ = self.warm_addresses.getOrPut(addr) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
             }
 
             // Pre-warm all storage keys in access list
@@ -338,7 +506,9 @@ pub const Evm = struct {
                     .address = entry.address,
                     .slot = entry.slot,
                 };
-                _ = try self.warm_storage_slots.getOrPut(key);
+                _ = self.warm_storage_slots.getOrPut(key) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
             }
         }
 
@@ -346,11 +516,7 @@ pub const Evm = struct {
         if (value > 0 and self.host != null) {
             const sender_balance = if (self.host) |h| h.getBalance(caller) else 0;
             if (sender_balance < value) {
-                return CallResult{
-                    .success = false,
-                    .gas_left = 0,
-                    .output = &[_]u8{},
-                };
+                return makeFailure(self.arena.allocator(), 0);
             }
             if (self.host) |h| {
                 h.setBalance(caller, sender_balance - value);
@@ -364,7 +530,7 @@ pub const Evm = struct {
         // net of intrinsic costs, similar to inner_call().
 
         // Create and push frame onto stack
-        try self.frames.append(self.arena.allocator(), try Frame.init(
+        self.frames.append(self.arena.allocator(), Frame.init(
             self.arena.allocator(),
             bytecode,
             gas,
@@ -375,7 +541,11 @@ pub const Evm = struct {
             @as(*anyopaque, @ptrCast(self)),
             self.hardfork,
             false, // Top-level transaction is never static
-        ));
+        ) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        }) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
         defer _ = self.frames.pop();
 
         // Execute the frame (don't cache pointer - it may become invalid during nested calls)
@@ -390,16 +560,14 @@ pub const Evm = struct {
                 }
             }
             // Return failure (arena will clean up)
-            return CallResult{
-                .success = false,
-                .gas_left = 0,
-                .output = &[_]u8{},
-            };
+            return makeFailure(self.arena.allocator(), 0);
         };
 
         // Get frame results (refetch pointer after execution)
         const frame = &self.frames.items[self.frames.items.len - 1];
-        const output = try self.arena.allocator().alloc(u8, frame.output.len);
+        const output = self.arena.allocator().alloc(u8, frame.output.len) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
         @memcpy(output, frame.output);
 
         const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
@@ -418,11 +586,15 @@ pub const Evm = struct {
         }
 
         // Return result (execution gas left; intrinsic gas handled by caller)
-        const result = CallResult{
-            .success = !frame.reverted,
-            .gas_left = gas_left,
-            .output = output,
-        };
+        var result = if (frame.reverted)
+            CallResult.revert_with_data(self.arena.allocator(), gas_left, output) catch unreachable
+        else
+            CallResult.success_with_output(self.arena.allocator(), gas_left, output) catch unreachable;
+
+        // Set created address for CREATE operations
+        if (is_create and !frame.reverted) {
+            result.created_address = address;
+        }
 
         // Reset transaction-scoped caches
         self.warm_addresses.clearRetainingCapacity();
@@ -508,22 +680,54 @@ pub const Evm = struct {
     }
 
     /// Handle inner call from frame (like evm.inner_call)
+    /// Execute a nested EVM call - used for calls from within the EVM (e.g., CALL, DELEGATECALL opcodes).
+    /// This handles nested calls and manages depth tracking.
+    /// Follows the same API pattern as guillotine performance EVM.
     pub fn inner_call(
         self: *Self,
-        address: Address,
-        value: u256,
-        input: []const u8,
-        gas: u64,
-        call_type: HostInterface.CallType,
-    ) errors.CallError!CallResult {
+        params: CallParams,
+    ) CallResult {
+        // Helper to return failure - if allocation fails, return static failure
+        const makeFailure = struct {
+            fn call(allocator: std.mem.Allocator, gas_left: u64) CallResult {
+                return CallResult.failure(allocator, gas_left) catch CallResult{
+                    .success = false,
+                    .gas_left = gas_left,
+                    .output = &.{},
+                };
+            }
+        }.call;
+        // Extract parameters from CallParams union
+        const address: Address = switch (params) {
+            .call => |p| p.to,
+            .callcode => |p| p.to,
+            .delegatecall => |p| p.to,
+            .staticcall => |p| p.to,
+            .create => unreachable, // CREATE should use inner_create
+            .create2 => unreachable, // CREATE2 should use inner_create
+        };
+
+        const value: u256 = if (params.hasValue()) switch (params) {
+            .call => |p| p.value,
+            .callcode => |p| p.value,
+            else => 0,
+        } else 0;
+
+        const input: []const u8 = params.getInput();
+        const gas: u64 = params.getGas();
+
+        // Determine call type
+        const call_type: enum { Call, CallCode, DelegateCall, StaticCall } = switch (params) {
+            .call => .Call,
+            .callcode => .CallCode,
+            .delegatecall => .DelegateCall,
+            .staticcall => .StaticCall,
+            else => unreachable,
+        };
         // Check call depth (STACK_DEPTH_LIMIT = 1024)
         // Per Python reference (system.py:297-300), depth exceeded refunds gas
         if (self.frames.items.len >= 1024) {
-            return CallResult{
-                .success = false,
-                .gas_left = gas,
-                .output = &[_]u8{},
-            };
+            return makeFailure(self.arena.allocator(), gas);
         }
 
         // Get caller and execution context address based on call type
@@ -545,7 +749,10 @@ pub const Evm = struct {
         var transient_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
         var it = self.transient_storage.iterator();
         while (it.next()) |entry| {
-            try transient_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
+            transient_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                // Memory allocation failed during snapshot - fail the call
+                return makeFailure(self.arena.allocator(), gas);
+            };
         }
 
         // Snapshot selfdestructed_accounts before the call (EIP-6780 revert handling)
@@ -553,7 +760,10 @@ pub const Evm = struct {
         var selfdestruct_snapshot = std.AutoHashMap(Address, void).init(self.arena.allocator());
         var selfdestruct_it = self.selfdestructed_accounts.iterator();
         while (selfdestruct_it.next()) |entry| {
-            try selfdestruct_snapshot.put(entry.key_ptr.*, {});
+            selfdestruct_snapshot.put(entry.key_ptr.*, {}) catch {
+                // Memory allocation failed during snapshot - fail the call
+                return makeFailure(self.arena.allocator(), gas);
+            };
         }
 
         // Snapshot balances before the call (for SELFDESTRUCT revert handling)
@@ -569,23 +779,32 @@ pub const Evm = struct {
 
         // Pre-populate with caller and callee since we know they'll be affected
         if (self.host) |h| {
-            try balance_snapshot.put(frame_caller, h.getBalance(frame_caller));
-            try balance_snapshot.put(address, h.getBalance(address));
+            balance_snapshot.put(frame_caller, h.getBalance(frame_caller)) catch {
+                // Memory allocation failed during snapshot - fail the call
+                return makeFailure(self.arena.allocator(), gas);
+            };
+            balance_snapshot.put(address, h.getBalance(address)) catch {
+                // Memory allocation failed during snapshot - fail the call
+                return makeFailure(self.arena.allocator(), gas);
+            };
         } else {
             var balance_it = self.balances.iterator();
             while (balance_it.next()) |entry| {
-                try balance_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
+                balance_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                    // Memory allocation failed during snapshot - fail the call
+                    return makeFailure(self.arena.allocator(), gas);
+                };
             }
         }
 
         const execution_caller: Address = switch (call_type) {
-            .Call, .StaticCall, .Create, .Create2 => frame_caller,
+            .Call, .StaticCall => frame_caller,
             .DelegateCall => frame_caller_caller,
             .CallCode => frame_caller,
         };
 
         const execution_address: Address = switch (call_type) {
-            .Call, .StaticCall, .Create, .Create2 => address,
+            .Call, .StaticCall => address,
             .DelegateCall, .CallCode => frame_caller,
         };
 
@@ -595,11 +814,7 @@ pub const Evm = struct {
             if (caller_balance < value) {
                 // Insufficient balance - call fails
                 // std.debug.print("CALL FAILED: insufficient balance (caller={any} needs {} has {})\n", .{frame_caller.bytes, value, caller_balance});
-                return CallResult{
-                    .success = false,
-                    .gas_left = gas,
-                    .output = &[_]u8{},
-                };
+                return makeFailure(self.arena.allocator(), gas);
             }
 
             // Transfer balance
@@ -609,9 +824,15 @@ pub const Evm = struct {
                 const callee_balance = h.getBalance(address);
                 h.setBalance(address, callee_balance + value);
             } else {
-                try self.balances.put(frame_caller, caller_balance - value);
+                self.balances.put(frame_caller, caller_balance - value) catch {
+                    // Memory allocation failed during balance transfer - fail the call
+                    return makeFailure(self.arena.allocator(), gas);
+                };
                 const callee_balance = self.balances.get(address) orelse 0;
-                try self.balances.put(address, callee_balance + value);
+                self.balances.put(address, callee_balance + value) catch {
+                    // Memory allocation failed during balance transfer - fail the call
+                    return makeFailure(self.arena.allocator(), gas);
+                };
             }
         }
 
@@ -631,11 +852,7 @@ pub const Evm = struct {
                 ) catch |err| {
                     // On error, return failure
                     std.debug.print("Precompile execution error: {}\n", .{err});
-                    return CallResult{
-                        .success = false,
-                        .gas_left = 0,
-                        .output = &[_]u8{},
-                    };
+                    return makeFailure(self.arena.allocator(), 0);
                 };
 
                 return CallResult{
@@ -646,10 +863,10 @@ pub const Evm = struct {
             }
 
             // For non-precompile empty accounts, return success with no output
-            return CallResult{
+            return CallResult.success_empty(self.arena.allocator(), gas) catch CallResult{
                 .success = true,
                 .gas_left = gas,
-                .output = &[_]u8{},
+                .output = &.{},
             };
         }
 
@@ -663,7 +880,7 @@ pub const Evm = struct {
 
         // Safely cast gas to i64 - if it exceeds i64::MAX, cap it (shouldn't happen in practice)
         const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
-        try self.frames.append(self.arena.allocator(), try Frame.init(
+        self.frames.append(self.arena.allocator(), Frame.init(
             self.arena.allocator(),
             code,
             frame_gas,
@@ -674,7 +891,11 @@ pub const Evm = struct {
             @as(*anyopaque, @ptrCast(self)),
             self.hardfork,
             is_static,
-        ));
+        ) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        }) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
         errdefer _ = self.frames.pop();
 
         // Execute frame (don't cache pointer - it may become invalid during nested calls)
@@ -695,10 +916,15 @@ pub const Evm = struct {
                 }
             } else {
                 // Restore all balances for non-host mode
+                // NOTE: Using arena allocator, so memory failures here are critical system failures
+                // We cannot recover gracefully, so we return failure result
                 self.balances.clearRetainingCapacity();
                 var balance_restore_it = balance_snapshot.iterator();
                 while (balance_restore_it.next()) |entry| {
-                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
+                    self.balances.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                        // Critical: cannot restore balances - return failure with remaining gas
+                        return makeFailure(self.arena.allocator(), 0);
+                    };
                 }
             }
 
@@ -706,14 +932,13 @@ pub const Evm = struct {
             self.transient_storage.clearRetainingCapacity();
             var restore_it = transient_snapshot.iterator();
             while (restore_it.next()) |entry| {
-                try self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                    // Critical: cannot restore transient storage - return failure with remaining gas
+                    return makeFailure(self.arena.allocator(), 0);
+                };
             }
 
-            return CallResult{
-                .success = false,
-                .gas_left = 0,
-                .output = &[_]u8{},
-            };
+            return makeFailure(self.arena.allocator(), 0);
         };
 
         // Get frame results (refetch pointer after execution)
@@ -721,7 +946,10 @@ pub const Evm = struct {
 
         // Store return data
         const output = if (frame.output.len > 0) blk: {
-            const output_copy = try self.arena.allocator().alloc(u8, frame.output.len);
+            const output_copy = self.arena.allocator().alloc(u8, frame.output.len) catch {
+                // Allocation failed - return empty output
+                break :blk &[_]u8{};
+            };
             @memcpy(output_copy, frame.output);
             break :blk output_copy;
         } else &[_]u8{};
@@ -746,7 +974,7 @@ pub const Evm = struct {
             self.transient_storage.clearRetainingCapacity();
             var restore_it = transient_snapshot.iterator();
             while (restore_it.next()) |entry| {
-                try self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {};
             }
         }
 
@@ -756,7 +984,7 @@ pub const Evm = struct {
             self.selfdestructed_accounts.clearRetainingCapacity();
             var restore_selfdestruct_it = selfdestruct_snapshot.iterator();
             while (restore_selfdestruct_it.next()) |entry| {
-                try self.selfdestructed_accounts.put(entry.key_ptr.*, {});
+                self.selfdestructed_accounts.put(entry.key_ptr.*, {}) catch {};
             }
         }
 
@@ -773,7 +1001,7 @@ pub const Evm = struct {
                 self.balances.clearRetainingCapacity();
                 var balance_restore_it = balance_snapshot.iterator();
                 while (balance_restore_it.next()) |entry| {
-                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
+                    self.balances.put(entry.key_ptr.*, entry.value_ptr.*) catch {};
                 }
             }
         }
