@@ -94,6 +94,9 @@ pub const Evm = struct {
     warm_addresses: std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false),
     warm_storage_slots: std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false),
     gas_refund: u64,
+    // Current call's balance snapshot for copy-on-write (for SELFDESTRUCT revert handling)
+    // This is set at the start of inner_call and cleared at the end
+    current_balance_snapshot: ?*std.AutoHashMap(Address, u256),
     hardfork: Hardfork = Hardfork.DEFAULT,
     origin: Address,
     gas_price: u256,
@@ -128,6 +131,7 @@ pub const Evm = struct {
             .warm_addresses = undefined,
             .warm_storage_slots = undefined,
             .gas_refund = 0,
+            .current_balance_snapshot = null,
             .hardfork = hardfork orelse Hardfork.DEFAULT,
             .block_context = block_context orelse .{
                 .chain_id = 1,
@@ -152,6 +156,31 @@ pub const Evm = struct {
     /// Clean up resources
     pub fn deinit(self: *Self) void {
         self.arena.deinit();
+    }
+
+    /// Initialize internal state (hash maps, lists, etc.) for transaction execution
+    /// Must be called before any transaction execution (call or inner_create)
+    pub fn initTransactionState(self: *Self, blob_versioned_hashes: ?[]const [32]u8) !void {
+        const arena_allocator = self.arena.allocator();
+        self.storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
+        self.balances = std.AutoHashMap(Address, u256).init(arena_allocator);
+        self.nonces = std.AutoHashMap(Address, u64).init(arena_allocator);
+        self.code = std.AutoHashMap(Address, []const u8).init(arena_allocator);
+        self.warm_addresses = std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false).init(arena_allocator);
+        self.warm_storage_slots = std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false).init(arena_allocator);
+        self.frames = std.ArrayList(Frame){};
+        try self.frames.ensureTotalCapacity(arena_allocator, 16);
+        self.original_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
+        self.transient_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
+        self.created_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
+        self.selfdestructed_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
+
+        // Set blob versioned hashes for EIP-4844
+        if (blob_versioned_hashes) |hashes| {
+            self.blob_versioned_hashes = hashes;
+        } else {
+            self.blob_versioned_hashes = &[_][32]u8{};
+        }
     }
 
     /// Set tracer for EIP-3155 trace capture
@@ -194,6 +223,30 @@ pub const Evm = struct {
             GasConstants.ColdSloadCost;
     }
 
+    /// Set balance with copy-on-write snapshot for revert handling
+    /// This should be called instead of direct host.setBalance() when inside a frame
+    pub fn setBalanceWithSnapshot(self: *Self, addr: Address, new_balance: u256) !void {
+        // If we have a current snapshot, ensure this address is in it before modifying
+        if (self.current_balance_snapshot) |snapshot| {
+            if (!snapshot.contains(addr)) {
+                // Snapshot the current balance before modifying
+                const current_balance = if (self.host) |h|
+                    h.getBalance(addr)
+                else
+                    self.balances.get(addr) orelse 0;
+                try snapshot.put(addr, current_balance);
+                // std.debug.print("DEBUG: Snapshotting addr={any} old_balance={} new_balance={}\n", .{addr.bytes, current_balance, new_balance});
+            }
+        }
+
+        // Now set the new balance
+        if (self.host) |h| {
+            h.setBalance(addr, new_balance);
+        } else {
+            try self.balances.put(addr, new_balance);
+        }
+    }
+
     /// Pre-warm addresses for transaction initialization
     fn preWarmAddresses(self: *Self, addresses: []const Address) !void {
         for (addresses) |addr| {
@@ -203,7 +256,7 @@ pub const Evm = struct {
         }
     }
 
-    fn preWarmTransaction(self: *Self, target: Address) errors.CallError!void {
+    pub fn preWarmTransaction(self: *Self, target: Address) errors.CallError!void {
         var warm: [3]Address = undefined;
         var count: usize = 0;
 
@@ -253,26 +306,8 @@ pub const Evm = struct {
         access_list: ?AccessListParam,
         blob_versioned_hashes: ?[]const [32]u8,
     ) errors.CallError!CallResult {
-        const arena_allocator = self.arena.allocator();
-        self.storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
-        self.balances = std.AutoHashMap(Address, u256).init(arena_allocator);
-        self.nonces = std.AutoHashMap(Address, u64).init(arena_allocator);
-        self.code = std.AutoHashMap(Address, []const u8).init(arena_allocator);
-        self.warm_addresses = std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false).init(arena_allocator);
-        self.warm_storage_slots = std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false).init(arena_allocator);
-        self.frames = std.ArrayList(Frame){};
-        try self.frames.ensureTotalCapacity(arena_allocator, 16);
-        self.original_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
-        self.transient_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
-        self.created_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
-        self.selfdestructed_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
-
-        // Set blob versioned hashes for EIP-4844
-        if (blob_versioned_hashes) |hashes| {
-            self.blob_versioned_hashes = hashes;
-        } else {
-            self.blob_versioned_hashes = &[_][32]u8{};
-        }
+        // Initialize transaction state
+        try self.initTransactionState(blob_versioned_hashes);
 
         try self.preWarmTransaction(address);
 
@@ -403,6 +438,12 @@ pub const Evm = struct {
             }
         }
 
+        // Clear transaction-scoped sets at end of transaction
+        // These must be cleared to avoid incorrectly treating accounts as created/selfdestructed
+        // in subsequent transactions within the same block
+        self.created_accounts.clearRetainingCapacity();
+        self.selfdestructed_accounts.clearRetainingCapacity();
+
         // No cleanup needed - arena handles it
         return result;
     }
@@ -424,14 +465,6 @@ pub const Evm = struct {
             };
         }
 
-        // Snapshot transient storage before the call (EIP-1153)
-        // Transient storage must be reverted on call failure
-        var transient_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
-        var it = self.transient_storage.iterator();
-        while (it.next()) |entry| {
-            try transient_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
-        }
-
         // Get caller and execution context address based on call type
         // For CALL: caller = current frame's address, execution address = target address
         // For DELEGATECALL: caller = current frame's caller, execution address = current frame's address (code from target)
@@ -440,6 +473,36 @@ pub const Evm = struct {
         const current_frame = self.getCurrentFrame();
         const frame_caller = if (current_frame) |frame| frame.address else self.origin;
         const frame_caller_caller = if (current_frame) |frame| frame.caller else self.origin;
+
+        // Snapshot transient storage before the call (EIP-1153)
+        // Transient storage must be reverted on call failure
+        var transient_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
+        var it = self.transient_storage.iterator();
+        while (it.next()) |entry| {
+            try transient_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+
+        // Snapshot balances before the call (for SELFDESTRUCT revert handling)
+        // We use copy-on-write: addresses are snapshotted when first modified
+        var balance_snapshot = std.AutoHashMap(Address, u256).init(self.arena.allocator());
+
+        // Set the snapshot pointer so frames can access it for copy-on-write
+        const prev_snapshot = self.current_balance_snapshot;
+        self.current_balance_snapshot = &balance_snapshot;
+        defer self.current_balance_snapshot = prev_snapshot;
+
+        // std.debug.print("DEBUG inner_call: setting snapshot pointer={*}\n", .{&balance_snapshot});
+
+        // Pre-populate with caller and callee since we know they'll be affected
+        if (self.host) |h| {
+            try balance_snapshot.put(frame_caller, h.getBalance(frame_caller));
+            try balance_snapshot.put(address, h.getBalance(address));
+        } else {
+            var balance_it = self.balances.iterator();
+            while (balance_it.next()) |entry| {
+                try balance_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+        }
 
         const execution_caller: Address = switch (call_type) {
             .Call, .StaticCall, .Create, .Create2 => frame_caller,
@@ -545,18 +608,19 @@ pub const Evm = struct {
             // std.debug.print("CALL FAILED: execution error {} (addr={any})\n", .{err, address.bytes});
             _ = self.frames.pop();
 
-            // Reverse value transfer on failure
-            if (value > 0 and call_type == .Call) {
-                if (self.host) |h| {
-                    const caller_balance = h.getBalance(frame_caller);
-                    const callee_balance = h.getBalance(address);
-                    h.setBalance(frame_caller, caller_balance + value);
-                    h.setBalance(address, callee_balance - value);
-                } else {
-                    const caller_balance = self.balances.get(frame_caller) orelse 0;
-                    const callee_balance = self.balances.get(address) orelse 0;
-                    try self.balances.put(frame_caller, caller_balance + value);
-                    try self.balances.put(address, callee_balance - value);
+            // Restore balances on failure (handles SELFDESTRUCT balance transfers)
+            if (self.host) |h| {
+                // Restore all snapshotted balances for host mode
+                var balance_restore_it = balance_snapshot.iterator();
+                while (balance_restore_it.next()) |entry| {
+                    h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
+                }
+            } else {
+                // Restore all balances for non-host mode
+                self.balances.clearRetainingCapacity();
+                var balance_restore_it = balance_snapshot.iterator();
+                while (balance_restore_it.next()) |entry| {
+                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
                 }
             }
 
@@ -601,19 +665,21 @@ pub const Evm = struct {
             }
         }
 
-        // Reverse value transfer if call reverted
-        if (frame.reverted and value > 0 and call_type == .Call) {
-            // std.debug.print("REVERT: reversing transfer from={any} to={any} value={}\n", .{frame_caller.bytes, address.bytes, value});
+        // Restore balances on revert (handles SELFDESTRUCT balance transfers and value transfers)
+        if (frame.reverted) {
             if (self.host) |h| {
-                const caller_balance = h.getBalance(frame_caller);
-                const callee_balance = h.getBalance(address);
-                h.setBalance(frame_caller, caller_balance + value);
-                h.setBalance(address, callee_balance - value);
+                // Restore all snapshotted balances for host mode
+                var balance_restore_it = balance_snapshot.iterator();
+                while (balance_restore_it.next()) |entry| {
+                    h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
+                }
             } else {
-                const caller_balance = self.balances.get(frame_caller) orelse 0;
-                const callee_balance = self.balances.get(address) orelse 0;
-                try self.balances.put(frame_caller, caller_balance + value);
-                try self.balances.put(address, callee_balance - value);
+                // Restore all balances for non-host mode
+                self.balances.clearRetainingCapacity();
+                var balance_restore_it = balance_snapshot.iterator();
+                while (balance_restore_it.next()) |entry| {
+                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
+                }
             }
         }
 
