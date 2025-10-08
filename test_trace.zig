@@ -45,6 +45,7 @@ pub fn main() !void {
         0, // value
         &[_]u8{}, // calldata
         null, // no access list
+        null, // no blob versioned hashes (EIP-4844)
     );
 
     std.debug.print("\nExecution result:\n", .{});
