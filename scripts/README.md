@@ -30,6 +30,30 @@ TEST_FILTER=Shanghai ./scripts/test-subset.sh
 - Support for both CLI args and env vars
 - Built-in test category listing
 
+### 🔬 `isolate-test.sh` - Test Isolation Helper ⭐ RECOMMENDED ⭐
+
+Run a single test with maximum debugging output and intelligent failure analysis.
+
+```bash
+./scripts/isolate-test.sh "transientStorageReset"
+./scripts/isolate-test.sh "push0" specs-shanghai-push0
+./scripts/isolate-test.sh "MCOPY" specs-cancun-mcopy
+```
+
+**Features:**
+- Automatic test filtering and isolation
+- Verbose trace output with divergence analysis
+- Intelligent failure type detection (crash vs gas vs behavior)
+- Extracts and displays divergence details (PC, opcode, gas, stack)
+- Provides next-step debugging guidance
+- Shows useful commands for follow-up investigation
+
+**Use this when:**
+- Any test fails and you need to debug it (FIRST CHOICE)
+- Before making code changes (pre-analysis phase)
+- After making fixes to verify they work
+- You need detailed trace comparison
+
 ### 🔍 `debug-test.sh` - Single Test Debugger
 
 Debug a specific test with full trace output.
@@ -42,7 +66,7 @@ Debug a specific test with full trace output.
 **Use this when:**
 - You know the exact test name
 - You want detailed execution traces
-- You need to debug a specific failure
+- Simpler alternative to isolate-test.sh
 
 ### ⚡ `quick-test.sh` - Smoke Tests
 
@@ -81,8 +105,13 @@ Basic wrapper around `zig build specs` with filtering.
 # 3. Run tests for the feature you're working on
 ./scripts/test-subset.sh transientStorage
 
-# 4. If a test fails, debug it
-./scripts/debug-test.sh specific_failing_test
+# 4. If a test fails, debug it with the isolation helper
+./scripts/isolate-test.sh "specific_failing_test"
+
+# 5. Review trace divergence, fix the issue
+
+# 6. Verify fix
+./scripts/isolate-test.sh "specific_failing_test"
 ```
 
 ### Before Committing
@@ -189,7 +218,134 @@ Tests follow these naming patterns:
 
 ---
 
+## Automation Scripts
+
+### 🤖 `fix-specs.ts` - Automated Spec Test Fixer
+
+AI-powered pipeline for systematically fixing spec test failures.
+
+```bash
+# Run all test suites
+bun run scripts/fix-specs.ts
+
+# Run specific test suite
+bun run scripts/fix-specs.ts suite cancun-tstore-basic
+bun run scripts/fix-specs.ts suite shanghai-push0
+```
+
+**What it does:**
+- Runs test suites sequentially
+- For each failing suite:
+  1. Captures test failures
+  2. Launches AI agent with detailed debugging instructions
+  3. **Enforces pre-analysis phase** (required before any code changes)
+  4. Agent fixes issues based on trace comparison and Python reference
+  5. Verifies fixes by re-running tests
+  6. Creates git commits for successful fixes
+  7. Retries up to 5 times per suite
+- Generates comprehensive reports in `reports/spec-fixes/`
+
+**Pre-Analysis Phase (mandatory):**
+The agent MUST complete these steps before any code changes:
+1. Run test and capture failure
+2. Generate and analyze trace divergence using `isolate-test.sh`
+3. Read Python reference implementation
+4. Locate corresponding Zig implementation
+5. Write formal analysis report with root cause hypothesis
+
+**Use this when:**
+- Systematic fixing of multiple test suites
+- Automated compliance improvement
+- Large-scale debugging campaigns
+- Overnight/long-running fix sessions
+
+**Reports generated:**
+- `reports/spec-fixes/<suite>-attempt<N>.md` - Per-attempt agent reports
+- `reports/spec-fixes/pipeline-summary.md` - Overall pipeline results
+- `reports/spec-fixes/pipeline-summary-ai.md` - AI-generated narrative summary
+
+---
+
 ## TypeScript/Bun Scripts
+
+### 📊 `compare-traces.ts` - Trace Comparison Tool ⭐ MOST POWERFUL DEBUGGING TOOL ⭐
+
+Captures and compares EIP-3155 execution traces to identify the EXACT point where your implementation diverges from the Python reference.
+
+```bash
+# Basic usage (runs test and captures traces)
+bun run scripts/compare-traces.ts "test_name"
+
+# Use existing traces (for testing/analysis)
+bun run scripts/compare-traces.ts "test_name" --skip-capture
+
+# Examples
+bun run scripts/compare-traces.ts "transientStorageReset"
+bun run scripts/compare-traces.ts "push0_basic"
+bun run scripts/compare-traces.ts "warmCoinbaseGasUsage"
+```
+
+**What it shows:**
+- **Exact divergence step** - Precise step number where behavior differs
+- **Opcode at divergence** - Which operation is failing
+- **Gas difference** - Sign and magnitude
+  - Positive: You're using less gas (missing charges)
+  - Negative: You're using more gas (extra charges)
+- **Stack comparison** - Value differences at divergence
+- **Context** - 5 steps before divergence for context
+- **Next steps** - Guidance on how to fix
+
+**Output:**
+- Console: Side-by-side comparison with highlighting
+- Report: `traces/<test_name>_analysis.md` with detailed guidance
+
+**Example output:**
+```
+████████████████████████████████████████████████████████████████████████████████
+🚨 TRACE DIVERGENCE DETECTED
+████████████████████████████████████████████████████████████████████████████████
+
+Step: 42
+Reason: Gas remaining divergence
+
+Details:
+  Our gas: 977894
+  Reference gas: 979994
+  Difference: -2100 (we have less gas)
+  Opcode: 0x55 (SSTORE)
+
+--------------------------------------------------------------------------------
+SIDE-BY-SIDE COMPARISON
+--------------------------------------------------------------------------------
+
+OUR IMPLEMENTATION:                      │ REFERENCE:
+  PC: 128                                │   PC: 128
+  Opcode: 0x55 (SSTORE)                  │   Opcode: 0x55 (SSTORE)
+  Gas: 977894                            │   Gas: 979994
+  Gas Cost: 22100                        │   Gas Cost: 20000
+  Stack (top 5):                         │   Stack (top 5):
+    [0] 0x60                             │     [0] 0x60
+    [1] 0x01                             │     [1] 0x01
+```
+
+**When to use:**
+- ANY failing test (use this FIRST)
+- Before making changes (see exact problem)
+- After making changes (verify fix)
+- When gas calculations are wrong
+- When behavior diverges
+- When stack/memory/storage differs
+
+**Why it's better than manual debugging:**
+- Eliminates guesswork - shows EXACT divergence
+- Saves hours compared to reading code
+- Shows context for understanding root cause
+- Provides actionable next steps
+- Creates detailed report for reference
+
+**Requirements:**
+- Bun runtime
+- Test runner configured for EIP-3155 traces (already configured in this project)
 
 For TypeScript utilities:
 
@@ -197,6 +353,7 @@ For TypeScript utilities:
 # Install dependencies
 bun install
 
-# Run scripts
-bun run index.ts
+# Run individual scripts
+bun run scripts/fix-specs.ts
+bun run scripts/compare-traces.ts "test_name"
 ```

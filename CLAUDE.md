@@ -72,7 +72,31 @@ zig build specs
 
 # Run interactive test watcher
 zig build test-watch
+
+# Debug a failing test (RECOMMENDED)
+./scripts/isolate-test.sh "test_name"
 ```
+
+### Helper Scripts
+
+The project includes powerful helper scripts for debugging and testing:
+
+**🔬 `isolate-test.sh`** - Test Isolation Helper (⭐ RECOMMENDED)
+- Run a single test with maximum debugging output
+- Automatic failure type detection (crash vs gas vs behavior)
+- Trace divergence analysis with exact PC, opcode, gas details
+- Next-step debugging guidance
+
+**🎯 `test-subset.sh`** - Test Subset Runner
+- Run filtered groups of tests by hardfork, EIP, or pattern
+- Useful for testing entire categories
+
+**🤖 `fix-specs.ts`** - Automated Spec Fixer
+- AI-powered pipeline for systematic test fixing
+- Enforces pre-analysis phase before code changes
+- Generates detailed reports and commits
+
+See `scripts/README.md` for complete documentation.
 
 ### Test Commands
 
@@ -89,14 +113,18 @@ TEST_FILTER="Cancun" zig build specs
 TEST_FILTER="transientStorage" zig build specs
 TEST_FILTER="push0" zig build specs
 
-# Using helper scripts
+# Using helper scripts (RECOMMENDED: isolate-test.sh)
+
+# Test Isolation Helper - Maximum debugging output with intelligent analysis
+./scripts/isolate-test.sh "exact_test_name"
+./scripts/isolate-test.sh "transientStorageReset"
+./scripts/isolate-test.sh "push0" specs-shanghai-push0
+
+# Test Subset Runner - Run multiple tests in a category
 ./scripts/test-subset.sh Cancun
 ./scripts/test-subset.sh Shanghai
 ./scripts/test-subset.sh transientStorage
 ./scripts/test-subset.sh MCOPY
-
-# Run a specific test
-./scripts/test-subset.sh "exact_test_name"
 ```
 
 #### Test Filtering Patterns
@@ -115,18 +143,25 @@ When a test fails, the runner automatically:
 3. Compares traces step-by-step
 4. Shows the exact divergence point with PC, opcode, gas, and stack details
 
-Example workflow:
+**Recommended workflow** using the test isolation helper:
 ```bash
 # 1. Run category to find failures
 ./scripts/test-subset.sh transientStorage
 
-# 2. Run specific failing test
-./scripts/test-subset.sh "transStorageReset"
+# 2. Isolate and debug specific failing test with maximum output
+./scripts/isolate-test.sh "transStorageReset"
 
-# 3. Review trace divergence output
+# The helper automatically:
+# - Runs test in isolation with verbose tracing
+# - Detects failure type (crash vs gas vs behavior divergence)
+# - Extracts divergence details (PC, opcode, gas, stack)
+# - Shows next-step debugging guidance
+# - Provides quick reference commands
+
+# 3. Review the analysis output to identify root cause
 # 4. Fix the issue in src/frame.zig or src/evm.zig
-# 5. Re-run to verify
-./scripts/test-subset.sh "transStorageReset"
+# 5. Verify fix with the same helper
+./scripts/isolate-test.sh "transStorageReset"
 ```
 
 ### Build Targets
@@ -376,8 +411,11 @@ zig build test
 # Work on a specific EIP/feature
 TEST_FILTER="transientStorage" zig build specs
 
-# Debug a failing test
-./scripts/test-subset.sh "specific_test_name"
+# Debug a failing test (RECOMMENDED: use isolate-test.sh)
+./scripts/isolate-test.sh "specific_test_name"
+
+# Alternative: test-subset.sh for multiple tests
+./scripts/test-subset.sh "test_pattern"
 
 # Build WASM and check size
 zig build wasm
@@ -399,6 +437,22 @@ zig build
 
 ### Debugging Tips
 
+**Use the test isolation helper** for efficient debugging:
+```bash
+# First, run to see failures
+./scripts/test-subset.sh transientStorage
+
+# Then isolate and debug specific test
+./scripts/isolate-test.sh "transientStorageReset"
+
+# The helper provides:
+# - Automatic failure type detection
+# - Trace divergence analysis
+# - Next-step guidance
+# - Quick reference commands
+```
+
+Other debugging tips:
 - Use `std.debug.print()` sparingly (suppressed in release builds)
 - Enable trace capture to see step-by-step execution
 - Compare traces with reference implementation (execution-specs or geth)
@@ -762,3 +816,178 @@ When debugging, these are the most frequently consulted files:
 ---
 
 **Remember**: The Python execution-specs are the authoritative source of truth. When in doubt, trust the Python code over intuition, documentation, or the Yellow Paper. The tests are generated from this reference implementation.
+
+## Spec Fixer Pipeline
+
+The project includes an automated spec-fixing pipeline (`scripts/fix-specs.ts`) that uses AI agents to systematically debug and fix failing test suites.
+
+### Known Issues Database
+
+Located at `scripts/known-issues.json`, this database tracks historical debugging insights:
+- **Common failure patterns** and root causes for each test suite
+- **Relevant file locations** to check (with line ranges when applicable)
+- **Python reference implementation** locations for quick lookup
+- **Key invariants** that must be satisfied
+- **Expected gas costs** for operations
+
+When the fix-specs pipeline runs, it automatically injects relevant known issues context into the agent prompt, providing historical context that accelerates debugging.
+
+**Adding new known issues:**
+
+Edit `scripts/known-issues.json` and add entries following this schema:
+```json
+{
+  "test-suite-name": {
+    "test_suite": "test-suite-name",
+    "description": "Brief description of what this tests",
+    "common_causes": [
+      "Common cause 1",
+      "Common cause 2"
+    ],
+    "relevant_files": [
+      "src/file.zig:function or line-range",
+      "src/other.zig:specific location"
+    ],
+    "python_ref": "execution-specs/src/ethereum/forks/<fork>/path/to/reference.py",
+    "key_invariants": [
+      "Important invariant 1",
+      "Important invariant 2"
+    ],
+    "gas_costs": {
+      "OPERATION_NAME": 100,
+      "OTHER_OPERATION": 2600
+    }
+  }
+}
+```
+
+### Running the Pipeline
+
+```bash
+# Fix all test suites sequentially
+bun run scripts/fix-specs.ts
+
+# Fix specific test suite
+bun run scripts/fix-specs.ts suite cancun-tstore-basic
+
+# Reports are saved to reports/spec-fixes/
+# - pipeline-summary.md: Overall results and statistics
+# - pipeline-summary-ai.md: AI-generated narrative summary
+# - {suite}-attempt{N}.md: Per-suite debugging reports with full agent output
+```
+
+**Pipeline features:**
+- Automatic test execution and failure detection
+- AI agent debugging with up to 5 attempts per suite
+- Historical context injection from known-issues.json
+- Automatic git commits when tests pass
+- Cost tracking and performance metrics
+- Comprehensive reporting
+
+**Best practices:**
+- Run pipeline on isolated test suites first to build up known-issues.json
+- Review agent reports after failures to identify patterns
+- Add successful debugging strategies to known-issues.json
+- Use `suite` mode to iterate on specific failing suites
+
+---
+
+
+## 🤖 Automated Spec Fixer: Checkpoint System
+
+The `scripts/fix-specs.ts` automated agent enforces a mandatory **7-checkpoint debugging methodology** to ensure systematic, evidence-based test fixing. This eliminates guesswork and provides full traceability.
+
+### Checkpoint Overview
+
+Each checkpoint must be explicitly confirmed with **actual data** (no placeholders) before proceeding:
+
+1. **✅ CHECKPOINT 1: Run Test and Confirm Failure**
+   - Execute test suite command
+   - Capture complete failure output
+   - Identify failing tests by exact name
+   - Record error messages/stack traces
+
+2. **✅ CHECKPOINT 2: Generate Trace Comparison**
+   - Use `./scripts/isolate-test.sh "exact_test_name"` for automated analysis
+   - Identify exact divergence point (PC, opcode, gas, stack, memory, storage)
+   - For crashes: capture crash type, message, stack trace
+   - **Required**: Paste actual trace divergence output
+
+3. **✅ CHECKPOINT 3: Read Python Reference Implementation**
+   - Navigate to `execution-specs/src/ethereum/forks/<hardfork>/`
+   - Find relevant Python file for diverging operation
+   - **Required**: Quote actual Python code (not summaries)
+   - Document gas calculation order with line references
+
+4. **✅ CHECKPOINT 4: Compare Zig Implementation**
+   - Read current Zig implementation
+   - **Required**: Quote actual Zig code
+   - Identify concrete discrepancies line-by-line with Python
+
+5. **✅ CHECKPOINT 5: Diagnose Root Cause and Propose Fix**
+   - Diagnose root cause based on checkpoints 2-4
+   - Propose specific fix with expected outcome
+   - List files to modify with line ranges
+
+6. **✅ CHECKPOINT 6: Implement Fix**
+   - Make minimal changes from Checkpoint 5
+   - Preserve hardfork compatibility
+   - Use proper guards (e.g., `if (self.hardfork.isAtLeast(.CANCUN))`)
+
+7. **✅ CHECKPOINT 7: Verify Fix**
+   - Re-run test suite
+   - Confirm tests pass
+   - **If failing**: Return to Checkpoint 2 with NEW output
+
+### Enforcement Rules
+
+The agent prompt enforces these strict rules:
+
+- ✅ **ALL checkpoints MUST be explicitly confirmed** before proceeding
+- ✅ **Each checkpoint MUST include actual data** (test output, code quotes, traces)
+- ✅ **NO placeholders**: `[TODO]`, `[TBD]`, `[Will investigate]`, `[value]`
+- ✅ **Iteration required** if tests fail after implementation
+- ✅ **Must STOP if cannot complete checkpoint** and explain why
+- ❌ **DO NOT skip checkpoints**
+- ❌ **DO NOT proceed to fixes** without completing analysis (1-5)
+- ❌ **DO NOT use summaries** instead of actual code quotes
+- ❌ **DO NOT guess** values or use placeholders
+
+### Example Checkpoint Confirmation
+
+```markdown
+✅ CHECKPOINT 2 COMPLETE
+- Isolated test: test_transient_storage_tload_after_revert
+- Divergence PC: 42
+- Diverging opcode: TLOAD (0x5c)
+- Expected gas: 99898
+- Actual gas: 97798
+- Gas difference: 2100 (we charged cold instead of warm)
+- Stack at divergence: [0x0000...0001] (key)
+- Memory at divergence: no divergence
+- Storage at divergence: no divergence
+```
+
+### Benefits
+
+This systematic approach provides:
+
+- **Evidence-based debugging**: Every decision backed by actual test output and code
+- **Full traceability**: Complete audit trail from failure to fix
+- **Eliminates guesswork**: No changes without understanding root cause
+- **Iterative refinement**: Built-in loop if first fix doesn't work
+- **Quality enforcement**: Cannot proceed without completing analysis
+
+### Usage
+
+```bash
+# Run automated fixer for all test suites
+bun run scripts/fix-specs.ts
+
+# Run for specific test suite
+bun run scripts/fix-specs.ts suite cancun-tstore-basic
+
+# The agent will enforce all 7 checkpoints automatically
+```
+
+See `scripts/fix-specs.ts` for the complete checkpoint specifications and validation rules.
