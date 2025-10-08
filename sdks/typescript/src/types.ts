@@ -1,17 +1,17 @@
 /**
- * 20-byte Ethereum address
+ * 20-byte Ethereum address (as hex string with 0x prefix)
  */
-export type Address = Uint8Array;
+export type Address = string;
 
 /**
- * 32-byte value (u256)
+ * 32-byte value (u256) as hex string with 0x prefix
  */
-export type U256 = Uint8Array;
+export type U256 = string;
 
 /**
- * Bytecode or calldata
+ * Bytecode or calldata as hex string with 0x prefix
  */
-export type Bytes = Uint8Array;
+export type Bytes = string;
 
 /**
  * Execution context for an EVM call
@@ -88,11 +88,78 @@ export interface AccessListEntry {
 }
 
 /**
+ * Custom opcode handler function
+ * Handler receives frame context and must return success/failure
+ */
+export type OpcodeHandler = (framePtr: number) => boolean;
+
+/**
+ * Opcode override definition
+ */
+export interface OpcodeOverride {
+  /** Opcode byte to override (0x00-0xFF) */
+  opcode: number;
+  /** Custom handler function */
+  handler: OpcodeHandler;
+}
+
+/**
+ * Precompile execution result
+ */
+export interface PrecompileResult {
+  /** Execution success */
+  success: boolean;
+  /** Gas consumed */
+  gasUsed: bigint;
+  /** Output data as hex string */
+  output: Bytes;
+}
+
+/**
+ * Custom precompile handler function
+ */
+export type PrecompileHandler = (
+  input: Bytes,
+  gasLimit: bigint
+) => Promise<PrecompileResult> | PrecompileResult;
+
+/**
+ * Precompile override definition
+ */
+export interface PrecompileOverride {
+  /** Address of the precompile (20 bytes) */
+  address: Address;
+  /** Custom handler function */
+  execute: PrecompileHandler;
+}
+
+/**
  * EVM creation options
  */
 export interface EvmOptions {
   /** Hardfork to use (default: PRAGUE) */
   hardfork?: Hardfork;
+
+  /** Custom opcode handlers (overrides default implementations) */
+  opcodeOverrides?: OpcodeOverride[];
+
+  /** Custom precompile handlers (overrides or adds precompiles) */
+  precompileOverrides?: PrecompileOverride[];
+
+  /** Maximum loop iterations before panic (null = disabled) */
+  loopQuota?: number | null;
+
+  /** Enable EIP-4788 beacon root contract updates */
+  enableBeaconRoots?: boolean;
+
+  /** Enable EIP-2935 historical block hash contract updates */
+  enableHistoricalBlockHashes?: boolean;
+
+  /** Enable validator deposit tracking */
+  enableValidatorDeposits?: boolean;
+
+  /** Enable validator withdrawal tracking */
+  enableValidatorWithdrawals?: boolean;
 }
 
 /**
