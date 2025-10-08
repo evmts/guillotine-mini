@@ -196,15 +196,31 @@ Follow this systematic debugging approach:
    - Return data mismatches
 
 ## Phase 2: Locate the Bug
-1. **Use targeted file reading**: Based on the failure type, read the most relevant files first
-2. **Check hardfork activation**: Verify the feature is enabled for the correct hardfork using \`hardfork.isAtLeast()\`
-3. **Review EIP specifications**: If the test relates to a specific EIP, ensure our implementation matches the spec
-4. **Compare with Python reference implementation**:
+
+**CRITICAL**: Before making ANY changes, you MUST:
+
+1. **Generate and compare traces**: Use the test runner's built-in trace comparison to see EXACTLY where our implementation diverges from the reference
+   - The test runner automatically captures EIP-3155 traces
+   - It shows the exact PC, opcode, gas, and stack state where divergence occurs
+   - This is your PRIMARY debugging tool - use it FIRST, not as a last resort
+
+2. **Study the Python reference implementation**: This is the authoritative specification
    - Location: \`execution-specs/src/ethereum/forks/<hardfork>/\`
    - Opcode implementations: \`vm/instructions/\`
    - Main interpreter: \`vm/interpreter.py\`
    - Gas metering: \`vm/gas.py\`
    - State management: \`state.py\`
+   - Read the ACTUAL Python code - don't guess what it should do
+   - The Python reference is battle-tested and correct; trust it over your intuition
+
+3. **Use targeted file reading**: Based on the failure type AND trace divergence point, read the most relevant files
+
+4. **Check hardfork activation**: Verify the feature is enabled for the correct hardfork using \`hardfork.isAtLeast()\`
+
+**Why this order matters**:
+- Traces show you the EXACT divergence point (saves hours of guessing)
+- Python reference shows you the CORRECT behavior (eliminates ambiguity)
+- Making changes without these two sources is effectively guessing
 
 ## Phase 3: Fix the Issue
 1. **Make minimal, focused changes**: Fix only what's broken, don't refactor unnecessarily
@@ -220,12 +236,22 @@ Follow this systematic debugging approach:
 5. **Filter to single test**: Use \`TEST_FILTER="test_name" ${suite.command}\` to focus on one failing test
 
 ## Important Guidelines
+
+**MANDATORY DEBUGGING PROCESS**:
+1. **ALWAYS generate traces FIRST** - Run the failing test and examine the trace divergence output
+2. **ALWAYS read the Python reference** - Find the corresponding opcode/function in execution-specs
+3. **ALWAYS compare step-by-step** - Match our Zig implementation against the Python reference line-by-line
+4. **NEVER guess** - If you don't see trace divergence, you don't know what's wrong
+5. **NEVER skip the reference** - The Python code IS the specification; trust it completely
+
+**Debugging workflow**:
 - Focus on ONE failing test at a time
-- **Think hard about what the behavior SHOULD be** based on the reference implementation
-- Compare opcode-by-opcode or state change-by-state change with the Python reference
-- After making changes, run the test command to verify
-- If tests still fail, analyze the new output and iterate
-- Use traces to pinpoint the exact divergence point
+- Generate trace comparison to see exact divergence point
+- Read the Python reference implementation for that operation
+- Compare our Zig code opcode-by-opcode or state change-by-state change
+- Make minimal changes based on what the Python reference actually does
+- Re-run test to verify fix
+- If still failing, repeat with new trace divergence
 </methodology>
 
 <codebase_reference>
@@ -283,19 +309,72 @@ If multiple tests fail, filter to ONE failing test for focused debugging:
 TEST_FILTER="exact_failing_test_name" ${suite.command}
 \`\`\`
 
-### Strategy 2: Trace Comparison
+### Strategy 2: Trace Comparison ⭐ PRIMARY DEBUGGING TOOL ⭐
+
+**This should be your FIRST step for any failing test.**
+
 For gas differences or behavior divergence:
-1. Generate our EVM trace (EIP-3155 format)
-2. Generate reference Python EVM trace
-3. Compare step-by-step to find exact divergence point
+1. The test runner **automatically generates both traces** (yours and Python reference)
+2. It **automatically compares them step-by-step**
+3. It **shows the exact divergence point** with:
+   - Program counter (PC)
+   - Opcode being executed
+   - Gas remaining
+   - Stack contents
+   - Memory state
+   - Storage changes
 
-The test runner automatically does this for you and shows the divergence point.
+**Why this is critical**:
+- Eliminates guesswork - you see EXACTLY where behavior differs
+- Shows you which opcode or gas calculation is wrong
+- Reveals the exact state (stack, memory, storage) at divergence
+- Saves hours compared to reading code and guessing
 
-### Strategy 3: Reference Implementation Comparison
-Check the official execution-specs Python implementation:
-- Located in \`execution-specs/\` submodule
-- Contains reference implementations for all hardforks
-- Look for the equivalent opcode/function and compare logic
+**How to use it**:
+\`\`\`bash
+# Run the failing test - trace comparison happens automatically
+TEST_FILTER="exact_test_name" ${suite.command}
+
+# Look for output like:
+# "Trace divergence at step N:"
+# "PC: 42, Opcode: SSTORE"
+# "Expected gas: 20000, Got: 22100"
+# "Stack divergence: [...]"
+\`\`\`
+
+Once you see the divergence, read the Python reference for that specific opcode/operation.
+
+### Strategy 3: Reference Implementation Comparison ⭐ REQUIRED FOR EVERY FIX ⭐
+
+**NEVER skip this step. The Python code IS the specification.**
+
+The official execution-specs Python implementation:
+- Located in \`execution-specs/src/ethereum/forks/<hardfork>/\` submodule
+- Contains the **authoritative, battle-tested** reference implementations
+- Used by geth, nethermind, erigon, and all major clients
+- If our code differs from Python, **we are wrong**
+
+**How to use it**:
+1. Identify the divergence point from trace comparison
+2. Navigate to \`execution-specs/src/ethereum/forks/<hardfork>/\`
+3. Find the relevant file:
+   - Opcode logic: \`vm/instructions/*.py\`
+   - Gas calculation: \`vm/gas.py\`
+   - State changes: \`state.py\`
+   - Interpreter loop: \`vm/interpreter.py\`
+4. Read the Python function line-by-line
+5. Compare with our Zig implementation
+6. Adjust our code to match Python behavior EXACTLY
+
+**Example**:
+\`\`\`bash
+# Trace shows SSTORE gas calculation is wrong at PC 42
+# Navigate to:
+cd execution-specs/src/ethereum/forks/cancun/vm/instructions/
+# Read storage.py and find sstore() function
+# Compare gas calculation with our src/frame.zig implementation
+# Match the Python logic exactly
+\`\`\`
 
 ### Strategy 4: Incremental Fixing
 If many tests fail:
@@ -437,16 +516,27 @@ After fixing:
 <critical_reminders>
 ## Critical Rules - Do Not Violate
 
-1. ❌ **DO NOT** break existing passing tests - always verify your changes don't cause regressions
-2. ❌ **DO NOT** hardcode test-specific logic - fix the underlying implementation
-3. ❌ **DO NOT** skip hardfork checks - use proper \`isAtLeast()\` guards
-4. ❌ **DO NOT** modify test files - only fix the implementation in \`src/\`
-5. ✅ **DO** run the test command after every change to verify
-6. ✅ **DO** make minimal, focused changes that directly address the failure
-7. ✅ **DO** preserve backward compatibility with earlier hardforks
-8. ✅ **DO** use the TodoWrite tool to track your progress through multiple test failures
-9. ✅ **DO** read files before editing them to understand context
-10. ✅ **DO** iterate if the first fix doesn't work - debugging is iterative
+### Mandatory Process Rules (NEVER skip these):
+1. ✅ **DO** generate and analyze trace comparison BEFORE making any changes
+2. ✅ **DO** read the Python reference implementation for the diverging operation
+3. ✅ **DO** compare your Zig code line-by-line with Python reference
+4. ✅ **DO** trust the Python reference completely - if it differs from your intuition, the Python is correct
+
+### Code Quality Rules:
+5. ❌ **DO NOT** guess what the behavior should be - read traces and Python reference
+6. ❌ **DO NOT** break existing passing tests - always verify your changes don't cause regressions
+7. ❌ **DO NOT** hardcode test-specific logic - fix the underlying implementation
+8. ❌ **DO NOT** skip hardfork checks - use proper \`isAtLeast()\` guards
+9. ❌ **DO NOT** modify test files - only fix the implementation in \`src/\`
+10. ✅ **DO** run the test command after every change to verify
+11. ✅ **DO** make minimal, focused changes that directly address the failure
+12. ✅ **DO** preserve backward compatibility with earlier hardforks
+13. ✅ **DO** use the TodoWrite tool to track your progress through multiple test failures
+14. ✅ **DO** read files before editing them to understand context
+15. ✅ **DO** iterate if the first fix doesn't work - debugging is iterative
+
+### The Golden Rule:
+**Traces tell you WHERE the problem is. Python reference tells you WHAT the correct behavior is. Use both, always.**
 </critical_reminders>
 
 <output_requirements>
