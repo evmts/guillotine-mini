@@ -6,6 +6,8 @@ import type {
   Address,
   U256,
   Bytes,
+  EvmOptions,
+  AccessListEntry,
 } from "./types.js";
 import { bigintToU256 } from "./utils.js";
 
@@ -16,7 +18,7 @@ interface WasmModule {
   instance: WebAssembly.Instance;
   exports: {
     memory: WebAssembly.Memory;
-    evm_create: () => number;
+    evm_create: (hardforkName: number, hardforkLen: number) => number;
     evm_destroy: (handle: number) => void;
     evm_set_bytecode: (handle: number, bytecode: number, len: number) => number;
     evm_set_execution_context: (
@@ -30,12 +32,32 @@ interface WasmModule {
     ) => number;
     evm_set_blockchain_context: (
       handle: number,
-      chainId: bigint,
+      chainId: number,
       blockNumber: bigint,
       blockTimestamp: bigint,
+      blockDifficulty: number,
+      blockPrevrandao: number,
       blockCoinbase: number,
       blockGasLimit: bigint,
+      blockBaseFee: number,
+      blobBaseFee: number,
     ) => void;
+    evm_set_access_list_addresses: (
+      handle: number,
+      addresses: number,
+      count: number,
+    ) => number;
+    evm_set_access_list_storage_keys: (
+      handle: number,
+      addresses: number,
+      slots: number,
+      count: number,
+    ) => number;
+    evm_set_blob_hashes: (
+      handle: number,
+      hashes: number,
+      count: number,
+    ) => number;
     evm_execute: (handle: number) => number;
     evm_get_gas_remaining: (handle: number) => bigint;
     evm_get_gas_used: (handle: number) => bigint;
@@ -80,49 +102,32 @@ class EvmImpl implements Evm {
   private wasm: WasmModule | null = null;
   private handle: number = 0;
 
-  constructor(wasmPath: string) {
-    this.readyPromise = this.initialize(wasmPath);
+  constructor(wasmModule: WebAssembly.Module, options?: EvmOptions) {
+    this.readyPromise = this.initialize(wasmModule, options);
   }
 
-  private async initialize(wasmPath: string): Promise<void> {
-    // Load WASM module
-    const wasmBuffer = await this.loadWasm(wasmPath);
-    const wasmModule = await WebAssembly.instantiate(wasmBuffer, {
+  private async initialize(wasmModule: WebAssembly.Module, options?: EvmOptions): Promise<void> {
+    // Instantiate WASM module
+    const instance = await WebAssembly.instantiate(wasmModule, {
       env: {
         // Add any required imports here if needed
       },
     });
 
     this.wasm = {
-      instance: wasmModule.instance,
-      exports: wasmModule.instance.exports as any,
+      instance,
+      exports: instance.exports as any,
     };
 
-    // Create EVM instance
-    this.handle = this.wasm.exports.evm_create();
+    // Create EVM instance with hardfork
+    const hardfork = options?.hardfork || '';
+    const hardforkBytes = new TextEncoder().encode(hardfork);
+    const hardforkPtr = hardforkBytes.length > 0 ? this.allocateAndCopy(hardforkBytes) : 0;
+
+    this.handle = this.wasm.exports.evm_create(hardforkPtr, hardforkBytes.length);
     if (this.handle === 0) {
       throw new Error("Failed to create EVM instance");
     }
-  }
-
-  private async loadWasm(wasmPath: string): Promise<ArrayBuffer> {
-    // Node.js environment
-    if (typeof process !== "undefined" && process.versions?.node) {
-      const fs = await import("fs/promises");
-      const buffer = await fs.readFile(wasmPath);
-      return buffer.buffer.slice(
-        buffer.byteOffset,
-        buffer.byteOffset + buffer.byteLength,
-      ) as ArrayBuffer;
-    }
-
-    // Browser environment
-    if (typeof fetch !== "undefined") {
-      const response = await fetch(wasmPath);
-      return await response.arrayBuffer();
-    }
-
-    throw new Error("Unsupported environment for loading WASM");
   }
 
   async ready(): Promise<void> {
@@ -188,16 +193,125 @@ class EvmImpl implements Evm {
     await this.ready();
     if (!this.wasm) throw new Error("WASM not initialized");
 
+    const chainIdBytes = bigintToU256(ctx.chainId);
+    const chainIdPtr = this.allocateAndCopy(chainIdBytes);
+
+    const blockDifficultyBytes = bigintToU256(ctx.blockDifficulty);
+    const blockDifficultyPtr = this.allocateAndCopy(blockDifficultyBytes);
+
+    const blockPrevrandaoBytes = bigintToU256(ctx.blockPrevrandao);
+    const blockPrevrandaoPtr = this.allocateAndCopy(blockPrevrandaoBytes);
+
     const coinbasePtr = this.allocateAndCopy(ctx.blockCoinbase);
+
+    const blockBaseFeeBytes = bigintToU256(ctx.blockBaseFee);
+    const blockBaseFeePtr = this.allocateAndCopy(blockBaseFeeBytes);
+
+    const blobBaseFeeBytes = bigintToU256(ctx.blobBaseFee);
+    const blobBaseFeePtr = this.allocateAndCopy(blobBaseFeeBytes);
 
     this.wasm.exports.evm_set_blockchain_context(
       this.handle,
-      ctx.chainId,
+      chainIdPtr,
       ctx.blockNumber,
       ctx.blockTimestamp,
+      blockDifficultyPtr,
+      blockPrevrandaoPtr,
       coinbasePtr,
       ctx.blockGasLimit,
+      blockBaseFeePtr,
+      blobBaseFeePtr,
     );
+  }
+
+  async setAccessList(accessList: AccessListEntry[]): Promise<void> {
+    await this.ready();
+    if (!this.wasm) throw new Error("WASM not initialized");
+
+    // Extract unique addresses
+    const addresses: Uint8Array[] = [];
+    for (const entry of accessList) {
+      addresses.push(entry.address);
+    }
+
+    // Pack addresses into single buffer (20 bytes each)
+    if (addresses.length > 0) {
+      const packedAddresses = new Uint8Array(addresses.length * 20);
+      for (let i = 0; i < addresses.length; i++) {
+        packedAddresses.set(addresses[i], i * 20);
+      }
+      const addressesPtr = this.allocateAndCopy(packedAddresses);
+      const result = this.wasm.exports.evm_set_access_list_addresses(
+        this.handle,
+        addressesPtr,
+        addresses.length,
+      );
+      if (result === 0) {
+        throw new Error("Failed to set access list addresses");
+      }
+    }
+
+    // Extract storage keys with addresses
+    const storageKeys: Array<{ address: Uint8Array; slot: U256 }> = [];
+    for (const entry of accessList) {
+      for (const slot of entry.storageKeys) {
+        storageKeys.push({ address: entry.address, slot });
+      }
+    }
+
+    // Pack storage keys (20 bytes address + 32 bytes slot each)
+    if (storageKeys.length > 0) {
+      const packedAddresses = new Uint8Array(storageKeys.length * 20);
+      const packedSlots = new Uint8Array(storageKeys.length * 32);
+
+      for (let i = 0; i < storageKeys.length; i++) {
+        packedAddresses.set(storageKeys[i].address, i * 20);
+        packedSlots.set(storageKeys[i].slot, i * 32);
+      }
+
+      const addressesPtr = this.allocateAndCopy(packedAddresses);
+      const slotsPtr = this.allocateAndCopy(packedSlots);
+
+      const result = this.wasm.exports.evm_set_access_list_storage_keys(
+        this.handle,
+        addressesPtr,
+        slotsPtr,
+        storageKeys.length,
+      );
+      if (result === 0) {
+        throw new Error("Failed to set access list storage keys");
+      }
+    }
+  }
+
+  async setBlobHashes(hashes: Bytes[]): Promise<void> {
+    await this.ready();
+    if (!this.wasm) throw new Error("WASM not initialized");
+
+    if (hashes.length === 0) {
+      // Clear blob hashes
+      this.wasm.exports.evm_set_blob_hashes(this.handle, 0, 0);
+      return;
+    }
+
+    // Pack hashes into single buffer (32 bytes each)
+    const packedHashes = new Uint8Array(hashes.length * 32);
+    for (let i = 0; i < hashes.length; i++) {
+      if (hashes[i].length !== 32) {
+        throw new Error(`Blob hash ${i} must be 32 bytes`);
+      }
+      packedHashes.set(hashes[i], i * 32);
+    }
+
+    const hashesPtr = this.allocateAndCopy(packedHashes);
+    const result = this.wasm.exports.evm_set_blob_hashes(
+      this.handle,
+      hashesPtr,
+      hashes.length,
+    );
+    if (result === 0) {
+      throw new Error("Failed to set blob hashes");
+    }
   }
 
   async execute(): Promise<ExecutionResult> {
@@ -316,8 +430,9 @@ class EvmImpl implements Evm {
  * Create a new EVM instance.
  * Returns synchronously, but all methods await WASM initialization.
  *
- * @param wasmPath - Path to the WASM file (e.g., './wasm/guillotine_mini.wasm')
+ * @param wasmModule - WebAssembly module to use. Import from the bundled WASM.
+ * @param options - Optional configuration (hardfork, etc.)
  */
-export function createEvm(wasmPath: string): Evm {
-  return new EvmImpl(wasmPath);
+export function createEvm(wasmModule: WebAssembly.Module, options?: EvmOptions): Evm {
+  return new EvmImpl(wasmModule, options);
 }
