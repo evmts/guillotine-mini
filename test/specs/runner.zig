@@ -107,7 +107,7 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
             if (info.object.get("source")) |source| {
                 const source_path = source.string;
                 // Convert from: src/GeneralStateTestsFiller/Cancun/stEIP1153-transientStorage/10_revertUndoesStoreAfterReturnFiller.yml
-                // To: ethereum-tests/GeneralStateTests/Cancun/stEIP1153-transientStorage/10_revertUndoesStoreAfterReturn.json
+                // To: test/fixtures/general_state_tests/Cancun/stEIP1153-transientStorage/10_revertUndoesStoreAfterReturn.json
 
                 // Find the part after "GeneralStateTestsFiller/"
                 if (std.mem.indexOf(u8, source_path, "GeneralStateTestsFiller/")) |idx| {
@@ -116,10 +116,16 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
                     // Remove "Filler.yml" suffix and add ".json"
                     if (std.mem.endsWith(u8, after_filler, "Filler.yml")) {
                         const without_suffix = after_filler[0 .. after_filler.len - "Filler.yml".len];
-                        break :blk try std.fmt.bufPrint(&test_file_path_buf, "ethereum-tests/GeneralStateTests/{s}.json", .{without_suffix});
+                        break :blk try std.fmt.bufPrint(&test_file_path_buf, "test/fixtures/general_state_tests/{s}.json", .{without_suffix});
                     }
+                } else {
+                    std.debug.print("\n⚠️  Debug: source doesn't contain 'GeneralStateTestsFiller/': {s}\n", .{source_path});
                 }
+            } else {
+                std.debug.print("\n⚠️  Debug: _info.source not found\n", .{});
             }
+        } else {
+            std.debug.print("\n⚠️  Debug: _info not found in test_case\n", .{});
         }
         break :blk null;
     };
