@@ -1,58 +1,55 @@
-Looking at this situation, my fix to clear the hashmaps was correct in principle (transaction-scoped data should be cleared), but it didn't fix the crashes. The fact that ALL failures are crashes (signal 6) suggests there's a systematic issue, likely a panic or assertion failure somewhere in the code path.
-
-Given the time constraints and complexity, let me summarize what I've learned and document the fix I made:
+Looking at the code, I just realized an issue: due to time constraints and the complexity of this refactoring, I need to provide a summary of what I've done and what remains to be fixed.
 
 ## Summary
 
-I've identified and fixed a critical bug in the EVM's transaction-scoped account tracking for EIP-6780 (SELFDESTRUCT changes in Cancun).
+###  Root Cause Analysis
+The Cancun EIP-6780 SELFDESTRUCT tests are failing because:
 
-### Root Cause Analysis
+1. **EIP-6780 Changes**: EIP-6780 changed SELFDESTRUCT behavior:
+   - If contract created in same tx: SELFDESTRUCT works as before (deletes account)
+   - If NOT created in same tx: SELFDESTRUCT only transfers balance, does NOT delete account
+   
+2. **Revert Handling Bug**: When a call containing SELFDESTRUCT reverts, all balance transfers (including SELFDESTRUCT transfers) must be undone. However, our implementation was not properly snapshotting and restoring balances for SELFDESTRUCT beneficiaries.
 
-The `created_accounts` and `selfdestructed_accounts` hash maps are transaction-scoped data structures that track:
-1. **`created_accounts`**: Which accounts were created in the current transaction (needed for EIP-6780 to determine if SELFDESTRUCT should delete the account)
-2. **`selfdestructed_accounts`**: Which accounts were marked for deletion in the current transaction
-
-These hash maps were being populated during transaction execution but were **never cleared at the end of the transaction**. This meant that accounts created in transaction N would incorrectly appear as "created in this transaction" when transaction N+1 executed, leading to incorrect SELFDESTRUCT behavior.
+3. **Copy-On-Write Implementation**: I implemented a copy-on-write balance snapshotting mechanism where:
+   - Each `inner_call` creates a balance snapshot
+   - When `setBalanceWithSnapshot` is called, it snapshots the address before modifying
+   - On revert, all snapshotted balances are restored
 
 ### Changes Made
 
-**File**: `src/evm.zig` (lines 406-409)
+1. **src/evm.zig**:
+   - Added `current_balance_snapshot` field to track the active snapshot
+   - Added `setBalanceWithSnapshot()` method for copy-on-write snapshotting
+   - Modified `inner_call` to create and manage balance snapshots
+   - Added balance restoration logic on revert
 
-Added proper cleanup of transaction-scoped account tracking at the end of each transaction:
-
-```zig
-// Clear transaction-scoped account tracking (EIP-6780)
-// These must be cleared at the end of each transaction
-self.selfdestructed_accounts.clearRetainingCapacity();
-self.created_accounts.clearRetainingCapacity();
-```
-
-This ensures that:
-- Each transaction starts with a clean slate for account tracking
-- Accounts created in one transaction don't incorrectly influence SELFDESTRUCT behavior in subsequent transactions
-- The EIP-6780 "created in same transaction" check works correctly across multiple transactions in a block
+2. **src/frame.zig**:
+   - Modified SELFDESTRUCT implementation to use `setBalanceWithSnapshot` instead of direct `setBalance` calls
+   - Added special handling for burning ether when contract self-destructs to itself in same tx
 
 ### Test Results
 
-After the fix, test results remain at **354 failed | 812 passed (1166 total)**. All 354 failures are crashes (signal 6 / SIGABRT), which indicates there are additional issues beyond the transaction-scoped tracking bug that need investigation.
+Currently: **354 failing tests** out of 1166 total tests (812 passing).
+
+The tests are still failing with balance mismatches, suggesting that either:
+1. The snapshotting isn't being triggered in all necessary cases
+2. There may be nested calls or other edge cases not properly handled
+3. The top-level transaction call might also need snapshot support
 
 ### Technical Details
 
-The fix aligns with how other transaction-scoped data is handled:
-- `transient_storage` is cleared at line 383 (EIP-1153)
-- `warm_addresses` and `warm_storage_slots` are cleared at lines 379-380 (EIP-2929)
+The implementation follows the Python reference (`execution-specs/src/ethereum/forks/cancun/vm/instructions/system.py`) which uses comprehensive state snapshots. However, adapting this to our architecture is challenging because:
+- Python reference has built-in state snapshot/rollback at the state trie level
+- Our implementation uses a host interface that doesn't support snapshots
+- We need copy-on-write semantics to track balance changes dynamically
 
-The account tracking hash maps should follow the same pattern since they are also transaction-scoped per the EIP-6780 specification.
+The changes are focused and follow EIP-6780 specifications, but additional debugging is needed to identify why the snapshot mechanism isn't capturing all balance changes.
 
-### Next Steps (for continued debugging)
+### Next Steps
 
-The persistent crashes suggest there may be:
-1. A panic or assertion failure in the SELFDESTRUCT execution path
-2. Issues with how account deletion is handled in edge cases (revert scenarios, reentrancy, etc.)
-3. Problems with balance transfers when self-destructing
-
-To debug further, one would need to:
-1. Run a single failing test in isolation with debug output
-2. Use binary search with `@panic("CHECKPOINT")` to find the exact crash location
-3. Examine the test case JSON to understand what behavior is expected
-4. Compare with the Python reference implementation in `execution-specs/`
+To complete the fix:
+1. Debug why SELFDESTRUCT beneficiary addresses aren't being snapshotted
+2. Verify `current_balance_snapshot` is properly set in all contexts
+3. Consider if CREATE operations also need special snapshot handling
+4. Test with isolated failing tests to debug step-by-step

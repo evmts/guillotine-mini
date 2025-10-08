@@ -1047,6 +1047,29 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Execute transaction
             const result = if (to == null) blk: {
                 // Contract creation transaction - use inner_create
+                // First, initialize transaction state (hash maps, etc.)
+                try evm_instance.initTransactionState(blob_hashes_storage);
+
+                // Pre-warm the origin/sender for contract creation
+                try evm_instance.preWarmTransaction(sender);
+
+                // Pre-warm access list (EIP-2930)
+                if (access_list_param) |list| {
+                    // Pre-warm all addresses in access list
+                    for (list.addresses) |addr| {
+                        _ = try evm_instance.warm_addresses.getOrPut(addr);
+                    }
+
+                    // Pre-warm all storage keys in access list
+                    for (list.storage_keys) |entry| {
+                        const key = evm_mod.StorageSlotKey{
+                            .address = entry.address,
+                            .slot = entry.slot,
+                        };
+                        _ = try evm_instance.warm_storage_slots.getOrPut(key);
+                    }
+                }
+
                 const create_result = try evm_instance.inner_create(
                     value,
                     tx_data,  // initcode
