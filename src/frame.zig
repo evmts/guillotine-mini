@@ -2491,35 +2491,63 @@ pub const Frame = struct {
 
                 try self.consumeGas(gas_cost);
 
-                // EIP-6780: Move ether from originator to beneficiary
-                // This is ALWAYS done regardless of whether account was created in same tx
-                // Per spec: move_ether is called unconditionally, even when sender == recipient
-                if (self_balance > 0) {
-                    if (evm_ptr.host) |h| {
-                        // Reduce originator balance first
-                        h.setBalance(self.address, 0);
-                        // Then increase beneficiary balance (read AFTER reducing originator)
-                        const beneficiary_balance = h.getBalance(beneficiary);
-                        h.setBalance(beneficiary, beneficiary_balance + self_balance);
-                    } else {
-                        // Reduce originator balance first
-                        try evm_ptr.balances.put(self.address, 0);
-                        // Then increase beneficiary balance (read AFTER reducing originator)
-                        const beneficiary_balance = evm_ptr.balances.get(beneficiary) orelse 0;
-                        try evm_ptr.balances.put(beneficiary, beneficiary_balance + self_balance);
+                // Transfer balance from originator to beneficiary
+                // Pre-Cancun vs Cancun+ have different balance transfer semantics
+                if (self.hardfork.isAtLeast(.CANCUN)) {
+                    // EIP-6780 (Cancun+): Use move_ether semantics
+                    // This follows the Python reference implementation's move_ether function:
+                    // 1. Reduce sender balance by amount
+                    // 2. Increase recipient balance by amount
+                    // When sender == recipient, the balance stays the same (decreased then increased)
+                    if (self_balance > 0) {
+                        // Step 1: Reduce originator balance
+                        try evm_ptr.setBalanceWithSnapshot(self.address, 0);
+
+                        // Step 2: Increase beneficiary balance
+                        // IMPORTANT: Must read beneficiary balance AFTER step 1 to handle sender == recipient case
+                        const beneficiary_balance = if (evm_ptr.host) |h|
+                            h.getBalance(beneficiary)
+                        else
+                            evm_ptr.balances.get(beneficiary) orelse 0;
+                        try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
                     }
+                } else {
+                    // Pre-Cancun: Use old balance transfer logic
+                    // 1. Read both balances
+                    // 2. Set beneficiary balance to beneficiary + originator
+                    // 3. Set originator balance to 0 (unconditionally - burns ether if sender == recipient)
+                    if (self_balance > 0) {
+                        const beneficiary_balance = if (evm_ptr.host) |h|
+                            h.getBalance(beneficiary)
+                        else
+                            evm_ptr.balances.get(beneficiary) orelse 0;
+                        try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
+                    }
+                    // Always set originator balance to 0 (even if balance is 0, for consistency)
+                    try evm_ptr.setBalanceWithSnapshot(self.address, 0);
                 }
 
-                // EIP-6780: Mark account for deletion if created in same transaction
-                // Actual deletion happens at the END of the transaction to allow code to persist
-                // during the transaction (important for reentrancy with transient storage)
-                const was_created_this_tx = evm_ptr.created_accounts.contains(self.address);
+                // EIP-6780 (Cancun+): Only delete if created in same transaction
+                // Pre-Cancun: Always delete the account
+                if (self.hardfork.isAtLeast(.CANCUN)) {
+                    // EIP-6780: Mark account for deletion ONLY if created in same transaction
+                    const was_created_this_tx = evm_ptr.created_accounts.contains(self.address);
 
-                if (was_created_this_tx) {
-                    // Mark for deletion - actual deletion at end of transaction
+                    if (was_created_this_tx) {
+                        // Mark for deletion - actual deletion at end of transaction
+                        try evm_ptr.selfdestructed_accounts.put(self.address, {});
+
+                        // EIP-6780: Set originator balance to 0 UNCONDITIONALLY when created in same tx
+                        // This matches Python reference: set_account_balance(state, originator, U256(0))
+                        // - If beneficiary != originator: this is a no-op (balance already 0 from move_ether)
+                        // - If beneficiary == originator: this burns the ether (overriding move_ether's increase)
+                        try evm_ptr.setBalanceWithSnapshot(self.address, 0);
+                    }
+                    // If not created in same tx: balance transferred but code/storage/nonce persist
+                } else {
+                    // Pre-Cancun behavior: Always mark for deletion
                     try evm_ptr.selfdestructed_accounts.put(self.address, {});
                 }
-                // Balance already transferred above, code persists until end of transaction per EIP-6780
 
                 // Apply refund to EVM's gas_refund counter
                 const refund = self.selfdestructRefund();
