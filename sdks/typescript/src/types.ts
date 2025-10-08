@@ -30,7 +30,7 @@ export interface ExecutionContext {
 }
 
 /**
- * Blockchain context
+ * Blockchain context - all fields required
  */
 export interface BlockchainContext {
   /** Chain ID (e.g., 1 for mainnet) */
@@ -39,10 +39,60 @@ export interface BlockchainContext {
   blockNumber: bigint;
   /** Block timestamp (seconds since epoch) */
   blockTimestamp: bigint;
+  /** Block difficulty (or 0 for PoS) */
+  blockDifficulty: bigint;
+  /** Block prevrandao (replaces difficulty in PoS) */
+  blockPrevrandao: bigint;
   /** Coinbase address (block.coinbase) */
   blockCoinbase: Address;
   /** Block gas limit */
   blockGasLimit: bigint;
+  /** Base fee per gas (EIP-1559) */
+  blockBaseFee: bigint;
+  /** Blob base fee (EIP-4844) */
+  blobBaseFee: bigint;
+}
+
+/**
+ * Hardfork names - controls which EVM features are enabled
+ */
+export type Hardfork =
+  | 'FRONTIER'
+  | 'HOMESTEAD'
+  | 'DAO'
+  | 'TANGERINE_WHISTLE'
+  | 'SPURIOUS_DRAGON'
+  | 'BYZANTIUM'
+  | 'CONSTANTINOPLE'
+  | 'PETERSBURG'
+  | 'ISTANBUL'
+  | 'MUIR_GLACIER'
+  | 'BERLIN'
+  | 'LONDON'
+  | 'ARROW_GLACIER'
+  | 'GRAY_GLACIER'
+  | 'MERGE'
+  | 'SHANGHAI'
+  | 'CANCUN'
+  | 'PRAGUE'
+  | 'OSAKA';
+
+/**
+ * Access list entry (EIP-2930)
+ */
+export interface AccessListEntry {
+  /** Address to pre-warm */
+  address: Address;
+  /** Storage slots to pre-warm for this address */
+  storageKeys: U256[];
+}
+
+/**
+ * EVM creation options
+ */
+export interface EvmOptions {
+  /** Hardfork to use (default: PRAGUE) */
+  hardfork?: Hardfork;
 }
 
 /**
@@ -81,8 +131,19 @@ export interface Evm {
 
   /**
    * Set blockchain context (chain_id, block number, timestamp, etc.)
+   * REQUIRED before calling execute()
    */
   setBlockchainContext(ctx: BlockchainContext): Promise<void>;
+
+  /**
+   * Set access list (EIP-2930) - optional, call before execute()
+   */
+  setAccessList(accessList: AccessListEntry[]): Promise<void>;
+
+  /**
+   * Set blob versioned hashes (EIP-4844) - optional, call before execute()
+   */
+  setBlobHashes(hashes: Bytes[]): Promise<void>;
 
   /**
    * Execute the EVM with current context
