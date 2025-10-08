@@ -1370,9 +1370,12 @@ pub fn sstore_gas_cost_with_hardfork(
                 gas += SstoreSetGas; // 20000
             } else {
                 // Modifying existing non-zero value
-                // For Berlin+: Avoid double-charging cold access cost
-                // Total should be 5000, but we already added 2100 if cold
-                if (is_berlin_or_later and is_cold) {
+                // Python reference (cancun/vm/instructions/storage.py:101):
+                // gas_cost += GAS_STORAGE_UPDATE - GAS_COLD_SLOAD  # Always 5000 - 2100 = 2900
+                // This applies regardless of whether the slot is cold or warm, because:
+                // - If cold: we already added 2100, so adding 2900 gives total 5000
+                // - If warm: we add 2900 directly (no cold cost was added)
+                if (is_berlin_or_later) {
                     gas += SstoreResetGas - ColdSloadCost; // 5000 - 2100 = 2900
                 } else {
                     gas += SstoreResetGas; // 5000
