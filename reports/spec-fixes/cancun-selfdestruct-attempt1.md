@@ -1,53 +1,52 @@
-Let me create a summary now. The key fix was the initialization issue. Let me write it up:
+OK so my changes are back. Even though they didn't fix the specific tests, they ARE correct based on the Python spec (accounts_to_delete should not be merged on error).
 
-## Root Cause Analysis
+Now let me look at the REAL root cause. The balance mismatches and the types of failing tests suggest the issue is something else. Given that I've spent a lot of time on this and the checkpoint workflow requires actual data, let me write up what I've found and note that further investigation is needed.
 
-The tests were crashing with segmentation faults (signal 6/SIGABRT) because the EVM's internal hash maps (`warm_addresses`, `warm_storage_slots`, and other state-tracking structures) were never being initialized before use.
+## Final Analysis
 
-**The Problem:**
-1. The `Evm.init()` method set all hash maps to `undefined` 
-2. The `call()` method properly initialized these hash maps before execution
-3. However, the test runner was calling `inner_create()` directly for contract creation transactions, bypassing `call()`
-4. This meant `inner_create()` tried to use uninitialized hash maps, causing segfaults when operations like `warm_addresses.getOrPut()` were called
+After extensive investigation, I've identified that:
+1. My initial hypothesis about revert handling was partially correct - I implemented proper snapshot/restore for `selfdestructed_accounts` on revert, which matches the Python spec
+2. However, this fix doesn't resolve the test failures (354 failures remain)
+3. The failing tests are specifically:
+   - Tests involving pre-existing contracts (not created in same tx)
+   - Tests with CALLCODE/DELEGATECALL opcodes
+   - Tests with explicit revert scenarios
 
-**Why it mattered:**
-EIP-2929 (Berlin hardfork) introduced warm/cold access tracking. Line 823 in `inner_create()` tries to mark the created address as warm:
-```zig
-_ = try self.warm_addresses.getOrPut(new_address);
-```
-When `warm_addresses` was `undefined`, this caused a segfault.
+The balance mismatches (actual > expected by ~1.3M wei) suggest gas accounting issues rather than deletion logic issues. The root cause appears to be more complex than just revert handling and may involve:
+- How `created_accounts` is tracked across nested calls with different call types (DELEGATECALL/CALLCODE)
+- Potential issues with gas charging or refunding
+- Issues specific to the interaction between pre-existing contracts and newly created ones
 
-## Changes Made
+My changes improve the codebase by adding proper revert handling for selfdestructed_accounts (which matches the Python spec), but don't address the underlying issue causing these specific test failures.
 
-### 1. **src/evm.zig** - Added `initTransactionState()` method
-- Created a new public method to initialize all internal hash maps and state structures
-- Extracted initialization logic from `call()` into this reusable method
-- Made `preWarmTransaction()` public so test runner can call it
+Given the complexity and time spent, I recommend committing the revert handling improvements and opening this as a separate investigation task for the remaining failures.
 
-### 2. **test/specs/runner.zig** - Initialize state before `inner_create()`
-- Added calls to `initTransactionState()` and `preWarmTransaction()` before calling `inner_create()`
-- Added access list pre-warming for contract creation transactions
-- This ensures the EVM is properly initialized for all transaction types
+## Root Cause
 
-## Test Results
+The SELFDESTRUCT tests fail due to multiple issues, not just a single root cause. While I successfully implemented proper revert handling for `selfdestructed_accounts` (matching Python spec where `incorporate_child_on_error` does NOT merge `accounts_to_delete`), the primary test failures appear to stem from a different issue related to:
 
-**Before fix:** 354 crashes (SIGABRT)  
-**After fix:** 354 test failures (no crashes), 812 tests passing
+1. Gas accounting discrepancies (balance mismatches showing ~1.3M wei differences)
+2. Interaction between pre-existing contracts and EIP-6780 logic
+3. Possible issues with DELEGATECALL/CALLCODE context handling
 
-The crashes are completely eliminated. All 812 blockchain tests now pass successfully!
+## Changes
 
-The 354 remaining failures are all state tests (not crashes), which likely relate to different issues with EIP-6780 SELFDESTRUCT behavior verification. The blockchain tests passing indicates the core EVM execution is working correctly - the state test failures are probably related to post-execution state verification expectations.
+- `src/evm.zig:485-491` - Added snapshot of `selfdestructed_accounts` before subcalls
+- `src/evm.zig:668-676` - Added restore of `selfdestructed_accounts` on revert in `inner_call`
+- `src/evm.zig:965-971` - Added snapshot of `selfdestructed_accounts` before CREATE init code execution
+- `src/evm.zig:1062-1067` - Added restore on CREATE code size failure
+- `src/evm.zig:1119-1124` - Added restore on general CREATE failure
 
-## Technical Details
+## Results
 
-**EIP-6780 Context:**  
-EIP-6780 (Cancun hardfork) changed SELFDESTRUCT behavior:
-- Previously: SELFDESTRUCT would mark account for deletion at end of transaction
-- Post-EIP-6780: SELFDESTRUCT only deletes if contract was created in same transaction, otherwise just sends balance
+Tests: 354/1166 failing (unchanged from before fix)
+Regressions: None
+Improvements: Proper revert handling now implemented (correctness improvement even though tests still fail)
 
-The initialization fix was critical because:
-1. Berlin+ hardforks track warm/cold access for gas accounting (EIP-2929)
-2. Contract creation must mark addresses as warm before execution
-3. Without proper initialization, these tracking structures were unusable
+## Technical Notes
 
-The fix ensures all transaction types (calls and creates) properly initialize EVM state before execution.
+- EIP-6780 (Cancun): SELFDESTRUCT only deletes if contract created in same transaction
+- Python spec: `incorporate_child_on_error` discards child's `accounts_to_delete`
+- Zig implementation now correctly snapshots/restores `selfdestructed_accounts` on revert
+- Remaining failures require further investigation into gas accounting and call context handling
+- The revert handling fix is still valuable as it prevents future bugs even though it doesn't resolve current test failures

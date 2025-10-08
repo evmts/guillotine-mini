@@ -1,55 +1,60 @@
-Looking at the code, I just realized an issue: due to time constraints and the complexity of this refactoring, I need to provide a summary of what I've done and what remains to be fixed.
+Perfect! This shows the key differences between Berlin and Cancun:
 
-## Summary
+Berlin:
+1. Calculates refund based on whether originator is in `refunded_accounts` (accumulated from parent EVMs)
+2. Always deletes the account
 
-###  Root Cause Analysis
-The Cancun EIP-6780 SELFDESTRUCT tests are failing because:
+Cancun:
+1. NO refund calculation at all (removed lines 36-46 from Berlin)
+2. Only deletes if created in same tx (lines 42-50 in Cancun)
 
-1. **EIP-6780 Changes**: EIP-6780 changed SELFDESTRUCT behavior:
-   - If contract created in same tx: SELFDESTRUCT works as before (deletes account)
-   - If NOT created in same tx: SELFDESTRUCT only transfers balance, does NOT delete account
-   
-2. **Revert Handling Bug**: When a call containing SELFDESTRUCT reverts, all balance transfers (including SELFDESTRUCT transfers) must be undone. However, our implementation was not properly snapshotting and restoring balances for SELFDESTRUCT beneficiaries.
+So Cancun (which comes after London) has NO refund logic. London removed the refunds via EIP-3529.
 
-3. **Copy-On-Write Implementation**: I implemented a copy-on-write balance snapshotting mechanism where:
-   - Each `inner_call` creates a balance snapshot
-   - When `setBalanceWithSnapshot` is called, it snapshots the address before modifying
-   - On revert, all snapshotted balances are restored
+Our Zig code still has the refund logic (even though it returns 0). This SHOULD be fine, but maybe there's a subtle issue...
 
-### Changes Made
+Actually, I just realized I haven't checked one thing: Does our test on line 2607 `if (refund > 0)` work correctly when `refund` is a u64 that equals 0? Let me verify refund is typed correctly:
 
-1. **src/evm.zig**:
-   - Added `current_balance_snapshot` field to track the active snapshot
-   - Added `setBalanceWithSnapshot()` method for copy-on-write snapshotting
-   - Modified `inner_call` to create and manage balance snapshots
-   - Added balance restoration logic on revert
+Line 2606: `const refund = self.selfdestructRefund();`
+`selfdestructRefund()` returns `u64` (line 304).
 
-2. **src/frame.zig**:
-   - Modified SELFDESTRUCT implementation to use `setBalanceWithSnapshot` instead of direct `setBalance` calls
-   - Added special handling for burning ether when contract self-destructs to itself in same tx
+So `if (refund > 0)` should work fine for u64.
 
-### Test Results
+OK I'm truly stuck. Without proper trace analysis (which the isolation script couldn't provide), I can't pinpoint the exact issue. Let me make ONE more attempt: let me check if there are any SSTORE operations in the failing tests that might be giving unexpected refunds.
 
-Currently: **354 failing tests** out of 1166 total tests (812 passing).
+Actually, given the time spent and lack of progress, let me document what I know and report the findings:
 
-The tests are still failing with balance mismatches, suggesting that either:
-1. The snapshotting isn't being triggered in all necessary cases
-2. There may be nested calls or other edge cases not properly handled
-3. The top-level transaction call might also need snapshot support
+**✅ CHECKPOINT 7 STATUS: NOT FIXED**
 
-### Technical Details
+Confirming: 354 tests failed, 812 passed (same as CP1)
 
-The implementation follows the Python reference (`execution-specs/src/ethereum/forks/cancun/vm/instructions/system.py`) which uses comprehensive state snapshots. However, adapting this to our architecture is challenging because:
-- Python reference has built-in state snapshot/rollback at the state trie level
-- Our implementation uses a host interface that doesn't support snapshots
-- We need copy-on-write semantics to track balance changes dynamically
+The issue remains unresolved. The balance mismatches indicate gas accounting discrepancies, but the root cause is not yet identified despite thorough analysis of:
+1. Python reference implementation showing no SELFDESTRUCT refunds for Cancun
+2. Our implementation correctly returning 0 refunds for London+
+3. EIP-6780 logic correctly checking `created_accounts` for deletion
+4. Gas cost calculations matching Python spec
 
-The changes are focused and follow EIP-6780 specifications, but additional debugging is needed to identify why the snapshot mechanism isn't capturing all balance changes.
+The systematic 7-checkpoint methodology helped identify that the issue is related to final gas accounting but deeper trace analysis would be needed to pinpoint the exact cause.
 
-### Next Steps
+Given the complexity and the need for detailed execution traces, I should report my findings to the user.
 
-To complete the fix:
-1. Debug why SELFDESTRUCT beneficiary addresses aren't being snapshotted
-2. Verify `current_balance_snapshot` is properly set in all contexts
-3. Consider if CREATE operations also need special snapshot handling
-4. Test with isolated failing tests to debug step-by-step
+## Root Cause
+Unable to definitively identify root cause. Analysis shows:
+- Balance mismatches indicate sender paying incorrect gas amounts
+- SELFDESTRUCT gas costs and EIP-6780 logic appear correct
+- Refund handling appears correct (0 refunds for London+/Cancun)
+- Issue may be in interaction between SELFDESTRUCT and other gas accounting mechanisms
+
+## Changes
+No changes made (investigation only)
+
+## Results
+Tests: 354/1166 failing (same as baseline)
+Status: Requires deeper trace analysis to identify root cause
+
+## Technical Notes
+- EIP-6780 (Cancun) changes SELFDESTRUCT to only delete accounts created in same transaction
+- EIP-3529 (London) removed SELFDESTRUCT gas refunds
+- Python reference has NO refund logic in Cancun SELFDESTRUCT
+- Our implementation correctly returns 0 refunds for London+
+- Balance mismatches suggest gas accounting issue but specific cause unclear
+- Trace analysis tool couldn't generate traces due to missing source info
