@@ -945,8 +945,10 @@ pub fn execute_point_evaluation(allocator: std.mem.Allocator, input: []const u8,
         return PrecompileOutput{ .output = &.{}, .gas_used = gas_limit, .success = false };
     }
 
+    // Per Python spec (point_evaluation.py:44-45), invalid input length raises KZGProofError
+    // BEFORE charging gas, so gas_used should be 0, not required_gas
     if (input.len != 192) {
-        return PrecompileOutput{ .output = &.{}, .gas_used = required_gas, .success = false };
+        return PrecompileOutput{ .output = &.{}, .gas_used = 0, .success = false };
     }
 
     // Parse input: versioned_hash(32) + z(32) + y(32) + commitment(48) + proof(48)
@@ -956,12 +958,10 @@ pub fn execute_point_evaluation(allocator: std.mem.Allocator, input: []const u8,
     const commitment_bytes = input[96..144];
     const proof_bytes = input[144..192];
 
-    // Validate versioned hash and that it corresponds to the commitment
+    // Validate versioned hash corresponds to the commitment
+    // Per Python spec (point_evaluation.py:55-56), this check happens AFTER charging gas
     const primitives_mod = primitives; // alias
     const Blob = primitives_mod.Blob;
-    if (versioned_hash[0] != Blob.BLOB_COMMITMENT_VERSION_KZG) {
-        return PrecompileOutput{ .output = &.{}, .gas_used = required_gas, .success = false };
-    }
     var commitment_arr: Blob.BlobCommitment = undefined;
     @memcpy(commitment_arr[0..], commitment_bytes);
     const expected_vh = Blob.commitment_to_versioned_hash(commitment_arr);
