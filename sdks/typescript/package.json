@@ -1,0 +1,37 @@
+{
+  "name": "@tevm/guillotine-mini",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Guillotine Mini EVM (WASM)",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist",
+    "wasm"
+  ],
+  "keywords": [
+    "ethereum",
+    "evm",
+    "wasm",
+    "blockchain"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
