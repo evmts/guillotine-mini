@@ -810,22 +810,26 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
             }
 
-            // Add access list cost if present
+            // Add access list cost if present (EIP-2930)
+            // Access lists reduce cold account/storage access costs by pre-declaring them
+            // Format: accessLists is array of arrays, each inner array has {address, storageKeys} objects
             if (tx.object.get("accessLists")) |access_lists_json| {
-                // accessLists is an array of access lists (one per data/gas/value combo)
                 if (access_lists_json == .array and access_lists_json.array.items.len > 0) {
-                    const access_list_json = access_lists_json.array.items[0];
-                    if (access_list_json == .array) {
-                        for (access_list_json.array.items) |entry| {
-                            // Each entry costs ACCESS_LIST_ADDRESS_COST (2400 gas)
-                            const addr_cost = primitives.AccessList.ACCESS_LIST_ADDRESS_COST;
-                            intrinsic_gas += addr_cost;
+                    // Get first access list (tests use array of arrays to support multiple data/gas combos)
+                    const first_access_list = access_lists_json.array.items[0];
+                    if (first_access_list == .array) {
+                        // Iterate through access list entries
+                        for (first_access_list.array.items) |access_entry| {
+                            if (access_entry == .object) {
+                                // Charge per-address cost (2400 gas per EIP-2930)
+                                intrinsic_gas += primitives.AccessList.ACCESS_LIST_ADDRESS_COST;
 
-                            // Add cost for storage keys (1900 gas each)
-                            if (entry.object.get("storageKeys")) |keys| {
-                                if (keys == .array) {
-                                    const keys_cost = @as(u64, @intCast(keys.array.items.len)) * primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST;
-                                    intrinsic_gas += keys_cost;
+                                // Charge per-storage-key cost (1900 gas each per EIP-2930)
+                                if (access_entry.object.get("storageKeys")) |storage_keys| {
+                                    if (storage_keys == .array) {
+                                        const num_keys = @as(u64, @intCast(storage_keys.array.items.len));
+                                        intrinsic_gas += num_keys * primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST;
+                                    }
                                 }
                             }
                         }
@@ -1090,6 +1094,31 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     }
                 }
 
+                // Process authorization list (EIP-7702, Prague+)
+                if (tx.object.get("authorizationList")) |auth_list_json| {
+                    if (auth_list_json == .array) {
+                        for (auth_list_json.array.items) |auth_json| {
+                            // Parse authority address (signer)
+                            const authority_hex = auth_json.object.get("signer").?.string;
+                            const authority = try parseAddress(authority_hex);
+
+                            // Mark authority as accessed (warm)
+                            _ = try evm_instance.warm_addresses.getOrPut(authority);
+
+                            // If authority account exists, refund PER_EMPTY_ACCOUNT_COST - PER_AUTH_BASE_COST
+                            const authority_balance = test_host.balances.get(authority) orelse 0;
+                            const authority_nonce = test_host.getNonce(authority);
+                            const authority_code = test_host.code.get(authority) orelse &[_]u8{};
+
+                            // account_exists = balance > 0 || nonce > 0 || code.len > 0
+                            if (authority_balance > 0 or authority_nonce > 0 or authority_code.len > 0) {
+                                // Refund for existing account
+                                evm_instance.gas_refund += primitives.Authorization.PER_EMPTY_ACCOUNT_COST - primitives.Authorization.PER_AUTH_BASE_COST;
+                            }
+                        }
+                    }
+                }
+
                 const create_result = try evm_instance.inner_create(
                     value,
                     tx_data,  // initcode
@@ -1102,7 +1131,29 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     .output = &[_]u8{},  // CREATE doesn't return data, just address on stack
                 };
             } else blk: {
+                // Regular call - process authorizations (EIP-7702, Prague+)
+                // Note: Must process authorizations BEFORE call() since they affect gas_refund
+                if (tx.object.get("authorizationList")) |auth_list_json| {
+                    if (auth_list_json == .array) {
+                        for (auth_list_json.array.items) |auth_json| {
+                            const authority_hex = auth_json.object.get("signer").?.string;
+                            const authority = try parseAddress(authority_hex);
+
+                            const authority_balance = test_host.balances.get(authority) orelse 0;
+                            const authority_nonce = test_host.getNonce(authority);
+                            const authority_code = test_host.code.get(authority) orelse &[_]u8{};
+
+                            // If authority account exists, refund PER_EMPTY_ACCOUNT_COST - PER_AUTH_BASE_COST
+                            // account_exists = balance > 0 || nonce > 0 || code.len > 0
+                            if (authority_balance > 0 or authority_nonce > 0 or authority_code.len > 0) {
+                                evm_instance.gas_refund += primitives.Authorization.PER_EMPTY_ACCOUNT_COST - primitives.Authorization.PER_AUTH_BASE_COST;
+                            }
+                        }
+                    }
+                }
+
                 // Regular call - use call method
+                // call() will initialize transaction state and handle access list warming
                 break :blk try evm_instance.call(
                     bytecode,
                     @intCast(execution_gas),
