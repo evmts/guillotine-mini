@@ -24,11 +24,14 @@ const ExecutionContext = struct {
     address: Address,
     value: u256,
     calldata: []const u8,
+    access_list_addresses: []Address,
+    access_list_storage_keys: []evm.AccessListStorageKey,
+    blob_versioned_hashes: ?[]const [32]u8,
     result: ?CallResult,
 };
 
-/// Create a new Evm instance
-export fn evm_create() ?*EvmHandle {
+/// Create a new Evm instance with optional hardfork name (null/empty = default Prague)
+export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize) ?*EvmHandle {
     const ctx = allocator.create(ExecutionContext) catch return null;
 
     const evm_ptr = allocator.create(Evm) catch {
@@ -36,7 +39,11 @@ export fn evm_create() ?*EvmHandle {
         return null;
     };
 
-    evm_ptr.* = Evm.init(allocator, null, null, null) catch {
+    const Hardfork = @import("hardfork.zig").Hardfork;
+    const hardfork_slice = hardfork_name[0..hardfork_len];
+    const hardfork = if (hardfork_len == 0) null else Hardfork.fromString(hardfork_slice);
+
+    evm_ptr.* = Evm.init(allocator, null, hardfork, null) catch {
         allocator.destroy(evm_ptr);
         allocator.destroy(ctx);
         return null;
@@ -50,6 +57,9 @@ export fn evm_create() ?*EvmHandle {
         .address = ZERO_ADDRESS,
         .value = 0,
         .calldata = &[_]u8{},
+        .access_list_addresses = &[_]Address{},
+        .access_list_storage_keys = &[_]evm.AccessListStorageKey{},
+        .blob_versioned_hashes = null,
         .result = null,
     };
 
@@ -132,14 +142,18 @@ export fn evm_set_execution_context(
     return false;
 }
 
-/// Set blockchain context
+/// Set blockchain context (required before execution)
 export fn evm_set_blockchain_context(
     handle: ?*EvmHandle,
-    chain_id: u64,
+    chain_id_bytes: [*]const u8,  // 32 bytes
     block_number: u64,
     block_timestamp: u64,
-    block_coinbase_bytes: [*]const u8,
+    block_difficulty_bytes: [*]const u8,  // 32 bytes
+    block_prevrandao_bytes: [*]const u8,  // 32 bytes
+    block_coinbase_bytes: [*]const u8,  // 20 bytes
     block_gas_limit: u64,
+    block_base_fee_bytes: [*]const u8,  // 32 bytes
+    blob_base_fee_bytes: [*]const u8,  // 32 bytes
 ) void {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
@@ -147,18 +161,138 @@ export fn evm_set_blockchain_context(
         var block_coinbase: Address = undefined;
         @memcpy(&block_coinbase.bytes, block_coinbase_bytes[0..20]);
 
+        // Convert bytes to u256 (big-endian)
+        var chain_id: u256 = 0;
+        var block_difficulty: u256 = 0;
+        var block_prevrandao: u256 = 0;
+        var block_base_fee: u256 = 0;
+        var blob_base_fee: u256 = 0;
+
+        var i: usize = 0;
+        while (i < 32) : (i += 1) {
+            chain_id = (chain_id << 8) | chain_id_bytes[i];
+            block_difficulty = (block_difficulty << 8) | block_difficulty_bytes[i];
+            block_prevrandao = (block_prevrandao << 8) | block_prevrandao_bytes[i];
+            block_base_fee = (block_base_fee << 8) | block_base_fee_bytes[i];
+            blob_base_fee = (blob_base_fee << 8) | blob_base_fee_bytes[i];
+        }
+
         ctx.evm.block_context = .{
             .chain_id = chain_id,
             .block_number = block_number,
             .block_timestamp = block_timestamp,
-            .block_difficulty = 0,
-            .block_prevrandao = 0,
+            .block_difficulty = block_difficulty,
+            .block_prevrandao = block_prevrandao,
             .block_coinbase = block_coinbase,
             .block_gas_limit = block_gas_limit,
-            .block_base_fee = 0,
-            .blob_base_fee = 0,
+            .block_base_fee = block_base_fee,
+            .blob_base_fee = blob_base_fee,
         };
     }
+}
+
+/// Set access list addresses (EIP-2930) - call before execute
+export fn evm_set_access_list_addresses(
+    handle: ?*EvmHandle,
+    addresses: [*]const u8,  // Packed 20-byte addresses
+    count: usize,
+) bool {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+
+        // Free old access list if any
+        if (ctx.access_list_addresses.len > 0) {
+            allocator.free(ctx.access_list_addresses);
+        }
+
+        if (count == 0) {
+            ctx.access_list_addresses = &[_]Address{};
+            return true;
+        }
+
+        const addr_list = allocator.alloc(Address, count) catch return false;
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            @memcpy(&addr_list[i].bytes, addresses[i * 20 .. (i + 1) * 20]);
+        }
+
+        ctx.access_list_addresses = addr_list;
+        return true;
+    }
+    return false;
+}
+
+/// Set access list storage keys (EIP-2930) - call before execute
+export fn evm_set_access_list_storage_keys(
+    handle: ?*EvmHandle,
+    addresses: [*]const u8,  // Packed 20-byte addresses
+    slots: [*]const u8,  // Packed 32-byte slots
+    count: usize,
+) bool {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+
+        // Free old storage keys if any
+        if (ctx.access_list_storage_keys.len > 0) {
+            allocator.free(ctx.access_list_storage_keys);
+        }
+
+        if (count == 0) {
+            ctx.access_list_storage_keys = &[_]evm.AccessListStorageKey{};
+            return true;
+        }
+
+        const keys = allocator.alloc(evm.AccessListStorageKey, count) catch return false;
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            var addr: Address = undefined;
+            @memcpy(&addr.bytes, addresses[i * 20 .. (i + 1) * 20]);
+
+            // Convert slot bytes to u256
+            var slot: u256 = 0;
+            var j: usize = 0;
+            while (j < 32) : (j += 1) {
+                slot = (slot << 8) | slots[i * 32 + j];
+            }
+
+            keys[i] = .{ .address = addr, .slot = slot };
+        }
+
+        ctx.access_list_storage_keys = keys;
+        return true;
+    }
+    return false;
+}
+
+/// Set blob versioned hashes (EIP-4844) - call before execute
+export fn evm_set_blob_hashes(
+    handle: ?*EvmHandle,
+    hashes: [*]const u8,  // Packed 32-byte hashes
+    count: usize,
+) bool {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+
+        // Free old blob hashes if any
+        if (ctx.blob_versioned_hashes) |old_hashes| {
+            allocator.free(old_hashes);
+        }
+
+        if (count == 0) {
+            ctx.blob_versioned_hashes = null;
+            return true;
+        }
+
+        const hash_list = allocator.alloc([32]u8, count) catch return false;
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            @memcpy(&hash_list[i], hashes[i * 32 .. (i + 1) * 32]);
+        }
+
+        ctx.blob_versioned_hashes = hash_list;
+        return true;
+    }
+    return false;
 }
 
 /// Execute the EVM with current context
@@ -168,6 +302,15 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
 
         if (ctx.bytecode.len == 0) return false;
 
+        // Build access list if provided
+        const access_list = if (ctx.access_list_addresses.len > 0 or ctx.access_list_storage_keys.len > 0)
+            evm.AccessListParam{
+                .addresses = ctx.access_list_addresses,
+                .storage_keys = ctx.access_list_storage_keys,
+            }
+        else
+            null;
+
         const result = ctx.evm.call(
             ctx.bytecode,
             ctx.gas,
@@ -175,8 +318,8 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
             ctx.address,
             ctx.value,
             ctx.calldata,
-            null,
-            null,
+            access_list,
+            ctx.blob_versioned_hashes,
         ) catch return false;
 
         ctx.result = result;
