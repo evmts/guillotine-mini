@@ -11,21 +11,6 @@
 
 import { createEvm, type ExecutionContext, type BlockchainContext } from '../src/index.js';
 
-// Helper to convert hex string to Uint8Array
-function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.replace(/^0x/, '');
-  const bytes = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
-  }
-  return bytes;
-}
-
-// Helper to convert bytes to hex
-function bytesToHex(bytes: Uint8Array): string {
-  return '0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
 async function testCustomAddOpcode() {
   console.log('\n=== Test: Custom ADD Opcode (0x01) ===\n');
 
@@ -36,8 +21,7 @@ async function testCustomAddOpcode() {
     // Simple bytecode: PUSH1 5, PUSH1 3, ADD, PUSH1 0, MSTORE, PUSH1 32, PUSH1 0, RETURN
     // Expected result without override: 5 + 3 = 8
     // Expected result with override: 5 * 3 = 15 (we'll override ADD to multiply)
-    const bytecode = hexToBytes(
-      '0x' +
+    const bytecode = '0x' +
       '6005' +  // PUSH1 5
       '6003' +  // PUSH1 3
       '01' +    // ADD (we want to override this)
@@ -45,17 +29,16 @@ async function testCustomAddOpcode() {
       '52' +    // MSTORE
       '6020' +  // PUSH1 32
       '6000' +  // PUSH1 0
-      'f3'      // RETURN
-    );
+      'f3';     // RETURN
 
     await evm.setBytecode(bytecode);
 
     const execCtx: ExecutionContext = {
       gas: 1000000n,
-      caller: new Uint8Array(20),
-      address: new Uint8Array(20),
+      caller: '0x0000000000000000000000000000000000000000',
+      address: '0x0000000000000000000000000000000000000000',
       value: 0n,
-      calldata: new Uint8Array(0),
+      calldata: '0x',
     };
 
     const blockCtx: BlockchainContext = {
@@ -64,7 +47,7 @@ async function testCustomAddOpcode() {
       blockTimestamp: 1234567890n,
       blockDifficulty: 0n,
       blockPrevrandao: 0n,
-      blockCoinbase: new Uint8Array(20),
+      blockCoinbase: '0x0000000000000000000000000000000000000000',
       blockGasLimit: 30000000n,
       blockBaseFee: 1000000000n,
       blobBaseFee: 1n,
@@ -79,11 +62,12 @@ async function testCustomAddOpcode() {
       success: result.success,
       gasUsed: result.gasUsed.toString(),
       gasRemaining: result.gasRemaining.toString(),
-      output: bytesToHex(result.output),
+      output: result.output,
     });
 
     // Parse result: should be 8 (0x0000000000000000000000000000000000000000000000000000000000000008)
-    const value = result.output[31]; // Get the last byte
+    const outputBytes = result.output.slice(2); // Remove 0x prefix
+    const value = parseInt(outputBytes.slice(-2), 16); // Get the last byte
     console.log(`Result value: ${value} (expected 8 without override, 15 with multiply override)`);
 
     if (value === 8) {
@@ -121,8 +105,7 @@ async function testCustomPrecompile() {
     // PUSH1 0x99 (address - custom precompile)
     // PUSH2 10000 (gas)
     // CALL
-    const bytecode = hexToBytes(
-      '0x' +
+    const bytecode = '0x' +
       '6014' +    // PUSH1 20 (return size)
       '6000' +    // PUSH1 0 (return offset)
       '6000' +    // PUSH1 0 (args size)
@@ -130,17 +113,16 @@ async function testCustomPrecompile() {
       '6000' +    // PUSH1 0 (value)
       '6099' +    // PUSH1 0x99 (custom precompile address)
       '612710' +  // PUSH2 10000 (gas)
-      'f1'        // CALL
-    );
+      'f1';       // CALL
 
     await evm.setBytecode(bytecode);
 
     const execCtx: ExecutionContext = {
       gas: 1000000n,
-      caller: new Uint8Array(20),
-      address: new Uint8Array(20),
+      caller: '0x0000000000000000000000000000000000000000',
+      address: '0x0000000000000000000000000000000000000000',
       value: 0n,
-      calldata: new Uint8Array(0),
+      calldata: '0x',
     };
 
     const blockCtx: BlockchainContext = {
@@ -149,7 +131,7 @@ async function testCustomPrecompile() {
       blockTimestamp: 1234567890n,
       blockDifficulty: 0n,
       blockPrevrandao: 0n,
-      blockCoinbase: new Uint8Array(20),
+      blockCoinbase: '0x0000000000000000000000000000000000000000',
       blockGasLimit: 30000000n,
       blockBaseFee: 1000000000n,
       blobBaseFee: 1n,
@@ -175,7 +157,7 @@ async function testCustomPrecompile() {
     //   hardfork: 'CANCUN',
     //   precompileOverrides: [
     //     {
-    //       address: new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x99]),
+    //       address: '0x0000000000000000000000000000000000000099',
     //       execute: customPrecompileHandler
     //     }
     //   ]

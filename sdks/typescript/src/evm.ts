@@ -126,7 +126,9 @@ class EvmImpl implements Evm {
     // Store references to prevent garbage collection
     opcodeOverrides.forEach(o => this.opcodeHandlers.set(o.opcode, o.handler));
     precompileOverrides.forEach(o => {
-      const key = Array.from(o.address).join(',');
+      // Convert address hex string to bytes for storage key
+      const addressBytes = addressToBytes(o.address);
+      const key = Array.from(addressBytes).join(',');
       this.precompileHandlers.set(key, o.execute);
     });
 
@@ -162,15 +164,18 @@ class EvmImpl implements Evm {
           try {
             const memory = new Uint8Array(this.wasm.exports.memory.buffer);
             const address = memory.slice(addressPtr, addressPtr + 20);
-            const input = memory.slice(inputPtr, inputPtr + inputLen);
+            const inputBytes = memory.slice(inputPtr, inputPtr + inputLen);
 
             // Find matching precompile handler
             const addrKey = Array.from(address).join(',');
             const handler = this.precompileHandlers.get(addrKey);
             if (!handler) return 0; // No custom handler for this address
 
+            // Convert input bytes to hex string for handler
+            const inputHex = bytesToHex(inputBytes);
+
             // Execute handler (note: must be synchronous)
-            const resultPromise = handler(input, gasLimit);
+            const resultPromise = handler(inputHex, gasLimit);
 
             // Check if handler returned a Promise (async)
             if (resultPromise instanceof Promise) {
@@ -181,15 +186,17 @@ class EvmImpl implements Evm {
             // Handler is synchronous
             const result = resultPromise as any;
 
-            // Write output to WASM memory
+            // Convert output hex string to bytes and write to WASM memory
             if (result.output && result.output.length > 0) {
+              const outputBytes = hexToBytes(result.output);
+
               // Allocate memory for output (simplified - in production use proper allocator)
-              const outputPtr = memory.length - result.output.length;
-              memory.set(result.output, outputPtr);
+              const outputPtr = memory.length - outputBytes.length;
+              memory.set(outputBytes, outputPtr);
 
               // Write output pointer and length
               const view = new DataView(memory.buffer);
-              view.setUint32(outputLenPtr, result.output.length, true);
+              view.setUint32(outputLenPtr, outputBytes.length, true);
               view.setUint32(outputPtrPtr, outputPtr, true);
             } else {
               const view = new DataView(memory.buffer);
@@ -250,11 +257,12 @@ class EvmImpl implements Evm {
     await this.ready();
     if (!this.wasm) throw new Error("WASM not initialized");
 
-    const ptr = this.allocateAndCopy(bytecode);
+    const bytecodeBytes = hexToBytes(bytecode);
+    const ptr = this.allocateAndCopy(bytecodeBytes);
     const result = this.wasm.exports.evm_set_bytecode(
       this.handle,
       ptr,
-      bytecode.length,
+      bytecodeBytes.length,
     );
     if (result === 0) {
       throw new Error("Failed to set bytecode");
@@ -265,12 +273,15 @@ class EvmImpl implements Evm {
     await this.ready();
     if (!this.wasm) throw new Error("WASM not initialized");
 
-    const callerPtr = this.allocateAndCopy(ctx.caller);
-    const addressPtr = this.allocateAndCopy(ctx.address);
+    const callerBytes = addressToBytes(ctx.caller);
+    const addressBytes = addressToBytes(ctx.address);
     const valueBytes = bigintToU256(ctx.value);
+    const calldataBytes = hexToBytes(ctx.calldata);
+
+    const callerPtr = this.allocateAndCopy(callerBytes);
+    const addressPtr = this.allocateAndCopy(addressBytes);
     const valuePtr = this.allocateAndCopy(valueBytes);
-    const calldataPtr =
-      ctx.calldata.length > 0 ? this.allocateAndCopy(ctx.calldata) : 0;
+    const calldataPtr = calldataBytes.length > 0 ? this.allocateAndCopy(calldataBytes) : 0;
 
     const result = this.wasm.exports.evm_set_execution_context(
       this.handle,
@@ -279,7 +290,7 @@ class EvmImpl implements Evm {
       addressPtr,
       valuePtr,
       calldataPtr,
-      ctx.calldata.length,
+      calldataBytes.length,
     );
 
     if (result === 0) {
@@ -300,7 +311,8 @@ class EvmImpl implements Evm {
     const blockPrevrandaoBytes = bigintToU256(ctx.blockPrevrandao);
     const blockPrevrandaoPtr = this.allocateAndCopy(blockPrevrandaoBytes);
 
-    const coinbasePtr = this.allocateAndCopy(ctx.blockCoinbase);
+    const coinbaseBytes = addressToBytes(ctx.blockCoinbase);
+    const coinbasePtr = this.allocateAndCopy(coinbaseBytes);
 
     const blockBaseFeeBytes = bigintToU256(ctx.blockBaseFee);
     const blockBaseFeePtr = this.allocateAndCopy(blockBaseFeeBytes);
@@ -326,10 +338,10 @@ class EvmImpl implements Evm {
     await this.ready();
     if (!this.wasm) throw new Error("WASM not initialized");
 
-    // Extract unique addresses
+    // Extract unique addresses and convert to bytes
     const addresses: Uint8Array[] = [];
     for (const entry of accessList) {
-      addresses.push(entry.address);
+      addresses.push(addressToBytes(entry.address));
     }
 
     // Pack addresses into single buffer (20 bytes each)
@@ -349,11 +361,14 @@ class EvmImpl implements Evm {
       }
     }
 
-    // Extract storage keys with addresses
-    const storageKeys: Array<{ address: Uint8Array; slot: U256 }> = [];
+    // Extract storage keys with addresses and convert to bytes
+    const storageKeys: Array<{ address: Uint8Array; slot: Uint8Array }> = [];
     for (const entry of accessList) {
       for (const slot of entry.storageKeys) {
-        storageKeys.push({ address: entry.address, slot });
+        storageKeys.push({
+          address: addressToBytes(entry.address),
+          slot: hexToBytes(slot)
+        });
       }
     }
 
@@ -392,13 +407,14 @@ class EvmImpl implements Evm {
       return;
     }
 
-    // Pack hashes into single buffer (32 bytes each)
+    // Convert hex strings to bytes and pack into single buffer (32 bytes each)
     const packedHashes = new Uint8Array(hashes.length * 32);
     for (let i = 0; i < hashes.length; i++) {
-      if (hashes[i].length !== 32) {
+      const hashBytes = hexToBytes(hashes[i]);
+      if (hashBytes.length !== 32) {
         throw new Error(`Blob hash ${i} must be 32 bytes`);
       }
-      packedHashes.set(hashes[i], i * 32);
+      packedHashes.set(hashBytes, i * 32);
     }
 
     const hashesPtr = this.allocateAndCopy(packedHashes);
@@ -423,18 +439,18 @@ class EvmImpl implements Evm {
 
     // Get output
     const outputLen = this.wasm.exports.evm_get_output_len(this.handle);
-    const output = new Uint8Array(outputLen);
+    const outputBytes = new Uint8Array(outputLen);
     if (outputLen > 0) {
       const outputPtr = this.allocateAndCopy(new Uint8Array(outputLen));
       this.wasm.exports.evm_get_output(this.handle, outputPtr, outputLen);
-      output.set(this.getMemory().slice(outputPtr, outputPtr + outputLen));
+      outputBytes.set(this.getMemory().slice(outputPtr, outputPtr + outputLen));
     }
 
     return {
       success,
       gasRemaining,
       gasUsed,
-      output,
+      output: bytesToHex(outputBytes),
     };
   }
 
@@ -442,9 +458,13 @@ class EvmImpl implements Evm {
     await this.ready();
     if (!this.wasm) throw new Error("WASM not initialized");
 
-    const addressPtr = this.allocateAndCopy(address);
-    const slotPtr = this.allocateAndCopy(slot);
-    const valuePtr = this.allocateAndCopy(value);
+    const addressBytes = addressToBytes(address);
+    const slotBytes = hexToBytes(slot);
+    const valueBytes = hexToBytes(value);
+
+    const addressPtr = this.allocateAndCopy(addressBytes);
+    const slotPtr = this.allocateAndCopy(slotBytes);
+    const valuePtr = this.allocateAndCopy(valueBytes);
 
     const result = this.wasm.exports.evm_set_storage(
       this.handle,
@@ -461,9 +481,12 @@ class EvmImpl implements Evm {
     await this.ready();
     if (!this.wasm) throw new Error("WASM not initialized");
 
-    const addressPtr = this.allocateAndCopy(address);
-    const slotPtr = this.allocateAndCopy(slot);
+    const addressBytes = addressToBytes(address);
+    const slotBytes = hexToBytes(slot);
     const valueBytes = new Uint8Array(32);
+
+    const addressPtr = this.allocateAndCopy(addressBytes);
+    const slotPtr = this.allocateAndCopy(slotBytes);
     const valuePtr = this.allocateAndCopy(valueBytes);
 
     const result = this.wasm.exports.evm_get_storage(
@@ -476,15 +499,18 @@ class EvmImpl implements Evm {
       throw new Error("Failed to get storage");
     }
 
-    return this.getMemory().slice(valuePtr, valuePtr + 32);
+    const storageBytes = this.getMemory().slice(valuePtr, valuePtr + 32);
+    return bytesToHex(storageBytes);
   }
 
   async setBalance(address: Address, balance: bigint): Promise<void> {
     await this.ready();
     if (!this.wasm) throw new Error("WASM not initialized");
 
-    const addressPtr = this.allocateAndCopy(address);
+    const addressBytes = addressToBytes(address);
     const balanceBytes = bigintToU256(balance);
+
+    const addressPtr = this.allocateAndCopy(addressBytes);
     const balancePtr = this.allocateAndCopy(balanceBytes);
 
     const result = this.wasm.exports.evm_set_balance(
@@ -501,14 +527,17 @@ class EvmImpl implements Evm {
     await this.ready();
     if (!this.wasm) throw new Error("WASM not initialized");
 
-    const addressPtr = this.allocateAndCopy(address);
-    const codePtr = code.length > 0 ? this.allocateAndCopy(code) : 0;
+    const addressBytes = addressToBytes(address);
+    const codeBytes = hexToBytes(code);
+
+    const addressPtr = this.allocateAndCopy(addressBytes);
+    const codePtr = codeBytes.length > 0 ? this.allocateAndCopy(codeBytes) : 0;
 
     const result = this.wasm.exports.evm_set_code(
       this.handle,
       addressPtr,
       codePtr,
-      code.length,
+      codeBytes.length,
     );
     if (result === 0) {
       throw new Error("Failed to set code");
