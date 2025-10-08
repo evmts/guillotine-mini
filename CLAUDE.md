@@ -469,3 +469,296 @@ This is a reference implementation. When making changes:
 5. Update this documentation as needed
 
 For questions or issues, refer to the test output and trace divergence analysis.
+
+---
+
+## Agent Quick Reference: Python Reference vs Zig Implementation
+
+This section provides critical implementation patterns to help agents efficiently debug and fix spec test failures.
+
+### 🔍 Where to Look: File Location Mapping
+
+When debugging a failing test, here's where to find the corresponding implementations:
+
+| Problem Area | Python Reference | Zig Implementation |
+|--------------|------------------|-------------------|
+| Opcode logic (SSTORE, SLOAD, etc.) | `execution-specs/src/ethereum/forks/<hardfork>/vm/instructions/*.py` | `src/frame.zig` (search for opcode name) |
+| Gas calculation errors | `execution-specs/src/ethereum/forks/<hardfork>/vm/gas.py` | `src/primitives/gas_constants.zig` + `src/frame.zig` (per-opcode) |
+| Call/Create operations | `execution-specs/src/ethereum/forks/<hardfork>/vm/instructions/system.py` | `src/evm.zig` (`inner_call`, `inner_create`) |
+| Storage operations | `execution-specs/src/ethereum/forks/<hardfork>/vm/instructions/storage.py` | `src/evm.zig` (`get_storage`, `set_storage`) |
+| Transient storage (EIP-1153) | `execution-specs/src/ethereum/forks/cancun/vm/instructions/storage.py` | `src/evm.zig` (`get_transient_storage`, `set_transient_storage`) |
+| State management | `execution-specs/src/ethereum/forks/<hardfork>/state.py` | `src/evm.zig` (balances, nonces, code maps) |
+| Hardfork activation | `execution-specs/src/ethereum/forks/<hardfork>/` (directory structure) | `src/hardfork.zig` (`isAtLeast`, `isBefore`) |
+| Warm/cold access tracking | `execution-specs/src/ethereum/forks/<hardfork>/vm/__init__.py` (Evm dataclass) | `src/evm.zig` (`warm_addresses`, `warm_storage_slots`) |
+| Memory operations | `execution-specs/src/ethereum/forks/<hardfork>/vm/memory.py` | `src/frame.zig` (`expandMemory`, memory array) |
+| Stack operations | `execution-specs/src/ethereum/forks/<hardfork>/vm/stack.py` | `src/frame.zig` (`pushStack`, `popStack`) |
+
+### 📐 Key Architectural Differences
+
+Understanding these differences prevents confusion when comparing implementations:
+
+#### Python: Single `Evm` Class
+- **Structure**: One `Evm` dataclass holds everything (stack, memory, pc, gas, state)
+- **Location**: `execution-specs/src/ethereum/forks/<hardfork>/vm/__init__.py`
+- **Pattern**: `evm.stack`, `evm.memory`, `evm.pc`, `evm.gas_left`, `evm.message.block_env.state`
+
+#### Zig: Split `Evm` + `Frame` Architecture
+- **Evm** (`src/evm.zig`): Orchestrator managing state, storage, gas refunds, nested calls
+  - Storage maps: `storage`, `transient_storage`, `original_storage`
+  - Warm/cold tracking: `warm_addresses`, `warm_storage_slots`
+  - Gas accounting: `gas_refund`
+  - Call stack management: `frames` (nested calls)
+- **Frame** (`src/frame.zig`): Execution context for a single call frame
+  - Stack: `stack` (ArrayList of u256)
+  - Memory: `memory` (expandable byte array)
+  - Execution: `pc`, `gas_remaining`, `bytecode`
+  - Per-frame context: `caller`, `address`, `value`, `calldata`
+
+**Key insight**: When Python code references `evm.stack`, in Zig that's `frame.stack`. When Python references `evm.message.block_env.state`, in Zig that's `evm.storage` / `evm.balances` / etc.
+
+### 🔥 Common Bug Patterns (with Solutions)
+
+#### 1. Gas Metering Bugs
+
+**Python pattern (SSTORE example)**:
+```python
+# execution-specs/.../vm/instructions/storage.py
+def sstore(evm: Evm) -> None:
+    key = pop(evm.stack).to_be_bytes32()
+    new_value = pop(evm.stack)
+
+    # Check gas stipend FIRST
+    if evm.gas_left <= GAS_CALL_STIPEND:
+        raise OutOfGasError
+
+    # Then calculate dynamic cost
+    gas_cost = Uint(0)
+    if (target, key) not in evm.accessed_storage_keys:
+        evm.accessed_storage_keys.add((target, key))
+        gas_cost += GAS_COLD_SLOAD
+
+    if original_value == current_value and current_value != new_value:
+        if original_value == 0:
+            gas_cost += GAS_STORAGE_SET
+        else:
+            gas_cost += GAS_STORAGE_UPDATE - GAS_COLD_SLOAD
+    else:
+        gas_cost += GAS_WARM_ACCESS
+
+    charge_gas(evm, gas_cost)
+```
+
+**Common Zig mistakes**:
+- ❌ Forgetting to check `SstoreSentryGas` (2300) before SSTORE
+- ❌ Not tracking `original_storage` separately from `storage`
+- ❌ Wrong gas refund calculation (must check original vs current vs new)
+- ❌ Not adding cold access cost before warm/set/update cost
+
+**Correct Zig pattern**: See `src/frame.zig` SSTORE implementation
+
+#### 2. Warm/Cold Access Tracking (EIP-2929)
+
+**Python pattern**:
+```python
+# In Evm dataclass
+accessed_addresses: Set[Address]
+accessed_storage_keys: Set[Tuple[Address, Bytes]]
+
+# Usage
+if address not in evm.accessed_addresses:
+    evm.accessed_addresses.add(address)
+    charge_gas(evm, GAS_COLD_ACCOUNT_ACCESS)
+else:
+    charge_gas(evm, GAS_WARM_ACCESS)
+```
+
+**Zig pattern**:
+```zig
+// In Evm struct
+warm_addresses: std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false)
+warm_storage_slots: std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false)
+
+// Usage
+if (!self.warm_addresses.contains(address)) {
+    try self.warm_addresses.put(address, {});
+    return ColdAccountAccessCost;
+} else {
+    return WarmStorageReadCost;
+}
+```
+
+**Key difference**: Python uses sets, Zig uses hash maps with `void` values.
+
+#### 3. Transient Storage (EIP-1153)
+
+**Python pattern**:
+```python
+# TLOAD
+def tload(evm: Evm) -> None:
+    key = pop(evm.stack).to_be_bytes32()
+    charge_gas(evm, GAS_WARM_ACCESS)  # Always warm, never cold
+    value = get_transient_storage(
+        evm.message.tx_env.transient_storage,
+        evm.message.current_target,
+        key
+    )
+    push(evm.stack, value)
+
+# TSTORE
+def tstore(evm: Evm) -> None:
+    key = pop(evm.stack).to_be_bytes32()
+    new_value = pop(evm.stack)
+    charge_gas(evm, GAS_WARM_ACCESS)  # Always warm
+    if evm.message.is_static:
+        raise WriteInStaticContext
+    set_transient_storage(...)
+```
+
+**Critical rules**:
+- ✅ Transient storage is ALWAYS warm (100 gas), never cold
+- ✅ Cleared at transaction boundaries, NOT call boundaries
+- ✅ Must check `is_static` for TSTORE (no writes in STATICCALL)
+- ✅ No gas refunds for transient storage operations
+
+#### 4. Hardfork-Specific Behavior
+
+**Python pattern**:
+```python
+# Hardforks are separate directories:
+# execution-specs/src/ethereum/forks/berlin/
+# execution-specs/src/ethereum/forks/london/
+# execution-specs/src/ethereum/forks/cancun/
+
+# Each fork inherits from previous and overrides changed operations
+# To find behavior for fork X, look in that fork's directory
+```
+
+**Zig pattern**:
+```zig
+// All forks in one codebase with runtime checks
+if (self.hardfork.isAtLeast(.CANCUN)) {
+    // Cancun-specific behavior (EIP-1153, EIP-4844, etc.)
+} else if (self.hardfork.isAtLeast(.SHANGHAI)) {
+    // Shanghai-specific behavior (PUSH0, warm coinbase, etc.)
+}
+```
+
+**Common mistakes**:
+- ❌ Implementing feature for wrong hardfork (e.g., PUSH0 before Shanghai)
+- ❌ Not using `isAtLeast` for backward compatibility
+- ❌ Breaking earlier hardforks when adding new feature
+
+### 🎯 Gas Constant Quick Reference
+
+Python and Zig gas constants must match EXACTLY. Here's the mapping:
+
+| Operation | Python Constant | Zig Constant | Value | Hardfork |
+|-----------|-----------------|--------------|-------|----------|
+| Warm storage read | `GAS_WARM_ACCESS` | `WarmStorageReadCost` | 100 | Berlin+ |
+| Cold SLOAD | `GAS_COLD_SLOAD` | `ColdSloadCost` | 2100 | Berlin+ |
+| Cold account access | `GAS_COLD_ACCOUNT_ACCESS` | `ColdAccountAccessCost` | 2600 | Berlin+ |
+| SSTORE set (0→nonzero) | `GAS_STORAGE_SET` | `SstoreSetGas` | 20000 | All |
+| SSTORE update (nonzero→nonzero) | `GAS_STORAGE_UPDATE` | `SstoreResetGas` | 5000 | All |
+| SSTORE clear refund | `GAS_STORAGE_CLEAR_REFUND` | `SstoreClearRefund` | 4800 | London+ |
+| SSTORE stipend check | `GAS_CALL_STIPEND` | `SstoreSentryGas` | 2300 | All |
+| Call value transfer | `GAS_CALL_VALUE` | `CallValueCost` | 9000 | All |
+| Call stipend | `GAS_CALL_STIPEND` | `CallStipend` | 2300 | All |
+
+**Location in code**:
+- Python: `execution-specs/src/ethereum/forks/<hardfork>/vm/gas.py`
+- Zig: `src/primitives/gas_constants.zig`
+
+### 🧪 Debugging Workflow Cheat Sheet
+
+When a test fails, follow this EXACT sequence:
+
+1. **Run test with trace comparison**
+   ```bash
+   TEST_FILTER="exact_failing_test_name" zig build specs
+   ```
+
+2. **Identify divergence point from output**
+   - Look for: "Trace divergence at step N"
+   - Note: PC (program counter), opcode, gas remaining, stack state
+
+3. **Find Python reference for that opcode**
+   ```bash
+   # For Cancun fork (adjust for your failing hardfork)
+   cd execution-specs/src/ethereum/forks/cancun/vm/instructions/
+   grep -r "def <opcode_name>" .
+   ```
+
+4. **Read Python implementation line-by-line**
+   - Note gas charges (order matters!)
+   - Note state modifications
+   - Note refund counter updates
+   - Note error conditions
+
+5. **Compare with Zig implementation**
+   - For opcodes: `src/frame.zig` (search for opcode constant)
+   - For calls/creates: `src/evm.zig` (`inner_call`, `inner_create`)
+   - For storage: `src/evm.zig` (storage getters/setters)
+
+6. **Make minimal fix matching Python exactly**
+   - Change only what diverges
+   - Keep gas calculation order identical
+   - Preserve hardfork guards
+
+7. **Re-run test to verify**
+   ```bash
+   TEST_FILTER="exact_failing_test_name" zig build specs
+   ```
+
+### 💡 Pro Tips for Agents
+
+1. **Gas calculation order matters**: Python calculates gas in a specific sequence. Match it exactly.
+   - Example: SSTORE checks stipend → cold access → original/current/new value comparison → refunds
+
+2. **Original vs Current storage**: Python tracks both `get_storage_original()` and `get_storage()`. Zig must do the same.
+   - `original_storage`: Value at transaction start (for refund calculations)
+   - `storage`: Current value (may have changed during transaction)
+
+3. **Warm/cold tracking is cumulative**: Once an address/slot is marked warm in Python's set, it stays warm for the entire transaction. Zig's ArrayHashMap must persist across frames.
+
+4. **Refund counter can be negative in intermediate steps**: Python's `evm.refund_counter` can go negative temporarily (gets capped at transaction end). Don't prematurely clamp it.
+
+5. **Static context propagates**: `is_static` flag must propagate through nested calls. STATICCALL → any child call → all descendants.
+
+6. **Memory expansion is quadratic**: Python uses `size_in_words ** 2 // 512`. Zig must match this exactly.
+   ```python
+   # Python
+   linear_cost = size_in_words * GAS_MEMORY
+   quadratic_cost = size_in_words ** 2 // 512
+   total = linear_cost + quadratic_cost
+   ```
+
+7. **Call depth limit is 1024**: Python checks `evm.message.depth + 1 > STACK_DEPTH_LIMIT`. Zig must check depth before any CALL/CREATE.
+
+### 🚨 Anti-Patterns (Things NOT to Do)
+
+❌ **Don't guess gas costs** - Every gas value must match Python reference exactly
+❌ **Don't skip trace comparison** - Traces show exact divergence point
+❌ **Don't mix hardfork behaviors** - Use `isAtLeast` guards, test each fork
+❌ **Don't ignore error conditions** - Python's `raise OutOfGasError` must map to Zig errors
+❌ **Don't hardcode test-specific logic** - Fix the general implementation
+❌ **Don't forget to charge gas before operations** - Python charges before executing
+❌ **Don't modify test files** - Only change implementation in `src/`
+
+### 📚 Essential Python Reference Files
+
+When debugging, these are the most frequently consulted files:
+
+**Cancun (latest tested hardfork)**:
+- `execution-specs/src/ethereum/forks/cancun/vm/interpreter.py` - Main execution loop
+- `execution-specs/src/ethereum/forks/cancun/vm/gas.py` - Gas calculation functions
+- `execution-specs/src/ethereum/forks/cancun/vm/instructions/storage.py` - SLOAD, SSTORE, TLOAD, TSTORE
+- `execution-specs/src/ethereum/forks/cancun/vm/instructions/system.py` - CALL, CREATE, SELFDESTRUCT
+- `execution-specs/src/ethereum/forks/cancun/vm/instructions/arithmetic.py` - ADD, MUL, EXP, etc.
+- `execution-specs/src/ethereum/forks/cancun/vm/instructions/memory.py` - MLOAD, MSTORE, MCOPY
+- `execution-specs/src/ethereum/forks/cancun/state.py` - State management primitives
+
+**For other hardforks**, replace `cancun` with: `shanghai`, `paris`, `london`, `berlin`, `istanbul`, etc.
+
+---
+
+**Remember**: The Python execution-specs are the authoritative source of truth. When in doubt, trust the Python code over intuition, documentation, or the Yellow Paper. The tests are generated from this reference implementation.
