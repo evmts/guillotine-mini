@@ -7,7 +7,9 @@ pub const BLAKE2B_IV = [8]u64{
 };
 
 /// BLAKE2b message schedule (sigma)
-pub const BLAKE2B_SIGMA = [12][16]u8{
+/// Only 10 rounds as per Python reference implementation
+/// For rounds > 10, wraps around using modulo operation
+pub const BLAKE2B_SIGMA = [10][16]u8{
     .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
     .{ 14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3 },
     .{ 11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4 },
@@ -18,8 +20,6 @@ pub const BLAKE2B_SIGMA = [12][16]u8{
     .{ 13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10 },
     .{ 6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5 },
     .{ 10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0 },
-    .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
-    .{ 14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3 },
 };
 
 /// BLAKE2b mixing function (G function)
@@ -42,7 +42,7 @@ pub fn unaudited_blake2b_g(v: *[16]u64, a: usize, b: usize, c: usize, d: usize, 
 /// This function implements BLAKE2b compression rounds without security review.
 /// Use at your own risk in production systems.
 pub fn unaudited_blake2b_round(v: *[16]u64, message: *const [16]u64, round: u32) void {
-    const s = &BLAKE2B_SIGMA[round % 12];
+    const s = &BLAKE2B_SIGMA[round % 10];
 
     // Column mixing
     unaudited_blake2b_g(v, 0, 4, 8, 12, message[s[0]], message[s[1]]);
