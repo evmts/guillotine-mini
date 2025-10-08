@@ -482,6 +482,11 @@ pub const Evm = struct {
         const frame_caller = if (current_frame) |frame| frame.address else self.origin;
         const frame_caller_caller = if (current_frame) |frame| frame.caller else self.origin;
 
+        // Snapshot gas refunds before the call
+        // Per Python reference (vm/__init__.py:incorporate_child_on_error), failed calls do not
+        // propagate refunds to parent. Only incorporate_child_on_success adds child refunds.
+        const refund_snapshot = self.gas_refund;
+
         // Snapshot transient storage before the call (EIP-1153)
         // Transient storage must be reverted on call failure
         var transient_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
@@ -624,6 +629,10 @@ pub const Evm = struct {
             // std.debug.print("CALL FAILED: execution error {} (addr={any})\n", .{err, address.bytes});
             _ = self.frames.pop();
 
+            // Restore gas refunds on failure
+            // Per Python: incorporate_child_on_error does NOT add child's refund_counter
+            self.gas_refund = refund_snapshot;
+
             // Restore balances on failure (handles SELFDESTRUCT balance transfers)
             if (self.host) |h| {
                 // Restore all snapshotted balances for host mode
@@ -671,6 +680,13 @@ pub const Evm = struct {
             .output = output,
         };
         // std.debug.print("DEBUG inner_call result: address={any} success={} reverted={} frames={}\n", .{address.bytes, result.success, frame.reverted, self.frames.items.len});
+
+        // Restore gas refunds on revert
+        // Per Python: incorporate_child_on_error does NOT add child's refund_counter
+        // This applies to both reverts and exceptional halts
+        if (frame.reverted) {
+            self.gas_refund = refund_snapshot;
+        }
 
         // Restore transient storage on revert (EIP-1153)
         if (frame.reverted) {

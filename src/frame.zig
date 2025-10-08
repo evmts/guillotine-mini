@@ -1234,9 +1234,39 @@ pub const Frame = struct {
                         }
                     }
                 } else if (evm.hardfork.isAtLeast(.LONDON)) {
-                    // EIP-3529 (London+): Simplified refund (only for clearing storage)
-                    if (current_value != 0 and value == 0) {
-                        evm.add_refund(GasConstants.SstoreRefundGas);  // 4,800
+                    // EIP-3529 (London+): Refund logic matching Python cancun/vm/instructions/storage.py lines 106-124
+                    // IMPORTANT: All three refund cases are independent checks (not else-if), matching Python
+                    const original_value = evm.get_original_storage(self.address, key);
+
+                    // Refund Counter Calculation (only when value changes)
+                    if (current_value != value) {
+                        // Case 1: Clearing storage for the first time in the transaction (line 107-109)
+                        if (original_value != 0 and current_value != 0 and value == 0) {
+                            evm.add_refund(GasConstants.SstoreRefundGas);  // 4,800 (GAS_STORAGE_CLEAR_REFUND)
+                        }
+
+                        // Case 2: Reversing a previous clear (line 111-113)
+                        // This is a separate independent check, not else-if
+                        if (original_value != 0 and current_value == 0) {
+                            // Subtract the refund that was given earlier
+                            if (evm.gas_refund >= GasConstants.SstoreRefundGas) {
+                                evm.gas_refund -= GasConstants.SstoreRefundGas;
+                            }
+                        }
+
+                        // Case 3: Restoring to original value (line 115-124)
+                        // This is also a separate independent check, not else-if
+                        if (original_value == value) {
+                            if (original_value == 0) {
+                                // Slot was originally empty and was SET earlier (cost 20000)
+                                // Now restored to 0, refund: 20000 - 100 = 19900
+                                evm.add_refund(GasConstants.SstoreSetGas - GasConstants.WarmStorageReadCost);
+                            } else {
+                                // Slot was originally non-empty and was UPDATED earlier
+                                // Now restored to original, refund: 5000 - 2100 - 100 = 2800
+                                evm.add_refund(GasConstants.SstoreResetGas - GasConstants.ColdSloadCost - GasConstants.WarmStorageReadCost);
+                            }
+                        }
                     }
                 } else {
                     // Pre-Istanbul (Frontier-Constantinople-Petersburg): Simple clear refund
@@ -1568,14 +1598,45 @@ pub const Frame = struct {
                 // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
                 const access_cost = try evm.accessAddress(call_address);
                 gas_cost += access_cost;
-                try self.consumeGas(gas_cost);
 
-                // Charge memory expansion cost for input region
-                if (in_length > 0) {
-                    const in_end = @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length));
-                    const mem_cost_in = self.memoryExpansionCost(in_end);
-                    try self.consumeGas(mem_cost_in);
+                // Calculate memory expansion cost for BOTH input and output regions together
+                // Per Python reference (gas.py:179-192), calculate_gas_extend_memory processes
+                // all memory extensions together, updating current_size between iterations
+                // This ensures we only charge for the INCREMENTAL expansion, not double-charge
+                const in_end = if (in_length > 0) @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length)) else 0;
+                const out_end = if (out_length > 0) @as(u64, @intCast(out_offset)) + @as(u64, @intCast(out_length)) else 0;
+                const max_end = @max(in_end, out_end);
+                if (max_end > 0) {
+                    const mem_cost = self.memoryExpansionCost(max_end);
+                    gas_cost += mem_cost;
                 }
+
+                // Calculate available gas BEFORE charging (per Python execution-specs)
+                // Python: gas = min(gas, max_message_call_gas(gas_left - memory_cost - extra_gas))
+                // We simulate the post-charge state to calculate max forwardable gas
+                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
+                const remaining_gas_before_charge = @as(u64, @intCast(@max(self.gas_remaining, 0)));
+                // Subtract the cost we're about to charge to get the "would-be" remaining gas
+                const gas_after_charge = if (remaining_gas_before_charge >= gas_cost)
+                    remaining_gas_before_charge - gas_cost
+                else
+                    0;
+                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
+                // Before EIP-150: forward all remaining gas
+                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    gas_after_charge - (gas_after_charge / 64)
+                else
+                    gas_after_charge;
+                const available_gas_without_stipend = @min(gas_limit, max_gas);
+
+                // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
+                const available_gas = if (value_arg > 0)
+                    available_gas_without_stipend + GasConstants.CallStipend
+                else
+                    available_gas_without_stipend;
+
+                // NOW charge the base cost
+                try self.consumeGas(gas_cost);
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
@@ -1598,36 +1659,16 @@ pub const Frame = struct {
                 }
                 // Note: No defer free needed - arena allocator will clean up
 
-                // Calculate available gas
-                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
-                const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
-                // Before EIP-150: forward all remaining gas
-                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                    remaining_gas - (remaining_gas / 64)
-                else
-                    remaining_gas;
-                const available_gas_without_stipend = @min(gas_limit, max_gas);
-
-                // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
-                const available_gas = if (value_arg > 0)
-                    available_gas_without_stipend + GasConstants.CallStipend
-                else
-                    available_gas_without_stipend;
-
                 // Perform the inner call (regular CALL)
                 const result = try evm.inner_call(call_address, value_arg, input_data, available_gas, .Call);
 
                 // Write output to memory
+                // Note: Memory expansion cost was already charged upfront (lines 1572-1582)
                 if (out_length > 0 and result.output.len > 0) {
                     const out_off = std.math.cast(u32, out_offset) orelse return error.OutOfBounds;
                     const out_len_u32 = std.math.cast(u32, out_length) orelse return error.OutOfBounds;
                     const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
                     const copy_len = @min(out_len_u32, result_len_u32);
-
-                    const end_bytes_callcopy: u64 = @as(u64, out_off) + @as(u64, copy_len);
-                    const mem_cost_out = self.memoryExpansionCost(end_bytes_callcopy);
-                    try self.consumeGas(mem_cost_out);
 
                     var k: u32 = 0;
                     while (k < copy_len) : (k += 1) {
@@ -1647,7 +1688,12 @@ pub const Frame = struct {
                 // The stipend is free additional gas for the callee
                 const gas_used_total = available_gas - result.gas_left;
                 const gas_used_by_caller = @min(gas_used_total, available_gas_without_stipend);
-                self.gas_remaining -= @intCast(gas_used_by_caller);
+                // Safely cast gas_used_by_caller - if it exceeds i64::MAX, clamp gas_remaining to 0
+                const gas_used_i64 = std.math.cast(i64, gas_used_by_caller) orelse {
+                    self.gas_remaining = 0;
+                    return error.OutOfGas;
+                };
+                self.gas_remaining -= gas_used_i64;
 
                 // Debug: log if call failed
                 // if (!result.success) {
@@ -1693,14 +1739,45 @@ pub const Frame = struct {
                 // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
                 const access_cost = try evm.accessAddress(call_address);
                 gas_cost += access_cost;
-                try self.consumeGas(gas_cost);
 
-                // Charge memory expansion cost for input region
-                if (in_length > 0) {
-                    const in_end = @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length));
-                    const mem_cost_in = self.memoryExpansionCost(in_end);
-                    try self.consumeGas(mem_cost_in);
+                // Calculate memory expansion cost for BOTH input and output regions together
+                // Per Python reference (gas.py:179-192), calculate_gas_extend_memory processes
+                // all memory extensions together, updating current_size between iterations
+                // This ensures we only charge for the INCREMENTAL expansion, not double-charge
+                const in_end = if (in_length > 0) @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length)) else 0;
+                const out_end = if (out_length > 0) @as(u64, @intCast(out_offset)) + @as(u64, @intCast(out_length)) else 0;
+                const max_end = @max(in_end, out_end);
+                if (max_end > 0) {
+                    const mem_cost = self.memoryExpansionCost(max_end);
+                    gas_cost += mem_cost;
                 }
+
+                // Calculate available gas BEFORE charging (per Python execution-specs)
+                // Python: gas = min(gas, max_message_call_gas(gas_left - memory_cost - extra_gas))
+                // We simulate the post-charge state to calculate max forwardable gas
+                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
+                const remaining_gas_before_charge = @as(u64, @intCast(@max(self.gas_remaining, 0)));
+                // Subtract the cost we're about to charge to get the "would-be" remaining gas
+                const gas_after_charge = if (remaining_gas_before_charge >= gas_cost)
+                    remaining_gas_before_charge - gas_cost
+                else
+                    0;
+                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
+                // Before EIP-150: forward all remaining gas
+                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    gas_after_charge - (gas_after_charge / 64)
+                else
+                    gas_after_charge;
+                const available_gas_without_stipend = @min(gas_limit, max_gas);
+
+                // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
+                const available_gas = if (value_arg > 0)
+                    available_gas_without_stipend + GasConstants.CallStipend
+                else
+                    available_gas_without_stipend;
+
+                // NOW charge the base cost
+                try self.consumeGas(gas_cost);
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
@@ -1723,36 +1800,16 @@ pub const Frame = struct {
                 }
                 // Note: No defer free needed - arena allocator will clean up
 
-                // Calculate available gas
-                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
-                const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
-                // Before EIP-150: forward all remaining gas
-                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                    remaining_gas - (remaining_gas / 64)
-                else
-                    remaining_gas;
-                const available_gas_without_stipend = @min(gas_limit, max_gas);
-
-                // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
-                const available_gas = if (value_arg > 0)
-                    available_gas_without_stipend + GasConstants.CallStipend
-                else
-                    available_gas_without_stipend;
-
                 // Perform the inner call (CALLCODE)
                 const result = try evm.inner_call(call_address, value_arg, input_data, available_gas, .CallCode);
 
                 // Write output to memory
+                // Note: Memory expansion cost was already charged upfront (lines 1697-1707)
                 if (out_length > 0 and result.output.len > 0) {
                     const out_off = std.math.cast(u32, out_offset) orelse return error.OutOfBounds;
                     const out_len_u32 = std.math.cast(u32, out_length) orelse return error.OutOfBounds;
                     const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
                     const copy_len = @min(out_len_u32, result_len_u32);
-
-                    const end_bytes_callcode: u64 = @as(u64, out_off) + @as(u64, copy_len);
-                    const mem_cost_out = self.memoryExpansionCost(end_bytes_callcode);
-                    try self.consumeGas(mem_cost_out);
 
                     var k: u32 = 0;
                     while (k < copy_len) : (k += 1) {
@@ -1844,14 +1901,39 @@ pub const Frame = struct {
                 // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
                 const access_cost = try evm.accessAddress(call_address);
                 gas_cost += access_cost;
-                try self.consumeGas(gas_cost);
 
-                // Charge memory expansion cost for input region
-                if (in_length > 0) {
-                    const in_end = @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length));
-                    const mem_cost_in = self.memoryExpansionCost(in_end);
-                    try self.consumeGas(mem_cost_in);
+                // Calculate memory expansion cost for BOTH input and output regions together
+                // Per Python reference (gas.py:179-192), calculate_gas_extend_memory processes
+                // all memory extensions together, updating current_size between iterations
+                // This ensures we only charge for the INCREMENTAL expansion, not double-charge
+                const in_end = if (in_length > 0) @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length)) else 0;
+                const out_end = if (out_length > 0) @as(u64, @intCast(out_offset)) + @as(u64, @intCast(out_length)) else 0;
+                const max_end = @max(in_end, out_end);
+                if (max_end > 0) {
+                    const mem_cost = self.memoryExpansionCost(max_end);
+                    gas_cost += mem_cost;
                 }
+
+                // Calculate available gas BEFORE charging (per Python execution-specs)
+                // Python: gas = min(gas, max_message_call_gas(gas_left - memory_cost - extra_gas))
+                // We simulate the post-charge state to calculate max forwardable gas
+                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
+                const remaining_gas_before_charge = @as(u64, @intCast(@max(self.gas_remaining, 0)));
+                // Subtract the cost we're about to charge to get the "would-be" remaining gas
+                const gas_after_charge = if (remaining_gas_before_charge >= gas_cost)
+                    remaining_gas_before_charge - gas_cost
+                else
+                    0;
+                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
+                // Before EIP-150: forward all remaining gas
+                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    gas_after_charge - (gas_after_charge / 64)
+                else
+                    gas_after_charge;
+                const available_gas = @min(gas_limit, max_gas);
+
+                // NOW charge the base cost
+                try self.consumeGas(gas_cost);
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
@@ -1874,30 +1956,16 @@ pub const Frame = struct {
                 }
                 // Note: No defer free needed - arena allocator will clean up
 
-                // Calculate available gas
-                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
-                const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
-                // Before EIP-150: forward all remaining gas
-                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                    remaining_gas - (remaining_gas / 64)
-                else
-                    remaining_gas;
-                const available_gas = @min(gas_limit, max_gas);
-
                 // Perform the inner call (DELEGATECALL)
                 const result = try evm.inner_call(call_address, self.value, input_data, available_gas, .DelegateCall);
 
                 // Write output to memory
+                // Note: Memory expansion cost was already charged upfront (lines 1852-1862)
                 if (out_length > 0 and result.output.len > 0) {
                     const out_off = std.math.cast(u32, out_offset) orelse return error.OutOfBounds;
                     const out_len_u32 = std.math.cast(u32, out_length) orelse return error.OutOfBounds;
                     const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
                     const copy_len = @min(out_len_u32, result_len_u32);
-
-                    const end_bytes_delegate: u64 = @as(u64, out_off) + @as(u64, copy_len);
-                    const mem_cost_out = self.memoryExpansionCost(end_bytes_delegate);
-                    try self.consumeGas(mem_cost_out);
 
                     var k: u32 = 0;
                     while (k < copy_len) : (k += 1) {
@@ -2044,14 +2112,39 @@ pub const Frame = struct {
                 // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
                 const access_cost = try evm.accessAddress(call_address);
                 call_gas_cost += access_cost;
-                try self.consumeGas(call_gas_cost);
 
-                // Charge memory expansion cost for input region
-                if (in_length > 0) {
-                    const in_end = @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length));
-                    const mem_cost_in = self.memoryExpansionCost(in_end);
-                    try self.consumeGas(mem_cost_in);
+                // Calculate memory expansion cost for BOTH input and output regions together
+                // Per Python reference (gas.py:179-192), calculate_gas_extend_memory processes
+                // all memory extensions together, updating current_size between iterations
+                // This ensures we only charge for the INCREMENTAL expansion, not double-charge
+                const in_end = if (in_length > 0) @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length)) else 0;
+                const out_end = if (out_length > 0) @as(u64, @intCast(out_offset)) + @as(u64, @intCast(out_length)) else 0;
+                const max_end = @max(in_end, out_end);
+                if (max_end > 0) {
+                    const mem_cost = self.memoryExpansionCost(max_end);
+                    call_gas_cost += mem_cost;
                 }
+
+                // Calculate available gas BEFORE charging (per Python execution-specs)
+                // Python: gas = min(gas, max_message_call_gas(gas_left - memory_cost - extra_gas))
+                // We simulate the post-charge state to calculate max forwardable gas
+                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
+                const remaining_gas_before_charge = @as(u64, @intCast(@max(self.gas_remaining, 0)));
+                // Subtract the cost we're about to charge to get the "would-be" remaining gas
+                const gas_after_charge = if (remaining_gas_before_charge >= call_gas_cost)
+                    remaining_gas_before_charge - call_gas_cost
+                else
+                    0;
+                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
+                // Before EIP-150: forward all remaining gas
+                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                    gas_after_charge - (gas_after_charge / 64)
+                else
+                    gas_after_charge;
+                const available_gas = @min(gas_limit, max_gas);
+
+                // NOW charge the base cost
+                try self.consumeGas(call_gas_cost);
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
@@ -2074,30 +2167,16 @@ pub const Frame = struct {
                 }
                 // Note: No defer free needed - arena allocator will clean up
 
-                // Calculate available gas
-                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
-                const remaining_gas = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
-                // Before EIP-150: forward all remaining gas
-                const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                    remaining_gas - (remaining_gas / 64)
-                else
-                    remaining_gas;
-                const available_gas = @min(gas_limit, max_gas);
-
                 // Perform the inner call (STATICCALL)
                 const result = try evm.inner_call(call_address, 0, input_data, available_gas, .StaticCall);
 
                 // Write output to memory
+                // Note: Memory expansion cost was already charged upfront (lines 2052-2062)
                 if (out_length > 0 and result.output.len > 0) {
                     const out_off = std.math.cast(u32, out_offset) orelse return error.OutOfBounds;
                     const out_len_u32 = std.math.cast(u32, out_length) orelse return error.OutOfBounds;
                     const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
                     const copy_len = @min(out_len_u32, result_len_u32);
-
-                    const end_bytes_static: u64 = @as(u64, out_off) + @as(u64, copy_len);
-                    const mem_cost_out = self.memoryExpansionCost(end_bytes_static);
-                    try self.consumeGas(mem_cost_out);
 
                     var k: u32 = 0;
                     while (k < copy_len) : (k += 1) {
