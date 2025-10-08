@@ -2632,18 +2632,18 @@ pub const Frame = struct {
                     // 1. Reduce sender balance by amount
                     // 2. Increase recipient balance by amount
                     // When sender == recipient, the balance stays the same (decreased then increased)
-                    if (self_balance > 0) {
-                        // Step 1: Reduce originator balance
-                        try evm_ptr.setBalanceWithSnapshot(self.address, 0);
+                    // IMPORTANT: Python ALWAYS calls move_ether, even if balance is 0, to match its semantics
 
-                        // Step 2: Increase beneficiary balance
-                        // IMPORTANT: Must read beneficiary balance AFTER step 1 to handle sender == recipient case
-                        const beneficiary_balance = if (evm_ptr.host) |h|
-                            h.getBalance(beneficiary)
-                        else
-                            evm_ptr.balances.get(beneficiary) orelse 0;
-                        try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
-                    }
+                    // Step 1: Reduce originator balance
+                    try evm_ptr.setBalanceWithSnapshot(self.address, 0);
+
+                    // Step 2: Increase beneficiary balance
+                    // IMPORTANT: Must read beneficiary balance AFTER step 1 to handle sender == recipient case
+                    const beneficiary_balance = if (evm_ptr.host) |h|
+                        h.getBalance(beneficiary)
+                    else
+                        evm_ptr.balances.get(beneficiary) orelse 0;
+                    try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
                 } else {
                     // Pre-Cancun: Use old balance transfer logic
                     // 1. Read both balances

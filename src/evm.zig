@@ -434,13 +434,67 @@ pub const Evm = struct {
                 h.setBalance(addr, 0);
                 h.setCode(addr, &[_]u8{});
                 h.setNonce(addr, 0);
-                // Note: permanent storage is also cleared in full implementations
+                // Note: Host interface doesn't have method to clear all storage for an address
+                // The host is expected to handle this internally
             } else {
                 // Clear all account state in EVM storage
                 try self.balances.put(addr, 0);
                 try self.code.put(addr, &[_]u8{});
                 try self.nonces.put(addr, 0);
-                // Note: permanent storage would also be cleared in full implementation
+
+                // Clear all storage slots for this address
+                // First count how many keys to remove
+                var storage_count: usize = 0;
+                var storage_it = self.storage.iterator();
+                while (storage_it.next()) |storage_entry| {
+                    if (storage_entry.key_ptr.address.equals(addr)) {
+                        storage_count += 1;
+                    }
+                }
+
+                // Allocate array for keys and collect them
+                if (storage_count > 0) {
+                    const storage_keys_to_remove = try self.arena.allocator().alloc(StorageSlotKey, storage_count);
+                    var idx: usize = 0;
+                    storage_it = self.storage.iterator();
+                    while (storage_it.next()) |storage_entry| {
+                        if (storage_entry.key_ptr.address.equals(addr)) {
+                            storage_keys_to_remove[idx] = storage_entry.key_ptr.*;
+                            idx += 1;
+                        }
+                    }
+
+                    // Remove all the keys
+                    for (storage_keys_to_remove) |key| {
+                        _ = self.storage.remove(key);
+                    }
+                }
+
+                // Also clear from original_storage
+                var orig_storage_count: usize = 0;
+                var orig_storage_it = self.original_storage.iterator();
+                while (orig_storage_it.next()) |storage_entry| {
+                    if (storage_entry.key_ptr.address.equals(addr)) {
+                        orig_storage_count += 1;
+                    }
+                }
+
+                if (orig_storage_count > 0) {
+                    const orig_storage_keys_to_remove = try self.arena.allocator().alloc(StorageSlotKey, orig_storage_count);
+                    var idx: usize = 0;
+                    orig_storage_it = self.original_storage.iterator();
+                    while (orig_storage_it.next()) |storage_entry| {
+                        if (storage_entry.key_ptr.address.equals(addr)) {
+                            orig_storage_keys_to_remove[idx] = storage_entry.key_ptr.*;
+                            idx += 1;
+                        }
+                    }
+
+                    // Remove all the keys
+                    for (orig_storage_keys_to_remove) |key| {
+                        _ = self.original_storage.remove(key);
+                    }
+                }
             }
         }
 
@@ -1004,6 +1058,11 @@ pub const Evm = struct {
             }
         }
 
+        // Snapshot gas refunds before executing init code
+        // Per Python reference: incorporate_child_on_error does NOT add child refunds
+        // Only incorporate_child_on_success propagates refunds to parent
+        const refund_snapshot = self.gas_refund;
+
         // Snapshot selfdestructed_accounts before executing init code (EIP-6780 revert handling)
         // If CREATE fails, any SELFDESTRUCTs in the init code must be reverted
         var create_selfdestruct_snapshot = std.AutoHashMap(Address, void).init(self.arena.allocator());
@@ -1032,6 +1091,10 @@ pub const Evm = struct {
             const failed_frame = &self.frames.items[self.frames.items.len - 1];
             const error_output = failed_frame.output; // Capture output before popping
             _ = self.frames.pop();
+
+            // Restore gas refunds on execution error
+            // Per Python: incorporate_child_on_error does NOT add child refunds
+            self.gas_refund = refund_snapshot;
 
             // Revert nonce on execution error
             if (self.host) |h| {
@@ -1086,6 +1149,10 @@ pub const Evm = struct {
                 const max_code_size = 24576;
                 if (frame_output.len > max_code_size) {
                     _ = self.frames.pop();
+
+                    // Restore gas refunds on code size failure
+                    // Per Python: incorporate_child_on_error does NOT add child refunds
+                    self.gas_refund = refund_snapshot;
 
                     // Revert nonce on failure
                     if (self.host) |h| {
@@ -1146,6 +1213,10 @@ pub const Evm = struct {
             }
         } else {
             // Reverse state changes on revert
+            // Restore gas refunds on revert
+            // Per Python: incorporate_child_on_error does NOT add child refunds
+            self.gas_refund = refund_snapshot;
+
             // Revert nonce to 0
             if (self.host) |h| {
                 h.setNonce(new_address, 0);
