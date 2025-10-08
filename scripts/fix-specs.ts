@@ -205,7 +205,18 @@ ${Object.entries(issue.gas_costs)
         maxBuffer: 10 * 1024 * 1024, // 10MB buffer
       });
 
-      console.log("✅ Tests passed!\n");
+      // Extract test count from output
+      const testCountMatch = output.match(/(\d+)\s+passed/i);
+      const testCount = testCountMatch ? parseInt(testCountMatch[1], 10) : null;
+
+      if (testCount === 0) {
+        console.log(`⚠️  Tests were not generated (0 tests)\n`);
+      } else if (testCount) {
+        console.log(`✅ Tests passed! (${testCount} tests)\n`);
+      } else {
+        console.log(`✅ Tests passed! (test count unknown)\n`);
+      }
+
       return {
         suite: suite.name,
         passed: true,
@@ -214,7 +225,20 @@ ${Object.entries(issue.gas_costs)
     } catch (error: any) {
       const output = error.stdout || "";
       const errorOutput = error.stderr || "";
-      console.log("❌ Tests failed\n");
+
+      // Try to extract failure info
+      const passedMatch = output.match(/(\d+)\s+passed/i);
+      const failedMatch = output.match(/(\d+)\s+failed/i);
+      const passed = passedMatch ? parseInt(passedMatch[1], 10) : 0;
+      const failed = failedMatch ? parseInt(failedMatch[1], 10) : null;
+
+      if (passed === 0 && failed === 0) {
+        console.log(`⚠️  Tests were not generated (0 tests)\n`);
+      } else if (failed !== null) {
+        console.log(`❌ Tests failed (${passed} passed, ${failed} failed)\n`);
+      } else {
+        console.log(`❌ Tests failed (${passed} passed)\n`);
+      }
 
       return {
         suite: suite.name,
