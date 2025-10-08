@@ -125,6 +125,7 @@ class SpecFixerPipeline {
   private maxAttemptsPerSuite = 5;
   private fixAttempts: FixAttempt[] = [];
   private knownIssues: KnownIssuesDatabase;
+  private agentEnabled: boolean;
 
   constructor() {
     if (!existsSync(this.reportsDir)) {
@@ -133,6 +134,14 @@ class SpecFixerPipeline {
 
     // Load known issues database
     this.knownIssues = this.loadKnownIssues();
+
+    // Check if agent is enabled
+    this.agentEnabled = !!process.env.ANTHROPIC_API_KEY;
+    if (!this.agentEnabled) {
+      console.log(
+        "ℹ️  ANTHROPIC_API_KEY not set. Agent auto-fix disabled. Tests will run, but no AI fixes will be attempted.",
+      );
+    }
   }
 
   private loadKnownIssues(): KnownIssuesDatabase {
@@ -221,6 +230,20 @@ ${Object.entries(issue.gas_costs)
     testResult: TestResult,
     attemptNumber: number,
   ): Promise<FixAttempt> {
+    if (!this.agentEnabled) {
+      console.log(
+        "⚠️  Agent disabled (no ANTHROPIC_API_KEY). Skipping auto-fix for this suite.",
+      );
+      return {
+        suite: suite.name,
+        attempt: attemptNumber,
+        success: false,
+        agentCost: 0,
+        agentTurns: 0,
+        agentDuration: 0,
+        error: "Agent not configured",
+      };
+    }
     console.log(`\n${"█".repeat(80)}`);
     console.log(
       `🤖 Starting Agent Fix - Attempt ${attemptNumber}/${this.maxAttemptsPerSuite}`,
