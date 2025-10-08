@@ -40,6 +40,10 @@ fn taylorExponential(factor: u256, numerator: u256, denominator: u256) u256 {
 
 // Run a single test case from JSON
 pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !void {
+    return runJsonTestWithPath(allocator, test_case, null);
+}
+
+pub fn runJsonTestWithPath(allocator: std.mem.Allocator, test_case: std.json.Value, test_file_path: ?[]const u8) !void {
     // Check if test has multiple hardforks in post section
     const post = test_case.object.get("post");
     if (post) |p| {
@@ -61,7 +65,7 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
             if (hardforks_to_test.items.len > 1) {
                 for (hardforks_to_test.items) |hf| {
                     runJsonTestImplForFork(allocator, test_case, null, hf) catch |err| {
-                        generateTraceDiffOnFailure(allocator, test_case) catch {};
+                        generateTraceDiffOnFailure(allocator, test_case, test_file_path) catch {};
                         return err;
                     };
                 }
@@ -72,7 +76,7 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
 
     // Single hardfork or no post section - use original logic
     runJsonTestImpl(allocator, test_case, null) catch |err| {
-        generateTraceDiffOnFailure(allocator, test_case) catch {};
+        generateTraceDiffOnFailure(allocator, test_case, test_file_path) catch {};
         return err;
     };
 }
@@ -84,7 +88,7 @@ fn runJsonTestImplForFork(allocator: std.mem.Allocator, test_case: std.json.Valu
     try runJsonTestImplWithOptionalFork(allocator, test_case, tracer, forced_hardfork);
 }
 
-fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.Value) !void {
+fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.Value, opt_test_file_path: ?[]const u8) !void {
     // Re-run with trace capture
     var tracer = trace.Tracer.init(allocator);
     defer tracer.deinit();
@@ -98,12 +102,16 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
         return;
     }
 
-    // Get test file path from _info.source
-    // The source field contains paths like: src/GeneralStateTestsFiller/Cancun/stEIP1153-transientStorage/10_revertUndoesStoreAfterReturnFiller.yml
-    // We need to derive the ethereum-tests JSON path from this
+    // Use provided test file path if available, otherwise try to derive from _info.source
     // NOTE: Many tests don't have _info.source metadata, so we silently skip trace generation for those
     var test_file_path_buf: [1024]u8 = undefined;
     const test_file_path = blk: {
+        // First, check if we have a direct path from the caller
+        if (opt_test_file_path) |path| {
+            break :blk path;
+        }
+
+        // Fallback: try to derive from _info.source (for ethereum-tests format)
         if (test_case.object.get("_info")) |info| {
             if (info.object.get("source")) |source| {
                 const source_path = source.string;
@@ -781,6 +789,16 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 } else {
                     intrinsic_gas += primitives.GasConstants.TxDataNonZeroGas; // 16
                 }
+            }
+
+            // EIP-3860 (Shanghai+): Add init code cost for contract creation transactions
+            // Cost is 2 gas per word (32 bytes) of init code
+            // Per execution-specs: create_cost = TX_CREATE_COST + init_code_cost(ulen(tx.data))
+            if (to == null and evm_instance.hardfork.isAtLeast(.SHANGHAI)) {
+                const init_code_words = (tx_data.len + 31) / 32;
+                const init_code_cost = @as(u64, @intCast(init_code_words)) * primitives.GasConstants.InitcodeWordGas;
+                intrinsic_gas += init_code_cost;
+
             }
 
             // Add authorization list cost if present (EIP-7702, Prague+)
