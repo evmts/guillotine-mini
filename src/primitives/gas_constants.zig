@@ -1656,9 +1656,9 @@ test "hardfork - edge cases across hardforks" {
 // EIP-4844: Blob Transactions
 // ============================================================================
 pub const GAS_PER_BLOB: u64 = 131072; // 2^17
-pub const TARGET_BLOB_GAS_PER_BLOCK: u64 = 786432; // 3 * 2^18
+pub const TARGET_BLOB_GAS_PER_BLOCK: u64 = 393216; // 3 * 2^17
 pub const MIN_BLOB_GASPRICE: u64 = 1;
-pub const BLOB_BASE_FEE_UPDATE_FRACTION: u64 = 5007716;
+pub const BLOB_BASE_FEE_UPDATE_FRACTION: u64 = 3338477;
 pub const GAS_BLOBHASH_OPCODE: u64 = 3;
 pub const GAS_POINT_EVALUATION: u64 = 50000;
 

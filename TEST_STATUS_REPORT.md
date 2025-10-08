@@ -1,11 +1,11 @@
 # Guillotine Mini - Test Status Report
-**Generated:** 2025-10-07
+**Generated:** 2025-10-08
 **Test Suite:** Ethereum Execution Specs (ethereum/tests)
 
 ## Executive Summary
 
 Total test suites tested: **15 hardforks**
-Overall status: **Most hardforks passing, 4 areas need attention**
+Overall status: **Most hardforks passing, 5 areas need attention**
 
 ### Recent Fixes
 - ✅ **BLAKE2F Precompile (EIP-152)**: Fixed sigma table bug (246 failures → 0)
@@ -28,20 +28,19 @@ Overall status: **Most hardforks passing, 4 areas need attention**
 |----------|-------|--------|-------|
 | **Frontier** | All | ✅ PASS | Baseline EVM functionality |
 | **Homestead** | All | ✅ PASS | EIP-2, EIP-7, EIP-8 |
-| **Tangerine** | All | ✅ PASS | EIP-150 gas changes |
-| **Spurious** | All | ✅ PASS | EIP-155, EIP-160, EIP-161, EIP-170 |
-| **Byzantium (non-MODEXP)** | 298/352 | ✅ 85% | Precompiles, opcodes work |
+| **Berlin** | All | ✅ PASS | EIP-2929, EIP-2930 fully working |
+| **Paris (Merge)** | 12/12 | ✅ 100% | All tests passing |
 
 ---
 
 ### ⚠️ Partial Passing Hardforks
 
-#### **Byzantium (EIP-198 MODEXP)** - 85% Pass Rate
-- **Status**: 298/352 passing (54 failures)
+#### **Byzantium (EIP-198 MODEXP)** - 88% Pass Rate
+- **Status**: 309/352 passing (43 failures)
 - **Issue**: MODEXP precompile edge cases
 - **Location**: `src/precompiles/precompiles.zig:execute_modexp`
 - **Priority**: MEDIUM
-- **Tests failing**: Specific MODEXP parameter combinations
+- **Tests failing**: Specific MODEXP parameter combinations (base_len edge cases)
 
 #### **Constantinople (EIP-1014 CREATE2)** - 78% Pass Rate
 - **Status**: 396/508 passing (112 failures)
@@ -50,50 +49,51 @@ Overall status: **Most hardforks passing, 4 areas need attention**
 - **Priority**: MEDIUM
 - **Root cause**: Return data not properly captured/returned from CREATE2
 
-#### **Istanbul (Non-BLAKE2)** - 95% Pass Rate
-- **Status**: 2052/2165 passing (113 failures, ~246 BLAKE2 fixed)
-- **Issue**: Unknown (need investigation after BLAKE2 fix)
-- **Priority**: LOW (small failure rate)
-- **Note**: BLAKE2F now working correctly
-
-#### **Shanghai (EIP-3860)** - 93% Pass Rate
-- **Status**: 1014/1090 passing (76 failures)
-- **Issue**: EIP-3860 initcode size validation
-- **Failing tests**: `initcode` test suites
+#### **Istanbul (Non-BLAKE2)** - Status Unknown
+- **Status**: Test suite times out after 5 minutes
+- **Issue**: Too large to run as single suite, needs sub-targets
 - **Priority**: MEDIUM
-- **Root cause**: Initcode size limit (49152 bytes) not enforced correctly
+- **Note**: BLAKE2F precompile now working correctly
+- **Action**: Split into smaller test sub-targets like other hardforks
+
+#### **Shanghai (EIP-3855, EIP-3651, EIP-4895)** - Mixed Results
+- **EIP-3855 PUSH0**: ✅ All passing
+- **EIP-3651 Warm Coinbase**: ✅ All passing
+- **EIP-4895 Withdrawals**: ✅ All passing
+- **EIP-3860 Initcode**: ⚠️ 464/558 passing (94 failures, 83%)
+  - Issue: Initcode size validation and gas calculation
+  - Failing tests: `gas_usage`, `contract_creating_tx` suites
+  - Priority: MEDIUM
 
 ---
 
 ### ⚠️ Cancun Hardfork - Mixed Results
 
-**Overall**: Most EIPs working, one major issue
+**Overall**: Most EIPs working, blob precompile fixed, selfdestruct still has issues
 
 #### ✅ Working Cancun EIPs
 
 | EIP | Feature | Tests | Status |
 |-----|---------|-------|--------|
-| **EIP-1153** | Transient Storage (TLOAD/TSTORE) | 620/620 | ✅ 100% |
-| | - Basic operations | 66/66 | ✅ PASS |
-| | - Reentrancy | 144/144 | ✅ PASS |
-| | - Execution contexts | 410/410 | ✅ PASS |
+| **EIP-1153** | Transient Storage (TLOAD/TSTORE) | 66/66 | ✅ 100% |
 | **EIP-5656** | MCOPY instruction | 558/558 | ✅ 100% |
 | **EIP-7516** | BLOBBASEFEE opcode | 29/29 | ✅ 100% |
-| **EIP-4844** | Blob transactions (small) | 108/108 | ✅ 100% |
+| **EIP-4844** | Blob tx (small tests) | Status unclear | ✅ PASS (based on prior runs) |
 
 #### ⚠️ Failing Cancun EIPs
 
 | EIP | Feature | Tests | Status | Issue |
 |-----|---------|-------|--------|-------|
-| **EIP-6780** | SELFDESTRUCT restrictions | 812/1166 | ⚠️ 70% | `dynamic_create2_selfdestruct_collision` failures |
-| **EIP-4844** | BLOBHASH opcode | 270/282 | ⚠️ 96% | 12 failures in blob opcode tests |
-| **EIP-4844** | Blob precompile | TIMEOUT | ❌ N/A | Point evaluation precompile hangs |
+| **EIP-6780** | SELFDESTRUCT restrictions | Unknown | ⚠️ TIMEOUT | Suite times out - needs investigation |
+| **EIP-4844** | BLOBHASH opcode | Unknown | ⚠️ UNKNOWN | Not tested in this run |
+| **EIP-4844** | Blob precompile | Working | ✅ FIXED | Point evaluation precompile now returns quickly with correct results |
 
 ---
 
 ### ⚠️ Prague & Osaka
-- **Status**: Not fully tested yet
-- **Dependencies**: Fix Cancun issues first
+- **Status**: Not tested in this run
+- **Note**: Prague and Osaka are future hardforks not yet activated on mainnet
+- **Priority**: LOW - focus on fixing active hardfork issues first
 
 ---
 
@@ -101,25 +101,24 @@ Overall status: **Most hardforks passing, 4 areas need attention**
 
 ### 🔴 HIGH PRIORITY
 
-1. **EIP-4844 Blob Precompile Timeout** (Cancun)
-   - **Issue**: Point evaluation precompile causes test timeout
-   - **Location**: `src/precompiles/precompiles.zig:execute_kzg_point_evaluation`
-   - **Impact**: Blocks all blob precompile tests
-   - **Action**: Debug infinite loop or performance issue
-
-2. **EIP-6780 SELFDESTRUCT Collision Tests** (Cancun)
-   - **Issue**: 354 `dynamic_create2_selfdestruct_collision` tests failing
+1. **EIP-6780 SELFDESTRUCT Tests Timeout** (Cancun)
+   - **Issue**: Test suite times out - unclear how many tests failing
    - **Location**: `src/evm.zig` (CREATE2 + SELFDESTRUCT interaction)
-   - **Impact**: 30% of SELFDESTRUCT tests
-   - **Recent work**: Added `created_accounts` tracking (partial fix)
-   - **Action**: Debug CREATE2 + SELFDESTRUCT in same transaction scenarios
+   - **Impact**: Cannot determine pass rate
+   - **Recent work**: Blob precompile performance fixed
+   - **Action**: Split into sub-targets or investigate timeout cause
+
+2. **Istanbul Test Suite Timeout**
+   - **Issue**: Suite too large, times out after 5+ minutes
+   - **Impact**: Cannot determine pass/fail for Istanbul hardfork
+   - **Action**: Split into sub-targets like Berlin/Cancun/Shanghai
 
 ### 🟡 MEDIUM PRIORITY
 
 3. **EIP-198 MODEXP Edge Cases** (Byzantium)
-   - **Issue**: 54/352 failures (15%)
+   - **Issue**: 43/352 failures (12%)
    - **Location**: `src/precompiles/precompiles.zig:execute_modexp`
-   - **Action**: Compare against Python reference for edge cases
+   - **Action**: Compare against Python reference for base_len edge cases
 
 4. **EIP-1014 CREATE2 Return Data** (Constantinople)
    - **Issue**: 112/508 failures (22%)
@@ -127,20 +126,16 @@ Overall status: **Most hardforks passing, 4 areas need attention**
    - **Action**: Verify return data handling matches Python reference
 
 5. **EIP-3860 Initcode Validation** (Shanghai)
-   - **Issue**: 76/1090 failures (7%)
+   - **Issue**: 94/558 failures (17%)
    - **Location**: `src/evm.zig:inner_create` (initcode size check)
-   - **Action**: Verify 49152-byte limit enforcement
-
-6. **EIP-4844 BLOBHASH Opcode** (Cancun)
-   - **Issue**: 12/282 failures (4%)
-   - **Location**: `src/frame.zig:BLOBHASH` opcode
-   - **Action**: Debug specific blob hash test failures
+   - **Action**: Verify 49152-byte limit enforcement and gas calculation
 
 ### 🟢 LOW PRIORITY
 
-7. **Istanbul Remaining Failures**
-   - **Issue**: 113 failures (5%)
-   - **Action**: Investigate after other fixes (may be test infrastructure issues)
+6. **EIP-4844 BLOBHASH Opcode** (Cancun)
+   - **Issue**: Status unknown (not tested)
+   - **Location**: `src/frame.zig:BLOBHASH` opcode
+   - **Action**: Run targeted tests after selfdestruct timeout fixed
 
 ---
 
@@ -158,26 +153,27 @@ Overall status: **Most hardforks passing, 4 areas need attention**
 - `scripts/fix-specs.ts`: Automated test fixing pipeline
 
 ### Known Issues
-- Cancun full suite (`specs-cancun`) times out → use individual sub-targets
-- Blob precompile tests require longer timeout (currently timing out at 2 minutes)
+- **Istanbul full suite (`specs-istanbul`) times out** → needs sub-targets like other large hardforks
+- **Cancun selfdestruct suite (`specs-cancun-selfdestruct`) times out** → needs investigation or sub-targets
+- **Blob precompile performance fixed** - Point evaluation now completes quickly
 
 ---
 
 ## Next Steps
 
-### Immediate (Today)
-1. Debug blob precompile timeout (EIP-4844)
-2. Investigate CREATE2+SELFDESTRUCT collision scenarios (EIP-6780)
-3. Run full test pass after fixes
+### Immediate
+1. **Split Istanbul into sub-targets** - Suite too large to run atomically
+2. **Investigate selfdestruct timeout** - Unknown pass rate for EIP-6780
+3. **Fix MODEXP edge cases** (Byzantium) - 43 failures remaining
 
-### Short-term (This Week)
-4. Fix MODEXP edge cases (Byzantium)
-5. Fix CREATE2 return data (Constantinople)
-6. Fix initcode validation (Shanghai)
+### Short-term
+4. **Fix CREATE2 return data** (Constantinople) - 112 failures
+5. **Fix initcode validation** (Shanghai) - 94 failures in gas calculation
+6. **Test BLOBHASH opcode** (Cancun) - Not run in this pass
 
 ### Medium-term
-7. Complete Prague and Osaka testing
-8. Add regression tests for BLAKE2F fix
+7. Complete Prague and Osaka testing (lower priority - future hardforks)
+8. Add regression tests for blob precompile fix
 9. Document all EIP implementations
 
 ---
@@ -185,14 +181,17 @@ Overall status: **Most hardforks passing, 4 areas need attention**
 ## Code Health
 
 ### Recent Improvements
-- ✅ EIP-6780 tracking infrastructure added
-- ✅ BLAKE2F sigma table corrected
+- ✅ **Blob precompile performance fixed** - Point evaluation precompile no longer times out
+- ✅ BLAKE2F sigma table corrected (246 failures → 0)
+- ✅ Berlin EIP-2929/EIP-2930 fully passing
+- ✅ Paris (Merge) fully passing
 - ✅ Comprehensive test coverage for all hardforks
 
 ### Areas Needing Attention
-- ⚠️ CREATE2 + SELFDESTRUCT interaction logic
-- ⚠️ Blob precompile performance
-- ⚠️ Edge case handling in precompiles (MODEXP)
+- ⚠️ Istanbul and Cancun selfdestruct test suites timing out
+- ⚠️ CREATE2 return data handling (Constantinople)
+- ⚠️ Initcode size validation and gas calculation (Shanghai)
+- ⚠️ MODEXP edge cases (Byzantium)
 
 ---
 
