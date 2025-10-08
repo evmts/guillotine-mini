@@ -339,6 +339,92 @@ Make minimal changes from CP5. Use \`hardfork.isAtLeast()\` guards if fork-speci
 | Transient storage (TLOAD/TSTORE) | forks/cancun/vm/instructions/storage.py | src/evm.zig (get_transient_storage, set_transient_storage) |
 | Warm/cold tracking | forks/<fork>/vm/__init__.py (Evm class) | src/evm.zig (warm_addresses, warm_storage_slots) |
 
+## 🚨 Error Mapping: Python → Zig
+
+| Python Exception | Zig Error | When to Use |
+|-----------------|-----------|-------------|
+| \`OutOfGasError\` | \`CallError.OutOfGas\` | Gas exhausted |
+| \`StackUnderflowError\` | \`CallError.StackUnderflow\` | Pop from empty stack |
+| \`StackOverflowError\` | \`CallError.StackOverflow\` | Stack > 1024 items |
+| \`InvalidJumpError\` | \`CallError.InvalidJump\` | JUMP to invalid dest |
+| \`WriteInStaticContext\` | \`CallError.StaticCallViolation\` | State change in STATICCALL |
+| \`Revert\` | \`CallError.RevertExecution\` | REVERT opcode |
+| \`InvalidOpcode\` | \`CallError.InvalidOpcode\` | Unknown opcode |
+
+**Locations**: Python \`vm/exceptions.py\` | Zig \`src/errors.zig\`
+
+## ⚡ Opcode Quick Reference
+
+| Opcode | Hex | Gas | Fork | Notes |
+|--------|-----|-----|------|-------|
+| PUSH0 | 0x5F | 2 | Shanghai+ | Pushes 0 |
+| TLOAD | 0x5C | 100 | Cancun+ | Always warm |
+| TSTORE | 0x5D | 100 | Cancun+ | Always warm, check static |
+| MCOPY | 0x5E | 3+3*w | Cancun+ | Handles overlaps |
+| BLOBHASH | 0x49 | 3 | Cancun+ | Versioned hash |
+| BLOBBASEFEE | 0x4A | 2 | Cancun+ | Blob base fee |
+| SELFDESTRUCT | 0xFF | 5000 | All | Changed in Cancun (EIP-6780) |
+| SLOAD | 0x54 | 100/2100 | All | Warm/cold (Berlin+) |
+| SSTORE | 0x55 | varies | All | Complex (see below) |
+
+## 💰 SSTORE Gas Logic (Most Complex)
+
+**Order** (MUST match Python exactly):
+1. Stipend: \`if gas < 2300: OutOfGas\`
+2. Cold: +2100 if slot not accessed
+3. Dynamic:
+   - \`original==current && current!=new\`: \`original==0 ? 20000 : 5000-2100\`
+   - Else: 100 (warm)
+4. Refunds: \`current→0: +4800\` | Track \`original_storage\` (tx start) separately
+
+**Python**: \`forks/.../vm/instructions/storage.py:sstore\`
+
+## 📐 Memory Expansion Cost
+
+\`\`\`
+words = (bytes + 31) / 32
+cost = 3*words + words²/512
+charge = new_cost - old_cost
+\`\`\`
+**Python**: \`forks/.../vm/memory.py\` | **Zig**: \`src/frame.zig:expandMemory\`
+
+## 🔧 Precompile Addresses
+
+| Addr | Name | Gas | Fork |
+|------|------|-----|------|
+| 0x01 | ecrecover | 3000 | Frontier |
+| 0x02 | sha256 | 60+12/w | Frontier |
+| 0x03 | ripemd160 | 600+120/w | Frontier |
+| 0x04 | identity | 15+3/w | Frontier |
+| 0x05 | modexp | Variable | Byzantium |
+| 0x06-0x08 | bn256 | Varies | Byzantium |
+| 0x09 | blake2f | Variable | Istanbul |
+| 0x0A | kzg_point_eval | 50000 | Cancun |
+| 0x0A-0x12 | BLS12-381 | Varies | Prague |
+
+## 🗓️ Hardfork Feature Activation
+
+| Feature | Fork | Zig Check |
+|---------|------|-----------|
+| Warm/cold (EIP-2929) | Berlin | \`isAtLeast(.BERLIN)\` |
+| Gas refund cap = 1/5 (EIP-3529) | London | \`isAtLeast(.LONDON)\` |
+| BASEFEE opcode (EIP-3198) | London | \`isAtLeast(.LONDON)\` |
+| PUSH0 (EIP-3855) | Shanghai | \`isAtLeast(.SHANGHAI)\` |
+| Warm coinbase (EIP-3651) | Shanghai | \`isAtLeast(.SHANGHAI)\` |
+| Transient storage (EIP-1153) | Cancun | \`isAtLeast(.CANCUN)\` |
+| MCOPY (EIP-5656) | Cancun | \`isAtLeast(.CANCUN)\` |
+| SELFDESTRUCT change (EIP-6780) | Cancun | \`isAtLeast(.CANCUN)\` |
+
+## 🔍 Trace Divergence Patterns
+
+**Gas divergence at instruction 0** → Intrinsic gas wrong, access list not applied
+**Gas divergence at SLOAD/SSTORE** → Warm/cold tracking, missing cold charge
+**Gas divergence at CALL/CREATE** → Value stipend, depth, address warming
+**Stack divergence** → Wrong pop/push order or values
+**PC divergence (early stop)** → Missing error check, wrong gas, early termination
+**Memory divergence** → Expansion cost, MSTORE/MLOAD, MCOPY overlap
+**No divergence but final gas differs** → Refund calculation, refund cap
+
 ## 🎯 Critical Invariants
 
 **Gas Metering:**
