@@ -101,6 +101,7 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
     // Get test file path from _info.source
     // The source field contains paths like: src/GeneralStateTestsFiller/Cancun/stEIP1153-transientStorage/10_revertUndoesStoreAfterReturnFiller.yml
     // We need to derive the ethereum-tests JSON path from this
+    // NOTE: Many tests don't have _info.source metadata, so we silently skip trace generation for those
     var test_file_path_buf: [1024]u8 = undefined;
     const test_file_path = blk: {
         if (test_case.object.get("_info")) |info| {
@@ -118,20 +119,15 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
                         const without_suffix = after_filler[0 .. after_filler.len - "Filler.yml".len];
                         break :blk try std.fmt.bufPrint(&test_file_path_buf, "test/fixtures/general_state_tests/{s}.json", .{without_suffix});
                     }
-                } else {
-                    std.debug.print("\n⚠️  Debug: source doesn't contain 'GeneralStateTestsFiller/': {s}\n", .{source_path});
                 }
-            } else {
-                std.debug.print("\n⚠️  Debug: _info.source not found\n", .{});
             }
-        } else {
-            std.debug.print("\n⚠️  Debug: _info not found in test_case\n", .{});
         }
+        // Silently return null if metadata not available (common for generated tests)
         break :blk null;
     };
 
     if (test_file_path == null) {
-        std.debug.print("\n⚠️  Cannot generate reference trace: could not derive test file path from _info.source\n", .{});
+        // Silently skip trace generation when _info.source is not available
         return;
     }
 
