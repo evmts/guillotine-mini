@@ -658,6 +658,9 @@ pub fn build(b: *std.Build) void {
         "evm_get_storage",
         "evm_set_balance",
         "evm_set_code",
+        "evm_set_access_list_addresses",
+        "evm_set_access_list_storage_keys",
+        "evm_set_blob_hashes",
     };
 
     const wasm_install = b.addInstallArtifact(wasm_lib, .{});
