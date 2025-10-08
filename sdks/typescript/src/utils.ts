@@ -76,3 +76,44 @@ export function bytesToAddress(bytes: Uint8Array): string {
   }
   return bytesToHex(bytes);
 }
+
+/**
+ * Convert bigint to hex string (u256)
+ */
+export function bigintToHex(value: bigint): string {
+  return bytesToHex(bigintToU256(value));
+}
+
+/**
+ * Convert hex string (u256) to bigint
+ */
+export function hexToBigint(hex: string): bigint {
+  return u256ToBigint(hexToBytes(hex));
+}
+
+/**
+ * Pad hex string to specific byte length
+ */
+export function padHex(hex: string, byteLength: number): string {
+  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+  const padded = clean.padStart(byteLength * 2, '0');
+  return '0x' + padded;
+}
+
+/**
+ * Validate hex string format
+ */
+export function isValidHex(hex: string): boolean {
+  if (!hex.startsWith('0x')) return false;
+  const clean = hex.slice(2);
+  return /^[0-9a-fA-F]*$/.test(clean) && clean.length % 2 === 0;
+}
+
+/**
+ * Validate Ethereum address format
+ */
+export function isValidAddress(address: string): boolean {
+  if (!isValidHex(address)) return false;
+  const clean = address.slice(2);
+  return clean.length === 40; // 20 bytes = 40 hex chars
+}
