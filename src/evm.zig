@@ -12,6 +12,8 @@ const errors = @import("errors.zig");
 const trace = @import("trace.zig");
 const blake2 = @import("blake2.zig");
 const precompiles = @import("precompiles/precompiles.zig");
+const evm_config = @import("evm_config.zig");
+const EvmConfig = evm_config.EvmConfig;
 
 const Address = primitives.Address.Address;
 
@@ -19,12 +21,8 @@ const Address = primitives.Address.Address;
 pub const HostInterface = host.HostInterface;
 pub const Host = host.Host;
 
-// Import new API types
-const call_params = @import("call_params.zig");
-const call_result = @import("call_result.zig");
-const default_config = struct {};
-pub const CallParams = call_params.CallParams(default_config);
-pub const CallResult = call_result.CallResult(default_config);
+// Re-export config
+pub const Config = EvmConfig;
 
 /// Access list storage key slot type
 pub const AccessListStorageKey = struct {
@@ -84,9 +82,17 @@ pub const BlockContext = struct {
     blob_base_fee: u256,
 };
 
-/// EVM - Orchestrates execution like evm.zig
-pub const Evm = struct {
-    const Self = @This();
+/// Creates a configured EVM instance type.
+pub fn Evm(config: EvmConfig) type {
+    // Import new API types with config
+    const call_params = @import("call_params.zig");
+    const call_result = @import("call_result.zig");
+
+    return struct {
+        const Self = @This();
+
+        pub const CallParams = call_params.CallParams(config);
+        pub const CallResult = call_result.CallResult(config);
 
     frames: std.ArrayList(Frame),
     storage: std.AutoHashMap(StorageSlotKey, u256),
@@ -103,29 +109,25 @@ pub const Evm = struct {
     // Current call's balance snapshot for copy-on-write (for SELFDESTRUCT revert handling)
     // This is set at the start of inner_call and cleared at the end
     current_balance_snapshot: ?*std.AutoHashMap(Address, u256),
-    hardfork: Hardfork = Hardfork.DEFAULT,
+    hardfork: Hardfork,
     origin: Address,
     gas_price: u256,
     host: ?HostInterface,
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
     tracer: ?*trace.Tracer = null,
-    block_context: BlockContext = .{
-        .chain_id = 1,
-        .block_number = 0,
-        .block_timestamp = 0,
-        .block_difficulty = 0,
-        .block_prevrandao = 0,
-        .block_coinbase = primitives.ZERO_ADDRESS,
-        .block_gas_limit = 30_000_000,
-        .block_base_fee = 0,
-        .blob_base_fee = 0,
-    },
+    block_context: BlockContext,
     blob_versioned_hashes: []const [32]u8 = &[_][32]u8{},
     // Stored state for call() - set via setter methods
     pending_bytecode: []const u8 = &[_]u8{},
     pending_access_list: ?AccessListParam = null,
 
+    // Config-provided overrides (comptime known)
+    opcode_overrides: []const evm_config.OpcodeOverride,
+    precompile_overrides: []const evm_config.PrecompileOverride,
+
+    /// Initialize a new EVM instance
+    /// Config provides defaults, but hardfork can be overridden at runtime
     pub fn init(allocator: std.mem.Allocator, h: ?HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext) !Self {
         return Self{
             .frames = undefined,
@@ -141,7 +143,7 @@ pub const Evm = struct {
             .warm_storage_slots = undefined,
             .gas_refund = 0,
             .current_balance_snapshot = null,
-            .hardfork = hardfork orelse Hardfork.DEFAULT,
+            .hardfork = hardfork orelse config.hardfork,
             .block_context = block_context orelse .{
                 .chain_id = 1,
                 .block_number = 0,
@@ -149,7 +151,7 @@ pub const Evm = struct {
                 .block_difficulty = 0,
                 .block_prevrandao = 0,
                 .block_coinbase = primitives.ZERO_ADDRESS,
-                .block_gas_limit = 30_000_000,
+                .block_gas_limit = config.block_gas_limit,
                 .block_base_fee = 0,
                 .blob_base_fee = 0,
             },
@@ -159,7 +161,31 @@ pub const Evm = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
             .allocator = allocator,
             .tracer = null,
+            .opcode_overrides = config.opcode_overrides,
+            .precompile_overrides = config.precompile_overrides,
         };
+    }
+
+    /// Look up custom opcode handler override
+    /// Returns null if no override exists for this opcode
+    pub fn getOpcodeOverride(self: *const Self, opcode: u8) ?*const anyopaque {
+        for (self.opcode_overrides) |override| {
+            if (override.opcode == opcode) {
+                return override.handler;
+            }
+        }
+        return null;
+    }
+
+    /// Look up custom precompile override
+    /// Returns null if no override exists for this address
+    pub fn getPrecompileOverride(self: *const Self, address: Address) ?*const evm_config.PrecompileOverride {
+        for (self.precompile_overrides) |*override| {
+            if (override.address.equals(address)) {
+                return override;
+            }
+        }
+        return null;
     }
 
     /// Clean up resources
@@ -840,7 +866,50 @@ pub const Evm = struct {
         const code = self.get_code(address);
         // std.debug.print("DEBUG inner_call: address={any} code.len={} frames={}\n", .{address.bytes, code.len, self.frames.items.len});
         if (code.len == 0) {
-            // Check if this is a precompile address (hardfork-aware)
+            // Check for JavaScript custom precompile handler first
+            const root_c = @import("root_c.zig");
+            var output_len: usize = 0;
+            var output_ptr: [*]u8 = undefined;
+            var gas_used: u64 = 0;
+
+            if (root_c.tryCallJsPrecompileHandler(
+                &address.bytes,
+                input.ptr,
+                input.len,
+                gas,
+                &output_len,
+                &output_ptr,
+                &gas_used,
+            )) {
+                // JavaScript precompile handler executed successfully
+                const output = if (output_len > 0) output_ptr[0..output_len] else &[_]u8{};
+                return CallResult{
+                    .success = true,
+                    .gas_left = gas - gas_used,
+                    .output = output,
+                };
+            }
+
+            // Check for config-based precompile override (native Zig handlers)
+            if (self.getPrecompileOverride(address)) |override| {
+                const result = override.execute(
+                    override.context,
+                    self.arena.allocator(),
+                    input,
+                    gas,
+                ) catch |err| {
+                    std.debug.print("Custom precompile execution error: {}\n", .{err});
+                    return makeFailure(self.arena.allocator(), 0);
+                };
+
+                return CallResult{
+                    .success = result.success,
+                    .gas_left = if (result.success) gas - result.gas_used else 0,
+                    .output = result.output,
+                };
+            }
+
+            // Check if this is a standard precompile address (hardfork-aware)
             if (precompiles.is_precompile(address, self.hardfork)) {
                 // Use the precompiles module to handle all precompile execution
                 const result = precompiles.execute_precompile(
@@ -1618,4 +1687,8 @@ pub const Evm = struct {
             try frame.step();
         }
     }
-};
+    };
+}
+
+// Default EVM instance for backward compatibility
+pub const DefaultEvm = Evm(.{});

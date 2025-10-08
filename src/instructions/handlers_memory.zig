@@ -94,7 +94,8 @@ pub fn Handlers(FrameType: type) type {
         }
 
         /// MCOPY opcode (0x5e) - Copy memory (EIP-5656, Cancun+)
-        pub fn mcopy(frame: *FrameType, evm: anytype) FrameType.EvmError!void {
+        pub fn mcopy(frame: *FrameType) FrameType.EvmError!void {
+            const evm = frame.getEvm();
             // EIP-5656: MCOPY was introduced in Cancun hardfork
             if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;
 
