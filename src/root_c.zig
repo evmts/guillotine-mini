@@ -3,6 +3,7 @@ const std = @import("std");
 const evm = @import("evm.zig");
 const Evm = evm.Evm;
 const CallResult = evm.CallResult;
+const CallParams = evm.CallParams;
 const StorageSlotKey = evm.StorageSlotKey;
 const primitives = @import("primitives");
 const Address = primitives.Address.Address;
@@ -311,16 +312,23 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
         else
             null;
 
-        const result = ctx.evm.call(
-            ctx.bytecode,
-            ctx.gas,
-            ctx.caller,
-            ctx.address,
-            ctx.value,
-            ctx.calldata,
-            access_list,
-            ctx.blob_versioned_hashes,
-        ) catch return false;
+        // Create CallParams for regular CALL operation
+        const call_params = CallParams{ .call = .{
+            .caller = ctx.caller,
+            .to = ctx.address,
+            .value = ctx.value,
+            .input = ctx.calldata,
+            .gas = @intCast(ctx.gas),
+        } };
+
+        // Set bytecode, access list, and blob hashes
+        ctx.evm.setBytecode(ctx.bytecode);
+        ctx.evm.setAccessList(access_list);
+        if (ctx.blob_versioned_hashes) |hashes| {
+            ctx.evm.setBlobVersionedHashes(hashes);
+        }
+
+        const result = ctx.evm.call(call_params);
 
         ctx.result = result;
         return result.success;
