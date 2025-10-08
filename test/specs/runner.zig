@@ -987,16 +987,20 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 };
             } else blk: {
                 // Regular call - use call method
-                break :blk try evm_instance.call(
-                    bytecode,
-                    @intCast(execution_gas),
-                    sender,
-                    target_addr,
-                    value,
-                    tx_data,
-                    access_list_param,
-                    blob_hashes_storage,
-                );
+                const call_params = evm_module.CallParams{ .call = .{
+                    .caller = sender,
+                    .to = target_addr,
+                    .value = value,
+                    .input = tx_data,
+                    .gas = @intCast(execution_gas),
+                } };
+                // Set bytecode, access list, and blob hashes before calling
+                evm_instance.setBytecode(bytecode);
+                evm_instance.setAccessList(access_list_param);
+                if (blob_hashes_storage) |hashes| {
+                    evm_instance.setBlobVersionedHashes(hashes);
+                }
+                break :blk evm_instance.call(call_params);
             };
 
             // Calculate gas used BEFORE applying refunds
