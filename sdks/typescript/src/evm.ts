@@ -8,8 +8,17 @@ import type {
   Bytes,
   EvmOptions,
   AccessListEntry,
+  OpcodeHandler,
+  PrecompileHandler,
 } from "./types.js";
-import { bigintToU256 } from "./utils.js";
+import {
+  bigintToU256,
+  hexToBytes,
+  bytesToHex,
+  addressToBytes,
+  isValidAddress,
+  isValidHex,
+} from "./utils.js";
 
 /**
  * WASM module interface
@@ -101,18 +110,107 @@ class EvmImpl implements Evm {
   private readyPromise: Promise<void>;
   private wasm: WasmModule | null = null;
   private handle: number = 0;
+  // Store references to callback functions to prevent garbage collection
+  private opcodeHandlers: Map<number, any> = new Map();
+  private precompileHandlers: Map<string, any> = new Map();
 
   constructor(wasmModule: WebAssembly.Module, options?: EvmOptions) {
     this.readyPromise = this.initialize(wasmModule, options);
   }
 
   private async initialize(wasmModule: WebAssembly.Module, options?: EvmOptions): Promise<void> {
-    // Instantiate WASM module
-    const instance = await WebAssembly.instantiate(wasmModule, {
-      env: {
-        // Add any required imports here if needed
-      },
+    // Store custom handlers for callbacks
+    const opcodeOverrides = options?.opcodeOverrides || [];
+    const precompileOverrides = options?.precompileOverrides || [];
+
+    // Store references to prevent garbage collection
+    opcodeOverrides.forEach(o => this.opcodeHandlers.set(o.opcode, o.handler));
+    precompileOverrides.forEach(o => {
+      const key = Array.from(o.address).join(',');
+      this.precompileHandlers.set(key, o.execute);
     });
+
+    // Create WASM imports with callback functions
+    const imports = {
+      env: {
+        // Called BY WASM to execute custom opcode handlers
+        js_opcode_callback: (opcode: number, framePtr: number): number => {
+          const handler = this.opcodeHandlers.get(opcode);
+          if (!handler) return 0; // No custom handler for this opcode
+
+          try {
+            const result = handler(framePtr);
+            return result ? 1 : 0;
+          } catch (e) {
+            console.error(`Opcode 0x${opcode.toString(16)} handler error:`, e);
+            return 0;
+          }
+        },
+
+        // Called BY WASM to execute custom precompile handlers
+        js_precompile_callback: (
+          addressPtr: number,
+          inputPtr: number,
+          inputLen: number,
+          gasLimit: bigint,
+          outputLenPtr: number,
+          outputPtrPtr: number,
+          gasUsedPtr: number
+        ): number => {
+          if (!this.wasm) return 0;
+
+          try {
+            const memory = new Uint8Array(this.wasm.exports.memory.buffer);
+            const address = memory.slice(addressPtr, addressPtr + 20);
+            const input = memory.slice(inputPtr, inputPtr + inputLen);
+
+            // Find matching precompile handler
+            const addrKey = Array.from(address).join(',');
+            const handler = this.precompileHandlers.get(addrKey);
+            if (!handler) return 0; // No custom handler for this address
+
+            // Execute handler (note: must be synchronous)
+            const resultPromise = handler(input, gasLimit);
+
+            // Check if handler returned a Promise (async)
+            if (resultPromise instanceof Promise) {
+              console.error('Async precompile handlers are not supported in callback pattern');
+              return 0;
+            }
+
+            // Handler is synchronous
+            const result = resultPromise as any;
+
+            // Write output to WASM memory
+            if (result.output && result.output.length > 0) {
+              // Allocate memory for output (simplified - in production use proper allocator)
+              const outputPtr = memory.length - result.output.length;
+              memory.set(result.output, outputPtr);
+
+              // Write output pointer and length
+              const view = new DataView(memory.buffer);
+              view.setUint32(outputLenPtr, result.output.length, true);
+              view.setUint32(outputPtrPtr, outputPtr, true);
+            } else {
+              const view = new DataView(memory.buffer);
+              view.setUint32(outputLenPtr, 0, true);
+            }
+
+            // Write gas used
+            const view = new DataView(memory.buffer);
+            view.setBigUint64(gasUsedPtr, result.gasUsed, true);
+
+            return result.success ? 1 : 0;
+          } catch (e) {
+            console.error('Precompile handler error:', e);
+            return 0;
+          }
+        },
+      },
+    };
+
+    // Instantiate WASM module with callback imports
+    const instance = await WebAssembly.instantiate(wasmModule, imports);
 
     this.wasm = {
       instance,
@@ -422,6 +520,8 @@ class EvmImpl implements Evm {
     if (this.wasm && this.handle !== 0) {
       this.wasm.exports.evm_destroy(this.handle);
       this.handle = 0;
+      this.opcodeHandlers.clear();
+      this.precompileHandlers.clear();
     }
   }
 }
