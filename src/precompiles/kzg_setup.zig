@@ -13,13 +13,16 @@ var initialized = false;
 /// This should be called once during application startup
 pub fn init() !void {
     if (initialized) return;
-    
+
     // Load the trusted setup using the embedded data
     const precompute: u64 = 0;
-    ckzg.loadTrustedSetupFromText(trusted_setup_data, precompute) catch {
-        return error.TrustedSetupLoadFailed;
+    ckzg.loadTrustedSetupFromText(trusted_setup_data, precompute) catch |err| {
+        // TrustedSetupAlreadyLoaded means it's already initialized, which is fine
+        if (err != error.TrustedSetupAlreadyLoaded) {
+            return error.TrustedSetupLoadFailed;
+        }
     };
-    
+
     initialized = true;
 }
 
@@ -28,13 +31,16 @@ pub fn init() !void {
 pub fn initFromFile(_allocator: std.mem.Allocator, trusted_setup_path: []const u8) !void {
     if (initialized) return;
     _ = _allocator;
-    
+
     // Load the trusted setup using the Zig binding API
     const precompute: u64 = 0;
-    crypto.c_kzg.loadTrustedSetupFile(trusted_setup_path, precompute) catch {
-        return error.TrustedSetupLoadFailed;
+    crypto.c_kzg.loadTrustedSetupFile(trusted_setup_path, precompute) catch |err| {
+        // TrustedSetupAlreadyLoaded means it's already initialized, which is fine
+        if (err != error.TrustedSetupAlreadyLoaded) {
+            return error.TrustedSetupLoadFailed;
+        }
     };
-    
+
     initialized = true;
 }
 
