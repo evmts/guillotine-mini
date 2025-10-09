@@ -468,13 +468,10 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
     }
 
     // Calculate gas cost (EIP-198 / EIP-7883)
-    // Read first 32 bytes of exponent (padded with zeros if shorter)
-    var exp_head: [32]u8 = [_]u8{0} ** 32;
+    // Read first 32 bytes of exponent (let bytesToU256 handle padding correctly)
     const exp_head_len = @min(exp_len, 32);
-    if (exp_head_len > 0) {
-        @memcpy(exp_head[0..exp_head_len], exp[0..exp_head_len]);
-    }
-    const exp_head_u256 = bytesToU256(&exp_head);
+    const exp_head_bytes = if (exp_head_len > 0) exp[0..exp_head_len] else &[_]u8{};
+    const exp_head_u256 = bytesToU256(exp_head_bytes);
 
     // Calculate multiplication complexity
     // EIP-198 (Byzantium): Three-tier formula based on max_length
@@ -943,9 +940,9 @@ pub fn execute_point_evaluation(allocator: std.mem.Allocator, input: []const u8,
     }
 
     // Per Python spec (point_evaluation.py:44-45), invalid input length raises KZGProofError
-    // BEFORE charging gas, so gas_used should be 0, not required_gas
+    // KZGProofError is an ExceptionalHalt which consumes ALL gas (per exceptions.py:17-21)
     if (input.len != 192) {
-        return PrecompileOutput{ .output = &.{}, .gas_used = 0, .success = false };
+        return PrecompileOutput{ .output = &.{}, .gas_used = gas_limit, .success = false };
     }
 
     // Parse input: versioned_hash(32) + z(32) + y(32) + commitment(48) + proof(48)
@@ -957,20 +954,22 @@ pub fn execute_point_evaluation(allocator: std.mem.Allocator, input: []const u8,
 
     // Validate versioned hash corresponds to the commitment
     // Per Python spec (point_evaluation.py:55-56), this check happens AFTER charging gas
+    // But failure raises KZGProofError (ExceptionalHalt) which consumes ALL gas
     const primitives_mod = primitives; // alias
     const Blob = primitives_mod.Blob;
     var commitment_arr: Blob.BlobCommitment = undefined;
     @memcpy(commitment_arr[0..], commitment_bytes);
     const expected_vh = Blob.commitment_to_versioned_hash(commitment_arr);
     if (!std.mem.eql(u8, expected_vh.bytes[0..], versioned_hash)) {
-        return PrecompileOutput{ .output = &.{}, .gas_used = required_gas, .success = false };
+        return PrecompileOutput{ .output = &.{}, .gas_used = gas_limit, .success = false };
     }
 
     // Ensure KZG settings are initialized; try lazy init from embedded data if not
+    // Failure raises KZGProofError (ExceptionalHalt) which consumes ALL gas
     const kzg_setup = @import("kzg_setup.zig");
     if (!kzg_setup.isInitialized()) {
         kzg_setup.init() catch {
-            return PrecompileOutput{ .output = &.{}, .gas_used = required_gas, .success = false };
+            return PrecompileOutput{ .output = &.{}, .gas_used = gas_limit, .success = false };
         };
     }
 
@@ -988,12 +987,13 @@ pub fn execute_point_evaluation(allocator: std.mem.Allocator, input: []const u8,
     @memcpy(&proof, proof_bytes);
 
     // Verify the KZG proof
+    // Per Python spec (lines 59-65), verification failure raises KZGProofError (ExceptionalHalt) which consumes ALL gas
     const valid = crypto.c_kzg.verifyKZGProof(&commitment, &z, &y, &proof) catch {
-        return PrecompileOutput{ .output = &.{}, .gas_used = required_gas, .success = false };
+        return PrecompileOutput{ .output = &.{}, .gas_used = gas_limit, .success = false };
     };
 
     if (!valid) {
-        return PrecompileOutput{ .output = &.{}, .gas_used = required_gas, .success = false };
+        return PrecompileOutput{ .output = &.{}, .gas_used = gas_limit, .success = false };
     }
 
     // Success - return FIELD_ELEMENTS_PER_BLOB and BLS_MODULUS as 32-byte big-endian values
@@ -1180,11 +1180,24 @@ fn bytesToU256(bytes: []const u8) u256 {
 }
 
 fn bytesToU32(bytes: []const u8) u32 {
-    // Interpret a big-endian 32-byte field length, retaining only lower 32 bits.
-    // This handles Ethereum’s 32-byte length encoding where only the last byte is often set.
+    // Read a big-endian 32-byte field as u32, clamping to u32::MAX if value exceeds 2^32-1
+    // Per EIP-198: Length fields are 32 bytes but should be capped at practical limits
+
+    // Check if any of the first bytes (beyond what fits in u32) are non-zero
+    // If so, the value exceeds u32::MAX and should be clamped
+    if (bytes.len > 4) {
+        for (bytes[0 .. bytes.len - 4]) |byte| {
+            if (byte != 0) {
+                return std.math.maxInt(u32); // Clamp to 2^32 - 1
+            }
+        }
+    }
+
+    // Read the last 4 bytes (or fewer) as big-endian u32
     var result: u32 = 0;
-    for (bytes) |byte| {
-        result = std.math.shl(u32, result, 8) | byte;
+    const start_idx = if (bytes.len >= 4) bytes.len - 4 else 0;
+    for (bytes[start_idx..]) |byte| {
+        result = (result << 8) | byte;
     }
     return result;
 }

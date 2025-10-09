@@ -438,17 +438,62 @@ pub const Evm = struct {
         while (selfdestruct_it.next()) |entry| {
             const addr = entry.key_ptr.*;
             if (self.host) |h| {
-                // Clear all account state: balance (should already be 0), code, and nonce
+                // Clear all account state: balance (should already be 0), code, nonce, and storage
                 h.setBalance(addr, 0);
                 h.setCode(addr, &[_]u8{});
                 h.setNonce(addr, 0);
-                // Note: permanent storage is also cleared in full implementations
+
+                // Clear permanent storage for self-destructed account
+                // Per Python reference: destroy_account calls destroy_storage
+                // We need to iterate and clear all storage slots for this address
+                var storage_it = self.storage.iterator();
+                while (storage_it.next()) |storage_entry| {
+                    const key = storage_entry.key_ptr.*;
+                    if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
+                        h.setStorage(addr, key.slot, 0);
+                    }
+                }
             } else {
                 // Clear all account state in EVM storage
                 try self.balances.put(addr, 0);
                 try self.code.put(addr, &[_]u8{});
                 try self.nonces.put(addr, 0);
-                // Note: permanent storage would also be cleared in full implementation
+
+                // Clear permanent storage for self-destructed account
+                // Per Python reference: destroy_account calls destroy_storage
+                // We need to remove all storage slots for this address from both storage and original_storage
+                var storage_it = self.storage.iterator();
+                var slots_to_remove = std.ArrayList(StorageSlotKey){};
+                try slots_to_remove.ensureTotalCapacity(self.arena.allocator(), 10);
+                while (storage_it.next()) |storage_entry| {
+                    const key = storage_entry.key_ptr.*;
+                    if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
+                        try slots_to_remove.append(self.arena.allocator(), key);
+                    }
+                }
+                // Also collect slots from original_storage
+                var original_storage_it = self.original_storage.iterator();
+                while (original_storage_it.next()) |storage_entry| {
+                    const key = storage_entry.key_ptr.*;
+                    if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
+                        // Check if not already in list to avoid duplicates
+                        var already_exists = false;
+                        for (slots_to_remove.items) |existing_key| {
+                            if (existing_key.eql(key)) {
+                                already_exists = true;
+                                break;
+                            }
+                        }
+                        if (!already_exists) {
+                            try slots_to_remove.append(self.arena.allocator(), key);
+                        }
+                    }
+                }
+                // Remove collected slots (can't modify map while iterating)
+                for (slots_to_remove.items) |slot_key| {
+                    _ = self.storage.remove(slot_key);
+                    _ = self.original_storage.remove(slot_key);
+                }
             }
         }
 
