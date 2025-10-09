@@ -23,19 +23,19 @@ def sanitize_test_name(name: str) -> str:
     return sanitized
 
 
-def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path) -> None:
-    """Generate a Zig test file for a JSON test file."""
+def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path) -> int:
+    """Generate a Zig test file for a JSON test file. Returns number of tests generated."""
     # Read and parse JSON to get test names
     try:
         with open(json_path, "r") as f:
             data = json.load(f)
     except (json.JSONDecodeError, IOError) as e:
         print(f"Warning: Could not parse {json_path}: {e}", file=sys.stderr)
-        return
+        return 0
 
     if not isinstance(data, dict):
         print(f"Warning: {json_path} does not contain a test object", file=sys.stderr)
-        return
+        return 0
 
     # Get relative path from specs root for the JSON file
     rel_path = json_path.relative_to(specs_root)
@@ -60,6 +60,7 @@ def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path) -> N
 
     # Track used test names to handle collisions
     used_names = {}
+    test_count = 0
 
     # Generate a test for each test case in the JSON file
     for test_name in data.keys():
@@ -96,12 +97,13 @@ def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path) -> N
         zig_code.append("    try runner.runJsonTestWithPathAndName(allocator, test_case, json_path, test_name);")
         zig_code.append("}")
         zig_code.append("")
+        test_count += 1
 
     # Write the Zig file
     with open(output_file, "w") as f:
         f.write("\n".join(zig_code))
 
-    print(f"Generated: {output_file}")
+    return test_count
 
 
 def main():
@@ -123,12 +125,14 @@ def main():
     print(f"Generating all test files...")
 
     # Generate test files
+    total_tests = 0
     for i, json_file in enumerate(json_files, 1):
         if i % 100 == 0:
             print(f"Progress: {i}/{len(json_files)} files...")
-        generate_test_file(json_file, output_root, specs_root)
+        test_count = generate_test_file(json_file, output_root, specs_root)
+        total_tests += test_count
 
-    print(f"\nGenerated {len(json_files)} test files in {output_root}")
+    print(f"\nGenerated {total_tests} zig tests in {output_root}")
 
 
 if __name__ == "__main__":
