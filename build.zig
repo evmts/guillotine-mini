@@ -314,12 +314,26 @@ pub fn build(b: *std.Build) void {
     const cancun_sub_targets = [_]SubTarget{
         .{ .name = "cancun-tstore-basic", .filter = "eip1153_tstore_test_tstorage_py", .desc = "Cancun EIP-1153 basic TLOAD/TSTORE tests" },
         .{ .name = "cancun-tstore-reentrancy", .filter = "eip1153_tstore_test_tstore_reentrancy", .desc = "Cancun EIP-1153 reentrancy tests" },
-        .{ .name = "cancun-tstore-contexts", .filter = "eip1153_tstore_test_tstorage_", .desc = "Cancun EIP-1153 execution context tests" },
+        // Split contexts into smaller chunks (was 410 tests, now ~60-80 each)
+        .{ .name = "cancun-tstore-contexts-execution", .filter = "tstorage_execution_contexts", .desc = "Cancun EIP-1153 execution context tests (60 tests)" },
+        .{ .name = "cancun-tstore-contexts-tload-reentrancy", .filter = "tload_reentrancy", .desc = "Cancun EIP-1153 tload reentrancy tests (48 tests)" },
+        .{ .name = "cancun-tstore-contexts-reentrancy", .filter = "tstorage_reentrancy_contexts", .desc = "Cancun EIP-1153 reentrancy context tests (20 tests)" },
+        .{ .name = "cancun-tstore-contexts-create", .filter = "tstorage_create_contexts", .desc = "Cancun EIP-1153 create context tests (20 tests)" },
+        .{ .name = "cancun-tstore-contexts-selfdestruct", .filter = "tstorage_selfdestruct", .desc = "Cancun EIP-1153 selfdestruct tests (12 tests)" },
+        .{ .name = "cancun-tstore-contexts-clear", .filter = "tstorage_clear_after_tx", .desc = "Cancun EIP-1153 clear after tx tests (4 tests)" },
         .{ .name = "cancun-mcopy", .filter = "eip5656_mcopy", .desc = "Cancun EIP-5656 MCOPY tests" },
-        .{ .name = "cancun-selfdestruct", .filter = "eip6780_selfdestruct", .desc = "Cancun EIP-6780 SELFDESTRUCT tests" },
+        // Split selfdestruct into smaller chunks (was 1166 tests, now ~50-300 each)
+        .{ .name = "cancun-selfdestruct-basic", .filter = "selfdestruct/selfdestruct", .desc = "Cancun EIP-6780 basic SELFDESTRUCT tests (306 tests)" },
+        .{ .name = "cancun-selfdestruct-collision", .filter = "dynamic_create2_selfdestruct_collision", .desc = "Cancun EIP-6780 create2 collision tests (52 tests)" },
+        .{ .name = "cancun-selfdestruct-reentrancy", .filter = "reentrancy_selfdestruct_revert", .desc = "Cancun EIP-6780 reentrancy revert tests (36 tests)" },
+        .{ .name = "cancun-selfdestruct-revert", .filter = "selfdestruct_revert/selfdestruct", .desc = "Cancun EIP-6780 revert tests (12 tests)" },
         .{ .name = "cancun-blobbasefee", .filter = "eip7516_blobgasfee", .desc = "Cancun EIP-7516 BLOBBASEFEE tests" },
-        .{ .name = "cancun-blob-precompile", .filter = "point_evaluation_precompile", .desc = "Cancun EIP-4844 point evaluation precompile tests" },
-        .{ .name = "cancun-blob-opcodes", .filter = "blobhash_opcode", .desc = "Cancun EIP-4844 BLOBHASH opcode tests" },
+        // Split blob precompile into smaller chunks (was 1073 tests, now ~50-310 each)
+        .{ .name = "cancun-blob-precompile-basic", .filter = "point_evaluation_precompile/point", .desc = "Cancun EIP-4844 point evaluation basic tests (310 tests)" },
+        .{ .name = "cancun-blob-precompile-gas", .filter = "point_evaluation_precompile_gas", .desc = "Cancun EIP-4844 point evaluation gas tests (48 tests)" },
+        // Split blob opcodes into smaller chunks (was 282 tests, now ~25-75 each)
+        .{ .name = "cancun-blob-opcodes-basic", .filter = "blobhash_opcode/blobhash", .desc = "Cancun EIP-4844 BLOBHASH basic tests (75 tests)" },
+        .{ .name = "cancun-blob-opcodes-contexts", .filter = "blobhash_opcode_contexts", .desc = "Cancun EIP-4844 BLOBHASH context tests (23 tests)" },
         .{ .name = "cancun-blob-tx-small", .filter = "blob_tx_attribute", .desc = "Cancun EIP-4844 small blob transaction tests" },
         .{ .name = "cancun-blob-tx-subtraction", .filter = "blob_gas_subtraction_tx", .desc = "Cancun EIP-4844 blob gas subtraction tests" },
         .{ .name = "cancun-blob-tx-insufficient", .filter = "insufficient_balance_blob_tx", .desc = "Cancun EIP-4844 insufficient balance tests" },
@@ -354,6 +368,32 @@ pub fn build(b: *std.Build) void {
         .{ .name = "osaka-other", .filter = "osaka.*(eip7823|eip7825)", .desc = "Osaka other EIP tests" },
     };
 
+    // Shanghai has 558 tests - split initcode (was 558 tests, now ~160-180 each)
+    const shanghai_sub_targets = [_]SubTarget{
+        .{ .name = "shanghai-push0", .filter = "eip3855_push0", .desc = "Shanghai EIP-3855 PUSH0 tests" },
+        .{ .name = "shanghai-warmcoinbase", .filter = "eip3651_warm_coinbase", .desc = "Shanghai EIP-3651 warm coinbase tests" },
+        .{ .name = "shanghai-initcode-basic", .filter = "initcode/initcode", .desc = "Shanghai EIP-3860 initcode basic tests (162 tests)" },
+        .{ .name = "shanghai-initcode-eof", .filter = "with_eof", .desc = "Shanghai EIP-3860 initcode EOF tests (24 tests)" },
+        .{ .name = "shanghai-withdrawals", .filter = "eip4895_withdrawals", .desc = "Shanghai EIP-4895 withdrawal tests" },
+    };
+
+    // Byzantium has 352 tests - all modexp precompile
+    const byzantium_sub_targets = [_]SubTarget{
+        .{ .name = "byzantium-modexp", .filter = "eip198_modexp", .desc = "Byzantium EIP-198 modexp precompile tests (352 tests)" },
+    };
+
+    // Constantinople has 508 tests - split by EIP (was 508 tests, now ~250 each)
+    const constantinople_sub_targets = [_]SubTarget{
+        .{ .name = "constantinople-bitshift", .filter = "eip145_bitwise_shift", .desc = "Constantinople EIP-145 bitwise shift tests (~250 tests)" },
+        .{ .name = "constantinople-create2", .filter = "eip1014_create2", .desc = "Constantinople EIP-1014 CREATE2 tests (~250 tests)" },
+    };
+
+    // Istanbul has 2165 tests - split by EIP (was 2165 tests, now smaller chunks)
+    const istanbul_sub_targets = [_]SubTarget{
+        .{ .name = "istanbul-blake2", .filter = "eip152_blake2", .desc = "Istanbul EIP-152 BLAKE2 precompile tests" },
+        .{ .name = "istanbul-chainid", .filter = "eip1344_chainid", .desc = "Istanbul EIP-1344 CHAINID tests" },
+    };
+
     // Helper to create sub-targets for a hardfork
     const SubTargetConfig = struct {
         targets: []const SubTarget,
@@ -366,6 +406,10 @@ pub fn build(b: *std.Build) void {
         .{ .targets = &cancun_sub_targets, .fork_name = "cancun" },
         .{ .targets = &prague_sub_targets, .fork_name = "prague" },
         .{ .targets = &osaka_sub_targets, .fork_name = "osaka" },
+        .{ .targets = &shanghai_sub_targets, .fork_name = "shanghai" },
+        .{ .targets = &byzantium_sub_targets, .fork_name = "byzantium" },
+        .{ .targets = &constantinople_sub_targets, .fork_name = "constantinople" },
+        .{ .targets = &istanbul_sub_targets, .fork_name = "istanbul" },
     };
 
     var fork_sub_steps_map = std.StringHashMap(std.ArrayList(*std.Build.Step)).init(b.allocator);
@@ -450,14 +494,9 @@ pub fn build(b: *std.Build) void {
     }
 
     // Create EIP-specific test suites for hardforks without sub-targets
-    // (Berlin, Frontier, Cancun, Prague, and Osaka now have sub-targets defined above)
-    const eip_suites = [_]struct { name: []const u8, filter: []const u8, desc: []const u8 }{
-        // Shanghai EIPs
-        .{ .name = "shanghai-push0", .filter = "eip3855_push0", .desc = "Shanghai EIP-3855 PUSH0 tests" },
-        .{ .name = "shanghai-warmcoinbase", .filter = "eip3651_warm_coinbase", .desc = "Shanghai EIP-3651 warm coinbase tests" },
-        .{ .name = "shanghai-initcode", .filter = "eip3860_initcode", .desc = "Shanghai EIP-3860 initcode tests" },
-        .{ .name = "shanghai-withdrawals", .filter = "eip4895_withdrawals", .desc = "Shanghai EIP-4895 withdrawal tests" },
-    };
+    // (Berlin, Frontier, Cancun, Prague, Osaka, Shanghai, Byzantium, Constantinople, and Istanbul now have sub-targets defined above)
+    // This array is now empty - all test suites have been converted to use sub-targets for better granularity
+    const eip_suites = [_]struct { name: []const u8, filter: []const u8, desc: []const u8 }{};
 
     for (eip_suites) |suite| {
         const eip_tests = b.addTest(.{
