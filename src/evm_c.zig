@@ -28,7 +28,8 @@ const ExecutionContext = struct {
 };
 
 /// Create a new Evm instance
-export fn evm_create() ?*EvmHandle {
+/// log_level: 0=none, 1=err, 2=warn, 3=info, 4=debug
+export fn evm_create(log_level: u8) ?*EvmHandle {
     const ctx = allocator.create(ExecutionContext) catch return null;
 
     const evm_ptr = allocator.create(Evm) catch {
@@ -36,7 +37,10 @@ export fn evm_create() ?*EvmHandle {
         return null;
     };
 
-    evm_ptr.* = Evm.init(allocator, null, null, null) catch {
+    const log = @import("logger.zig");
+    const log_level_enum: log.LogLevel = @enumFromInt(log_level);
+
+    evm_ptr.* = Evm.init(allocator, null, null, null, log_level_enum) catch {
         allocator.destroy(evm_ptr);
         allocator.destroy(ctx);
         return null;
