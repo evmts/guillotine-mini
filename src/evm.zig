@@ -1124,10 +1124,12 @@ pub const Evm = struct {
                         try self.selfdestructed_accounts.put(entry.key_ptr.*, {});
                     }
 
+                    // Per Python reference: code size violation raises OutOfGasError, consuming all gas
+                    // execution-specs/src/ethereum/forks/constantinople/vm/interpreter.py
                     return .{
                         .address = primitives.ZERO_ADDRESS,
                         .success = false,
-                        .gas_left = gas_left,
+                        .gas_left = 0,  // Consume all remaining gas on code size violation
                         .output = frame_output,
                     };
                 }

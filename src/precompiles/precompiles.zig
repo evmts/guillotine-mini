@@ -527,15 +527,12 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
     crypto.ModExp.unaudited_modexp(allocator, base, exp, mod, output) catch {
         // On error, return zeros (following EVM spec)
         @memset(output, 0);
-        std.debug.print("MODEXP ERROR: hardfork={s} base_len={} exp_len={} mod_len={} gas={}\n", .{@tagName(hardfork), base_len, exp_len, mod_len, required_gas});
         return PrecompileOutput{
             .output = output,
             .gas_used = required_gas,
             .success = true,
         };
     };
-
-    std.debug.print("MODEXP SUCCESS: hardfork={s} base_len={} exp_len={} mod_len={} output[0]={x} gas={}\n", .{@tagName(hardfork), base_len, exp_len, mod_len, if (output.len > 0) output[0] else 0, required_gas});
 
     return PrecompileOutput{
         .output = output,
