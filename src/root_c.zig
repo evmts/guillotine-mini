@@ -10,26 +10,38 @@ const PrecompileOutput = evm_config_mod.PrecompileOutput;
 // External JavaScript callback functions (provided as WASM imports)
 // These are called BY WASM to execute custom handlers defined in JavaScript
 
-/// JavaScript callback for custom opcode handlers
-/// Returns 1 if a custom handler was found and executed, 0 otherwise
-extern "env" fn js_opcode_callback(opcode: u8, frame_ptr: usize) c_int;
+const builtin = @import("builtin");
 
-/// JavaScript callback for custom precompile handlers
-/// Returns 1 if a custom handler was found and executed, 0 otherwise
-extern "env" fn js_precompile_callback(
-    address_ptr: [*]const u8,
-    input_ptr: [*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    output_len: *usize,
-    output_ptr: *[*]u8,
-    gas_used: *u64,
-) c_int;
+// Only declare extern functions when building for WASM
+const js_opcode_callback = if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64)
+    struct {
+        extern "env" fn js_opcode_callback(opcode: u8, frame_ptr: usize) c_int;
+    }.js_opcode_callback
+else
+    undefined;
+
+const js_precompile_callback = if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64)
+    struct {
+        extern "env" fn js_precompile_callback(
+            address_ptr: [*]const u8,
+            input_ptr: [*]const u8,
+            input_len: usize,
+            gas_limit: u64,
+            output_len: *usize,
+            output_ptr: *[*]u8,
+            gas_used: *u64,
+        ) c_int;
+    }.js_precompile_callback
+else
+    undefined;
 
 /// Public wrapper to check if JavaScript opcode callback exists and call it
 pub fn tryCallJsOpcodeHandler(opcode: u8, frame_ptr: usize) bool {
-    const result = js_opcode_callback(opcode, frame_ptr);
-    return result != 0;
+    if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64) {
+        const result = js_opcode_callback(opcode, frame_ptr);
+        return result != 0;
+    }
+    return false;
 }
 
 /// Public wrapper to check if JavaScript precompile callback exists and call it
@@ -42,16 +54,19 @@ pub fn tryCallJsPrecompileHandler(
     output_ptr: *[*]u8,
     gas_used: *u64,
 ) bool {
-    const result = js_precompile_callback(
-        address_ptr,
-        input_ptr,
-        input_len,
-        gas_limit,
-        output_len,
-        output_ptr,
-        gas_used,
-    );
-    return result != 0;
+    if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64) {
+        const result = js_precompile_callback(
+            address_ptr,
+            input_ptr,
+            input_len,
+            gas_limit,
+            output_len,
+            output_ptr,
+            gas_used,
+        );
+        return result != 0;
+    }
+    return false;
 }
 
 // Use default config for C API (hardfork specified at runtime in evm_create)
@@ -59,6 +74,7 @@ const Evm = evm.Evm(.{});
 const CallResult = Evm.CallResult;
 const CallParams = Evm.CallParams;
 const StorageSlotKey = evm.StorageSlotKey;
+const StorageInjector = @import("storage_injector.zig").StorageInjector;
 const primitives = @import("primitives");
 const Address = primitives.Address.Address;
 const ZERO_ADDRESS = primitives.ZERO_ADDRESS;
@@ -86,10 +102,13 @@ const ExecutionContext = struct {
     access_list_storage_keys: []evm.AccessListStorageKey,
     blob_versioned_hashes: ?[]const [32]u8,
     result: ?CallResult,
+    // For async protocol
+    pending_changes_json: []const u8,
 };
 
 /// Create a new Evm instance with optional hardfork name (null/empty = default from config)
-export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize) ?*EvmHandle {
+/// log_level: 0=none, 1=err, 2=warn, 3=info, 4=debug
+export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize, log_level: u8) ?*EvmHandle {
     const ctx = allocator.create(ExecutionContext) catch return null;
 
     const evm_ptr = allocator.create(Evm) catch {
@@ -101,7 +120,10 @@ export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize) ?*EvmHandl
     const hardfork_slice = hardfork_name[0..hardfork_len];
     const hardfork = if (hardfork_len == 0) null else Hardfork.fromString(hardfork_slice);
 
-    evm_ptr.* = Evm.init(allocator, null, hardfork, null) catch {
+    const log = @import("logger.zig");
+    const log_level_enum: log.LogLevel = @enumFromInt(log_level);
+
+    evm_ptr.* = Evm.init(allocator, null, hardfork, null, log_level_enum) catch {
         allocator.destroy(evm_ptr);
         allocator.destroy(ctx);
         return null;
@@ -119,6 +141,7 @@ export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize) ?*EvmHandl
         .access_list_storage_keys = &[_]evm.AccessListStorageKey{},
         .blob_versioned_hashes = null,
         .result = null,
+        .pending_changes_json = &[_]u8{},
     };
 
     return @ptrCast(ctx);
@@ -567,6 +590,200 @@ export fn evm_set_code(
         const code_copy = ctx.evm.allocator.alloc(u8, code_slice.len) catch return false;
         @memcpy(code_copy, code_slice);
         ctx.evm.code.put(address, code_copy) catch return false;
+        return true;
+    }
+    return false;
+}
+
+// ===== Async Protocol FFI Functions =====
+
+/// Output structure for async requests
+pub const AsyncRequest = extern struct {
+    output_type: u8, // 0=result, 1=need_storage, 2=need_balance, 5=ready_to_commit
+    address: [20]u8,
+    slot: [32]u8, // Only used for storage requests
+};
+
+/// Helper: Pack CallOrContinueOutput into AsyncRequest
+fn packOutput(output: Evm.CallOrContinueOutput, ctx: *ExecutionContext, request_out: *AsyncRequest) bool {
+    switch (output) {
+        .result => |r| {
+            ctx.result = r;
+            request_out.output_type = 0;
+            return true;
+        },
+        .need_storage => |req| {
+            const log = @import("logger.zig");
+            log.debug("packOutput: need_storage address={any}, slot={}", .{ req.address.bytes, req.slot });
+            request_out.output_type = 1;
+            @memcpy(&request_out.address, &req.address.bytes);
+            std.mem.writeInt(u256, &request_out.slot, req.slot, .big);
+            log.debug("packOutput: wrote address to request_out={any}", .{request_out.address});
+            return true;
+        },
+        .need_balance => |req| {
+            request_out.output_type = 2;
+            @memcpy(&request_out.address, &req.address.bytes);
+            return true;
+        },
+        .need_code => |req| {
+            request_out.output_type = 3;
+            @memcpy(&request_out.address, &req.address.bytes);
+            return true;
+        },
+        .need_nonce => |req| {
+            request_out.output_type = 4;
+            @memcpy(&request_out.address, &req.address.bytes);
+            return true;
+        },
+        .ready_to_commit => |data| {
+            request_out.output_type = 5;
+            ctx.pending_changes_json = data.changes_json;
+            return true;
+        },
+    }
+}
+
+/// Helper: Build CallParams from ExecutionContext
+fn buildCallParams(ctx: *ExecutionContext) CallParams {
+    return CallParams{
+        .call = .{
+            .caller = ctx.caller,
+            .to = ctx.address,
+            .gas = @intCast(ctx.gas),
+            .value = ctx.value,
+            .input = ctx.calldata,
+        },
+    };
+}
+
+/// Start EVM execution (async protocol)
+/// Returns request in request_out, or sets output_type=0 if done
+export fn evm_call_ffi(
+    handle: ?*EvmHandle,
+    request_out: *AsyncRequest,
+) bool {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+
+        if (ctx.bytecode.len == 0) {
+            request_out.output_type = 255;
+            return false;
+        }
+
+        // Build access list if provided
+        const access_list = if (ctx.access_list_addresses.len > 0 or ctx.access_list_storage_keys.len > 0)
+            evm.AccessListParam{
+                .addresses = ctx.access_list_addresses,
+                .storage_keys = ctx.access_list_storage_keys,
+            }
+        else
+            null;
+
+        // Set bytecode, access list, and blob hashes BEFORE calling
+        ctx.evm.setBytecode(ctx.bytecode);
+        ctx.evm.setAccessList(access_list);
+        if (ctx.blob_versioned_hashes) |hashes| {
+            ctx.evm.setBlobVersionedHashes(hashes);
+        }
+
+        // Start execution with params from ctx
+        const params = buildCallParams(ctx);
+        const output = ctx.evm.callOrContinue(.{ .call = params }) catch {
+            request_out.output_type = 255; // Error
+            return false;
+        };
+
+        return packOutput(output, ctx, request_out);
+    }
+    return false;
+}
+
+/// Continue execution with async response
+/// Returns next request in request_out, or output_type=0 if done
+export fn evm_continue_ffi(
+    handle: ?*EvmHandle,
+    continue_type: u8, // 1=storage, 2=balance, 3=code, 4=nonce, 5=after_commit
+    data_ptr: [*]const u8,
+    data_len: usize,
+    request_out: *AsyncRequest,
+) bool {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+
+        // Build continue input based on type
+        const input: Evm.CallOrContinueInput = switch (continue_type) {
+            1 => blk: {
+                // Storage: address(20) + slot(32) + value(32) = 84 bytes
+                if (data_len < 84) {
+                    request_out.output_type = 255;
+                    return false;
+                }
+                var addr: Address = undefined;
+                @memcpy(&addr.bytes, data_ptr[0..20]);
+                const slot = std.mem.readInt(u256, data_ptr[20..52], .big);
+                const value = std.mem.readInt(u256, data_ptr[52..84], .big);
+                break :blk .{ .continue_with_storage = .{ .address = addr, .slot = slot, .value = value } };
+            },
+            2 => blk: {
+                // Balance: address(20) + balance(32) = 52 bytes
+                if (data_len < 52) {
+                    request_out.output_type = 255;
+                    return false;
+                }
+                var addr: Address = undefined;
+                @memcpy(&addr.bytes, data_ptr[0..20]);
+                const balance = std.mem.readInt(u256, data_ptr[20..52], .big);
+                break :blk .{ .continue_with_balance = .{ .address = addr, .balance = balance } };
+            },
+            5 => .{ .continue_after_commit = {} },
+            else => {
+                request_out.output_type = 255;
+                return false;
+            },
+        };
+
+        const output = ctx.evm.callOrContinue(input) catch {
+            request_out.output_type = 255;
+            return false;
+        };
+
+        return packOutput(output, ctx, request_out);
+    }
+    return false;
+}
+
+/// Get state changes JSON (only when output_type = ReadyToCommit)
+export fn evm_get_state_changes(
+    handle: ?*EvmHandle,
+    buffer: [*]u8,
+    buffer_len: usize,
+) usize {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+        const changes_json = ctx.pending_changes_json;
+
+        const copy_len = @min(changes_json.len, buffer_len);
+        @memcpy(buffer[0..copy_len], changes_json[0..copy_len]);
+        return copy_len;
+    }
+    return 0;
+}
+
+/// Enable async storage injection
+/// Must be called before evm_call_ffi if using StateInterface
+export fn evm_enable_storage_injector(handle: ?*EvmHandle) bool {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+
+        // Create storage injector with arena allocator
+        const injector_ptr = ctx.evm.allocator.create(StorageInjector) catch return false;
+        injector_ptr.* = StorageInjector.init(ctx.evm.arena.allocator()) catch {
+            ctx.evm.allocator.destroy(injector_ptr);
+            return false;
+        };
+
+        ctx.evm.storage_injector = injector_ptr;
         return true;
     }
     return false;
