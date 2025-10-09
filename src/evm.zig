@@ -194,6 +194,9 @@ pub fn Evm(config: EvmConfig) type {
     // Async storage injection
     async_data_request: AsyncDataRequest = .none,
     storage_injector: ?*StorageInjector = null,
+    // Buffer for state changes JSON (persists across yields)
+    pending_state_changes_buffer: [16384]u8 = undefined,
+    pending_state_changes_len: usize = 0,
 
     /// Initialize a new EVM instance
     /// Config provides defaults, but hardfork can be overridden at runtime
@@ -948,8 +951,10 @@ pub fn Evm(config: EvmConfig) type {
             // Frame completed successfully
             // Check if this is the last frame AND we have storage injector
             if (self.frames.items.len == 1 and self.storage_injector != null) {
+                log.debug("executeUntilYieldOrComplete: Last frame, dumping changes", .{});
                 // Don't pop yet - need to dump changes first
                 const changes_json = try self.dumpStateChanges();
+                log.debug("executeUntilYieldOrComplete: changes_json.len = {}", .{changes_json.len});
                 return .{ .ready_to_commit = .{ .changes_json = changes_json } };
             }
 
@@ -996,8 +1001,18 @@ pub fn Evm(config: EvmConfig) type {
     /// Dump state changes to JSON
     fn dumpStateChanges(self: *Self) ![]const u8 {
         if (self.storage_injector) |injector| {
-            return try injector.dumpChanges(self);
+            const result = try injector.dumpChanges(self);
+            log.debug("dumpStateChanges: Got {} bytes from injector", .{result.len});
+            // Copy to persistent buffer in Evm struct
+            const copy_len = @min(result.len, self.pending_state_changes_buffer.len);
+            if (copy_len > 0) {
+                @memcpy(self.pending_state_changes_buffer[0..copy_len], result[0..copy_len]);
+            }
+            self.pending_state_changes_len = copy_len;
+            return self.pending_state_changes_buffer[0..copy_len];
         }
+        log.debug("dumpStateChanges: No injector, returning empty", .{});
+        self.pending_state_changes_len = 0;
         return &.{};
     }
 
