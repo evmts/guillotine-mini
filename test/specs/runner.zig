@@ -873,13 +873,26 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 primitives.GasConstants.TxGas; // 21000 for regular transactions
 
             // Add calldata cost (4 gas per zero byte, 16 gas per non-zero byte)
+            // Also track counts for EIP-7623 floor calculation (Prague+)
+            var zero_bytes: u64 = 0;
+            var non_zero_bytes: u64 = 0;
             for (tx_data) |byte| {
                 if (byte == 0) {
                     intrinsic_gas += primitives.GasConstants.TxDataZeroGas; // 4
+                    zero_bytes += 1;
                 } else {
                     intrinsic_gas += primitives.GasConstants.TxDataNonZeroGas; // 16
+                    non_zero_bytes += 1;
                 }
             }
+
+            // EIP-7623 (Prague+): Calculate calldata floor gas cost
+            // Ensures transactions pay minimum based on calldata size
+            const calldata_floor_gas_cost = if (evm_instance.hardfork.isAtLeast(.PRAGUE)) blk: {
+                const tokens_in_calldata = zero_bytes + non_zero_bytes * 4;
+                const FLOOR_CALLDATA_COST: u64 = 10;
+                break :blk tokens_in_calldata * FLOOR_CALLDATA_COST + primitives.GasConstants.TxGas;
+            } else 0;
 
             // EIP-3860 (Shanghai+): Add init code cost for contract creation transactions
             // Cost is 2 gas per word (32 bytes) of init code
@@ -924,7 +937,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             }
 
             // EIP-3860: For contract-creation transactions (to == null), enforce initcode size limit here.
-            // The per-word initcode gas is charged at execution time in inner_create for top-level creates.
+            // The per-word initcode gas has already been charged in intrinsic gas calculation above (lines 900-903).
             if (to == null) {
                 if (hardfork) |hf| {
                     if (hf.isAtLeast(.SHANGHAI)) {
@@ -1010,20 +1023,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             if (blob_hashes_storage) |blob_hashes| {
                 const blob_count = blob_hashes.len;
 
-                // Get current excess blob gas from environment
-                const excess_blob_gas = if (test_case.object.get("env")) |env_val|
-                    if (env_val.object.get("currentExcessBlobGas")) |ebg|
-                        try parseIntFromJson(ebg)
-                    else
-                        0
-                else
-                    0;
-
-                // Calculate blob gas price using taylor_exponential formula
-                // blob_gas_price = fake_exponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION)
-                const MIN_BLOB_GASPRICE: u256 = 1;
-                const BLOB_BASE_FEE_UPDATE_FRACTION: u256 = 3338477;
-                const blob_gas_price = taylorExponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION);
+                // Use blob_base_fee from block context (already calculated during block context creation)
+                // This ensures consistent blob gas price throughout transaction execution
+                const blob_gas_price = evm_instance.block_context.blob_base_fee;
 
                 // Each blob uses 131072 (2^17) gas
                 const blob_gas_per_blob: u256 = 131072;
@@ -1218,7 +1220,12 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 @min(gas_refund, gas_used_before_refunds / 5);
 
             // Calculate final gas used (after applying capped refunds)
-            const gas_used = gas_used_before_refunds - capped_refund;
+            var gas_used = gas_used_before_refunds - capped_refund;
+
+            // EIP-7623 (Prague+): Apply calldata floor - transactions must pay at least the floor cost
+            if (evm_instance.hardfork.isAtLeast(.PRAGUE)) {
+                gas_used = @max(gas_used, calldata_floor_gas_cost);
+            }
 
             // Refund unused gas to sender
             // Note: The capped_refund has already been subtracted from gas_used above.
