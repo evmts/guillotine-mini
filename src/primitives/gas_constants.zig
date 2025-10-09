@@ -230,9 +230,13 @@ pub const TxGasContractCreation: u64 = 53000;
 /// Cheaper than non-zero bytes to incentivize data efficiency
 pub const TxDataZeroGas: u64 = 4;
 
-/// Gas cost per non-zero byte in transaction data
-/// Higher cost reflects increased storage and bandwidth requirements
+/// Gas cost per non-zero byte in transaction data (Istanbul+, EIP-2028)
+/// EIP-2028 reduced this from 68 to 16 to lower calldata costs
 pub const TxDataNonZeroGas: u64 = 16;
+
+/// Gas cost per non-zero byte in transaction data (Pre-Istanbul)
+/// Before EIP-2028, non-zero bytes cost 68 gas
+pub const TxDataNonZeroGasPreIstanbul: u64 = 68;
 
 /// Gas cost per address in access list (EIP-2930)
 /// Applied to type 1 (0x01) and type 3 (0x03) blob transactions

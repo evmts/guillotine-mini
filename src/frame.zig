@@ -2632,18 +2632,18 @@ pub const Frame = struct {
                     // 1. Reduce sender balance by amount
                     // 2. Increase recipient balance by amount
                     // When sender == recipient, the balance stays the same (decreased then increased)
-                    if (self_balance > 0) {
-                        // Step 1: Reduce originator balance
-                        try evm_ptr.setBalanceWithSnapshot(self.address, 0);
+                    // NOTE: Python calls move_ether UNCONDITIONALLY (even if balance is 0)
+                    // This ensures state modifications happen for tracking/snapshots
+                    // Step 1: Reduce originator balance
+                    try evm_ptr.setBalanceWithSnapshot(self.address, 0);
 
-                        // Step 2: Increase beneficiary balance
-                        // IMPORTANT: Must read beneficiary balance AFTER step 1 to handle sender == recipient case
-                        const beneficiary_balance = if (evm_ptr.host) |h|
-                            h.getBalance(beneficiary)
-                        else
-                            evm_ptr.balances.get(beneficiary) orelse 0;
-                        try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
-                    }
+                    // Step 2: Increase beneficiary balance
+                    // IMPORTANT: Must read beneficiary balance AFTER step 1 to handle sender == recipient case
+                    const beneficiary_balance = if (evm_ptr.host) |h|
+                        h.getBalance(beneficiary)
+                    else
+                        evm_ptr.balances.get(beneficiary) orelse 0;
+                    try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
                 } else {
                     // Pre-Cancun: Use old balance transfer logic
                     // 1. Read both balances
@@ -2680,12 +2680,12 @@ pub const Frame = struct {
                 } else {
                     // Pre-Cancun behavior: Always mark for deletion
                     try evm_ptr.selfdestructed_accounts.put(self.address, {});
-                }
 
-                // Apply refund to EVM's gas_refund counter
-                const refund = self.selfdestructRefund();
-                if (refund > 0) {
-                    evm_ptr.gas_refund += refund;
+                    // Pre-London: Apply gas refund (EIP-3529 removed refunds in London)
+                    const refund = self.selfdestructRefund();
+                    if (refund > 0) {
+                        evm_ptr.gas_refund += refund;
+                    }
                 }
 
                 self.stopped = true;
