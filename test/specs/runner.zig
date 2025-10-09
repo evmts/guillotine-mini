@@ -44,6 +44,10 @@ pub fn runJsonTest(allocator: std.mem.Allocator, test_case: std.json.Value) !voi
 }
 
 pub fn runJsonTestWithPath(allocator: std.mem.Allocator, test_case: std.json.Value, test_file_path: ?[]const u8) !void {
+    return runJsonTestWithPathAndName(allocator, test_case, test_file_path, null);
+}
+
+pub fn runJsonTestWithPathAndName(allocator: std.mem.Allocator, test_case: std.json.Value, test_file_path: ?[]const u8, test_name: ?[]const u8) !void {
     // Check if test has multiple hardforks in post section
     const post = test_case.object.get("post");
     if (post) |p| {
@@ -65,7 +69,7 @@ pub fn runJsonTestWithPath(allocator: std.mem.Allocator, test_case: std.json.Val
             if (hardforks_to_test.items.len > 1) {
                 for (hardforks_to_test.items) |hf| {
                     runJsonTestImplForFork(allocator, test_case, null, hf) catch |err| {
-                        generateTraceDiffOnFailure(allocator, test_case, test_file_path) catch {};
+                        generateTraceDiffOnFailure(allocator, test_case, test_file_path, test_name) catch {};
                         return err;
                     };
                 }
@@ -76,7 +80,7 @@ pub fn runJsonTestWithPath(allocator: std.mem.Allocator, test_case: std.json.Val
 
     // Single hardfork or no post section - use original logic
     runJsonTestImpl(allocator, test_case, null) catch |err| {
-        generateTraceDiffOnFailure(allocator, test_case, test_file_path) catch {};
+        generateTraceDiffOnFailure(allocator, test_case, test_file_path, test_name) catch {};
         return err;
     };
 }
@@ -88,7 +92,7 @@ fn runJsonTestImplForFork(allocator: std.mem.Allocator, test_case: std.json.Valu
     try runJsonTestImplWithOptionalFork(allocator, test_case, tracer, forced_hardfork);
 }
 
-fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.Value, opt_test_file_path: ?[]const u8) !void {
+fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.Value, opt_test_file_path: ?[]const u8, opt_test_name: ?[]const u8) !void {
     // Re-run with trace capture
     var tracer = trace.Tracer.init(allocator);
     defer tracer.deinit();
@@ -135,9 +139,83 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
     };
 
     if (test_file_path == null) {
-        // Silently skip trace generation when _info.source is not available
+        // Silently skip trace generation when test file path is not available
         return;
     }
+
+    // Create a temporary JSON file with only this test case for ethereum-spec-evm
+    // This is necessary because ethereum-spec-evm runs all tests in a file and outputs traces for all of them
+    const temp_test_path = "trace_test_temp.json";
+    defer std.fs.cwd().deleteFile(temp_test_path) catch {};
+
+    // Get test name from the test_case
+    // For execution-specs tests, the original file contains multiple tests with keys like:
+    // "tests/eest/cancun/eip1153_tstore/test_tstorage_reentrancy_contexts.py::test_reentrant_call[fork_Cancun-state_test-invalid_undoes_tstorage_after_successful_call]"
+    // We need to find the test name by reading the original file and finding which key matches our test_case
+    const original_json = std.fs.cwd().readFileAlloc(allocator, test_file_path.?, 100 * 1024 * 1024) catch |err| {
+        std.debug.print("\n⚠️  Failed to read test file {s}: {}\n", .{ test_file_path.?, err });
+        return;
+    };
+    defer allocator.free(original_json);
+
+    const original_parsed = std.json.parseFromSlice(std.json.Value, allocator, original_json, .{}) catch |err| {
+        std.debug.print("\n⚠️  Failed to parse test file: {}\n", .{err});
+        return;
+    };
+    defer original_parsed.deinit();
+
+    // Use the provided test name if available, otherwise try to find it
+    var test_name: ?[]const u8 = opt_test_name;
+
+    if (test_name == null) {
+        // Find the test name by comparing test_case content with entries in the original file
+        // We'll use a simple heuristic: find the first test whose "pre" section matches
+        if (original_parsed.value == .object) {
+            var it = original_parsed.value.object.iterator();
+            while (it.next()) |entry| {
+                // Compare the test cases - we'll check if the env sections match
+                if (entry.value_ptr.* == .object and test_case == .object) {
+                    if (entry.value_ptr.object.get("env")) |orig_env| {
+                        if (test_case.object.get("env")) |case_env| {
+                            // Simple equality check - if env matches, assume it's the same test
+                            if (std.meta.eql(orig_env, case_env)) {
+                                test_name = entry.key_ptr.*;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (test_name == null) {
+            std.debug.print("\n⚠️  Could not find test name in original file\n", .{});
+            return;
+        }
+    }
+
+    // Simpler approach: Just copy the whole original file to the temp location
+    // Since we need ethereum-spec-evm to run on a JSON file that contains the test,
+    // and the original file already contains it, we can just copy it.
+    // The ethereum-spec-evm tool will output traces for all tests, but we can still
+    // compare our trace against the reference.
+    const temp_file = std.fs.cwd().createFile(temp_test_path, .{}) catch |err| {
+        std.debug.print("\n⚠️  Failed to create temporary test file: {}\n", .{err});
+        return;
+    };
+    defer temp_file.close();
+
+    // Just copy the original file
+    const original_content = std.fs.cwd().readFileAlloc(allocator, test_file_path.?, 100 * 1024 * 1024) catch |err| {
+        std.debug.print("\n⚠️  Failed to read original test file '{s}': {}\n", .{ test_file_path.?, err });
+        return;
+    };
+    defer allocator.free(original_content);
+
+    temp_file.writeAll(original_content) catch |err| {
+        std.debug.print("\n⚠️  Failed to write temp file: {}\n", .{err});
+        return;
+    };
 
     // Generate reference trace using Python ethereum-spec-evm
     const ref_trace_path = "trace_ref.jsonl";
@@ -145,16 +223,28 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
 
     const python_cmd = try std.fmt.allocPrint(
         allocator,
-        "execution-specs/.venv/bin/ethereum-spec-evm statetest --json {s} 1>{s} 2>/dev/null",
-        .{ test_file_path.?, ref_trace_path },
+        "execution-specs/.venv/bin/ethereum-spec-evm statetest --json {s} 1>{s} 2>trace_err.log",
+        .{ temp_test_path, ref_trace_path },
     );
     defer allocator.free(python_cmd);
 
     var child = std.process.Child.init(&.{ "sh", "-c", python_cmd }, allocator);
-    _ = child.spawnAndWait() catch {
-        std.debug.print("\n⚠️  Failed to generate reference trace (Python execution-specs error)\n", .{});
+    const term = child.spawnAndWait() catch {
+        std.debug.print("\n⚠️  Failed to spawn ethereum-spec-evm\n", .{});
         return;
     };
+
+    if (term != .Exited or term.Exited != 0) {
+        std.debug.print("\n⚠️  ethereum-spec-evm failed (exit code: {})\n", .{term});
+        // Try to show error log
+        if (std.fs.cwd().readFileAlloc(allocator, "trace_err.log", 1024 * 1024)) |err_log| {
+            defer allocator.free(err_log);
+            if (err_log.len > 0) {
+                std.debug.print("Error output:\n{s}\n", .{err_log});
+            }
+        } else |_| {}
+        return;
+    }
 
     // Parse reference trace
     const ref_trace_file = std.fs.cwd().openFile(ref_trace_path, .{}) catch {
