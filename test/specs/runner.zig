@@ -223,7 +223,7 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
 
     const python_cmd = try std.fmt.allocPrint(
         allocator,
-        "execution-specs/.venv/bin/ethereum-spec-evm statetest --json {s} 1>{s} 2>trace_err.log",
+        "execution-specs/.venv/bin/ethereum-spec-evm statetest --json {s} 2>{s}",
         .{ temp_test_path, ref_trace_path },
     );
     defer allocator.free(python_cmd);
@@ -236,8 +236,8 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
 
     if (term != .Exited or term.Exited != 0) {
         std.debug.print("\n⚠️  ethereum-spec-evm failed (exit code: {})\n", .{term});
-        // Try to show error log
-        if (std.fs.cwd().readFileAlloc(allocator, "trace_err.log", 1024 * 1024)) |err_log| {
+        // Try to show error from trace file
+        if (std.fs.cwd().readFileAlloc(allocator, ref_trace_path, 1024 * 1024)) |err_log| {
             defer allocator.free(err_log);
             if (err_log.len > 0) {
                 std.debug.print("Error output:\n{s}\n", .{err_log});
@@ -269,6 +269,24 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
 
         // Extract trace entry fields from JSON
         const obj = parsed.value.object;
+
+        // Skip non-trace entries (output, stateRoot, etc.)
+        if (obj.get("pc") == null) continue;
+
+        // Parse stack array
+        var stack_list = std.ArrayList(u256){};
+        if (obj.get("stack")) |stack_json| {
+            if (stack_json == .array) {
+                for (stack_json.array.items) |stack_item| {
+                    if (stack_item == .string) {
+                        const val = try std.fmt.parseInt(u256, stack_item.string, 0);
+                        try stack_list.append(allocator, val);
+                    }
+                }
+            }
+        }
+        const stack_slice = try stack_list.toOwnedSlice(allocator);
+
         const entry = trace.TraceEntry{
             .pc = @intCast(obj.get("pc").?.integer),
             .op = @intCast(obj.get("op").?.integer),
@@ -290,7 +308,7 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
             },
             .memory = null,
             .memSize = @intCast(obj.get("memSize").?.integer),
-            .stack = &.{},
+            .stack = stack_slice,
             .returnData = null,
             .depth = @intCast(obj.get("depth").?.integer),
             .refund = @intCast(obj.get("refund").?.integer),
@@ -313,32 +331,157 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
             std.debug.print("\x1b[1mDifference in: {s}\x1b[0m\n\n", .{field});
         }
 
+        // Show context: up to 16 steps before divergence
+        const context_count = @min(idx, 16);
+        if (context_count > 0) {
+            std.debug.print("\x1b[2mContext (previous {d} step{s}):\x1b[0m\n", .{ context_count, if (context_count == 1) "" else "s" });
+            const context_start = idx - context_count;
+            for (context_start..idx) |i| {
+                if (i < tracer.entries.items.len) {
+                    const entry = &tracer.entries.items[i];
+                    std.debug.print("  [{d}] PC: 0x{x}  {s}  Gas: {d}\n", .{ i, entry.pc, entry.opName, entry.gas });
+                }
+            }
+            std.debug.print("\n", .{});
+        }
+
         if (diff.our_entry) |our| {
-            std.debug.print("\x1b[36mOur EVM:\x1b[0m\n", .{});
-            std.debug.print("  PC: 0x{x}  Op: 0x{x:0>2} ({s})  Gas: {d}\n", .{
+            std.debug.print("\x1b[36m[{d}] Our EVM:\x1b[0m\n", .{idx});
+            std.debug.print("  PC: 0x{x}  Op: 0x{x:0>2} ({s})  Gas: {d}  GasCost: {d}\n", .{
                 our.pc,
                 our.op,
                 our.opName,
                 our.gas,
+                our.gasCost,
             });
-            std.debug.print("  Stack depth: {d}\n", .{our.stack.len});
+            std.debug.print("  Depth: {d}  Refund: {d}\n", .{ our.depth, our.refund });
+
+            // Show stack
+            std.debug.print("  Stack [{d}]:", .{our.stack.len});
+            if (our.stack.len > 0) {
+                const show_count = @min(our.stack.len, 5);
+                for (0..show_count) |i| {
+                    const stack_idx = our.stack.len - 1 - i;
+                    std.debug.print(" 0x{x}", .{our.stack[stack_idx]});
+                }
+                if (our.stack.len > 5) {
+                    std.debug.print(" ... ({d} more)", .{our.stack.len - 5});
+                }
+            }
+            std.debug.print("\n", .{});
+
+            // Show memory for memory-related opcodes
+            if (isMemoryOp(our.op)) {
+                std.debug.print("  Memory size: {d} bytes\n", .{our.memSize});
+            }
+
+            // Show storage info for storage opcodes
+            if (isStorageOp(our.op)) {
+                std.debug.print("  \x1b[2m(Storage operation)\x1b[0m\n", .{});
+            }
         }
 
         if (diff.ref_entry) |ref| {
-            std.debug.print("\n\x1b[35mReference:\x1b[0m\n", .{});
-            std.debug.print("  PC: 0x{x}  Op: 0x{x:0>2} ({s})  Gas: {d}\n", .{
+            std.debug.print("\n\x1b[35m[{d}] Reference:\x1b[0m\n", .{idx});
+            std.debug.print("  PC: 0x{x}  Op: 0x{x:0>2} ({s})  Gas: {d}  GasCost: {d}\n", .{
                 ref.pc,
                 ref.op,
                 ref.opName,
                 ref.gas,
+                ref.gasCost,
             });
-            std.debug.print("  Stack depth: {d}\n", .{ref.stack.len});
+            std.debug.print("  Depth: {d}  Refund: {d}\n", .{ ref.depth, ref.refund });
+
+            // Show stack
+            std.debug.print("  Stack [{d}]:", .{ref.stack.len});
+            if (ref.stack.len > 0) {
+                const show_count = @min(ref.stack.len, 5);
+                for (0..show_count) |i| {
+                    const stack_idx = ref.stack.len - 1 - i;
+                    std.debug.print(" 0x{x}", .{ref.stack[stack_idx]});
+                }
+                if (ref.stack.len > 5) {
+                    std.debug.print(" ... ({d} more)", .{ref.stack.len - 5});
+                }
+            }
+            std.debug.print("\n", .{});
+
+            // Show memory for memory-related opcodes
+            if (isMemoryOp(ref.op)) {
+                std.debug.print("  Memory size: {d} bytes\n", .{ref.memSize});
+            }
+
+            // Show storage info for storage opcodes
+            if (isStorageOp(ref.op)) {
+                std.debug.print("  \x1b[2m(Storage operation)\x1b[0m\n", .{});
+            }
+        }
+
+        // Show next 4 steps after divergence (if available)
+        const max_our_steps = @min(tracer.entries.items.len - idx - 1, 4);
+        const max_ref_steps = @min(ref_tracer.entries.items.len - idx - 1, 4);
+        const max_next_steps = @max(max_our_steps, max_ref_steps);
+
+        if (max_next_steps > 0) {
+            std.debug.print("\n\x1b[2mNext {d} step{s} after divergence:\x1b[0m\n", .{ max_next_steps, if (max_next_steps == 1) "" else "s" });
+
+            var step: usize = 0;
+            while (step < max_next_steps) : (step += 1) {
+                const next_idx = idx + 1 + step;
+
+                if (next_idx < tracer.entries.items.len) {
+                    const our_next = &tracer.entries.items[next_idx];
+                    std.debug.print("\x1b[36m  [{d}] Our: PC: 0x{x:<4}  {s:<12}  Gas: {d}\x1b[0m", .{
+                        next_idx,
+                        our_next.pc,
+                        our_next.opName,
+                        our_next.gas,
+                    });
+                } else {
+                    std.debug.print("\x1b[36m  [{d}] Our: (trace ended)\x1b[0m", .{next_idx});
+                }
+
+                std.debug.print("  ", .{});
+
+                if (next_idx < ref_tracer.entries.items.len) {
+                    const ref_next = &ref_tracer.entries.items[next_idx];
+                    std.debug.print("\x1b[35mRef: PC: 0x{x:<4}  {s:<12}  Gas: {d}\x1b[0m", .{
+                        ref_next.pc,
+                        ref_next.opName,
+                        ref_next.gas,
+                    });
+                } else {
+                    std.debug.print("\x1b[35mRef: (trace ended)\x1b[0m", .{});
+                }
+
+                std.debug.print("\n", .{});
+            }
         }
     } else {
         std.debug.print("✓ Traces match perfectly!\n", .{});
     }
 
     std.debug.print("\n", .{});
+}
+
+// Helper function to check if opcode is memory-related
+fn isMemoryOp(op: u8) bool {
+    return switch (op) {
+        0x51...0x5f => true, // MLOAD, MSTORE, MSTORE8, etc.
+        0x37, 0x39, 0x3c, 0x3e => true, // CALLDATACOPY, CODECOPY, EXTCODECOPY, RETURNDATACOPY
+        0xf0...0xf5 => true, // CREATE, CALL, CALLCODE, RETURN, DELEGATECALL, CREATE2, STATICCALL
+        0xfd => true, // REVERT
+        else => false,
+    };
+}
+
+// Helper function to check if opcode is storage-related
+fn isStorageOp(op: u8) bool {
+    return switch (op) {
+        0x54, 0x55 => true, // SLOAD, SSTORE
+        0x5c, 0x5d => true, // TLOAD, TSTORE
+        else => false,
+    };
 }
 
 /// Convert hardfork to its string name for JSON lookup
