@@ -20,7 +20,7 @@ pub fn Handlers(FrameType: type) type {
             // Access cost already includes the full SLOAD gas cost (100 for warm, 2100 for cold)
             try frame.consumeGas(access_cost);
 
-            const value = evm.get_storage(frame.address, key);
+            const value = try evm.get_storage(frame.address, key);
             try frame.pushStack(value);
             frame.pc += 1;
         }
@@ -44,7 +44,7 @@ pub fn Handlers(FrameType: type) type {
             const value = try frame.popStack();
 
             // Get current value for gas calculation
-            const current_value = evm.get_storage(frame.address, key);
+            const current_value = try evm.get_storage(frame.address, key);
 
             // Calculate gas cost based on hardfork
             const gas_cost = if (evm.hardfork.isAtLeast(.ISTANBUL)) blk: {

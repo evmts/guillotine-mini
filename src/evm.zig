@@ -14,6 +14,8 @@ const blake2 = @import("blake2.zig");
 const precompiles = @import("precompiles/precompiles.zig");
 const evm_config = @import("evm_config.zig");
 const EvmConfig = evm_config.EvmConfig;
+const storage_injector = @import("storage_injector.zig");
+const StorageInjector = storage_injector.StorageInjector;
 
 const Address = primitives.Address.Address;
 
@@ -70,6 +72,25 @@ const StorageSlotKeyContext = struct {
     }
 };
 
+/// Async data request - written by get_storage/get_balance/etc when cache miss
+/// Read by executeUntilYieldOrComplete to build the return value
+pub const AsyncDataRequest = union(enum) {
+    none: void,
+    storage: struct {
+        address: Address,
+        slot: u256,
+    },
+    balance: struct {
+        address: Address,
+    },
+    code: struct {
+        address: Address,
+    },
+    nonce: struct {
+        address: Address,
+    },
+};
+
 pub const BlockContext = struct {
     chain_id: u256,
     block_number: u64,
@@ -93,6 +114,50 @@ pub fn Evm(config: EvmConfig) type {
 
         pub const CallParams = call_params.CallParams(config);
         pub const CallResult = call_result.CallResult(config);
+
+        /// Input to callOrContinue - tagged union for starting or continuing execution
+        pub const CallOrContinueInput = union(enum) {
+            call: CallParams,
+            continue_with_storage: struct {
+                address: Address,
+                slot: u256,
+                value: u256,
+            },
+            continue_with_balance: struct {
+                address: Address,
+                balance: u256,
+            },
+            continue_with_code: struct {
+                address: Address,
+                code: []const u8,
+            },
+            continue_with_nonce: struct {
+                address: Address,
+                nonce: u64,
+            },
+            continue_after_commit: void,
+        };
+
+        /// Output from callOrContinue - tagged union for result or async request
+        pub const CallOrContinueOutput = union(enum) {
+            result: CallResult,
+            need_storage: struct {
+                address: Address,
+                slot: u256,
+            },
+            need_balance: struct {
+                address: Address,
+            },
+            need_code: struct {
+                address: Address,
+            },
+            need_nonce: struct {
+                address: Address,
+            },
+            ready_to_commit: struct {
+                changes_json: []const u8,
+            },
+        };
 
     frames: std.ArrayList(Frame),
     storage: std.AutoHashMap(StorageSlotKey, u256),
@@ -126,9 +191,18 @@ pub fn Evm(config: EvmConfig) type {
     opcode_overrides: []const evm_config.OpcodeOverride,
     precompile_overrides: []const evm_config.PrecompileOverride,
 
+    // Async storage injection
+    async_data_request: AsyncDataRequest = .none,
+    storage_injector: ?*StorageInjector = null,
+
     /// Initialize a new EVM instance
     /// Config provides defaults, but hardfork can be overridden at runtime
-    pub fn init(allocator: std.mem.Allocator, h: ?HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext) !Self {
+    pub fn init(allocator: std.mem.Allocator, h: ?HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext, log_level: ?log.LogLevel) !Self {
+        // Set log level if provided
+        if (log_level) |level| {
+            log.setLogLevel(level);
+        }
+
         return Self{
             .frames = undefined,
             .storage = undefined,
@@ -535,6 +609,10 @@ pub fn Evm(config: EvmConfig) type {
                 _ = self.warm_storage_slots.getOrPut(key) catch {
                     return makeFailure(self.arena.allocator(), 0);
                 };
+
+                // If using storage injector, mark slot as warm but we still need to fetch value
+                // The slot is marked warm for gas accounting, but value fetching happens lazily
+                // when get_storage() is first called on this slot
             }
         }
 
@@ -703,6 +781,224 @@ pub fn Evm(config: EvmConfig) type {
 
         // No cleanup needed - arena handles it
         return result;
+    }
+
+    /// Main async execution method - supports yielding for async requests
+    /// CRITICAL: NO defer statements that clean up state!
+    /// This wraps call() but supports yielding for async data requests
+    pub fn callOrContinue(
+        self: *Self,
+        input: CallOrContinueInput,
+    ) !CallOrContinueOutput {
+        switch (input) {
+            .call => |params| {
+                // Start new call - set up state
+                try self.initTransactionState(null);
+
+                if (self.storage_injector) |injector| {
+                    log.debug("callOrContinue: Storage injector enabled, clearing cache", .{});
+                    injector.clearCache();
+                } else {
+                    log.debug("callOrContinue: No storage injector", .{});
+                }
+
+                // Extract common parameters (same as call() method)
+                const caller = params.getCaller();
+                const gas = @as(i64, @intCast(params.getGas()));
+                const is_create = params.isCreate();
+
+                // Determine target address and value
+                const address: Address = if (is_create) blk: {
+                    if (params == .create2) {
+                        const init_code = params.getInput();
+                        const salt = params.create2.salt;
+                        break :blk try self.computeCreate2Address(caller, salt, init_code);
+                    } else {
+                        const nonce = self.getNonce(caller);
+                        break :blk try self.computeCreateAddress(caller, nonce);
+                    }
+                } else params.get_to().?;
+
+                const value = switch (params) {
+                    .call => |p| p.value,
+                    .callcode => |p| p.value,
+                    .create => |p| p.value,
+                    .create2 => |p| p.value,
+                    .delegatecall, .staticcall => 0,
+                };
+
+                const calldata = params.getInput();
+                const bytecode = self.pending_bytecode;
+
+                try self.preWarmTransaction(address);
+
+                // Pre-warm access list if present
+                if (self.pending_access_list) |list| {
+                    for (list.addresses) |addr| {
+                        _ = try self.warm_addresses.getOrPut(addr);
+                    }
+                    for (list.storage_keys) |entry| {
+                        const key = StorageSlotKey{
+                            .address = entry.address,
+                            .slot = entry.slot,
+                        };
+                        _ = try self.warm_storage_slots.getOrPut(key);
+                    }
+                }
+
+                // Transfer value if needed
+                if (value > 0 and self.host != null) {
+                    const sender_balance = if (self.host) |h| h.getBalance(caller) else 0;
+                    if (sender_balance < value) {
+                        return error.InsufficientBalance;
+                    }
+                    if (self.host) |h| {
+                        h.setBalance(caller, sender_balance - value);
+                        const recipient_balance = h.getBalance(address);
+                        h.setBalance(address, recipient_balance + value);
+                    }
+                }
+
+                // Create frame WITHOUT defer (critical!)
+                log.debug("callOrContinue: Creating frame with address={any}", .{address.bytes});
+                try self.frames.append(self.arena.allocator(), try Frame.init(
+                    self.arena.allocator(),
+                    bytecode,
+                    gas,
+                    caller,
+                    address,
+                    value,
+                    calldata,
+                    @as(*anyopaque, @ptrCast(self)),
+                    self.hardfork,
+                    false, // Top-level is never static
+                ));
+
+                // Execute (may yield)
+                return try self.executeUntilYieldOrComplete();
+            },
+
+            .continue_with_storage => |data| {
+                const key = StorageSlotKey{
+                    .address = data.address,
+                    .slot = data.slot,
+                };
+
+                // Store value in both cache and storage
+                if (self.storage_injector) |injector| {
+                    _ = try injector.storage_cache.put(key, data.value);
+                }
+
+                // Also put in self.storage so get_storage can find it
+                try self.storage.put(key, data.value);
+
+                // Clear the request
+                self.async_data_request = .none;
+
+                // Continue execution
+                return try self.executeUntilYieldOrComplete();
+            },
+
+            .continue_with_balance => |data| {
+                if (self.storage_injector) |injector| {
+                    try injector.balance_cache.put(data.address, data.balance);
+                }
+
+                // Clear the request
+                self.async_data_request = .none;
+
+                return try self.executeUntilYieldOrComplete();
+            },
+
+            .continue_after_commit => {
+                // Commit done - finalize and return result
+                return try self.finalizeAndReturnResult();
+            },
+
+            else => return error.UnsupportedContinueType,
+        }
+    }
+
+    /// Execute until we hit a yield point or complete
+    /// NO defer statements!
+    fn executeUntilYieldOrComplete(self: *Self) !CallOrContinueOutput {
+        while (self.frames.items.len > 0) {
+            const frame = &self.frames.items[self.frames.items.len - 1];
+
+            // Execute frame - may return error.NeedAsyncData
+            frame.execute() catch |err| {
+                if (err == error.NeedAsyncData) {
+                    // Read the request from evm.async_data_request
+                    return switch (self.async_data_request) {
+                        .storage => |req| .{ .need_storage = .{
+                            .address = req.address,
+                            .slot = req.slot,
+                        } },
+                        .balance => |req| .{ .need_balance = .{ .address = req.address } },
+                        .code => |req| .{ .need_code = .{ .address = req.address } },
+                        .nonce => |req| .{ .need_nonce = .{ .address = req.address } },
+                        .none => error.InvalidAsyncState,
+                    };
+                }
+
+                // Real error - return it (state preserved for debugging)
+                return err;
+            };
+
+            // Frame completed successfully
+            // Check if this is the last frame AND we have storage injector
+            if (self.frames.items.len == 1 and self.storage_injector != null) {
+                // Don't pop yet - need to dump changes first
+                const changes_json = try self.dumpStateChanges();
+                return .{ .ready_to_commit = .{ .changes_json = changes_json } };
+            }
+
+            // Pop frame (safe - not returning early)
+            _ = self.frames.pop();
+        }
+
+        // All frames complete, no storage injector
+        return try self.finalizeAndReturnResult();
+    }
+
+    /// Finalize execution and return result
+    /// Called only when we're truly done (after commit if needed)
+    fn finalizeAndReturnResult(self: *Self) !CallOrContinueOutput {
+        // At this point frames should be empty OR we have one frame to finalize
+        if (self.frames.items.len > 0) {
+            const frame = self.frames.items[self.frames.items.len - 1];
+            const output = try self.arena.allocator().dupe(u8, frame.output);
+            const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
+            const success = !frame.reverted;
+
+            // NOW we can pop (we're returning the final result)
+            _ = self.frames.pop();
+
+            // Clean up transaction state (safe now)
+            self.warm_addresses.clearRetainingCapacity();
+            self.warm_storage_slots.clearRetainingCapacity();
+            self.transient_storage.clearRetainingCapacity();
+
+            return .{ .result = CallResult{
+                .success = success,
+                .gas_left = gas_left,
+                .output = output,
+            } };
+        }
+
+        return .{ .result = CallResult{
+            .success = true,
+            .gas_left = 0,
+            .output = &.{},
+        } };
+    }
+
+    /// Dump state changes to JSON
+    fn dumpStateChanges(self: *Self) ![]const u8 {
+        if (self.storage_injector) |injector| {
+            return try injector.dumpChanges(self);
+        }
+        return &.{};
     }
 
     /// Handle inner call from frame (like evm.inner_call)
@@ -1594,11 +1890,31 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     /// Get storage value (called by frame)
-    pub fn get_storage(self: *Self, address: Address, slot: u256) u256 {
+    pub fn get_storage(self: *Self, address: Address, slot: u256) !u256 {
+        const key = StorageSlotKey{ .address = address, .slot = slot };
+
+        // If using storage injector, check cache first
+        if (self.storage_injector) |injector| {
+            log.debug("get_storage: Using storage injector for slot {}", .{slot});
+            // Check cache first
+            if (injector.storage_cache.get(key)) |value| {
+                log.debug("get_storage: Cache HIT for slot {}, value={}", .{ slot, value });
+                return value; // Cache hit
+            }
+
+            // Cache miss - yield to fetch from async source
+            log.debug("get_storage: Cache MISS for slot {}, yielding", .{slot});
+            self.async_data_request = .{ .storage = .{
+                .address = address,
+                .slot = slot,
+            } };
+            return errors.CallError.NeedAsyncData;
+        }
+
+        // No injector - use host or internal HashMap
         if (self.host) |h| {
             return h.getStorage(address, slot);
         }
-        const key = StorageSlotKey{ .address = address, .slot = slot };
         return self.storage.get(key) orelse 0;
     }
 
@@ -1613,6 +1929,11 @@ pub fn Evm(config: EvmConfig) type {
             else
                 self.storage.get(key) orelse 0;
             try self.original_storage.put(key, current);
+        }
+
+        // Mark dirty if using injector
+        if (self.storage_injector) |injector| {
+            try injector.markStorageDirty(address, slot);
         }
 
         if (self.host) |h| {
@@ -1692,3 +2013,243 @@ pub fn Evm(config: EvmConfig) type {
 
 // Default EVM instance for backward compatibility
 pub const DefaultEvm = Evm(.{});
+
+// ============================================================================
+// Tests for Async Storage Injection (Phase 1: Core Types and Error Handling)
+// ============================================================================
+
+test "AsyncDataRequest - union size and field access" {
+    const testing = std.testing;
+
+    // Test none variant
+    const req_none = AsyncDataRequest{ .none = {} };
+    try testing.expect(req_none == .none);
+
+    // Test storage variant
+    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+    const req_storage = AsyncDataRequest{ .storage = .{
+        .address = addr,
+        .slot = 42,
+    } };
+    try testing.expect(req_storage == .storage);
+    try testing.expect(req_storage.storage.address.equals(addr));
+    try testing.expectEqual(42, req_storage.storage.slot);
+
+    // Test balance variant
+    const req_balance = AsyncDataRequest{ .balance = .{
+        .address = addr,
+    } };
+    try testing.expect(req_balance == .balance);
+    try testing.expect(req_balance.balance.address.equals(addr));
+
+    // Test code variant
+    const req_code = AsyncDataRequest{ .code = .{
+        .address = addr,
+    } };
+    try testing.expect(req_code == .code);
+    try testing.expect(req_code.code.address.equals(addr));
+
+    // Test nonce variant
+    const req_nonce = AsyncDataRequest{ .nonce = .{
+        .address = addr,
+    } };
+    try testing.expect(req_nonce == .nonce);
+    try testing.expect(req_nonce.nonce.address.equals(addr));
+}
+
+test "AsyncDataRequest - can write and read each variant" {
+    const testing = std.testing;
+
+    var request: AsyncDataRequest = .none;
+
+    // Write storage request
+    const addr = primitives.Address.from_hex("0xabcdef0123456789abcdef0123456789abcdef01") catch unreachable;
+    request = .{ .storage = .{ .address = addr, .slot = 100 } };
+    try testing.expect(request == .storage);
+    try testing.expectEqual(100, request.storage.slot);
+
+    // Write balance request
+    request = .{ .balance = .{ .address = addr } };
+    try testing.expect(request == .balance);
+
+    // Write back to none
+    request = .none;
+    try testing.expect(request == .none);
+}
+
+test "error.NeedAsyncData can be caught and identified" {
+    const testing = std.testing;
+
+    const TestFn = struct {
+        fn needsData() !void {
+            return errors.CallError.NeedAsyncData;
+        }
+    };
+
+    const result = TestFn.needsData();
+    try testing.expectError(errors.CallError.NeedAsyncData, result);
+}
+
+test "error.NeedAsyncData propagates through call stack" {
+    const testing = std.testing;
+
+    const TestFn = struct {
+        fn level3() !void {
+            return errors.CallError.NeedAsyncData;
+        }
+
+        fn level2() !void {
+            try level3();
+        }
+
+        fn level1() !void {
+            try level2();
+        }
+    };
+
+    const result = TestFn.level1();
+    try testing.expectError(errors.CallError.NeedAsyncData, result);
+}
+
+test "Evm.async_data_request field initialized to .none" {
+    const testing = std.testing;
+
+    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    defer evm.deinit();
+
+    try testing.expect(evm.async_data_request == .none);
+}
+
+test "Evm.async_data_request can write/read different request types" {
+    const testing = std.testing;
+
+    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    defer evm.deinit();
+
+    const addr = primitives.Address.from_hex("0x1111111111111111111111111111111111111111") catch unreachable;
+
+    // Write storage request
+    evm.async_data_request = .{ .storage = .{ .address = addr, .slot = 99 } };
+    try testing.expect(evm.async_data_request == .storage);
+    try testing.expectEqual(99, evm.async_data_request.storage.slot);
+
+    // Write balance request
+    evm.async_data_request = .{ .balance = .{ .address = addr } };
+    try testing.expect(evm.async_data_request == .balance);
+
+    // Clear request
+    evm.async_data_request = .none;
+    try testing.expect(evm.async_data_request == .none);
+}
+
+// ============================================================================
+// Tests for Phase 4: callOrContinue() and Async Execution
+// ============================================================================
+
+test "CallOrContinueInput/Output - can construct each variant" {
+    const testing = std.testing;
+
+    const addr = primitives.Address.from_hex("0x1111111111111111111111111111111111111111") catch unreachable;
+
+    // Test Input variants
+    const call_input: DefaultEvm.CallOrContinueInput = .{ .call = .{
+        .call = .{
+            .caller = addr,
+            .to = addr,
+            .gas = 1000,
+            .value = 0,
+            .input = &[_]u8{},
+        },
+    } };
+    try testing.expect(call_input == .call);
+
+    const storage_input: DefaultEvm.CallOrContinueInput = .{ .continue_with_storage = .{
+        .address = addr,
+        .slot = 42,
+        .value = 100,
+    } };
+    try testing.expect(storage_input == .continue_with_storage);
+
+    // Test Output variants
+    const result_output: DefaultEvm.CallOrContinueOutput = .{ .result = .{
+        .success = true,
+        .gas_left = 500,
+        .output = &[_]u8{},
+    } };
+    try testing.expect(result_output == .result);
+
+    const storage_output: DefaultEvm.CallOrContinueOutput = .{ .need_storage = .{
+        .address = addr,
+        .slot = 99,
+    } };
+    try testing.expect(storage_output == .need_storage);
+}
+
+test "callOrContinue - returns .need_storage on cache miss" {
+    const testing = std.testing;
+
+    // Create EVM with storage injector
+    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    defer evm.deinit();
+
+    var injector = try StorageInjector.init(evm.arena.allocator());
+    evm.storage_injector = &injector;
+
+    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+
+    // Bytecode: PUSH1 0x00, SLOAD - will trigger async request
+    const bytecode = [_]u8{ 0x60, 0x00, 0x54 }; // PUSH1 0, SLOAD
+    evm.pending_bytecode = &bytecode;
+
+    const params: DefaultEvm.CallParams = .{ .call = .{
+        .caller = addr,
+        .to = addr,
+        .gas = 100000,
+        .value = 0,
+        .input = &[_]u8{},
+    } };
+
+    const output = try evm.callOrContinue(.{ .call = params });
+
+    // Should yield with storage request
+    try testing.expect(output == .need_storage);
+    try testing.expectEqual(0, output.need_storage.slot);
+}
+
+test "callOrContinue - continue_with_storage resumes execution" {
+    const testing = std.testing;
+
+    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    defer evm.deinit();
+
+    var injector = try StorageInjector.init(evm.arena.allocator());
+    evm.storage_injector = &injector;
+
+    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+
+    // Bytecode: PUSH1 0x00, SLOAD, STOP
+    const bytecode = [_]u8{ 0x60, 0x00, 0x54, 0x00 };
+    evm.pending_bytecode = &bytecode;
+
+    const params: DefaultEvm.CallParams = .{ .call = .{
+        .caller = addr,
+        .to = addr,
+        .gas = 100000,
+        .value = 0,
+        .input = &[_]u8{},
+    } };
+
+    // First call - should yield
+    const output1 = try evm.callOrContinue(.{ .call = params });
+    try testing.expect(output1 == .need_storage);
+
+    // Continue with storage value
+    const output2 = try evm.callOrContinue(.{ .continue_with_storage = .{
+        .address = addr,
+        .slot = 0,
+        .value = 42,
+    } });
+
+    // Should complete with ready_to_commit (if storage injector) or result
+    try testing.expect(output2 == .ready_to_commit or output2 == .result);
+}

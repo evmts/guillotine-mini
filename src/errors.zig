@@ -37,4 +37,6 @@ pub const CallError = error{
     InvalidStaticCallValue,
     // IO errors
     NoSpaceLeft,
+    // Async storage injection
+    NeedAsyncData,
 };
