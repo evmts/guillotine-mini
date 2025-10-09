@@ -1,39 +1,19 @@
 # Guillotine Spec Fixer Pipeline - Summary Report
 
-<<<<<<< HEAD
-**Generated**: 2025-10-07T20:54:25.803Z
-
-## Overview
-
-- **Total Test Suites**: 4
-- **Passed**: 0
-- **Failed**: 4
-- **Total Agent Attempts**: 20
-- **Total Cost**: $11.3645
-- **Total Duration**: 68.8 minutes
-
-## Test Suite Results
-
-### ✅ Passed (0)
-
-
-### ❌ Failed (4)
-=======
-**Generated**: 2025-10-07T19:48:36.863Z
+**Generated**: 2025-10-08T21:03:06.490Z
 
 ## Overview
 
 - **Total Test Suites**: 54
-- **Passed**: 54
-- **Failed**: 0
-- **Total Agent Attempts**: 0
-- **Total Cost**: $0.0000
-- **Total Duration**: 0.2 minutes
+- **Passed**: 44
+- **Failed**: 10
+- **Total Agent Attempts**: 10
+- **Total Cost**: $28.7696
+- **Total Duration**: 387.9 minutes
 
 ## Test Suite Results
 
-### ✅ Passed (54)
->>>>>>> 11ff531 (📚 docs: Update pipeline summary with complete test success)
+### ✅ Passed (44)
 
 - paris
 - homestead
@@ -41,16 +21,10 @@
 - shanghai-push0
 - cancun-tstore-basic
 - cancun-tstore-reentrancy
-- cancun-tstore-contexts
 - cancun-mcopy
-- cancun-selfdestruct
 - cancun-blobbasefee
-- cancun-blob-precompile
-- cancun-blob-opcodes
 - cancun-blob-tx-small
-- cancun-blob-tx-subtraction
 - cancun-blob-tx-insufficient
-- cancun-blob-tx-sufficient
 - cancun-blob-tx-valid-combos
 - prague-calldata-cost-type0
 - prague-calldata-cost-type1-2
@@ -72,11 +46,6 @@
 - osaka-modexp-misc
 - osaka-other
 - shanghai-warmcoinbase
-- shanghai-initcode
-- byzantium
-<<<<<<< HEAD
-- istanbul
-=======
 - berlin-acl
 - berlin-intrinsic-gas-cost
 - berlin-intrinsic-type0
@@ -90,38 +59,37 @@
 - frontier-push
 - frontier-stack
 - frontier-opcodes
->>>>>>> 11ff531 (📚 docs: Update pipeline summary with complete test success)
+
+### ❌ Failed (10)
+
+- cancun-tstore-contexts
+- cancun-blob-precompile
+- cancun-blob-opcodes
+- cancun-blob-tx-subtraction
+- cancun-blob-tx-sufficient
+- shanghai-initcode
+- byzantium
 - constantinople
 - istanbul
+- cancun-selfdestruct
 
 ## Agent Fix Attempts
 
 | Suite | Attempt | Success | Cost | Turns | Duration |
 |-------|---------|---------|------|-------|----------|
-<<<<<<< HEAD
-| shanghai-initcode | 1 | ✅ | $2.9766 | 221 | 773.9s |
-| shanghai-initcode | 2 | ✅ | $2.3266 | 179 | 718.2s |
-| shanghai-initcode | 3 | ✅ | $2.2787 | 182 | 719.6s |
-| shanghai-initcode | 4 | ✅ | $3.7825 | 305 | 1139.1s |
-| shanghai-initcode | 5 | ❌ | $0.0000 | 0 | 398.4s |
-| byzantium | 1 | ❌ | $0.0000 | 0 | 2.3s |
-| byzantium | 2 | ❌ | $0.0000 | 0 | 2.0s |
-| byzantium | 3 | ❌ | $0.0000 | 0 | 2.4s |
-| byzantium | 4 | ❌ | $0.0000 | 0 | 2.0s |
-| byzantium | 5 | ❌ | $0.0000 | 0 | 2.1s |
-| istanbul | 1 | ❌ | $0.0000 | 0 | 2.4s |
-| istanbul | 2 | ❌ | $0.0000 | 0 | 2.0s |
-| istanbul | 3 | ❌ | $0.0000 | 0 | 2.0s |
-| istanbul | 4 | ❌ | $0.0000 | 0 | 2.1s |
-| istanbul | 5 | ❌ | $0.0000 | 0 | 2.2s |
-| constantinople | 1 | ❌ | $0.0000 | 0 | 2.0s |
-| constantinople | 2 | ❌ | $0.0000 | 0 | 1.9s |
-| constantinople | 3 | ❌ | $0.0000 | 0 | 1.8s |
-| constantinople | 4 | ❌ | $0.0000 | 0 | 2.1s |
-| constantinople | 5 | ❌ | $0.0000 | 0 | 2.0s |
-=======
->>>>>>> 11ff531 (📚 docs: Update pipeline summary with complete test success)
+| cancun-tstore-contexts | 1 | ✅ | $1.8175 | 198 | 799.2s |
+| cancun-blob-precompile | 1 | ✅ | $3.1832 | 168 | 3411.3s |
+| cancun-blob-opcodes | 1 | ✅ | $2.6609 | 261 | 878.1s |
+| cancun-blob-tx-subtraction | 1 | ✅ | $4.2044 | 355 | 2009.2s |
+| cancun-blob-tx-sufficient | 1 | ✅ | $4.4261 | 335 | 5431.8s |
+| shanghai-initcode | 1 | ✅ | $2.5478 | 266 | 993.8s |
+| byzantium | 1 | ✅ | $4.0193 | 268 | 1543.1s |
+| constantinople | 1 | ✅ | $2.6292 | 224 | 1744.8s |
+| istanbul | 1 | ✅ | $1.4831 | 187 | 732.7s |
+| cancun-selfdestruct | 1 | ✅ | $1.7982 | 204 | 704.2s |
 
 ## Next Steps
 
-🎉 All test suites passing! Great work!
+1. Review failed test suites and agent reports
+2. Manually investigate remaining failures
+3. Consider increasing maxTurns or maxAttempts for complex fixes
