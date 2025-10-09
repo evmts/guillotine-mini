@@ -102,8 +102,6 @@ const ExecutionContext = struct {
     access_list_storage_keys: []evm.AccessListStorageKey,
     blob_versioned_hashes: ?[]const [32]u8,
     result: ?CallResult,
-    // For async protocol
-    pending_changes_json: []const u8,
 };
 
 /// Create a new Evm instance with optional hardfork name (null/empty = default from config)
@@ -141,7 +139,6 @@ export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize, log_level:
         .access_list_storage_keys = &[_]evm.AccessListStorageKey{},
         .blob_versioned_hashes = null,
         .result = null,
-        .pending_changes_json = &[_]u8{},
     };
 
     return @ptrCast(ctx);
@@ -602,6 +599,9 @@ pub const AsyncRequest = extern struct {
     output_type: u8, // 0=result, 1=need_storage, 2=need_balance, 5=ready_to_commit
     address: [20]u8,
     slot: [32]u8, // Only used for storage requests
+    // For ready_to_commit: JSON length and data
+    json_len: u32,
+    json_data: [16384]u8, // State changes JSON (inline)
 };
 
 /// Helper: Pack CallOrContinueOutput into AsyncRequest
@@ -613,12 +613,13 @@ fn packOutput(output: Evm.CallOrContinueOutput, ctx: *ExecutionContext, request_
             return true;
         },
         .need_storage => |req| {
-            const log = @import("logger.zig");
-            log.debug("packOutput: need_storage address={any}, slot={}", .{ req.address.bytes, req.slot });
             request_out.output_type = 1;
-            @memcpy(&request_out.address, &req.address.bytes);
+            // Write address bytes
+            var i: usize = 0;
+            while (i < 20) : (i += 1) {
+                request_out.address[i] = req.address.bytes[i];
+            }
             std.mem.writeInt(u256, &request_out.slot, req.slot, .big);
-            log.debug("packOutput: wrote address to request_out={any}", .{request_out.address});
             return true;
         },
         .need_balance => |req| {
@@ -638,7 +639,12 @@ fn packOutput(output: Evm.CallOrContinueOutput, ctx: *ExecutionContext, request_
         },
         .ready_to_commit => |data| {
             request_out.output_type = 5;
-            ctx.pending_changes_json = data.changes_json;
+            // Pack JSON directly into AsyncRequest
+            const json_len = @min(data.changes_json.len, request_out.json_data.len);
+            if (json_len > 0) {
+                @memcpy(request_out.json_data[0..json_len], data.changes_json[0..json_len]);
+            }
+            request_out.json_len = @intCast(json_len);
             return true;
         },
     }
@@ -761,10 +767,12 @@ export fn evm_get_state_changes(
 ) usize {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
-        const changes_json = ctx.pending_changes_json;
 
-        const copy_len = @min(changes_json.len, buffer_len);
-        @memcpy(buffer[0..copy_len], changes_json[0..copy_len]);
+        // Read from evm struct
+        const copy_len = @min(ctx.evm.pending_state_changes_len, buffer_len);
+        if (copy_len > 0) {
+            @memcpy(buffer[0..copy_len], ctx.evm.pending_state_changes_buffer[0..copy_len]);
+        }
         return copy_len;
     }
     return 0;

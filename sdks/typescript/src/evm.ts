@@ -535,7 +535,9 @@ class EvmImpl implements Evm {
     const requestPtr = memory.length - 256; // Reserve 256 bytes at end of memory
 
     // Start execution
+    console.log(`[Debug] Calling evm_call_ffi with handle=${this.handle}, requestPtr=${requestPtr}`);
     const startResult = this.wasm.exports.evm_call_ffi(this.handle, requestPtr);
+    console.log(`[Debug] evm_call_ffi returned: ${startResult}`);
     if (!startResult) {
       throw new Error("Failed to start async execution");
     }
@@ -544,7 +546,9 @@ class EvmImpl implements Evm {
     memory = this.getMemory();
     let outputType = memory[requestPtr];
 
-    console.log(`[Debug] Initial outputType: ${outputType}`);
+    const reqAddr1 = memory[requestPtr + 1];
+    const reqAddr2 = memory[requestPtr + 2];
+    console.log(`[Debug] Initial outputType: ${outputType}, requestPtr: ${requestPtr}, address[0:2]=${reqAddr1.toString(16)}${reqAddr2.toString(16)}`);
 
     // Yield loop - handle async requests until done
     while (outputType !== OutputType.Result) {
@@ -607,23 +611,26 @@ class EvmImpl implements Evm {
         memory = this.getMemory();
         outputType = memory[requestPtr];
       } else if (outputType === OutputType.ReadyToCommit) {
-        // Get changes JSON (too large for requestBuffer)
-        const changesBuffer = new Uint8Array(1024 * 1024); // 1MB buffer
-        const changesPtr = this.allocateAndCopy(changesBuffer);
-        const changesLen = this.wasm.exports.evm_get_state_changes(
-          this.handle,
-          changesPtr,
-          changesBuffer.length,
-        );
+        // Read JSON directly from AsyncRequest struct
+        // Layout: output_type(1) + address(20) + slot(32) + json_len(4) + padding(3) + json_data
+        // (struct is packed with alignment)
+        memory = this.getMemory();
+        const jsonLenOffset = requestPtr + 1 + 20 + 32;
+        // Skip padding - find the '{' character
+        let jsonDataOffset = jsonLenOffset + 4;
+        while (jsonDataOffset < requestPtr + 1000 && memory[jsonDataOffset] !== 0x7B) { // 0x7B = '{'
+          jsonDataOffset++;
+        }
+
+        const jsonLen = new DataView(memory.buffer, memory.byteOffset + jsonLenOffset, 4).getUint32(0, false);
 
         const changesJson = new TextDecoder().decode(
-          memory.slice(changesPtr, changesPtr + changesLen),
+          memory.slice(jsonDataOffset, jsonDataOffset + jsonLen),
         );
 
-        // Debug: log JSON
-        console.log(`[Debug] Changes JSON (len=${changesLen}):`, changesJson);
+        console.log(`[Debug] ReadyToCommit: json_len=${jsonLen}, JSON=${changesJson}`);
 
-        if (changesLen === 0 || !changesJson) {
+        if (jsonLen === 0 || !changesJson) {
           // No changes - continue without committing
           console.log("[Debug] No state changes to commit");
           const continueResult = this.wasm.exports.evm_continue_ffi(
