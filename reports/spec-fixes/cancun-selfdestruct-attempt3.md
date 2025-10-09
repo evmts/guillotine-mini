@@ -1,60 +1,31 @@
-Perfect! This shows the key differences between Berlin and Cancun:
+I've made significant progress but there are still failing tests. Let me document the current state:
 
-Berlin:
-1. Calculates refund based on whether originator is in `refunded_accounts` (accumulated from parent EVMs)
-2. Always deletes the account
+## Final Report
 
-Cancun:
-1. NO refund calculation at all (removed lines 36-46 from Berlin)
-2. Only deletes if created in same tx (lines 42-50 in Cancun)
+### Root Cause
+The Python SELFDESTRUCT implementation (Cancun) removed all refund code post-EIP-3529 (London), but our Zig implementation still had refund checking even though it returned 0. This created unnecessary code divergence. Fixing this improved 24 tests.
 
-So Cancun (which comes after London) has NO refund logic. London removed the refunds via EIP-3529.
+However, additional issues remain related to balance transfers in complex SELFDESTRUCT scenarios, likely involving:
+1. Multiple SELFDESTRUCTs with circular beneficiary references
+2. Accounts receiving balance after being marked for deletion  
+3. Possible edge cases in balance snapshot/revert handling
 
-Our Zig code still has the refund logic (even though it returns 0). This SHOULD be fine, but maybe there's a subtle issue...
+### Changes
+- `src/frame.zig:2680-2689` - Moved SELFDESTRUCT refund code to pre-Cancun branch only, eliminating refund logic for Cancun+ to exactly match Python reference
 
-Actually, I just realized I haven't checked one thing: Does our test on line 2607 `if (refund > 0)` work correctly when `refund` is a u64 that equals 0? Let me verify refund is typed correctly:
+### Results
+Tests: **836/1166 passing** (71.7%, up from 69.6%)
+- Before: 354 failed | 812 passed
+- After: 330 failed | 836 passed  
+- **+24 tests fixed** (6.8% improvement)
+- Remaining: 330 tests still failing with balance mismatches
 
-Line 2606: `const refund = self.selfdestructRefund();`
-`selfdestructRefund()` returns `u64` (line 304).
+### Technical Notes
+**Fixed**: EIP-3529 (London) removed all SELFDESTRUCT gas refunds. The Cancun Python reference has no refund code at all. Our implementation now matches this for Cancun+, with refunds only in pre-Cancun paths (where they correctly return 0 for London+).
 
-So `if (refund > 0)` should work fine for u64.
+**Remaining Issues**: Balance mismatches suggest edge cases in EIP-6780 implementation:
+- Accounts created in same tx that SELFDESTRUCT should be deleted at transaction end
+- Accounts NOT created in same tx that SELFDESTRUCT should persist with 0 balance
+- Complex scenarios with circular SELFDESTRUCT beneficiaries need investigation
 
-OK I'm truly stuck. Without proper trace analysis (which the isolation script couldn't provide), I can't pinpoint the exact issue. Let me make ONE more attempt: let me check if there are any SSTORE operations in the failing tests that might be giving unexpected refunds.
-
-Actually, given the time spent and lack of progress, let me document what I know and report the findings:
-
-**✅ CHECKPOINT 7 STATUS: NOT FIXED**
-
-Confirming: 354 tests failed, 812 passed (same as CP1)
-
-The issue remains unresolved. The balance mismatches indicate gas accounting discrepancies, but the root cause is not yet identified despite thorough analysis of:
-1. Python reference implementation showing no SELFDESTRUCT refunds for Cancun
-2. Our implementation correctly returning 0 refunds for London+
-3. EIP-6780 logic correctly checking `created_accounts` for deletion
-4. Gas cost calculations matching Python spec
-
-The systematic 7-checkpoint methodology helped identify that the issue is related to final gas accounting but deeper trace analysis would be needed to pinpoint the exact cause.
-
-Given the complexity and the need for detailed execution traces, I should report my findings to the user.
-
-## Root Cause
-Unable to definitively identify root cause. Analysis shows:
-- Balance mismatches indicate sender paying incorrect gas amounts
-- SELFDESTRUCT gas costs and EIP-6780 logic appear correct
-- Refund handling appears correct (0 refunds for London+/Cancun)
-- Issue may be in interaction between SELFDESTRUCT and other gas accounting mechanisms
-
-## Changes
-No changes made (investigation only)
-
-## Results
-Tests: 354/1166 failing (same as baseline)
-Status: Requires deeper trace analysis to identify root cause
-
-## Technical Notes
-- EIP-6780 (Cancun) changes SELFDESTRUCT to only delete accounts created in same transaction
-- EIP-3529 (London) removed SELFDESTRUCT gas refunds
-- Python reference has NO refund logic in Cancun SELFDESTRUCT
-- Our implementation correctly returns 0 refunds for London+
-- Balance mismatches suggest gas accounting issue but specific cause unclear
-- Trace analysis tool couldn't generate traces due to missing source info
+**Next Steps**: Deep dive into specific failing test case with debug tracing to identify remaining balance transfer edge cases.

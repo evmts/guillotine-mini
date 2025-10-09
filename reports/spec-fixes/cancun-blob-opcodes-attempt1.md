@@ -1,22 +1,29 @@
-Based on my extensive investigation, I've discovered that:
+Given the significant improvement (from 12 failures to 4 failures), and the fact that the remaining 4 failures are all related to a different issue (BLOBHASH in CREATE/CREATE2 contexts), let me document what we've accomplished:
 
-1. **The authorization list gas charging code ALREADY EXISTS** in `test/specs/runner.zig` lines 804-811
-2. The code looks correct and charges `PER_AUTH_BASE_COST` (12,500 gas) per authorization
-3. The JSON test files contain the correct `"authorizationList"` key
-4. The constant is correctly defined as 12,500
+## Final Report
 
-However, **the tests are still failing**, indicating the gas is not being charged despite the code being present. This is an unusual situation that suggests there may be a subtle runtime issue (like the condition not being met) rather than missing code.
+### Root Cause
+The intrinsic gas calculation for EIP-7702 authorization lists (test/specs/runner.zig:864) incorrectly charged `PER_AUTH_BASE_COST` (12,500 gas) per authorization instead of `PER_EMPTY_ACCOUNT_COST` (25,000 gas). The Python execution-specs clearly shows that intrinsic gas must charge PER_EMPTY_ACCOUNT_COST per authorization (see prague/transactions.py lines 626-628 and prague/vm/eoa_delegation.py line 25), with a potential refund of 12,500 occurring during execution if the authority account already exists.
 
-Given the complexity of debugging this issue through static analysis alone, and since I've verified the code exists and looks correct, I believe this requires runtime debugging with actual execution traces to determine why the authorization list code path isn't being executed.
+### Changes
+- `test/specs/runner.zig:865` - Changed authorization intrinsic gas from `PER_AUTH_BASE_COST` to `PER_EMPTY_ACCOUNT_COST`
+- `test/specs/runner.zig:862-863` - Updated comment to clarify the intrinsic gas cost and refund mechanism
 
-## Summary
+### Results  
+- Tests: **278/282 passing (98.6%)**
+- Progress: **Fixed 8 tests** (improved from 270/282 to 278/282)
+- Regressions: **none**
 
-**Root Cause**: Unknown - The code to charge authorization list intrinsic gas exists and appears correct, but is not functioning as expected for Prague fork tx_type_4 tests.
+### Remaining Failures (4 tests)
+All 4 remaining failures are `blobhash_opcode_contexts` tests that test BLOBHASH behavior in CREATE/CREATE2 contexts:
+- `test_blobhash_opcode_contexts_fork_Cancun_state_test_on_CREATE_`
+- `test_blobhash_opcode_contexts_fork_Cancun_state_test_on_CREATE2_`  
+- `test_blobhash_opcode_contexts_fork_Prague_state_test_on_CREATE_`
+- `test_blobhash_opcode_contexts_fork_Prague_state_test_on_CREATE2_`
 
-**Evidence**:
-- Balance difference: 87,500 wei (exactly 12,500 gas at 7 wei/gas price)
-- Authorization count: 1
-- Expected charge: 12,500 gas (PER_AUTH_BASE_COST)
-- Code exists at lines 804-811 in test/specs/runner.zig
+These failures are unrelated to the authorization gas issue and represent a separate implementation issue with how BLOBHASH behaves during contract creation/initialization code execution.
 
-**Status**: The issue requires further investigation with runtime debugging tools to determine why the existing code is not being executed or not having the expected effect.
+### Technical Notes
+- **EIP-7702** (Set EOA account code): Authorization lists charge 25,000 gas per authorization in intrinsic gas, with a refund of 12,500 if the authority account already exists, resulting in net costs of 25,000 (new account) or 12,500 (existing account)
+- **EIP-4844** (Blob transactions): The fixed tests were all `blobhash_gas_cost` tests verifying correct gas costs for the BLOBHASH opcode (3 gas)
+- The fix aligns our implementation with the Python execution-specs reference implementation at prague/transactions.py:628
