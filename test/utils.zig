@@ -408,25 +408,28 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
         formatDuration(writer, suite_duration);
         try std.fmt.format(writer, "\n", .{});
 
-        // Print failed and todo test names
+        // Print all test names with pass/fail status on same line
         for (tests.items) |t| {
             if (t.todo) {
-                try std.fmt.format(writer, "   {s}{s}{s} {s}{s} (TODO){s}\n", .{
-                    Color.yellow,
-                    Icons.clock,
-                    Color.reset,
+                try std.fmt.format(writer, "   {s}{s} {s}(TODO){s}\n", .{
                     Color.yellow,
                     t.test_name,
+                    Color.yellow,
                     Color.reset,
                 });
-            } else if (!t.passed) {
-                try std.fmt.format(writer, "   {s}{s}{s} {s}{s}{s}\n", .{
+            } else if (t.passed) {
+                try std.fmt.format(writer, "   {s}{s}{s} {s}\n", .{
+                    Color.green,
+                    Icons.check,
+                    Color.reset,
+                    t.test_name,
+                });
+            } else {
+                try std.fmt.format(writer, "   {s}{s}{s} {s}\n", .{
                     Color.red,
                     Icons.cross,
                     Color.reset,
-                    Color.red,
                     t.test_name,
-                    Color.reset,
                 });
             }
         }
