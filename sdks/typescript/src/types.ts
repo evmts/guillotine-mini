@@ -134,11 +134,19 @@ export interface PrecompileOverride {
 }
 
 /**
+ * Log level for EVM execution
+ */
+export type LogLevel = 'none' | 'error' | 'warn' | 'info' | 'debug';
+
+/**
  * EVM creation options
  */
 export interface EvmOptions {
   /** Hardfork to use (default: PRAGUE) */
   hardfork?: Hardfork;
+
+  /** Log level (default: none) */
+  logLevel?: LogLevel;
 
   /** Custom opcode handlers (overrides default implementations) */
   opcodeOverrides?: OpcodeOverride[];
@@ -160,6 +168,12 @@ export interface EvmOptions {
 
   /** Enable validator withdrawal tracking */
   enableValidatorWithdrawals?: boolean;
+
+  /**
+   * Optional async state interface for storage injection
+   * When provided, EVM will fetch state from this interface instead of internal maps
+   */
+  stateInterface?: StateInterface;
 }
 
 /**
@@ -174,6 +188,74 @@ export interface ExecutionResult {
   gasUsed: bigint;
   /** Output data (return value or revert reason) */
   output: Bytes;
+}
+
+/**
+ * State changes from transaction execution
+ */
+export interface StateChanges {
+  /** Storage slot changes */
+  storage: Array<{
+    address: Address;
+    slot: U256;
+    originalValue: U256;
+    newValue: U256;
+  }>;
+  /** Balance changes */
+  balances: Array<{
+    address: Address;
+    originalBalance: bigint;
+    newBalance: bigint;
+  }>;
+  /** Nonce changes */
+  nonces: Array<{
+    address: Address;
+    originalNonce: bigint;
+    newNonce: bigint;
+  }>;
+  /** Code changes */
+  codes: Array<{
+    address: Address;
+    code: Bytes;
+  }>;
+  /** Self-destructed accounts */
+  selfDestructs: Address[];
+}
+
+/**
+ * Async state interface - provides state access for EVM
+ * All methods are async to support RPC, database, or cache lookups
+ */
+export interface StateInterface {
+  /**
+   * Get storage value at given address and slot
+   * @returns Storage value as hex string (0x-prefixed, 32 bytes)
+   */
+  getStorage(address: Address, slot: U256): Promise<U256>;
+
+  /**
+   * Get account balance
+   * @returns Balance as bigint
+   */
+  getBalance(address: Address): Promise<bigint>;
+
+  /**
+   * Get account code
+   * @returns Code as hex string (0x-prefixed)
+   */
+  getCode(address: Address): Promise<Bytes>;
+
+  /**
+   * Get account nonce
+   * @returns Nonce as bigint
+   */
+  getNonce(address: Address): Promise<bigint>;
+
+  /**
+   * Commit state changes after successful transaction
+   * Called once at the end of transaction execution
+   */
+  commitChanges(changes: StateChanges): Promise<void>;
 }
 
 /**

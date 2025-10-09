@@ -12,6 +12,7 @@ export type {
   Hardfork,
   AccessListEntry,
   EvmOptions,
+  LogLevel,
 } from './types.js';
 export {
   hexToBytes,

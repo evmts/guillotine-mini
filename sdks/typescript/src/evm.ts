@@ -10,6 +10,8 @@ import type {
   AccessListEntry,
   OpcodeHandler,
   PrecompileHandler,
+  StateInterface,
+  StateChanges,
 } from "./types.js";
 import {
   bigintToU256,
@@ -27,7 +29,7 @@ interface WasmModule {
   instance: WebAssembly.Instance;
   exports: {
     memory: WebAssembly.Memory;
-    evm_create: (hardforkName: number, hardforkLen: number) => number;
+    evm_create: (hardforkName: number, hardforkLen: number, logLevel: number) => number;
     evm_destroy: (handle: number) => void;
     evm_set_bytecode: (handle: number, bytecode: number, len: number) => number;
     evm_set_execution_context: (
@@ -100,6 +102,21 @@ interface WasmModule {
       code: number,
       codeLen: number,
     ) => number;
+    // Async protocol FFI functions
+    evm_call_ffi: (handle: number, requestOut: number) => number;
+    evm_continue_ffi: (
+      handle: number,
+      continueType: number,
+      dataPtr: number,
+      dataLen: number,
+      requestOut: number,
+    ) => number;
+    evm_get_state_changes: (
+      handle: number,
+      buffer: number,
+      bufferLen: number,
+    ) => number;
+    evm_enable_storage_injector: (handle: number) => number;
   };
 }
 
@@ -113,8 +130,10 @@ class EvmImpl implements Evm {
   // Store references to callback functions to prevent garbage collection
   private opcodeHandlers: Map<number, any> = new Map();
   private precompileHandlers: Map<string, any> = new Map();
+  private stateInterface?: StateInterface;
 
   constructor(wasmModule: WebAssembly.Module, options?: EvmOptions) {
+    this.stateInterface = options?.stateInterface;
     this.readyPromise = this.initialize(wasmModule, options);
   }
 
@@ -132,9 +151,52 @@ class EvmImpl implements Evm {
       this.precompileHandlers.set(key, o.execute);
     });
 
+    // Map log level string to numeric value
+    const logLevelMap: Record<string, number> = {
+      'none': 0,
+      'error': 1,
+      'warn': 2,
+      'info': 3,
+      'debug': 4,
+    };
+    const logLevel = logLevelMap[options?.logLevel || 'none'];
+
     // Create WASM imports with callback functions
     const imports = {
+      wasi_snapshot_preview1: {
+        fd_write: () => 0,
+        fd_close: () => 0,
+        fd_seek: () => 0,
+        fd_read: () => 0,
+        fd_pwrite: () => 0,
+        fd_pread: () => 0,
+        fd_fdstat_get: () => 0,
+        fd_filestat_get: () => 0,
+        fd_prestat_get: () => 0,
+        fd_prestat_dir_name: () => 0,
+        path_open: () => 0,
+        proc_exit: () => {},
+        environ_sizes_get: () => 0,
+        environ_get: () => 0,
+        clock_time_get: () => 0,
+        random_get: () => 0,
+      },
       env: {
+        // BLS12-381 curve operations (stubs for now - not called in basic tests)
+        bls12_381_pairing: () => 0,
+        bls12_381_g1_add: () => 0,
+        bls12_381_g1_mul: () => 0,
+        bls12_381_g1_multiexp: () => 0,
+        bls12_381_g2_add: () => 0,
+        bls12_381_g2_mul: () => 0,
+        bls12_381_g2_multiexp: () => 0,
+        bls12_381_map_fp_to_g1: () => 0,
+        bls12_381_map_fp2_to_g2: () => 0,
+        // BN254 curve operations (alt_bn128)
+        bn254_ecpairing: () => 0,
+        bn254_ecadd: () => 0,
+        bn254_ecmul: () => 0,
+
         // Called BY WASM to execute custom opcode handlers
         js_opcode_callback: (opcode: number, framePtr: number): number => {
           const handler = this.opcodeHandlers.get(opcode);
@@ -224,14 +286,22 @@ class EvmImpl implements Evm {
       exports: instance.exports as any,
     };
 
-    // Create EVM instance with hardfork
+    // Create EVM instance with hardfork and log level
     const hardfork = options?.hardfork || '';
     const hardforkBytes = new TextEncoder().encode(hardfork);
     const hardforkPtr = hardforkBytes.length > 0 ? this.allocateAndCopy(hardforkBytes) : 0;
 
-    this.handle = this.wasm.exports.evm_create(hardforkPtr, hardforkBytes.length);
+    this.handle = this.wasm.exports.evm_create(hardforkPtr, hardforkBytes.length, logLevel);
     if (this.handle === 0) {
       throw new Error("Failed to create EVM instance");
+    }
+
+    // Enable storage injector if state interface is provided
+    if (options?.stateInterface) {
+      const result = this.wasm.exports.evm_enable_storage_injector(this.handle);
+      if (result === 0) {
+        throw new Error("Failed to enable storage injector");
+      }
     }
   }
 
@@ -277,6 +347,8 @@ class EvmImpl implements Evm {
     const addressBytes = addressToBytes(ctx.address);
     const valueBytes = bigintToU256(ctx.value);
     const calldataBytes = hexToBytes(ctx.calldata);
+
+    console.log(`[Debug] setExecutionContext: address=${ctx.address}, addressBytes=${Array.from(addressBytes)}`);
 
     const callerPtr = this.allocateAndCopy(callerBytes);
     const addressPtr = this.allocateAndCopy(addressBytes);
@@ -428,10 +500,208 @@ class EvmImpl implements Evm {
     }
   }
 
+  /**
+   * Execute with yield handling for async state interface
+   * INTERNAL: Handles all the yield/continue logic
+   */
+  private async executeWithYieldHandling(): Promise<ExecutionResult> {
+    if (!this.wasm) throw new Error("WASM not initialized");
+    if (!this.stateInterface) {
+      throw new Error("StateInterface required for async execution");
+    }
+
+    // Output types
+    const OutputType = {
+      Result: 0,
+      NeedStorage: 1,
+      NeedBalance: 2,
+      NeedCode: 3,
+      NeedNonce: 4,
+      ReadyToCommit: 5,
+      Error: 255,
+    };
+
+    // Continue types
+    const ContinueType = {
+      Storage: 1,
+      Balance: 2,
+      Code: 3,
+      Nonce: 4,
+      AfterCommit: 5,
+    };
+
+    // Allocate request buffer in WASM memory
+    let memory = this.getMemory();
+    const requestPtr = memory.length - 256; // Reserve 256 bytes at end of memory
+
+    // Start execution
+    const startResult = this.wasm.exports.evm_call_ffi(this.handle, requestPtr);
+    if (!startResult) {
+      throw new Error("Failed to start async execution");
+    }
+
+    // Read from memory (need to refresh since it may have grown)
+    memory = this.getMemory();
+    let outputType = memory[requestPtr];
+
+    console.log(`[Debug] Initial outputType: ${outputType}`);
+
+    // Yield loop - handle async requests until done
+    while (outputType !== OutputType.Result) {
+      console.log(`[Debug] Handling outputType: ${outputType}`);
+      if (outputType === OutputType.NeedStorage) {
+        // Request data is in WASM memory at requestPtr
+        memory = this.getMemory();
+        console.log(`[Debug] Request buffer bytes:`, Array.from(memory.slice(requestPtr, requestPtr + 25)));
+        const address = bytesToHex(memory.slice(requestPtr + 1, requestPtr + 21));
+        const slot = bytesToHex(memory.slice(requestPtr + 21, requestPtr + 53));
+
+        console.log(`[Debug] NeedStorage: address=${address}, slot=${slot}`);
+        const value = await this.stateInterface.getStorage(address, slot);
+
+        // Pack continue data: address(20) + slot(32) + value(32) = 84 bytes
+        const continueData = new Uint8Array(84);
+        continueData.set(memory.slice(requestPtr + 1, requestPtr + 21), 0); // address
+        continueData.set(memory.slice(requestPtr + 21, requestPtr + 53), 20); // slot
+        continueData.set(hexToBytes(value), 52); // value
+
+        const continuePtr = this.allocateAndCopy(continueData);
+        const continueResult = this.wasm.exports.evm_continue_ffi(
+          this.handle,
+          ContinueType.Storage,
+          continuePtr,
+          84,
+          requestPtr,
+        );
+
+        if (!continueResult) {
+          throw new Error("Failed to continue after storage");
+        }
+
+        // Refresh memory and outputType
+        memory = this.getMemory();
+        outputType = memory[requestPtr];
+      } else if (outputType === OutputType.NeedBalance) {
+        memory = this.getMemory();
+        const address = bytesToHex(memory.slice(requestPtr + 1, requestPtr + 21));
+        const balance = await this.stateInterface.getBalance(address);
+
+        // Pack continue data: address(20) + balance(32) = 52 bytes
+        const continueData = new Uint8Array(52);
+        continueData.set(memory.slice(requestPtr + 1, requestPtr + 21), 0); // address
+        continueData.set(hexToBytes(bigintToU256(balance)), 20); // balance
+
+        const continuePtr = this.allocateAndCopy(continueData);
+        const continueResult = this.wasm.exports.evm_continue_ffi(
+          this.handle,
+          ContinueType.Balance,
+          continuePtr,
+          52,
+          requestPtr,
+        );
+
+        if (!continueResult) {
+          throw new Error("Failed to continue after balance");
+        }
+
+        memory = this.getMemory();
+        outputType = memory[requestPtr];
+      } else if (outputType === OutputType.ReadyToCommit) {
+        // Get changes JSON (too large for requestBuffer)
+        const changesBuffer = new Uint8Array(1024 * 1024); // 1MB buffer
+        const changesPtr = this.allocateAndCopy(changesBuffer);
+        const changesLen = this.wasm.exports.evm_get_state_changes(
+          this.handle,
+          changesPtr,
+          changesBuffer.length,
+        );
+
+        const changesJson = new TextDecoder().decode(
+          memory.slice(changesPtr, changesPtr + changesLen),
+        );
+
+        // Debug: log JSON
+        console.log(`[Debug] Changes JSON (len=${changesLen}):`, changesJson);
+
+        if (changesLen === 0 || !changesJson) {
+          // No changes - continue without committing
+          console.log("[Debug] No state changes to commit");
+          const continueResult = this.wasm.exports.evm_continue_ffi(
+            this.handle,
+            ContinueType.AfterCommit,
+            0,
+            0,
+            requestPtr,
+          );
+
+          if (!continueResult) {
+            throw new Error("Failed to continue after empty commit");
+          }
+
+          memory = this.getMemory();
+          outputType = memory[requestPtr];
+          continue;
+        }
+
+        const changes: StateChanges = JSON.parse(changesJson);
+
+        // Commit changes
+        await this.stateInterface.commitChanges(changes);
+
+        // Continue after commit
+        const continueResult = this.wasm.exports.evm_continue_ffi(
+          this.handle,
+          ContinueType.AfterCommit,
+          0,
+          0,
+          requestPtr,
+        );
+
+        if (!continueResult) {
+          throw new Error("Failed to continue after commit");
+        }
+
+        memory = this.getMemory();
+        outputType = memory[requestPtr];
+      } else if (outputType === OutputType.Error) {
+        throw new Error("EVM execution error during async execution");
+      } else {
+        throw new Error(`Unknown output type: ${outputType}`);
+      }
+    }
+
+    // Done - return result
+    const success = this.wasm.exports.evm_is_success(this.handle) !== 0;
+    const gasRemaining = this.wasm.exports.evm_get_gas_remaining(this.handle);
+    const gasUsed = this.wasm.exports.evm_get_gas_used(this.handle);
+
+    // Get output
+    const outputLen = this.wasm.exports.evm_get_output_len(this.handle);
+    const outputBytes = new Uint8Array(outputLen);
+    if (outputLen > 0) {
+      const outputPtr = this.allocateAndCopy(new Uint8Array(outputLen));
+      this.wasm.exports.evm_get_output(this.handle, outputPtr, outputLen);
+      outputBytes.set(memory.slice(outputPtr, outputPtr + outputLen));
+    }
+
+    return {
+      success,
+      gasRemaining,
+      gasUsed,
+      output: bytesToHex(outputBytes),
+    };
+  }
+
   async execute(): Promise<ExecutionResult> {
     await this.ready();
     if (!this.wasm) throw new Error("WASM not initialized");
 
+    // If stateInterface is provided, use async protocol
+    if (this.stateInterface) {
+      return this.executeWithYieldHandling();
+    }
+
+    // Otherwise, use regular sync execution
     const result = this.wasm.exports.evm_execute(this.handle);
     const success = this.wasm.exports.evm_is_success(this.handle) !== 0;
     const gasRemaining = this.wasm.exports.evm_get_gas_remaining(this.handle);
