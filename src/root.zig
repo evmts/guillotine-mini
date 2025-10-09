@@ -34,7 +34,6 @@ pub const Frame = frame.Frame;
 
 // Export Host interface and types
 pub const host = @import("host.zig");
-pub const Host = host.Host;
 pub const HostInterface = host.HostInterface;
 
 // Export Hardfork

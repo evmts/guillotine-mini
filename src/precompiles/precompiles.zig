@@ -1308,7 +1308,7 @@ test "execute_modexp simple case" {
     // mod = 5
     input[98] = 5;
 
-    const result = try execute_modexp(testing.allocator, input[0..99], 1000);
+    const result = try execute_modexp(testing.allocator, input[0..99], 1000, @import("../hardfork.zig").Hardfork.CANCUN);
     defer testing.allocator.free(result.output);
 
     try testing.expect(result.success);
@@ -1467,7 +1467,7 @@ test "execute_modexp edge cases" {
     // mod = 5
     input[98] = 5;
     
-    const result = try execute_modexp(testing.allocator, &input, 10000);
+    const result = try execute_modexp(testing.allocator, &input, 10000, @import("../hardfork.zig").Hardfork.CANCUN);
     defer testing.allocator.free(result.output);
     
     try testing.expect(result.success);
@@ -1601,7 +1601,7 @@ test "execute_modexp with zero modulus" {
     input[97] = 3;
     // mod = 0 (already zero)
 
-    const result = try execute_modexp(testing.allocator, &input, 10000);
+    const result = try execute_modexp(testing.allocator, &input, 10000, @import("../hardfork.zig").Hardfork.CANCUN);
     defer testing.allocator.free(result.output);
 
     try testing.expect(result.success);
