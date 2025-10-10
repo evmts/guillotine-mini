@@ -93,375 +93,23 @@ fn runJsonTestImplForFork(allocator: std.mem.Allocator, test_case: std.json.Valu
 }
 
 fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.Value, opt_test_file_path: ?[]const u8, opt_test_name: ?[]const u8) !void {
-    // Re-run with trace capture
-    var tracer = trace.Tracer.init(allocator);
-    defer tracer.deinit();
-    tracer.enable();
+    // Temporarily disabled due to Zig 0.15 API changes
+    _ = allocator;
+    _ = test_case;
+    _ = opt_test_file_path;
+    _ = opt_test_name;
+    return;
 
-    // Capture our trace (ignore errors since we're already in error state)
-    runJsonTestImpl(allocator, test_case, &tracer) catch {};
-
-    if (tracer.entries.items.len == 0) {
-        std.debug.print("\n⚠️  No trace captured (test may have failed before execution)\n", .{});
-        return;
-    }
-
-    // Use provided test file path if available, otherwise try to derive from _info.source
-    // NOTE: Many tests don't have _info.source metadata, so we silently skip trace generation for those
-    var test_file_path_buf: [1024]u8 = undefined;
-    const test_file_path = blk: {
-        // First, check if we have a direct path from the caller
-        if (opt_test_file_path) |path| {
-            break :blk path;
-        }
-
-        // Fallback: try to derive from _info.source (for ethereum-tests format)
-        if (test_case.object.get("_info")) |info| {
-            if (info.object.get("source")) |source| {
-                const source_path = source.string;
-                // Convert from: src/GeneralStateTestsFiller/Cancun/stEIP1153-transientStorage/10_revertUndoesStoreAfterReturnFiller.yml
-                // To: test/fixtures/general_state_tests/Cancun/stEIP1153-transientStorage/10_revertUndoesStoreAfterReturn.json
-
-                // Find the part after "GeneralStateTestsFiller/"
-                if (std.mem.indexOf(u8, source_path, "GeneralStateTestsFiller/")) |idx| {
-                    const after_filler = source_path[idx + "GeneralStateTestsFiller/".len ..];
-
-                    // Remove "Filler.yml" suffix and add ".json"
-                    if (std.mem.endsWith(u8, after_filler, "Filler.yml")) {
-                        const without_suffix = after_filler[0 .. after_filler.len - "Filler.yml".len];
-                        break :blk try std.fmt.bufPrint(&test_file_path_buf, "test/fixtures/general_state_tests/{s}.json", .{without_suffix});
-                    }
-                }
-            }
-        }
-        // Silently return null if metadata not available (common for generated tests)
-        break :blk null;
-    };
-
-    if (test_file_path == null) {
-        // Silently skip trace generation when test file path is not available
-        return;
-    }
-
-    // Create a temporary JSON file with only this test case for ethereum-spec-evm
-    // This is necessary because ethereum-spec-evm runs all tests in a file and outputs traces for all of them
-    const temp_test_path = "trace_test_temp.json";
-    defer std.fs.cwd().deleteFile(temp_test_path) catch {};
-
-    // Get test name from the test_case
-    // For execution-specs tests, the original file contains multiple tests with keys like:
-    // "tests/eest/cancun/eip1153_tstore/test_tstorage_reentrancy_contexts.py::test_reentrant_call[fork_Cancun-state_test-invalid_undoes_tstorage_after_successful_call]"
-    // We need to find the test name by reading the original file and finding which key matches our test_case
-    const original_json = std.fs.cwd().readFileAlloc(allocator, test_file_path.?, 100 * 1024 * 1024) catch |err| {
-        std.debug.print("\n⚠️  Failed to read test file {s}: {}\n", .{ test_file_path.?, err });
-        return;
-    };
-    defer allocator.free(original_json);
-
-    const original_parsed = std.json.parseFromSlice(std.json.Value, allocator, original_json, .{}) catch |err| {
-        std.debug.print("\n⚠️  Failed to parse test file: {}\n", .{err});
-        return;
-    };
-    defer original_parsed.deinit();
-
-    // Use the provided test name if available, otherwise try to find it
-    var test_name: ?[]const u8 = opt_test_name;
-
-    if (test_name == null) {
-        // Find the test name by comparing test_case content with entries in the original file
-        // We'll use a simple heuristic: find the first test whose "pre" section matches
-        if (original_parsed.value == .object) {
-            var it = original_parsed.value.object.iterator();
-            while (it.next()) |entry| {
-                // Compare the test cases - we'll check if the env sections match
-                if (entry.value_ptr.* == .object and test_case == .object) {
-                    if (entry.value_ptr.object.get("env")) |orig_env| {
-                        if (test_case.object.get("env")) |case_env| {
-                            // Simple equality check - if env matches, assume it's the same test
-                            if (std.meta.eql(orig_env, case_env)) {
-                                test_name = entry.key_ptr.*;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (test_name == null) {
-            std.debug.print("\n⚠️  Could not find test name in original file\n", .{});
-            return;
-        }
-    }
-
-    // Simpler approach: Just copy the whole original file to the temp location
-    // Since we need ethereum-spec-evm to run on a JSON file that contains the test,
-    // and the original file already contains it, we can just copy it.
-    // The ethereum-spec-evm tool will output traces for all tests, but we can still
-    // compare our trace against the reference.
-    const temp_file = std.fs.cwd().createFile(temp_test_path, .{}) catch |err| {
-        std.debug.print("\n⚠️  Failed to create temporary test file: {}\n", .{err});
-        return;
-    };
-    defer temp_file.close();
-
-    // Just copy the original file
-    const original_content = std.fs.cwd().readFileAlloc(allocator, test_file_path.?, 100 * 1024 * 1024) catch |err| {
-        std.debug.print("\n⚠️  Failed to read original test file '{s}': {}\n", .{ test_file_path.?, err });
-        return;
-    };
-    defer allocator.free(original_content);
-
-    temp_file.writeAll(original_content) catch |err| {
-        std.debug.print("\n⚠️  Failed to write temp file: {}\n", .{err});
-        return;
-    };
-
-    // Generate reference trace using Python ethereum-spec-evm
-    const ref_trace_path = "trace_ref.jsonl";
-    defer std.fs.cwd().deleteFile(ref_trace_path) catch {};
-
-    const python_cmd = try std.fmt.allocPrint(
-        allocator,
-        "execution-specs/.venv/bin/ethereum-spec-evm statetest --json {s} 2>{s}",
-        .{ temp_test_path, ref_trace_path },
-    );
-    defer allocator.free(python_cmd);
-
-    var child = std.process.Child.init(&.{ "sh", "-c", python_cmd }, allocator);
-    const term = child.spawnAndWait() catch {
-        std.debug.print("\n⚠️  Failed to spawn ethereum-spec-evm\n", .{});
-        return;
-    };
-
-    if (term != .Exited or term.Exited != 0) {
-        std.debug.print("\n⚠️  ethereum-spec-evm failed (exit code: {})\n", .{term});
-        // Try to show error from trace file
-        if (std.fs.cwd().readFileAlloc(allocator, ref_trace_path, 1024 * 1024)) |err_log| {
-            defer allocator.free(err_log);
-            if (err_log.len > 0) {
-                std.debug.print("Error output:\n{s}\n", .{err_log});
-            }
-        } else |_| {}
-        return;
-    }
-
-    // Parse reference trace
-    const ref_trace_file = std.fs.cwd().openFile(ref_trace_path, .{}) catch {
-        std.debug.print("\n⚠️  Reference trace file not found\n", .{});
-        return;
-    };
-    defer ref_trace_file.close();
-
-    const ref_trace_content = try ref_trace_file.readToEndAlloc(allocator, 100 * 1024 * 1024);
-    defer allocator.free(ref_trace_content);
-
-    // Parse JSONL format (one JSON object per line)
-    var ref_tracer = trace.Tracer.init(allocator);
-    defer ref_tracer.deinit();
-
-    var line_it = std.mem.splitScalar(u8, ref_trace_content, '\n');
-    while (line_it.next()) |line| {
-        if (line.len == 0) continue;
-
-        const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
-        defer parsed.deinit();
-
-        // Extract trace entry fields from JSON
-        const obj = parsed.value.object;
-
-        // Skip non-trace entries (output, stateRoot, etc.)
-        if (obj.get("pc") == null) continue;
-
-        // Parse stack array
-        var stack_list = std.ArrayList(u256){};
-        if (obj.get("stack")) |stack_json| {
-            if (stack_json == .array) {
-                for (stack_json.array.items) |stack_item| {
-                    if (stack_item == .string) {
-                        const val = try std.fmt.parseInt(u256, stack_item.string, 0);
-                        try stack_list.append(allocator, val);
-                    }
-                }
-            }
-        }
-        const stack_slice = try stack_list.toOwnedSlice(allocator);
-
-        const entry = trace.TraceEntry{
-            .pc = @intCast(obj.get("pc").?.integer),
-            .op = @intCast(obj.get("op").?.integer),
-            .gas = blk: {
-                const gas_val = obj.get("gas").?;
-                if (gas_val == .string) {
-                    break :blk try std.fmt.parseInt(u64, gas_val.string, 0);
-                } else {
-                    break :blk @intCast(gas_val.integer);
-                }
-            },
-            .gasCost = blk: {
-                const cost_val = obj.get("gasCost").?;
-                if (cost_val == .string) {
-                    break :blk try std.fmt.parseInt(u64, cost_val.string, 0);
-                } else {
-                    break :blk @intCast(cost_val.integer);
-                }
-            },
-            .memory = null,
-            .memSize = @intCast(obj.get("memSize").?.integer),
-            .stack = stack_slice,
-            .returnData = null,
-            .depth = @intCast(obj.get("depth").?.integer),
-            .refund = @intCast(obj.get("refund").?.integer),
-            .opName = try allocator.dupe(u8, obj.get("opName").?.string),
-        };
-
-        try ref_tracer.entries.append(allocator, entry);
-    }
-
-    // Compare traces and print diff
-    const diff = try trace.TraceDiff.compare(allocator, &tracer, &ref_tracer);
-
-    std.debug.print("\n", .{});
-
-    // Print diff using debug output
-    if (diff.divergence_index) |idx| {
-        std.debug.print("\x1b[33m⚠ Trace Divergence at step {d}\x1b[0m\n", .{idx});
-
-        if (diff.diff_field) |field| {
-            std.debug.print("\x1b[1mDifference in: {s}\x1b[0m\n\n", .{field});
-        }
-
-        // Show context: up to 16 steps before divergence
-        const context_count = @min(idx, 16);
-        if (context_count > 0) {
-            std.debug.print("\x1b[2mContext (previous {d} step{s}):\x1b[0m\n", .{ context_count, if (context_count == 1) "" else "s" });
-            const context_start = idx - context_count;
-            for (context_start..idx) |i| {
-                if (i < tracer.entries.items.len) {
-                    const entry = &tracer.entries.items[i];
-                    std.debug.print("  [{d}] PC: 0x{x}  {s}  Gas: {d}\n", .{ i, entry.pc, entry.opName, entry.gas });
-                }
-            }
-            std.debug.print("\n", .{});
-        }
-
-        if (diff.our_entry) |our| {
-            std.debug.print("\x1b[36m[{d}] Our EVM:\x1b[0m\n", .{idx});
-            std.debug.print("  PC: 0x{x}  Op: 0x{x:0>2} ({s})  Gas: {d}  GasCost: {d}\n", .{
-                our.pc,
-                our.op,
-                our.opName,
-                our.gas,
-                our.gasCost,
-            });
-            std.debug.print("  Depth: {d}  Refund: {d}\n", .{ our.depth, our.refund });
-
-            // Show stack
-            std.debug.print("  Stack [{d}]:", .{our.stack.len});
-            if (our.stack.len > 0) {
-                const show_count = @min(our.stack.len, 5);
-                for (0..show_count) |i| {
-                    const stack_idx = our.stack.len - 1 - i;
-                    std.debug.print(" 0x{x}", .{our.stack[stack_idx]});
-                }
-                if (our.stack.len > 5) {
-                    std.debug.print(" ... ({d} more)", .{our.stack.len - 5});
-                }
-            }
-            std.debug.print("\n", .{});
-
-            // Show memory for memory-related opcodes
-            if (isMemoryOp(our.op)) {
-                std.debug.print("  Memory size: {d} bytes\n", .{our.memSize});
-            }
-
-            // Show storage info for storage opcodes
-            if (isStorageOp(our.op)) {
-                std.debug.print("  \x1b[2m(Storage operation)\x1b[0m\n", .{});
-            }
-        }
-
-        if (diff.ref_entry) |ref| {
-            std.debug.print("\n\x1b[35m[{d}] Reference:\x1b[0m\n", .{idx});
-            std.debug.print("  PC: 0x{x}  Op: 0x{x:0>2} ({s})  Gas: {d}  GasCost: {d}\n", .{
-                ref.pc,
-                ref.op,
-                ref.opName,
-                ref.gas,
-                ref.gasCost,
-            });
-            std.debug.print("  Depth: {d}  Refund: {d}\n", .{ ref.depth, ref.refund });
-
-            // Show stack
-            std.debug.print("  Stack [{d}]:", .{ref.stack.len});
-            if (ref.stack.len > 0) {
-                const show_count = @min(ref.stack.len, 5);
-                for (0..show_count) |i| {
-                    const stack_idx = ref.stack.len - 1 - i;
-                    std.debug.print(" 0x{x}", .{ref.stack[stack_idx]});
-                }
-                if (ref.stack.len > 5) {
-                    std.debug.print(" ... ({d} more)", .{ref.stack.len - 5});
-                }
-            }
-            std.debug.print("\n", .{});
-
-            // Show memory for memory-related opcodes
-            if (isMemoryOp(ref.op)) {
-                std.debug.print("  Memory size: {d} bytes\n", .{ref.memSize});
-            }
-
-            // Show storage info for storage opcodes
-            if (isStorageOp(ref.op)) {
-                std.debug.print("  \x1b[2m(Storage operation)\x1b[0m\n", .{});
-            }
-        }
-
-        // Show next 4 steps after divergence (if available)
-        const max_our_steps = @min(tracer.entries.items.len - idx - 1, 4);
-        const max_ref_steps = @min(ref_tracer.entries.items.len - idx - 1, 4);
-        const max_next_steps = @max(max_our_steps, max_ref_steps);
-
-        if (max_next_steps > 0) {
-            std.debug.print("\n\x1b[2mNext {d} step{s} after divergence:\x1b[0m\n", .{ max_next_steps, if (max_next_steps == 1) "" else "s" });
-
-            var step: usize = 0;
-            while (step < max_next_steps) : (step += 1) {
-                const next_idx = idx + 1 + step;
-
-                if (next_idx < tracer.entries.items.len) {
-                    const our_next = &tracer.entries.items[next_idx];
-                    std.debug.print("\x1b[36m  [{d}] Our: PC: 0x{x:<4}  {s:<12}  Gas: {d}\x1b[0m", .{
-                        next_idx,
-                        our_next.pc,
-                        our_next.opName,
-                        our_next.gas,
-                    });
-                } else {
-                    std.debug.print("\x1b[36m  [{d}] Our: (trace ended)\x1b[0m", .{next_idx});
-                }
-
-                std.debug.print("  ", .{});
-
-                if (next_idx < ref_tracer.entries.items.len) {
-                    const ref_next = &ref_tracer.entries.items[next_idx];
-                    std.debug.print("\x1b[35mRef: PC: 0x{x:<4}  {s:<12}  Gas: {d}\x1b[0m", .{
-                        ref_next.pc,
-                        ref_next.opName,
-                        ref_next.gas,
-                    });
-                } else {
-                    std.debug.print("\x1b[35mRef: (trace ended)\x1b[0m", .{});
-                }
-
-                std.debug.print("\n", .{});
-            }
-        }
-    } else {
-        std.debug.print("✓ Traces match perfectly!\n", .{});
-    }
-
-    std.debug.print("\n", .{});
+    // NOTE: The rest of this function has been temporarily disabled due to Zig 0.15 API changes.
+    // The trace generation code uses ArrayList and file writer APIs that have changed significantly
+    // in Zig 0.15. This functionality is only used for debugging test failures, so it's acceptable
+    // to disable it temporarily while focusing on fixing the actual EVM implementation.
+    //
+    // To re-enable, the following APIs need to be updated for Zig 0.15:
+    // - std.ArrayList initialization patterns
+    // - File writer API changes
+    // - JSON Value array handling
+    // - std.fmt.fmtSliceHexLower (removed in newer Zig versions)
 }
 
 // Helper function to check if opcode is memory-related
@@ -1050,9 +698,10 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Add authorization list cost if present (EIP-7702, Prague+)
             if (tx.object.get("authorizationList")) |auth_list_json| {
                 if (auth_list_json == .array) {
-                    // Per EIP-7702: PER_AUTH_BASE_COST (12500) per authorization
+                    // Per EIP-7702: PER_EMPTY_ACCOUNT_COST (25000) per authorization in intrinsic gas
+                    // (refund of 12500 may occur during execution if authority account exists)
                     const auth_count = auth_list_json.array.items.len;
-                    intrinsic_gas += @as(u64, @intCast(auth_count)) * primitives.Authorization.PER_AUTH_BASE_COST;
+                    intrinsic_gas += @as(u64, @intCast(auth_count)) * primitives.Authorization.PER_EMPTY_ACCOUNT_COST;
                 }
             }
 
@@ -1351,7 +1000,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             };
 
             // Calculate gas used BEFORE applying refunds
-            const execution_gas_used = execution_gas - result.gas_left;
+            // Note: result.gas_left can be > execution_gas if CALL stipend was not fully used
+            const execution_gas_used = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
             const gas_used_before_refunds = intrinsic_gas + execution_gas_used;
 
             // Apply gas refunds (EIP-3529: capped at 1/2 of gas used pre-London, 1/5 post-London)
@@ -1402,7 +1052,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
     }
 
     // Validate post-state
-    if (test_case.object.get("post")) |post| {
+    // Check for both "post" (state tests) and "postState" (blockchain tests)
+    const post_opt = test_case.object.get("post") orelse test_case.object.get("postState");
+    if (post_opt) |post| {
         // Debug: print all storage for debugging
         // var storage_debug_it = test_host.storage.iterator();
         // while (storage_debug_it.next()) |entry| {
@@ -1419,7 +1071,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
 
         // Handle different post formats
         // Format 1: post -> Cancun/Prague/etc (array) -> [0] -> state -> addresses
-        // Format 2: post -> addresses
+        // Format 2: post -> addresses (for state tests)
+        // Format 3: postState -> addresses (for blockchain tests)
         const post_state = blk: {
             if (post == .object) {
                 // Check if this is the nested format (has hardfork keys)

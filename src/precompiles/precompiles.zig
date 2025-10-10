@@ -506,7 +506,13 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
         3
     else
         20;
-    const cost = (complexity * iteration_count) / gas_divisor;
+    // Use u128 for intermediate calculation to prevent overflow
+    const complexity_u128 = @as(u128, complexity);
+    const iteration_count_u128 = @as(u128, iteration_count);
+    const product = complexity_u128 * iteration_count_u128;
+    const cost_u128 = product / @as(u128, gas_divisor);
+    // Clamp to u64::MAX if the result exceeds u64
+    const cost = if (cost_u128 > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(cost_u128));
     const required_gas = if (min_gas > 0) @max(min_gas, cost) else cost;
 
     if (gas_limit < required_gas) {
@@ -934,14 +940,15 @@ pub fn execute_blake2f(allocator: std.mem.Allocator, input: []const u8, gas_limi
 /// Input: 192 bytes (versioned_hash + z + y + commitment + proof)
 /// Output: 64 bytes (FIELD_ELEMENTS_PER_BLOB + BLS_MODULUS)
 pub fn execute_point_evaluation(allocator: std.mem.Allocator, input: []const u8, gas_limit: u64) PrecompileError!PrecompileOutput {
-    const required_gas = GasCosts.POINT_EVALUATION;
-    if (gas_limit < required_gas) {
+    // Per Python spec (point_evaluation.py:44-45), invalid input length check happens FIRST
+    // (before gas charge). KZGProofError is an ExceptionalHalt which consumes ALL gas.
+    if (input.len != 192) {
         return PrecompileOutput{ .output = &.{}, .gas_used = gas_limit, .success = false };
     }
 
-    // Per Python spec (point_evaluation.py:44-45), invalid input length raises KZGProofError
-    // KZGProofError is an ExceptionalHalt which consumes ALL gas (per exceptions.py:17-21)
-    if (input.len != 192) {
+    // Now check if we have enough gas (per Python spec line 54)
+    const required_gas = GasCosts.POINT_EVALUATION;
+    if (gas_limit < required_gas) {
         return PrecompileOutput{ .output = &.{}, .gas_used = gas_limit, .success = false };
     }
 

@@ -1635,8 +1635,13 @@ pub const Frame = struct {
                 else
                     available_gas_without_stipend;
 
-                // NOW charge the base cost
+                // Charge the base cost (extra costs + memory) AND the gas to be forwarded
+                // Per Python: charge_gas(evm, message_call_gas.cost + memory_cost)
+                // where message_call_gas.cost = gas + extra_gas
+                // In our case: gas_cost already includes extra_gas + memory_cost
+                // So we need to additionally charge for available_gas_without_stipend
                 try self.consumeGas(gas_cost);
+                try self.consumeGas(available_gas_without_stipend);
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
@@ -1684,16 +1689,11 @@ pub const Frame = struct {
                 const success_val: u256 = if (result.success) 1 else 0;
                 try self.pushStack(success_val);
 
-                // Update gas - only charge caller for gas without stipend
-                // The stipend is free additional gas for the callee
-                const gas_used_total = available_gas - result.gas_left;
-                const gas_used_by_caller = @min(gas_used_total, available_gas_without_stipend);
-                // Safely cast gas_used_by_caller - if it exceeds i64::MAX, clamp gas_remaining to 0
-                const gas_used_i64 = std.math.cast(i64, gas_used_by_caller) orelse {
-                    self.gas_remaining = 0;
-                    return error.OutOfGas;
-                };
-                self.gas_remaining -= gas_used_i64;
+                // Refund unused gas to parent (including unused stipend)
+                // Per Python execution-specs: evm.gas_left += child_evm.gas_left
+                // The stipend is free for the caller - if the callee doesn't use it, caller gets it back
+                const gas_left_i64 = std.math.cast(i64, result.gas_left) orelse std.math.maxInt(i64);
+                self.gas_remaining += gas_left_i64;
 
                 // Debug: log if call failed
                 // if (!result.success) {
@@ -1776,8 +1776,13 @@ pub const Frame = struct {
                 else
                     available_gas_without_stipend;
 
-                // NOW charge the base cost
+                // Charge the base cost (extra costs + memory) AND the gas to be forwarded
+                // Per Python: charge_gas(evm, message_call_gas.cost + memory_cost)
+                // where message_call_gas.cost = gas + extra_gas
+                // In our case: gas_cost already includes extra_gas + memory_cost
+                // So we need to additionally charge for available_gas_without_stipend
                 try self.consumeGas(gas_cost);
+                try self.consumeGas(available_gas_without_stipend);
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
@@ -1824,10 +1829,10 @@ pub const Frame = struct {
                 // Push success status
                 try self.pushStack(if (result.success) 1 else 0);
 
-                // Update gas - only charge caller for gas without stipend
-                const gas_used_total = available_gas - result.gas_left;
-                const gas_used_by_caller = @min(gas_used_total, available_gas_without_stipend);
-                self.gas_remaining -= @intCast(gas_used_by_caller);
+                // Refund unused gas to parent (including unused stipend)
+                // Per Python execution-specs: evm.gas_left += child_evm.gas_left
+                const gas_left_i64 = std.math.cast(i64, result.gas_left) orelse std.math.maxInt(i64);
+                self.gas_remaining += gas_left_i64;
 
                 self.pc += 1;
             },
@@ -1932,8 +1937,9 @@ pub const Frame = struct {
                     gas_after_charge;
                 const available_gas = @min(gas_limit, max_gas);
 
-                // NOW charge the base cost
+                // Charge the base cost AND the gas to be forwarded
                 try self.consumeGas(gas_cost);
+                try self.consumeGas(available_gas);
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
@@ -1980,14 +1986,10 @@ pub const Frame = struct {
                 // Push success status
                 try self.pushStack(if (result.success) 1 else 0);
 
-                // Update gas
-                const gas_used = available_gas - result.gas_left;
-                // Safely cast gas_used - if it exceeds i64::MAX, clamp gas_remaining to 0
-                const gas_used_i64 = std.math.cast(i64, gas_used) orelse {
-                    self.gas_remaining = 0;
-                    return error.OutOfGas;
-                };
-                self.gas_remaining -= gas_used_i64;
+                // Refund unused gas to parent
+                // Per Python execution-specs: evm.gas_left += child_evm.gas_left
+                const gas_left_i64 = std.math.cast(i64, result.gas_left) orelse std.math.maxInt(i64);
+                self.gas_remaining += gas_left_i64;
 
                 self.pc += 1;
             },
@@ -2143,8 +2145,9 @@ pub const Frame = struct {
                     gas_after_charge;
                 const available_gas = @min(gas_limit, max_gas);
 
-                // NOW charge the base cost
+                // Charge the base cost AND the gas to be forwarded
                 try self.consumeGas(call_gas_cost);
+                try self.consumeGas(available_gas);
 
                 // Read input data from memory
                 var input_data: []const u8 = &.{};
@@ -2191,14 +2194,10 @@ pub const Frame = struct {
                 // Push success status
                 try self.pushStack(if (result.success) 1 else 0);
 
-                // Update gas
-                const gas_used = available_gas - result.gas_left;
-                // Safely cast gas_used - if it exceeds i64::MAX, clamp gas_remaining to 0
-                const gas_used_i64 = std.math.cast(i64, gas_used) orelse {
-                    self.gas_remaining = 0;
-                    return error.OutOfGas;
-                };
-                self.gas_remaining -= gas_used_i64;
+                // Refund unused gas to parent
+                // Per Python execution-specs: evm.gas_left += child_evm.gas_left
+                const gas_left_i64 = std.math.cast(i64, result.gas_left) orelse std.math.maxInt(i64);
+                self.gas_remaining += gas_left_i64;
 
                 self.pc += 1;
             },

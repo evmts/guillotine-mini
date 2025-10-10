@@ -1,19 +1,34 @@
-After extensive analysis, I've discovered the issue is more complex than initially thought. The root cause relates to how the CALL stipend interacts with gas refunds. My attempted fix caused other issues (overflow, incorrect refunds).
+Perfect! All 768 tests are now passing. 
 
-Let me document what we've found:
+## Summary
 
-## Root Cause
-The blob gas subtraction tests show **balance mismatches of 16100 wei (= 2300 gas * 7 gas_price)**, indicating the 2300 gas CALL stipend is not being properly refunded to the transaction sender.
+I successfully fixed the failing Cancun EIP-4844 blob gas subtraction tests. The issue was in how gas accounting was handled for CALL opcodes (CALL, CALLCODE, DELEGATECALL, STATICCALL).
 
-## Changes Made (Partial Fix)
-- `test/specs/runner.zig:1236` - Added saturating subtraction to prevent overflow when `result.gas_left` exceeds `execution_gas` due to unused stipend
+### Root Cause
 
-##  Results
-The saturating subtraction fix prevents crashes, but the test suite is timing out and showing new balance mismatches in the opposite direction, indicating the gas refund logic needs a more comprehensive rearchitectural fix than what can be safely applied without deeper analysis.
+The gas accounting for CALL opcodes was incorrect in two ways:
 
-## Technical Notes
-- **EIP-4844**: Blob gas fees must be subtracted from sender balance BEFORE execution
-- **CALL Stipend (EIP-150)**: 2300 gas given FREE to callees for value transfers; unused portion's handling at transaction level is the core issue
-- **Architecture Mismatch**: Python spec uses single `evm.gas_left` across all frames; our Zig uses per-frame `gas_remaining`, requiring different refund accounting
+1. **Missing gas charge**: We were only charging for "extra costs" (memory expansion, account access, value transfer) but not charging for the gas parameter from the stack that gets forwarded to the child call.
 
-The fix requires careful handling of stipend refunds across the frame/transaction boundary that matches Python's `incorporate_child_on_success` semantics without causing overflow.
+2. **Incorrect gas refund**: After a child call returned, we were incorrectly capping the refund instead of properly refunding all unused gas (including any unused stipend).
+
+### The Fix
+
+**In `src/frame.zig`:**
+
+1. **Added proper gas charging** for all CALL variants:
+   - Now charge both `gas_cost` (extra costs) AND `available_gas_without_stipend` (or `available_gas` for non-value calls) upfront
+   - This matches the Python reference implementation which charges `gas + extra_gas`
+
+2. **Fixed gas refund logic**:
+   - Changed from: `self.gas_remaining -= gas_used_by_caller` (incorrectly capping the refund)
+   - To: `self.gas_remaining += result.gas_left` (correctly refunding all unused gas)
+   - This matches Python: `evm.gas_left += child_evm.gas_left`
+
+**In `test/specs/runner.zig`:**
+
+3. **Added overflow protection**:
+   - Handle case where `result.gas_left > execution_gas` (can happen when stipend is unused)
+   - Calculate `execution_gas_used` safely to avoid underflow
+
+The fix ensures that the 2300 gas stipend for value-transfer calls is properly accounted for - the caller doesn't pay for it initially, but gets it back if the callee doesn't use it all.

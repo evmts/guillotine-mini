@@ -7,12 +7,22 @@ const ckzg = crypto.c_kzg;
 const trusted_setup_data = @embedFile("../kzg/trusted_setup.txt");
 
 /// Global initialization state
-var initialized = false;
+var initialized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+var init_mutex = std.Thread.Mutex{};
 
 /// Initialize the KZG trusted setup from embedded data
 /// This should be called once during application startup
+/// Thread-safe for concurrent calls
 pub fn init() !void {
-    if (initialized) return;
+    // Fast path: check if already initialized without locking
+    if (initialized.load(.acquire)) return;
+
+    // Slow path: acquire lock and initialize
+    init_mutex.lock();
+    defer init_mutex.unlock();
+
+    // Double-check after acquiring lock
+    if (initialized.load(.acquire)) return;
 
     // Load the trusted setup using the embedded data
     const precompute: u64 = 0;
@@ -23,14 +33,23 @@ pub fn init() !void {
         }
     };
 
-    initialized = true;
+    initialized.store(true, .release);
 }
 
 /// Initialize the KZG trusted setup from a file (kept for compatibility)
 /// This should be called once during application startup
+/// Thread-safe for concurrent calls
 pub fn initFromFile(_allocator: std.mem.Allocator, trusted_setup_path: []const u8) !void {
-    if (initialized) return;
+    // Fast path: check if already initialized without locking
+    if (initialized.load(.acquire)) return;
     _ = _allocator;
+
+    // Slow path: acquire lock and initialize
+    init_mutex.lock();
+    defer init_mutex.unlock();
+
+    // Double-check after acquiring lock
+    if (initialized.load(.acquire)) return;
 
     // Load the trusted setup using the Zig binding API
     const precompute: u64 = 0;
@@ -41,24 +60,27 @@ pub fn initFromFile(_allocator: std.mem.Allocator, trusted_setup_path: []const u
         }
     };
 
-    initialized = true;
+    initialized.store(true, .release);
 }
 
 
 /// Deinitialize the KZG trusted setup
 pub fn deinit(allocator: std.mem.Allocator) void {
-    if (!initialized) return;
-    
+    init_mutex.lock();
+    defer init_mutex.unlock();
+
+    if (!initialized.load(.acquire)) return;
+
     _ = allocator; // allocator unused
     // Free via Zig binding; ignore error if not loaded
     crypto.c_kzg.freeTrustedSetup() catch {};
-    
-    initialized = false;
+
+    initialized.store(false, .release);
 }
 
 /// Check if KZG is initialized
 pub fn isInitialized() bool {
-    return initialized;
+    return initialized.load(.acquire);
 }
 
 test "KZG setup initialization" {
@@ -124,13 +146,15 @@ test "KZG setup - initialization with empty path" {
 
 test "KZG setup - deinitialization without initialization" {
     const testing = std.testing;
-    
+
     // Force deinitialization state (this is a bit hacky but necessary for isolated testing)
-    initialized = false;
-    
+    init_mutex.lock();
+    initialized.store(false, .release);
+    init_mutex.unlock();
+
     // Should not crash or error
     deinit(testing.allocator);
-    
+
     // State should remain uninitialized
     try testing.expect(!isInitialized());
 }

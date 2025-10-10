@@ -329,10 +329,10 @@ pub fn build(b: *std.Build) void {
         .{ .name = "cancun-selfdestruct-revert", .filter = "selfdestruct_revert/selfdestruct", .desc = "Cancun EIP-6780 revert tests (12 tests)" },
         .{ .name = "cancun-blobbasefee", .filter = "eip7516_blobgasfee", .desc = "Cancun EIP-7516 BLOBBASEFEE tests" },
         // Split blob precompile into smaller chunks (was 1073 tests, now ~50-310 each)
-        .{ .name = "cancun-blob-precompile-basic", .filter = "point_evaluation_precompile/point", .desc = "Cancun EIP-4844 point evaluation basic tests (310 tests)" },
-        .{ .name = "cancun-blob-precompile-gas", .filter = "point_evaluation_precompile_gas", .desc = "Cancun EIP-4844 point evaluation gas tests (48 tests)" },
+        .{ .name = "cancun-blob-precompile-basic", .filter = "test_point_evaluation_precompile_py", .desc = "Cancun EIP-4844 point evaluation basic tests (310 tests)" },
+        .{ .name = "cancun-blob-precompile-gas", .filter = "test_point_evaluation_precompile_gas_py", .desc = "Cancun EIP-4844 point evaluation gas tests (48 tests)" },
         // Split blob opcodes into smaller chunks (was 282 tests, now ~25-75 each)
-        .{ .name = "cancun-blob-opcodes-basic", .filter = "blobhash_opcode/blobhash", .desc = "Cancun EIP-4844 BLOBHASH basic tests (75 tests)" },
+        .{ .name = "cancun-blob-opcodes-basic", .filter = "test_blobhash_opcode_py__test_blobhash_", .desc = "Cancun EIP-4844 BLOBHASH basic tests (75 tests)" },
         .{ .name = "cancun-blob-opcodes-contexts", .filter = "blobhash_opcode_contexts", .desc = "Cancun EIP-4844 BLOBHASH context tests (23 tests)" },
         .{ .name = "cancun-blob-tx-small", .filter = "blob_tx_attribute", .desc = "Cancun EIP-4844 small blob transaction tests" },
         .{ .name = "cancun-blob-tx-subtraction", .filter = "blob_gas_subtraction_tx", .desc = "Cancun EIP-4844 blob gas subtraction tests" },
@@ -372,7 +372,7 @@ pub fn build(b: *std.Build) void {
     const shanghai_sub_targets = [_]SubTarget{
         .{ .name = "shanghai-push0", .filter = "eip3855_push0", .desc = "Shanghai EIP-3855 PUSH0 tests" },
         .{ .name = "shanghai-warmcoinbase", .filter = "eip3651_warm_coinbase", .desc = "Shanghai EIP-3651 warm coinbase tests" },
-        .{ .name = "shanghai-initcode-basic", .filter = "initcode/initcode", .desc = "Shanghai EIP-3860 initcode basic tests (162 tests)" },
+        .{ .name = "shanghai-initcode-basic", .filter = "test_initcode_py", .desc = "Shanghai EIP-3860 initcode basic tests (162 tests)" },
         .{ .name = "shanghai-initcode-eof", .filter = "with_eof", .desc = "Shanghai EIP-3860 initcode EOF tests (24 tests)" },
         .{ .name = "shanghai-withdrawals", .filter = "eip4895_withdrawals", .desc = "Shanghai EIP-4895 withdrawal tests" },
     };
