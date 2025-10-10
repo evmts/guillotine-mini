@@ -1140,7 +1140,6 @@ pub fn Evm(config: EvmConfig) type {
 
             // Transfer balance
             if (self.host) |h| {
-                // std.debug.print("TRANSFER: from={any} to={any} value={} (caller_bal={} callee_bal={})\n", .{frame_caller.bytes, address.bytes, value, caller_balance, h.getBalance(address)});
                 h.setBalance(frame_caller, caller_balance - value);
                 const callee_balance = h.getBalance(address);
                 h.setBalance(address, callee_balance + value);

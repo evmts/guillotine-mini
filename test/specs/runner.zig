@@ -204,6 +204,333 @@ fn extractHardfork(test_case: std.json.Value) ?Hardfork {
     return null;
 }
 
+/// Process an RLP-encoded transaction (from blockchain tests)
+fn processRlpTransaction(
+    allocator: std.mem.Allocator,
+    evm_instance: *evm_mod.Evm,
+    test_host: *TestHost,
+    rlp_hex: []const u8,
+    block_ctx: ?evm_mod.BlockContext,
+) !void {
+    // Decode hex to bytes
+    const rlp_bytes = try primitives.Hex.hex_to_bytes(allocator, rlp_hex);
+    defer allocator.free(rlp_bytes);
+
+    // Check if transaction is typed (EIP-2718)
+    // Typed transactions start with a single byte (0x01 or 0x02) followed by RLP payload
+    const is_typed = rlp_bytes.len > 0 and (rlp_bytes[0] == 0x01 or rlp_bytes[0] == 0x02);
+
+    // For typed transactions, decode from byte 1 onwards
+    const rlp_to_decode = if (is_typed) rlp_bytes[1..] else rlp_bytes;
+
+    // Decode RLP structure
+    const decoded = try primitives.Rlp.decode(allocator, rlp_to_decode, false);
+    defer decoded.data.deinit(allocator);
+
+    // Expect a list for transaction
+    const tx_list = switch (decoded.data) {
+        .List => |items| items,
+        else => return error.InvalidTransactionFormat,
+    };
+
+    // Legacy transaction format: [nonce, gasPrice, gasLimit, to, value, data, v, r, s] (9 fields)
+    // Type 1 (EIP-2930): [chainId, nonce, gasPrice, gasLimit, to, value, data, accessList, yParity, r, s] (11 fields)
+    // Type 2 (EIP-1559): [chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList, yParity, r, s] (12 fields)
+    const is_legacy = tx_list.len == 9;
+    const is_type_1 = tx_list.len == 11;
+    const is_type_2 = tx_list.len == 12;
+
+    if (!is_legacy and !is_type_1 and !is_type_2) {
+        return error.InvalidTransactionFormat;
+    }
+
+    // Extract transaction fields (indices vary by transaction type)
+    // Legacy: [nonce(0), gasPrice(1), gasLimit(2), to(3), value(4), data(5), v(6), r(7), s(8)]
+    // Type 1: [chainId(0), nonce(1), gasPrice(2), gasLimit(3), to(4), value(5), data(6), accessList(7), yParity(8), r(9), s(10)]
+    // Type 2: [chainId(0), nonce(1), maxPriorityFee(2), maxFee(3), gasLimit(4), to(5), value(6), data(7), accessList(8), yParity(9), r(10), s(11)]
+
+    const nonce_idx: usize = if (is_legacy) 0 else 1;
+    const gas_price_idx: usize = if (is_legacy) 1 else if (is_type_1) 2 else 3; // Type 2 uses maxFee at index 3
+    const gas_limit_idx: usize = if (is_legacy) 2 else if (is_type_1) 3 else 4;
+    const to_idx: usize = if (is_legacy) 3 else if (is_type_1) 4 else 5;
+    const value_idx: usize = if (is_legacy) 4 else if (is_type_1) 5 else 6;
+    const data_idx: usize = if (is_legacy) 5 else if (is_type_1) 6 else 7;
+    const access_list_idx: usize = if (is_type_1) 7 else if (is_type_2) 8 else 0; // Only for typed transactions
+
+    const nonce_bytes = switch (tx_list[nonce_idx]) {
+        .String => |s| s,
+        else => return error.InvalidTransactionFormat,
+    };
+    const nonce: u64 = if (nonce_bytes.len == 0) 0 else blk: {
+        var val: u64 = 0;
+        for (nonce_bytes) |b| {
+            val = (val << 8) | b;
+        }
+        break :blk val;
+    };
+
+    const gas_price_bytes = switch (tx_list[gas_price_idx]) {
+        .String => |s| s,
+        else => return error.InvalidTransactionFormat,
+    };
+    var gas_price: u256 = 0;
+    for (gas_price_bytes) |b| {
+        gas_price = (gas_price << 8) | b;
+    }
+
+    const gas_limit_bytes = switch (tx_list[gas_limit_idx]) {
+        .String => |s| s,
+        else => return error.InvalidTransactionFormat,
+    };
+    var gas_limit: u64 = 0;
+    for (gas_limit_bytes) |b| {
+        gas_limit = (gas_limit << 8) | @as(u64, b);
+    }
+
+    const to_bytes = switch (tx_list[to_idx]) {
+        .String => |s| s,
+        else => return error.InvalidTransactionFormat,
+    };
+    const to_addr = if (to_bytes.len == 20) blk: {
+        var addr_bytes: [20]u8 = undefined;
+        for (to_bytes, 0..) |b, i| {
+            addr_bytes[i] = b;
+        }
+        break :blk Address{ .bytes = addr_bytes };
+    } else primitives.ZERO_ADDRESS;
+
+    const value_bytes = switch (tx_list[value_idx]) {
+        .String => |s| s,
+        else => return error.InvalidTransactionFormat,
+    };
+    var value: u256 = 0;
+    for (value_bytes) |b| {
+        value = (value << 8) | b;
+    }
+
+    const data_bytes = switch (tx_list[data_idx]) {
+        .String => |s| s,
+        else => return error.InvalidTransactionFormat,
+    };
+    const tx_data = try allocator.dupe(u8, data_bytes);
+    defer allocator.free(tx_data);
+
+    // Signature components (v, r and s) - not currently used for sender recovery
+    // Legacy: v(6), r(7), s(8)
+    // Type 1: yParity(8), r(9), s(10)
+    // Type 2: yParity(9), r(10), s(11)
+
+    // Parse access list if present (Type 1 or Type 2 transactions)
+    var access_list_gas_cost: u64 = 0;
+    if (is_type_1 or is_type_2) {
+        const access_list_data = tx_list[access_list_idx];
+        if (access_list_data == .List) {
+            const access_list = access_list_data.List;
+            for (access_list) |entry| {
+                // Each address costs 2400 gas
+                access_list_gas_cost += primitives.AccessList.ACCESS_LIST_ADDRESS_COST;
+
+                // Each storage key costs 1900 gas
+                if (entry == .List and entry.List.len >= 2) {
+                    const storage_keys = entry.List[1];
+                    if (storage_keys == .List) {
+                        access_list_gas_cost += @as(u64, storage_keys.List.len) * primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST;
+                    }
+                }
+            }
+        }
+    }
+
+    // Recover sender from signature
+    // For now, we'll use a simple approach: find the first pre-state account with matching nonce
+    var sender: Address = primitives.ZERO_ADDRESS;
+    var nonces_it = test_host.nonces.iterator();
+    while (nonces_it.next()) |entry| {
+        if (entry.value_ptr.* == nonce) {
+            sender = entry.key_ptr.*;
+            break;
+        }
+    }
+
+    // If no matching account found, use a default test address
+    if (std.mem.eql(u8, &sender.bytes, &primitives.ZERO_ADDRESS.bytes)) {
+        // Common test sender address
+        const test_sender_hex = "a94f5374fce5edbc8e2a8697c15331677e6ebf0b";
+        sender = try parseAddress(test_sender_hex);
+    }
+
+    // Set gas price for the EVM instance
+    evm_instance.gas_price = gas_price;
+
+    // Calculate priority fee (entire gas_price goes to coinbase in legacy transactions)
+    const base_fee: u256 = if (block_ctx) |ctx| ctx.block_base_fee else 0;
+    const priority_fee_per_gas: u256 = if (gas_price > base_fee) gas_price - base_fee else 0;
+
+    // Deduct transaction cost from sender
+    const tx_cost = gas_price * @as(u256, gas_limit) + value;
+    const sender_balance = test_host.balances.get(sender) orelse 0;
+    if (sender_balance >= tx_cost) {
+        try test_host.balances.put(sender, sender_balance - tx_cost);
+    } else {
+        // Transaction can't afford gas, skip execution
+        return;
+    }
+
+    // Increment sender nonce
+    try test_host.nonces.put(sender, nonce + 1);
+
+    // Set origin for the transaction
+    evm_instance.origin = sender;
+
+    // Pre-warm sender and target (EIP-2929, Berlin+)
+    if (evm_instance.hardfork.isAtLeast(.BERLIN)) {
+        try evm_instance.preWarmTransaction(to_addr);
+    }
+
+    // Pre-warm access list addresses and storage keys (EIP-2930, Berlin+)
+    if (is_type_1 or is_type_2) {
+        const access_list_data = tx_list[access_list_idx];
+        if (access_list_data == .List) {
+            const access_list = access_list_data.List;
+            for (access_list) |entry| {
+                if (entry == .List and entry.List.len >= 1) {
+                    // Pre-warm address
+                    const addr_bytes = switch (entry.List[0]) {
+                        .String => |s| s,
+                        else => continue,
+                    };
+                    if (addr_bytes.len == 20) {
+                        var addr: Address = undefined;
+                        for (addr_bytes, 0..) |b, i| {
+                            addr.bytes[i] = b;
+                        }
+                        _ = try evm_instance.warm_addresses.getOrPut(addr);
+
+                        // Pre-warm storage keys
+                        if (entry.List.len >= 2) {
+                            const storage_keys = entry.List[1];
+                            if (storage_keys == .List) {
+                                for (storage_keys.List) |key_item| {
+                                    const key_bytes = switch (key_item) {
+                                        .String => |s| s,
+                                        else => continue,
+                                    };
+                                    var key: u256 = 0;
+                                    for (key_bytes) |b| {
+                                        key = (key << 8) | b;
+                                    }
+                                    const storage_key = evm_mod.StorageSlotKey{ .address = addr, .slot = key };
+                                    _ = try evm_instance.warm_storage_slots.getOrPut(storage_key);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Calculate intrinsic gas cost
+    var intrinsic_gas: u64 = primitives.GasConstants.TxGas; // 21000 for regular transactions
+    for (tx_data) |byte| {
+        if (byte == 0) {
+            intrinsic_gas += primitives.GasConstants.TxDataZeroGas; // 4
+        } else {
+            intrinsic_gas += primitives.GasConstants.TxDataNonZeroGas; // 16
+        }
+    }
+
+    // Add access list cost (EIP-2930, Berlin+)
+    intrinsic_gas += access_list_gas_cost;
+
+    // Check if gas_limit is sufficient for intrinsic gas
+    if (gas_limit < intrinsic_gas) {
+        // Transaction cannot afford intrinsic gas, fail immediately
+        // No gas refund - all gas is consumed
+        if (block_ctx) |ctx| {
+            const coinbase_payment = @as(u256, gas_limit) * priority_fee_per_gas;
+            const coinbase_balance = test_host.balances.get(ctx.block_coinbase) orelse 0;
+            try test_host.balances.put(ctx.block_coinbase, coinbase_balance + coinbase_payment);
+        }
+        return;
+    }
+
+    // Calculate execution gas (gas available after intrinsic cost)
+    const execution_gas = gas_limit - intrinsic_gas;
+
+    // Execute the transaction
+    const is_create = std.mem.eql(u8, &to_addr.bytes, &primitives.ZERO_ADDRESS.bytes);
+
+    if (is_create) {
+        // CREATE transaction - use inner_create
+        const result = evm_instance.inner_create(value, tx_data, execution_gas, null) catch |err| {
+            // Refund gas on failure
+            const refund = @as(u256, gas_limit) * gas_price;
+            const new_balance = test_host.balances.get(sender) orelse 0;
+            try test_host.balances.put(sender, new_balance + refund);
+            return err;
+        };
+
+        // Calculate gas used before refunds (intrinsic + execution)
+        const execution_gas_used = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
+        const gas_used_before_refunds: u64 = intrinsic_gas + execution_gas_used;
+
+        // Apply gas refunds (EIP-3529: capped at 1/2 pre-London, 1/5 post-London)
+        const gas_refund_value = evm_instance.gas_refund;
+        const capped_refund = if (evm_instance.hardfork.isBefore(.LONDON))
+            @min(gas_refund_value, gas_used_before_refunds / 2)
+        else
+            @min(gas_refund_value, gas_used_before_refunds / 5);
+
+        const gas_used: u64 = gas_used_before_refunds - capped_refund;
+        const gas_to_refund = gas_limit - gas_used;
+        const gas_refund_amount = @as(u256, gas_to_refund) * gas_price;
+        const new_balance = test_host.balances.get(sender) orelse 0;
+        try test_host.balances.put(sender, new_balance + gas_refund_amount);
+
+        // Pay coinbase (miner)
+        if (block_ctx) |ctx| {
+            const coinbase_payment = @as(u256, gas_used) * priority_fee_per_gas;
+            const coinbase_balance = test_host.balances.get(ctx.block_coinbase) orelse 0;
+            try test_host.balances.put(ctx.block_coinbase, coinbase_balance + coinbase_payment);
+        }
+    } else {
+        // CALL transaction - use call with bytecode
+        const bytecode = test_host.code.get(to_addr) orelse &[_]u8{};
+        const result = evm_instance.call(bytecode, @intCast(execution_gas), sender, to_addr, value, tx_data, null, null) catch |err| {
+            // Refund gas on failure
+            const refund = @as(u256, gas_limit) * gas_price;
+            const new_balance = test_host.balances.get(sender) orelse 0;
+            try test_host.balances.put(sender, new_balance + refund);
+            return err;
+        };
+
+        // Calculate gas used before refunds (intrinsic + execution)
+        const execution_gas_used = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
+        const gas_used_before_refunds: u64 = intrinsic_gas + execution_gas_used;
+
+        // Apply gas refunds (EIP-3529: capped at 1/2 pre-London, 1/5 post-London)
+        const gas_refund_value = evm_instance.gas_refund;
+        const capped_refund = if (evm_instance.hardfork.isBefore(.LONDON))
+            @min(gas_refund_value, gas_used_before_refunds / 2)
+        else
+            @min(gas_refund_value, gas_used_before_refunds / 5);
+
+        const gas_used: u64 = gas_used_before_refunds - capped_refund;
+        const gas_to_refund = gas_limit - gas_used;
+        const gas_refund_amount = @as(u256, gas_to_refund) * gas_price;
+        const new_balance = test_host.balances.get(sender) orelse 0;
+        try test_host.balances.put(sender, new_balance + gas_refund_amount);
+
+        // Pay coinbase (miner)
+        if (block_ctx) |ctx| {
+            const coinbase_payment = @as(u256, gas_used) * priority_fee_per_gas;
+            const coinbase_balance = test_host.balances.get(ctx.block_coinbase) orelse 0;
+            try test_host.balances.put(ctx.block_coinbase, coinbase_balance + coinbase_payment);
+        }
+    }
+}
+
 fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?*trace.Tracer) !void {
     try runJsonTestImplWithOptionalFork(allocator, test_case, tracer, null);
 }
@@ -312,6 +639,45 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         }
     }
 
+    // For blockchain tests, override coinbase and base fee with values from block header or engine payload
+    // (env.currentCoinbase is typically ZERO_ADDRESS and env.currentBaseFee may be missing)
+    var block_header_base_fee: ?u256 = null;
+    const has_blocks_for_coinbase = test_case.object.get("blocks") != null;
+    const has_engine_for_coinbase = test_case.object.get("engineNewPayloads") != null;
+
+    if (has_blocks_for_coinbase) {
+        if (test_case.object.get("blocks")) |blocks_json| {
+            if (blocks_json == .array and blocks_json.array.items.len > 0) {
+                const first_block = blocks_json.array.items[0];
+                if (first_block.object.get("blockHeader")) |block_header| {
+                    if (block_header.object.get("coinbase")) |cb| {
+                        coinbase = try parseAddress(cb.string);
+                    }
+                    if (block_header.object.get("baseFeePerGas")) |bf| {
+                        block_header_base_fee = try parseIntFromJson(bf);
+                    }
+                }
+            }
+        }
+    } else if (has_engine_for_coinbase) {
+        if (test_case.object.get("engineNewPayloads")) |payloads_json| {
+            if (payloads_json == .array and payloads_json.array.items.len > 0) {
+                const first_payload = payloads_json.array.items[0];
+                if (first_payload.object.get("params")) |params| {
+                    if (params == .array and params.array.items.len > 0) {
+                        const block_params = params.array.items[0];
+                        if (block_params.object.get("feeRecipient")) |fee_recipient| {
+                            coinbase = try parseAddress(fee_recipient.string);
+                        }
+                        if (block_params.object.get("baseFeePerGas")) |bf| {
+                            block_header_base_fee = try parseIntFromJson(bf);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Extract hardfork from test JSON (or use forced hardfork for multi-fork tests)
     const hardfork = if (forced_hardfork) |hf| hf else extractHardfork(test_case);
 
@@ -324,7 +690,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         }
     }
 
-    // Build block context from env section
+    // Build block context from env section or engine payload
     const block_ctx: ?evm_mod.BlockContext = if (test_case.object.get("env")) |env| blk: {
         break :blk .{
             .chain_id = if (env.object.get("currentChainId")) |cid|
@@ -367,6 +733,101 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     taylorExponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION);
             } else 0,
         };
+    } else if (has_engine_for_coinbase) blk: {
+        // Build block context from engine payload if no env
+        if (test_case.object.get("engineNewPayloads")) |payloads_json| {
+            if (payloads_json == .array and payloads_json.array.items.len > 0) {
+                const first_payload = payloads_json.array.items[0];
+                if (first_payload.object.get("params")) |params| {
+                    if (params == .array and params.array.items.len > 0) {
+                        const block_params = params.array.items[0];
+                        break :blk .{
+                            .chain_id = 1, // Default chain ID
+                            .block_number = if (block_params.object.get("blockNumber")) |bn|
+                                try parseIntFromJson(bn)
+                            else
+                                0,
+                            .block_timestamp = if (block_params.object.get("timestamp")) |ts|
+                                try parseIntFromJson(ts)
+                            else
+                                0,
+                            .block_difficulty = 0, // PoS has no difficulty
+                            .block_prevrandao = if (block_params.object.get("prevRandao")) |pr|
+                                try std.fmt.parseInt(u256, pr.string, 0)
+                            else
+                                0,
+                            .block_coinbase = coinbase,
+                            .block_gas_limit = if (block_params.object.get("gasLimit")) |gl|
+                                try parseIntFromJson(gl)
+                            else
+                                30_000_000,
+                            .block_base_fee = if (block_header_base_fee) |bhf| bhf else 0,
+                            .blob_base_fee = if (block_params.object.get("excessBlobGas")) |excess| blk2: {
+                                const excess_blob_gas = try parseIntFromJson(excess);
+                                const MIN_BLOB_GASPRICE: u256 = 1;
+                                const BLOB_BASE_FEE_UPDATE_FRACTION: u256 = 3338477;
+                                break :blk2 if (excess_blob_gas == 0)
+                                    MIN_BLOB_GASPRICE
+                                else
+                                    taylorExponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION);
+                            } else 0,
+                        };
+                    }
+                }
+            }
+        }
+        break :blk null;
+    } else if (test_case.object.get("blocks") != null) blk: {
+        // Build block context from blocks array for blockchain tests
+        if (test_case.object.get("blocks")) |blocks_json| {
+            if (blocks_json == .array and blocks_json.array.items.len > 0) {
+                const first_block = blocks_json.array.items[0];
+                if (first_block.object.get("blockHeader")) |block_header| {
+                    break :blk .{
+                        .chain_id = 1, // Default chain ID
+                        .block_number = if (block_header.object.get("number")) |num|
+                            try parseIntFromJson(num)
+                        else
+                            0,
+                        .block_timestamp = if (block_header.object.get("timestamp")) |ts|
+                            try parseIntFromJson(ts)
+                        else
+                            0,
+                        .block_difficulty = if (block_header.object.get("difficulty")) |diff|
+                            try std.fmt.parseInt(u256, diff.string, 0)
+                        else
+                            0,
+                        .block_prevrandao = if (block_header.object.get("mixHash")) |mix|
+                            try std.fmt.parseInt(u256, mix.string, 0)
+                        else
+                            0,
+                        .block_coinbase = if (block_header.object.get("coinbase")) |cb|
+                            try parseAddress(cb.string)
+                        else
+                            try parseAddress("0000000000000000000000000000000000000000"),
+                        .block_gas_limit = if (block_header.object.get("gasLimit")) |gl|
+                            try parseIntFromJson(gl)
+                        else
+                            30_000_000,
+                        .block_base_fee = if (block_header.object.get("baseFeePerGas")) |bf|
+                            try parseIntFromJson(bf)
+                        else
+                            0,
+                        .blob_base_fee = if (block_header.object.get("excessBlobGas")) |excess| blk2: {
+                            const excess_blob_gas = try parseIntFromJson(excess);
+                            // Calculate blob base fee from excess blob gas (EIP-4844)
+                            const MIN_BLOB_GASPRICE: u256 = 1;
+                            const BLOB_BASE_FEE_UPDATE_FRACTION: u256 = 3338477;
+                            break :blk2 if (excess_blob_gas == 0)
+                                MIN_BLOB_GASPRICE
+                            else
+                                taylorExponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION);
+                        } else 0,
+                    };
+                }
+            }
+        }
+        break :blk null;
     } else null;
 
     // Create EVM with test host and detected hardfork
@@ -382,14 +843,208 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
     // Execute transaction(s)
     const has_transactions = test_case.object.get("transactions") != null;
     const has_transaction = test_case.object.get("transaction") != null;
+    const has_blocks_field = test_case.object.get("blocks") != null;
+    const has_engine_payloads = test_case.object.get("engineNewPayloads") != null;
 
-    if (has_transactions or has_transaction) {
-        const transactions = if (has_transactions)
-            test_case.object.get("transactions").?.array.items
-        else
-            &[_]std.json.Value{test_case.object.get("transaction").?};
+    // Collect all transactions to process
+    var transactions_list = std.ArrayList(std.json.Value){};
+    defer transactions_list.deinit(allocator);
 
-        for (transactions) |tx| {
+    if (has_transactions) {
+        try transactions_list.appendSlice(allocator, test_case.object.get("transactions").?.array.items);
+    } else if (has_transaction) {
+        try transactions_list.append(allocator, test_case.object.get("transaction").?);
+    } else if (has_blocks_field) {
+        // Blockchain tests: collect transactions from all blocks
+        if (test_case.object.get("blocks")) |blocks_json| {
+            if (blocks_json == .array) {
+                for (blocks_json.array.items) |block| {
+                    if (block.object.get("transactions")) |txs| {
+                        if (txs == .array) {
+                            try transactions_list.appendSlice(allocator, txs.array.items);
+                        }
+                    }
+                }
+            }
+        }
+    } else if (has_engine_payloads) {
+        // Engine API tests: collect transactions from engineNewPayloads
+        if (test_case.object.get("engineNewPayloads")) |payloads| {
+            if (payloads == .array) {
+                for (payloads.array.items) |payload| {
+                    if (payload.object.get("params")) |params| {
+                        if (params == .array and params.array.items.len > 0) {
+                            const block_params = params.array.items[0];
+                            if (block_params.object.get("transactions")) |txs| {
+                                if (txs == .array) {
+                                    try transactions_list.appendSlice(allocator, txs.array.items);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // EIP-4788: Process beacon root system call for blockchain tests (Cancun+)
+    const needs_beacon_root = if (hardfork) |hf|
+        (hf == .CANCUN or hf == .PRAGUE or hf == .OSAKA)
+    else
+        false;
+    if ((has_engine_payloads or has_blocks_field) and needs_beacon_root) {
+        // Beacon roots contract address (EIP-4788)
+        const beacon_roots_address = try parseAddress("000F3df6D732807Ef1319fB7B8bB8522d0Beac02");
+        // System address that calls the beacon root contract
+        const system_address = try parseAddress("fffffffffffffffffffffffffffffffffffffffe");
+
+        var parent_beacon_root_hex: []const u8 = undefined;
+        var found_parent_root = false;
+
+        // Get parent beacon block root from engineNewPayloads params[2]
+        if (has_engine_payloads) {
+            if (test_case.object.get("engineNewPayloads")) |payloads| {
+                if (payloads == .array and payloads.array.items.len > 0) {
+                    const first_payload = payloads.array.items[0];
+                    if (first_payload.object.get("params")) |params| {
+                        if (params == .array and params.array.items.len >= 3) {
+                            parent_beacon_root_hex = params.array.items[2].string;
+                            found_parent_root = true;
+                        }
+                    }
+                }
+            }
+        } else if (has_blocks_field) {
+            // Get parent beacon block root from blocks[0].blockHeader.parentBeaconBlockRoot
+            if (test_case.object.get("blocks")) |blocks_json| {
+                if (blocks_json == .array and blocks_json.array.items.len > 0) {
+                    const first_block = blocks_json.array.items[0];
+                    if (first_block.object.get("blockHeader")) |block_header| {
+                        if (block_header.object.get("parentBeaconBlockRoot")) |pbr| {
+                            parent_beacon_root_hex = pbr.string;
+                            found_parent_root = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (found_parent_root) {
+            const parent_beacon_root = try primitives.Hex.hex_to_bytes(allocator, parent_beacon_root_hex);
+            defer allocator.free(parent_beacon_root);
+
+            // Extract block timestamp for the beacon root call
+            var block_timestamp: u64 = 0;
+            if (has_engine_payloads) {
+                if (test_case.object.get("engineNewPayloads")) |payloads| {
+                    if (payloads == .array and payloads.array.items.len > 0) {
+                        const first_payload = payloads.array.items[0];
+                        if (first_payload.object.get("params")) |params| {
+                            if (params == .array and params.array.items.len > 0) {
+                                const block_params = params.array.items[0];
+                                if (block_params.object.get("timestamp")) |ts| {
+                                    block_timestamp = try std.fmt.parseInt(u64, ts.string, 0);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (has_blocks_field) {
+                if (test_case.object.get("blocks")) |blocks_json| {
+                    if (blocks_json == .array and blocks_json.array.items.len > 0) {
+                        const first_block = blocks_json.array.items[0];
+                        if (first_block.object.get("blockHeader")) |block_header| {
+                            if (block_header.object.get("timestamp")) |ts| {
+                                block_timestamp = try std.fmt.parseInt(u64, ts.string, 0);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Set block timestamp in EVM instance for the beacon root call
+            evm_instance.block_context.block_timestamp = block_timestamp;
+
+            // Get beacon roots contract code from pre-state
+            if (test_host.code.get(beacon_roots_address)) |beacon_code| {
+                // Execute system call to beacon roots contract
+                // This call uses system address as caller and has 30M gas
+                if (evm_instance.call(
+                    beacon_code,
+                    30_000_000, // SYSTEM_TRANSACTION_GAS
+                    system_address,
+                    beacon_roots_address,
+                    0, // value = 0
+                    parent_beacon_root,
+                    null, // no access list
+                    null, // no blob hashes
+                )) |_| {
+                    // System call successful
+                } else |_| {
+                    // System call failures are ignored per spec
+                }
+            }
+        }
+    }
+
+    // EIP-2935: Process history storage system call for Prague+ blockchain tests
+    const needs_history_storage = if (hardfork) |hf|
+        (hf == .PRAGUE or hf == .OSAKA)
+    else
+        false;
+
+    if ((has_engine_payloads or has_blocks_field) and needs_history_storage) {
+        // History storage contract address (EIP-2935)
+        const history_storage_address = try parseAddress("0000F90827F1C53a10cb7A02335B175320002935");
+        // System address that calls the history storage contract
+        const system_address = try parseAddress("fffffffffffffffffffffffffffffffffffffffe");
+
+        var parent_hash_hex: []const u8 = undefined;
+        var found_parent_hash = false;
+
+        // Get parent hash from genesis block header
+        if (test_case.object.get("genesisBlockHeader")) |genesis| {
+            if (genesis.object.get("hash")) |hash| {
+                parent_hash_hex = hash.string;
+                found_parent_hash = true;
+            }
+        }
+
+        if (found_parent_hash) {
+            const parent_hash = try primitives.Hex.hex_to_bytes(allocator, parent_hash_hex);
+            defer allocator.free(parent_hash);
+
+            // Get history storage contract code from pre-state
+            if (test_host.code.get(history_storage_address)) |history_code| {
+                // Execute system call to history storage contract
+                // This call uses system address as caller and has 30M gas
+                if (evm_instance.call(
+                    history_code,
+                    30_000_000, // SYSTEM_TRANSACTION_GAS
+                    system_address,
+                    history_storage_address,
+                    0, // value = 0
+                    parent_hash,
+                    null, // no access list
+                    null, // no blob hashes
+                )) |_| {
+                    // System call successful
+                } else |_| {
+                    // System call failures are ignored per spec
+                }
+            }
+        }
+    }
+
+    if (transactions_list.items.len > 0) {
+        for (transactions_list.items) |tx| {
+            // Handle RLP-encoded transactions (Engine API format)
+            if (tx == .string) {
+                // Process RLP-encoded transaction
+                try processRlpTransaction(allocator, &evm_instance, &test_host, tx.string, block_ctx);
+                continue;
+            }
+
             // Parse transaction data
             const tx_data = if (tx.object.get("data")) |data| blk: {
                 const data_str = if (data == .array) data.array.items[0].string else data.string;
@@ -416,16 +1071,21 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 const gas_price_str = gp.string;
                 const gas_price = if (gas_price_str.len == 0) 0 else try std.fmt.parseInt(u256, gas_price_str, 0);
                 evm_instance.gas_price = gas_price;
-                // If a base fee is present in the env (London+), only the tip (gas_price - base_fee)
-                // goes to the coinbase as priority fee. Otherwise, entire gas_price goes to coinbase.
-                const base_fee_env: u256 = if (test_case.object.get("env")) |env_val|
-                    if (env_val.object.get("currentBaseFee")) |bf|
-                        try parseIntFromJson(bf)
+                // If a base fee is present, only the tip (gas_price - base_fee) goes to coinbase.
+                // For blockchain tests, use base fee from block header. Otherwise use env.currentBaseFee.
+                const base_fee_for_priority: u256 = if (block_header_base_fee) |bhf|
+                    bhf
+                else blk: {
+                    const base_fee_env: u256 = if (test_case.object.get("env")) |env_val|
+                        if (env_val.object.get("currentBaseFee")) |bf|
+                            try parseIntFromJson(bf)
+                        else
+                            0
                     else
-                        0
-                else
-                    0;
-                priority_fee_per_gas = if (gas_price > base_fee_env) gas_price - base_fee_env else 0;
+                        0;
+                    break :blk base_fee_env;
+                };
+                priority_fee_per_gas = if (gas_price > base_fee_for_priority) gas_price - base_fee_for_priority else 0;
             } else if (tx.object.get("maxFeePerGas")) |max_fee| {
                 // EIP-1559 transaction
                 const max_fee_per_gas = try parseIntFromJson(max_fee);
@@ -434,14 +1094,19 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 else
                     0;
 
-                // Get base fee from environment
-                const base_fee = if (test_case.object.get("env")) |env_val|
-                    if (env_val.object.get("currentBaseFee")) |bf|
-                        try parseIntFromJson(bf)
+                // Get base fee - prefer block header, fallback to env
+                const base_fee = if (block_header_base_fee) |bhf|
+                    bhf
+                else blk: {
+                    const base_fee_env: u256 = if (test_case.object.get("env")) |env_val|
+                        if (env_val.object.get("currentBaseFee")) |bf|
+                            try parseIntFromJson(bf)
+                        else
+                            0
                     else
-                        0
-                else
-                    0;
+                        0;
+                    break :blk base_fee_env;
+                };
 
                 // Effective gas price = min(maxFeePerGas, baseFee + maxPriorityFeePerGas)
                 priority_fee_per_gas = if (max_fee_per_gas > base_fee)
@@ -706,7 +1371,25 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             }
 
             // Add access list cost if present
-            if (tx.object.get("accessLists")) |access_lists_json| {
+            // Note: Some tests use "accessList" (singular), others use "accessLists" (plural)
+            if (tx.object.get("accessList")) |access_list_json| {
+                // accessList is a single access list (blockchain tests)
+                if (access_list_json == .array) {
+                    for (access_list_json.array.items) |entry| {
+                        // Each entry costs ACCESS_LIST_ADDRESS_COST (2400 gas)
+                        const addr_cost = primitives.AccessList.ACCESS_LIST_ADDRESS_COST;
+                        intrinsic_gas += addr_cost;
+
+                        // Add cost for storage keys (1900 gas each)
+                        if (entry.object.get("storageKeys")) |keys| {
+                            if (keys == .array) {
+                                const keys_cost = @as(u64, @intCast(keys.array.items.len)) * primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST;
+                                intrinsic_gas += keys_cost;
+                            }
+                        }
+                    }
+                }
+            } else if (tx.object.get("accessLists")) |access_lists_json| {
                 // accessLists is an array of access lists (one per data/gas/value combo)
                 if (access_lists_json == .array and access_lists_json.array.items.len > 0) {
                     const access_list_json = access_lists_json.array.items[0];
@@ -850,61 +1533,76 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             var access_list_slots_storage: ?[]evm_mod.AccessListStorageKey = null;
             defer if (access_list_slots_storage) |slots| allocator.free(slots);
 
-            const access_list_param: ?evm_mod.AccessListParam = if (tx.object.get("accessLists")) |access_lists_json| blk: {
-                if (access_lists_json == .array and access_lists_json.array.items.len > 0) {
-                    const access_list_json = access_lists_json.array.items[0];
-                    if (access_list_json == .array) {
-                        // First pass: count addresses and storage keys
-                        var addr_count: usize = 0;
-                        var slot_count: usize = 0;
-                        for (access_list_json.array.items) |entry| {
-                            if (entry.object.get("address")) |_| {
-                                addr_count += 1;
-                                if (entry.object.get("storageKeys")) |keys| {
-                                    if (keys == .array) {
-                                        slot_count += keys.array.items.len;
-                                    }
-                                }
+            // Parse access list from either "accessList" (blockchain tests) or "accessLists" (state tests)
+            const has_access_list_singular = tx.object.get("accessList") != null;
+            const access_list_json_opt = tx.object.get("accessList") orelse tx.object.get("accessLists");
+            const access_list_param: ?evm_mod.AccessListParam = if (access_list_json_opt) |access_list_data| blk: {
+                // Determine which format we have
+                const access_list_array = if (has_access_list_singular) blk2: {
+                    // Handle accessList (singular) - direct array
+                    if (access_list_data == .array) {
+                        break :blk2 access_list_data.array;
+                    }
+                    break :blk null;
+                } else blk2: {
+                    // Handle accessLists (plural) - array of arrays, take first
+                    if (access_list_data == .array and access_list_data.array.items.len > 0) {
+                        const first_item = access_list_data.array.items[0];
+                        if (first_item == .array) {
+                            break :blk2 first_item.array;
+                        }
+                    }
+                    break :blk null;
+                };
+
+                // First pass: count addresses and storage keys
+                var addr_count: usize = 0;
+                var slot_count: usize = 0;
+                for (access_list_array.items) |entry| {
+                    if (entry.object.get("address")) |_| {
+                        addr_count += 1;
+                        if (entry.object.get("storageKeys")) |keys| {
+                            if (keys == .array) {
+                                slot_count += keys.array.items.len;
                             }
                         }
-
-                        // Allocate arrays
-                        const addrs = try allocator.alloc(Address, addr_count);
-                        access_list_addrs_storage = addrs;
-                        const slots = try allocator.alloc(evm_mod.AccessListStorageKey, slot_count);
-                        access_list_slots_storage = slots;
-
-                        // Second pass: populate arrays
-                        var addr_idx: usize = 0;
-                        var slot_idx: usize = 0;
-                        for (access_list_json.array.items) |entry| {
-                            if (entry.object.get("address")) |addr_json| {
-                                const addr = try parseAddress(addr_json.string);
-                                addrs[addr_idx] = addr;
-                                addr_idx += 1;
-
-                                if (entry.object.get("storageKeys")) |keys| {
-                                    if (keys == .array) {
-                                        for (keys.array.items) |key_json| {
-                                            const slot = try std.fmt.parseInt(u256, key_json.string, 0);
-                                            slots[slot_idx] = .{
-                                                .address = addr,
-                                                .slot = slot,
-                                            };
-                                            slot_idx += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        break :blk .{
-                            .addresses = addrs,
-                            .storage_keys = slots,
-                        };
                     }
                 }
-                break :blk null;
+
+                // Allocate arrays
+                const addrs = try allocator.alloc(Address, addr_count);
+                access_list_addrs_storage = addrs;
+                const slots = try allocator.alloc(evm_mod.AccessListStorageKey, slot_count);
+                access_list_slots_storage = slots;
+
+                // Second pass: populate arrays
+                var addr_idx: usize = 0;
+                var slot_idx: usize = 0;
+                for (access_list_array.items) |entry| {
+                    if (entry.object.get("address")) |addr_json| {
+                        const addr = try parseAddress(addr_json.string);
+                        addrs[addr_idx] = addr;
+                        addr_idx += 1;
+
+                        if (entry.object.get("storageKeys")) |keys| {
+                            if (keys == .array) {
+                                for (keys.array.items) |key_json| {
+                                    const slot = try std.fmt.parseInt(u256, key_json.string, 0);
+                                    slots[slot_idx] = .{
+                                        .address = addr,
+                                        .slot = slot,
+                                    };
+                                    slot_idx += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                break :blk .{
+                    .addresses = addrs,
+                    .storage_keys = slots,
+                };
             } else null;
 
             // Process authorization list for EIP-7702 (Prague+)
@@ -1052,6 +1750,38 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const coinbase_reward = gas_for_coinbase * priority_fee_per_gas;
             const coinbase_balance = test_host.balances.get(coinbase) orelse 0;
             try test_host.setBalance(coinbase, coinbase_balance + coinbase_reward);
+        }
+    }
+
+    // Process withdrawals (EIP-4895, Shanghai+)
+    // Withdrawals are processed at the END of block execution (after transactions)
+    // For blockchain tests with multiple blocks, we need to apply withdrawals after EACH block's transactions
+    const has_blocks = test_case.object.get("blocks") != null;
+    if (has_blocks) {
+        if (test_case.object.get("blocks")) |blocks_json| {
+            if (blocks_json == .array) {
+                for (blocks_json.array.items) |block| {
+                    if (block.object.get("withdrawals")) |withdrawals_json| {
+                        if (withdrawals_json == .array) {
+                            for (withdrawals_json.array.items) |withdrawal| {
+                                if (withdrawal.object.get("address")) |addr| {
+                                    if (withdrawal.object.get("amount")) |amt| {
+                                        const withdrawal_address = try parseAddress(addr.string);
+                                        const withdrawal_amount_gwei = try parseIntFromJson(amt);
+
+                                        // Convert Gwei to Wei (multiply by 10^9)
+                                        const withdrawal_amount_wei: u256 = @as(u256, withdrawal_amount_gwei) * 1_000_000_000;
+
+                                        // Add to recipient balance
+                                        const current_balance = test_host.balances.get(withdrawal_address) orelse 0;
+                                        try test_host.setBalance(withdrawal_address, current_balance + withdrawal_amount_wei);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

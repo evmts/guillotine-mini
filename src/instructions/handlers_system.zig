@@ -184,6 +184,10 @@ pub fn Handlers(FrameType: type) type {
             if (max_end > 0) {
                 const mem_cost = frame.memoryExpansionCost(max_end);
                 gas_cost += mem_cost;
+                // Update memory_size immediately after charging (matches Python behavior)
+                // Python: evm.memory += b"\x00" * extend_memory.expand_by
+                const aligned_size = wordAlignedSize(max_end);
+                if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
             }
 
             // Calculate available gas BEFORE charging (per Python execution-specs)
@@ -326,6 +330,10 @@ pub fn Handlers(FrameType: type) type {
             if (max_end > 0) {
                 const mem_cost = frame.memoryExpansionCost(max_end);
                 gas_cost += mem_cost;
+                // Update memory_size immediately after charging (matches Python behavior)
+                // Python: evm.memory += b"\x00" * extend_memory.expand_by
+                const aligned_size = wordAlignedSize(max_end);
+                if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
             }
 
             // Calculate available gas BEFORE charging (per Python execution-specs)
@@ -455,6 +463,10 @@ pub fn Handlers(FrameType: type) type {
             if (max_end > 0) {
                 const mem_cost = frame.memoryExpansionCost(max_end);
                 gas_cost += mem_cost;
+                // Update memory_size immediately after charging (matches Python behavior)
+                // Python: evm.memory += b"\x00" * extend_memory.expand_by
+                const aligned_size = wordAlignedSize(max_end);
+                if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
             }
 
             // Calculate available gas BEFORE charging (per Python execution-specs)
@@ -581,6 +593,10 @@ pub fn Handlers(FrameType: type) type {
             if (max_end > 0) {
                 const mem_cost = frame.memoryExpansionCost(max_end);
                 call_gas_cost += mem_cost;
+                // Update memory_size immediately after charging (matches Python behavior)
+                // Python: evm.memory += b"\x00" * extend_memory.expand_by
+                const aligned_size = wordAlignedSize(max_end);
+                if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
             }
 
             // Calculate available gas BEFORE charging (per Python execution-specs)
