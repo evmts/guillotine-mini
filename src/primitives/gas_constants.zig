@@ -369,8 +369,12 @@ pub const MODEXP_LINEAR_THRESHOLD: usize = 1024;
 // Call Operation Gas Constants (EIP-150 & EIP-2929)
 // ============================================================================
 
-/// Base gas cost for CALL operations when target account is warm
-/// This is the minimum cost for any call operation
+/// Base gas cost for CALL operations before Berlin (Homestead through Istanbul)
+/// EIP-150 (Tangerine Whistle) set this to 700
+pub const CALL_BASE_COST_PRE_BERLIN: u64 = 700;
+
+/// Base gas cost for CALL operations when target account is warm (Berlin+)
+/// EIP-2929 reduced this to 100
 pub const CALL_BASE_COST: u64 = 100;
 
 /// Gas cost for CALL operations when target account is cold (EIP-2929)
@@ -1326,23 +1330,24 @@ pub fn call_gas_cost_with_hardfork(
     cold_access: bool,
     is_berlin_or_later: bool,
 ) u64 {
-    var gas = CALL_BASE_COST;
-    
+    // EIP-2929 (Berlin): Base cost reduced from 700 to 100, cold access cost added
+    var gas = if (is_berlin_or_later) CALL_BASE_COST else CALL_BASE_COST_PRE_BERLIN;
+
     // EIP-2929 (Berlin): Cold access costs
     if (is_berlin_or_later and cold_access) {
         gas += CALL_COLD_ACCOUNT_COST;
     }
-    
+
     // Value transfer cost (all hardforks)
     if (value_transfer) {
         gas += CALL_VALUE_TRANSFER_COST;
     }
-    
+
     // New account creation cost (all hardforks)
     if (new_account) {
         gas += CALL_NEW_ACCOUNT_COST;
     }
-    
+
     return gas;
 }
 

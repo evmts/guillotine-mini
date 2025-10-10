@@ -800,9 +800,8 @@ pub const Evm = struct {
     ) errors.CallError!struct { address: Address, success: bool, gas_left: u64, output: []const u8 } {
         // Track if this is a top-level create (contract-creation transaction)
         // We detect this when there is no active frame yet.
-        // Note: Variable kept for potential future use, but not used in current EIP-3860 fix
+        // Used to avoid double-incrementing the sender's nonce (runner already increments it)
         const is_top_level_create = self.frames.items.len == 0;
-        _ = is_top_level_create; // Mark as intentionally unused
         // Check call depth (STACK_DEPTH_LIMIT = 1024)
         // Per Python reference (system.py:97-99), depth exceeded refunds gas
         if (self.frames.items.len >= 1024) {
@@ -879,11 +878,17 @@ pub const Evm = struct {
             break :blk Address{ .bytes = addr_bytes };
         } else blk: {
             // CREATE: keccak256(rlp([sender, nonce]))[12:]
-            // Get caller's nonce (don't increment yet - that happens after collision check)
-            const nonce = if (self.host) |h|
+            // For top-level creates: nonce was already incremented by runner, so subtract 1
+            // For opcode creates: use current nonce (will be incremented after collision check)
+            // Per Python reference (message.py:57): uses "nonce - 1" for transactions
+            var nonce = if (self.host) |h|
                 h.getNonce(caller)
             else
                 self.nonces.get(caller) orelse 0;
+
+            if (is_top_level_create) {
+                nonce -= 1; // Undo the increment that runner already did
+            }
 
             // Manually construct RLP encoding of [address_bytes, nonce]
             // Address is 20 bytes, nonce is variable length
@@ -942,23 +947,17 @@ pub const Evm = struct {
         };
 
         // EIP-3860: Check init code size limit (Shanghai and later)
-        // Per Python reference (line 81-82): This check happens IMMEDIATELY after reading call_data
+        // Per Python reference (system.py:81-82): This check happens IMMEDIATELY after reading call_data
         // and BEFORE any nonce increments or child call gas calculation
-        // When this check fails, it raises OutOfGasError BEFORE deducting child call gas
+        // When this check fails, it raises OutOfGasError in the PARENT frame (the frame executing CREATE)
+        // This halts the entire parent frame, not just the CREATE operation
         if (self.hardfork.isAtLeast(.SHANGHAI)) {
             // Check must use >= to match reference implementation exactly
             // MAX_INITCODE_SIZE is the maximum ALLOWED, so > is correct
             if (init_code.len > primitives.GasConstants.MaxInitcodeSize) {
-                // CREATE/CREATE2 fails - return failure without incrementing nonce
+                // Per Python reference: OutOfGasError is raised, halting the parent frame
                 // The initcode gas was already charged in frame.zig
-                // Return all the child call gas unused (gas) since OutOfGasError happens
-                // before max_message_call_gas is deducted
-                return .{
-                    .address = primitives.ZERO_ADDRESS,
-                    .success = false,
-                    .gas_left = gas,
-                    .output = &[_]u8{},
-                };
+                return error.OutOfGas;
             }
         }
 
@@ -991,17 +990,19 @@ pub const Evm = struct {
 
         if (has_collision) {
             // Collision detected - increment caller's nonce and return failure
-            // Per Python reference (line 107-110): nonce is incremented even on collision
-            // This applies to BOTH CREATE and CREATE2
-            const caller_nonce = if (self.host) |h|
-                h.getNonce(caller)
-            else
-                self.nonces.get(caller) orelse 0;
+            // Per Python reference (system.py:107-110): nonce is incremented even on collision
+            // But only for CREATE/CREATE2 opcodes, not for top-level creates (already incremented by runner)
+            if (!is_top_level_create) {
+                const caller_nonce = if (self.host) |h|
+                    h.getNonce(caller)
+                else
+                    self.nonces.get(caller) orelse 0;
 
-            if (self.host) |h| {
-                h.setNonce(caller, caller_nonce + 1);
-            } else {
-                try self.nonces.put(caller, caller_nonce + 1);
+                if (self.host) |h| {
+                    h.setNonce(caller, caller_nonce + 1);
+                } else {
+                    try self.nonces.put(caller, caller_nonce + 1);
+                }
             }
 
             // Per Python reference (system.py:105-112): On collision, the gas is NOT refunded.
@@ -1015,19 +1016,24 @@ pub const Evm = struct {
             };
         }
 
-        // No collision - increment caller's nonce before proceeding
-        // Per Python reference (line 113): nonce is incremented for both CREATE and CREATE2
-        const caller_nonce = if (self.host) |h|
-            h.getNonce(caller)
-        else
-            self.nonces.get(caller) orelse 0;
+        // Increment caller's nonce for CREATE/CREATE2 opcodes (but not top-level creates)
+        // Per Python reference:
+        // - fork.py:546 increments sender nonce for transactions (done by runner before calling this)
+        // - system.py:113 increments caller nonce for CREATE/CREATE2 opcodes
+        // For top-level creates: nonce already incremented in transaction processing (runner.zig:988-990)
+        // For opcode creates: nonce must be incremented here
+        if (!is_top_level_create) {
+            const caller_nonce = if (self.host) |h|
+                h.getNonce(caller)
+            else
+                self.nonces.get(caller) orelse 0;
 
-        if (self.host) |h| {
-            h.setNonce(caller, caller_nonce + 1);
-        } else {
-            try self.nonces.put(caller, caller_nonce + 1);
+            if (self.host) |h| {
+                h.setNonce(caller, caller_nonce + 1);
+            } else {
+                try self.nonces.put(caller, caller_nonce + 1);
+            }
         }
-
 
         // Set nonce of new contract to 1 (EVM spec: contracts start with nonce 1)
         if (self.host) |h| {

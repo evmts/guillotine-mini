@@ -280,274 +280,67 @@ ${Object.entries(issue.gas_costs)
     // Include known issues context if available
     const knownIssueContext = this.getKnownIssueContext(suite.name);
 
-    const prompt = `🚨 CRITICAL: Complete ALL 7 checkpoints with ACTUAL data before ANY code changes. NO placeholders/TBDs allowed.
-
-<task>
-Pass ${suite.description} tests (spec-compliant EVM implementation).
+    const prompt = `<task>
+Fix the failing tests in ${suite.description}.
 Command: \`${suite.command}\`
 </task>
 
 ${knownIssueContext}
 
-<common_mistakes>
-## ❌ ANTI-PATTERNS (Real Failures from Past Attempts)
+<context>
+You're debugging an EVM implementation in Zig. The goal is to make all tests pass by fixing bugs in the implementation.
 
-**1. Skipping Trace Analysis**
-❌ BAD: "The gas is wrong, let me check gas_constants.zig"
-✅ GOOD: "Running trace comparison first to see EXACT divergence point → PC 42, SSTORE, expected 22100 got 20000 → 2100 diff = missing cold access cost"
+**Key resources:**
+- **Trace analysis**: \`bun scripts/isolate-test.ts "test_name"\` - Shows exact divergence point (PC, opcode, gas, stack)
+- **Python reference**: \`execution-specs/src/ethereum/forks/<hardfork>/\` - The authoritative spec (if Zig differs from Python, Zig is wrong)
+- **Zig implementation**: \`src/frame.zig\` (opcodes), \`src/evm.zig\` (calls, storage, state)
 
-**2. Guessing Without Python Reference**
-❌ BAD: "TSTORE should be 100 gas based on my understanding"
-✅ GOOD: "Read cancun/vm/instructions/storage.py line 89: charge_gas(evm, GAS_WARM_ACCESS) confirms 100 gas"
+**Common patterns:**
+- Gas divergence → Check gas calculation order, warm/cold tracking, missing charges
+- Stack/memory divergence → Check pop/push order, memory expansion cost
+- Crashes → Use binary search with panics to isolate exact line
 
-**3. Making Changes Without Diagnosis**
-❌ BAD: "Let me try changing this gas constant and see if it works"
-✅ GOOD: "Root cause: Missing cold access charge before SSTORE dynamic cost. Python charges GAS_COLD_SLOAD first (line 156), we skip it. Fix: Add accessStorageSlot() before gas calculation."
+**Architecture notes:**
+- Python: Single \`Evm\` class with stack, memory, pc, gas, state
+- Zig: Split into \`Evm\` (state, storage, refunds) + \`Frame\` (stack, memory, pc, gas)
+- Python \`evm.stack\` = Zig \`frame.stack\`
+- Python \`evm.message.block_env.state\` = Zig \`evm.storage\`
+</context>
 
-**4. Using Placeholders in Checkpoints**
-❌ BAD: "✅ CHECKPOINT 2: Divergence PC: [TBD]"
-✅ GOOD: "✅ CHECKPOINT 2: Divergence PC: 42, Opcode: SSTORE (0x55), Expected gas: 22100, Actual: 20000, Diff: 2100"
+<guidelines>
+- Use trace comparison to identify exact divergence point
+- Check Python reference implementation for correct behavior
+- Make minimal, targeted fixes
+- Use \`hardfork.isAtLeast()\` guards for fork-specific behavior
+- Verify fixes by re-running tests
+- If a fix doesn't work, analyze the new failure and iterate
+</guidelines>
 
-**5. Not Iterating After Failed Fix**
-❌ BAD: "Fix didn't work. Moving on to next approach." [makes random changes]
-✅ GOOD: "Fix didn't work. Returning to CHECKPOINT 2 with NEW trace output → new divergence at PC 58..."
-</common_mistakes>
-
-<methodology>
-## 🔴 MANDATORY 7-CHECKPOINT WORKFLOW 🔴
-
-### ✅ CP1: Run Test & Capture Failure
-\`${suite.command}\` → Confirm: Failed: [N tests], Names: [...], Type: [gas/output/crash]
-
-### ✅ CP2: 🎯 Trace Divergence (DO THIS FIRST)
-\`\`\`bash
-bun scripts/isolate-test.ts "exact_test_name"  # Auto-analyzes divergence
-\`\`\`
-**Confirm** (actual trace data required):
-\`\`\`
-Test: [name] | PC: [N] | Opcode: [NAME]
-Gas: Expected [N] vs Actual [N] = Diff [N]
-Stack/Memory/Storage: [paste or "matched"]
-\`\`\`
-*Crash? Mark "CP2 SKIPPED (crash)" + Type: [segfault/panic] + Message: [paste]*
-
-### ✅ CP3: Read Python Reference (IS THE SPEC)
-Navigate: \`execution-specs/src/ethereum/forks/<hardfork>/vm/instructions/\`
-**Confirm** (quote actual Python code):
-\`\`\`
-File: [exact path]
-Function: [name]
-Python code: [paste actual function, NOT summary]
-Gas order: 1.[line X], 2.[line Y], 3.[line Z]
-\`\`\`
-
-### ✅ CP4: Compare Zig Implementation
-File: \`src/frame.zig\` (opcodes) or \`src/evm.zig\` (calls/storage)
-**Confirm** (line-by-line comparison):
-\`\`\`
-Zig location: [file:lines]
-Zig code: [paste actual code]
-Discrepancies:
-  1. Python: [quote] | Zig: [quote] | Problem: [explain]
-  2. [repeat for each]
-\`\`\`
-
-### ✅ CP5: Diagnose Root Cause & Propose Fix
-**Confirm**:
-\`\`\`
-Root Cause: [2-3 sentences referencing CP2-4 evidence]
-Proposed Fix: [what changes + why matches Python]
-Files: src/X.zig (lines Y-Z) - [specific change]
-\`\`\`
-
-### ✅ CP6: Implement Fix
-Make minimal changes from CP5. Use \`hardfork.isAtLeast()\` guards if fork-specific.
-**Confirm**: Files modified: [list] | Changes: [brief summary]
-
-### ✅ CP7: Verify Fix
-\`${suite.command}\` → **Confirm**: Passing: [Y/N] | Count: [N/total]
-*If failing: Return to CP2 with NEW failure output for iteration*
-
-## 🚨 VALIDATION RULES 🚨
-✅ ALL checkpoints require ACTUAL data (test output, code quotes, trace values)
-✅ NO placeholders: "[TODO]", "[TBD]", "[Will check]", "[value]"
-✅ MUST iterate if tests fail after fix (return to CP2)
-❌ NEVER skip checkpoints or make changes before CP1-5 complete
-❌ NEVER guess - use traces (CP2) + Python ref (CP3)
-
-## 📋 File Location Quick Reference
-
-| Failure Type | Python Reference | Zig Implementation |
-|--------------|------------------|-------------------|
-| Opcode logic | forks/<fork>/vm/instructions/*.py | src/frame.zig |
-| Gas calculation | forks/<fork>/vm/gas.py | src/primitives/gas_constants.zig + src/frame.zig |
+<helpful_references>
+**File mappings:**
+| Issue Type | Python Location | Zig Location |
+|------------|----------------|--------------|
+| Opcodes | forks/<fork>/vm/instructions/*.py | src/frame.zig |
+| Gas costs | forks/<fork>/vm/gas.py | src/primitives/gas_constants.zig + src/frame.zig |
 | CALL/CREATE | forks/<fork>/vm/instructions/system.py | src/evm.zig (inner_call, inner_create) |
-| Storage (SLOAD/SSTORE) | forks/<fork>/vm/instructions/storage.py | src/evm.zig (get_storage, set_storage) |
-| Transient storage (TLOAD/TSTORE) | forks/cancun/vm/instructions/storage.py | src/evm.zig (get_transient_storage, set_transient_storage) |
-| Warm/cold tracking | forks/<fork>/vm/__init__.py (Evm class) | src/evm.zig (warm_addresses, warm_storage_slots) |
+| Storage | forks/<fork>/vm/instructions/storage.py | src/evm.zig (get/set storage) |
 
-## 🚨 Error Mapping: Python → Zig
+**Common gas costs:**
+- Warm access: 100 gas (Berlin+)
+- Cold SLOAD: 2100 gas (Berlin+)
+- Cold account access: 2600 gas (Berlin+)
+- TLOAD/TSTORE: Always 100 gas (Cancun+, never cold)
+- SSTORE: Complex (2300 stipend check → cold access → dynamic cost → refunds)
 
-| Python Exception | Zig Error | When to Use |
-|-----------------|-----------|-------------|
-| \`OutOfGasError\` | \`CallError.OutOfGas\` | Gas exhausted |
-| \`StackUnderflowError\` | \`CallError.StackUnderflow\` | Pop from empty stack |
-| \`StackOverflowError\` | \`CallError.StackOverflow\` | Stack > 1024 items |
-| \`InvalidJumpError\` | \`CallError.InvalidJump\` | JUMP to invalid dest |
-| \`WriteInStaticContext\` | \`CallError.StaticCallViolation\` | State change in STATICCALL |
-| \`Revert\` | \`CallError.RevertExecution\` | REVERT opcode |
-| \`InvalidOpcode\` | \`CallError.InvalidOpcode\` | Unknown opcode |
-
-**Locations**: Python \`vm/exceptions.py\` | Zig \`src/errors.zig\`
-
-## ⚡ Opcode Quick Reference
-
-| Opcode | Hex | Gas | Fork | Notes |
-|--------|-----|-----|------|-------|
-| PUSH0 | 0x5F | 2 | Shanghai+ | Pushes 0 |
-| TLOAD | 0x5C | 100 | Cancun+ | Always warm |
-| TSTORE | 0x5D | 100 | Cancun+ | Always warm, check static |
-| MCOPY | 0x5E | 3+3*w | Cancun+ | Handles overlaps |
-| BLOBHASH | 0x49 | 3 | Cancun+ | Versioned hash |
-| BLOBBASEFEE | 0x4A | 2 | Cancun+ | Blob base fee |
-| SELFDESTRUCT | 0xFF | 5000 | All | Changed in Cancun (EIP-6780) |
-| SLOAD | 0x54 | 100/2100 | All | Warm/cold (Berlin+) |
-| SSTORE | 0x55 | varies | All | Complex (see below) |
-
-## 💰 SSTORE Gas Logic (Most Complex)
-
-**Order** (MUST match Python exactly):
-1. Stipend: \`if gas < 2300: OutOfGas\`
-2. Cold: +2100 if slot not accessed
-3. Dynamic:
-   - \`original==current && current!=new\`: \`original==0 ? 20000 : 5000-2100\`
-   - Else: 100 (warm)
-4. Refunds: \`current→0: +4800\` | Track \`original_storage\` (tx start) separately
-
-**Python**: \`forks/.../vm/instructions/storage.py:sstore\`
-
-## 📐 Memory Expansion Cost
-
-\`\`\`
-words = (bytes + 31) / 32
-cost = 3*words + words²/512
-charge = new_cost - old_cost
-\`\`\`
-**Python**: \`forks/.../vm/memory.py\` | **Zig**: \`src/frame.zig:expandMemory\`
-
-## 🔧 Precompile Addresses
-
-| Addr | Name | Gas | Fork |
-|------|------|-----|------|
-| 0x01 | ecrecover | 3000 | Frontier |
-| 0x02 | sha256 | 60+12/w | Frontier |
-| 0x03 | ripemd160 | 600+120/w | Frontier |
-| 0x04 | identity | 15+3/w | Frontier |
-| 0x05 | modexp | Variable | Byzantium |
-| 0x06-0x08 | bn256 | Varies | Byzantium |
-| 0x09 | blake2f | Variable | Istanbul |
-| 0x0A | kzg_point_eval | 50000 | Cancun |
-| 0x0A-0x12 | BLS12-381 | Varies | Prague |
-
-## 🗓️ Hardfork Feature Activation
-
-| Feature | Fork | Zig Check |
-|---------|------|-----------|
-| Warm/cold (EIP-2929) | Berlin | \`isAtLeast(.BERLIN)\` |
-| Gas refund cap = 1/5 (EIP-3529) | London | \`isAtLeast(.LONDON)\` |
-| BASEFEE opcode (EIP-3198) | London | \`isAtLeast(.LONDON)\` |
-| PUSH0 (EIP-3855) | Shanghai | \`isAtLeast(.SHANGHAI)\` |
-| Warm coinbase (EIP-3651) | Shanghai | \`isAtLeast(.SHANGHAI)\` |
-| Transient storage (EIP-1153) | Cancun | \`isAtLeast(.CANCUN)\` |
-| MCOPY (EIP-5656) | Cancun | \`isAtLeast(.CANCUN)\` |
-| SELFDESTRUCT change (EIP-6780) | Cancun | \`isAtLeast(.CANCUN)\` |
-
-## 🔍 Trace Divergence Patterns
-
-**Gas divergence at instruction 0** → Intrinsic gas wrong, access list not applied
-**Gas divergence at SLOAD/SSTORE** → Warm/cold tracking, missing cold charge
-**Gas divergence at CALL/CREATE** → Value stipend, depth, address warming
-**Stack divergence** → Wrong pop/push order or values
-**PC divergence (early stop)** → Missing error check, wrong gas, early termination
-**Memory divergence** → Expansion cost, MSTORE/MLOAD, MCOPY overlap
-**No divergence but final gas differs** → Refund calculation, refund cap
-
-## 🎯 Critical Invariants
-
-**Gas Metering:**
-- Order matters: Check stipend → Cold access → Dynamic cost → Refunds
-- SSTORE: Must track original_storage (tx start) ≠ storage (current)
-- Transient: ALWAYS warm (100 gas), NEVER cold, NO refunds
-
-**Hardfork Guards:**
-- Berlin+: Warm/cold tracking (2600/100 gas split)
-- London+: Refund cap = gasUsed/5 (was gasUsed/2)
-- Cancun+: TLOAD/TSTORE (transient storage)
-Use: \`if (self.hardfork.isAtLeast(.BERLIN))\`
-
-**Architecture Differences:**
-Python: Single \`Evm\` class (stack, memory, pc, gas, state all in one)
-Zig: Split \`Evm\` (state, storage, refunds) + \`Frame\` (stack, memory, pc, gas)
-→ Python \`evm.stack\` = Zig \`frame.stack\`
-→ Python \`evm.message.block_env.state\` = Zig \`evm.storage\`
-
-## 💡 Debugging Strategies
-
-**Strategy 1: Trace Comparison** (USE FIRST)
-Automated: \`bun scripts/isolate-test.ts "test_name"\`
-Shows: EXACT divergence (PC, opcode, gas, stack) → eliminates guesswork
-
-**Strategy 2: Python Reference** (REQUIRED FOR EVERY FIX)
-Location: \`execution-specs/src/ethereum/forks/<hardfork>/\`
-Rule: If our code differs from Python, WE ARE WRONG
-Read line-by-line, match gas order exactly
-
-**Strategy 3: Crash Debugging** (Systematic Binary Search)
-1. Isolate: \`TEST_FILTER="test" ${suite.command}\`
-2. Binary search: Add \`@panic("CP")\` halfway, run, move marker
-3. Find exact crash line before attempting fix
-4. Add assertions BEFORE crash line to inspect values
-Never: Add prints at crash site (output swallowed)
-
-## ⚡ Quick Commands
-
+**Debugging commands:**
 \`\`\`bash
-# Isolate single test with auto-analysis
-bun scripts/isolate-test.ts "test_name"
-
-# Run test suite
-${suite.command}
-
-# Filter to single test (manual)
-TEST_FILTER="test_name" ${suite.command}
-
-# Find Python reference
-cd execution-specs/src/ethereum/forks/<hardfork>/vm/instructions/
-grep -r "def sstore" .
+bun scripts/isolate-test.ts "test_name"  # Detailed trace + divergence analysis
+TEST_FILTER="test_name" ${suite.command}  # Run single test
 \`\`\`
-</methodology>
-
-<output_requirements>
-## Final Report Structure
-
-\`\`\`markdown
-## Root Cause
-[Specific bug referencing CP2-4 evidence]
-
-## Changes
-- \`src/file.zig:lines\` - [change]
-
-## Results
-Tests: [N/total passing]
-Regressions: [none/list]
-
-## Technical Notes
-[EIP refs, implementation details, gotchas]
-\`\`\`
-</output_requirements>
+</helpful_references>
 
 <execution_directive>
-Begin analysis now. Complete ALL checkpoints with ACTUAL data before any code changes. Be systematic, verify every change.
+Fix the failing tests. Use your judgment on the best approach - trace analysis is usually the fastest path to identifying issues.
 </execution_directive>`;
 
     try {

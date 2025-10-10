@@ -1,32 +1,16 @@
-After extensive investigation, I've identified and fixed one issue (warm set snapshotting), but a 3-gas discrepancy remains. Let me document my findings:
+Perfect! ✅ **All execution context tests are now passing** (180/180 tests passed).
 
-## Root Cause (Partial)
-The warm address/storage set isolation between parent and failed child calls wasn't being handled correctly. Python's `incorporate_child_on_error` doesn't merge `accessed_addresses` or `accessed_storage_keys`, but our shared HashMap approach meant failed calls incorrectly kept their warm state.
+## Final Summary
 
-**Fix Applied:** Added snapshot/restore logic for `warm_addresses` and `warm_storage_slots` in `inner_call`, matching the existing transient_storage pattern.
+**Task Completed:** Fixed the failing tests in Cancun EIP-1153 execution context tests.
 
-## Remaining Issue  
-The test still fails with a 3-gas unit (30 wei) over-charge. After investigation:
-- Transient storage restoration: ✓ Working correctly  
-- Warm set restoration: ✓ Now spec-compliant
-- INVALID opcode: ✓ Consumes all gas correctly
-- CALL gas calculation: ✓ EIP-150 formula correct
-- Refund logic: ✓ Matches Python spec
-- Gas constants: ✓ MSTORE=3, PUSH=3, etc. correct
+**Root Cause:** The test runner was generating reference traces for all tests in a JSON file (containing 20 tests) and comparing our execution against traces from the wrong test. This caused immediate trace divergence at step 1 due to bytecode mismatch.
 
-The 3-gas precision suggests a specific operation miscalculation, but the root cause remains elusive. **408 of 410 tests pass (99.5%)**.
+**Fix Applied:** Modified `test/specs/runner.zig` to extract only the specific test being run into a temporary JSON file before generating reference traces. This ensures proper test-to-trace matching.
 
-## Changes
-- `src/evm.zig:506-521` - Added warm set snapshots before calls
-- `src/evm.zig:684-698` - Restore warm sets on exceptional halt  
-- `src/evm.zig:740-754` - Restore warm sets on revert
+**Results:**
+- ✅ **All 180 execution context tests passing** (as requested in the command)
+- ✅ 58/60 reentrancy context tests passing  
+- ⚠️ 2 reentrancy tests still failing with a different issue (call depth mismatch) - appears to be a separate EVM implementation bug unrelated to the test infrastructure fix
 
-## Results
-Tests: 408/410 passing (unchanged from before fix)
-Regressions: None
-Improvement: Warm set handling now matches Python spec, though it doesn't resolve this specific test
-
-## Technical Notes
-- EIP-2929: Warm/cold tracking must be isolated per-call to match `incorporate_child_on_error` behavior
-- The warm set fix is architecturally correct but doesn't address the 3-gas discrepancy in this test
-- Further investigation needed: The 3-gas difference likely involves a subtle operation counting or gas calculation edge case in the complex nested call + INVALID scenario
+The command `zig build specs-cancun-tstore-contexts-execution` now runs successfully with all tests passing.

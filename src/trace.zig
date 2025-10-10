@@ -16,31 +16,34 @@ pub const TraceEntry = struct {
     error_msg: ?[]const u8 = null,
 
     pub fn toJson(self: *const TraceEntry, allocator: std.mem.Allocator) !std.json.Value {
-        var obj = std.StringArrayHashMap(std.json.Value){};
+        var obj = std.StringArrayHashMap(std.json.Value).init(allocator);
 
-        try obj.put(allocator, "pc", .{ .integer = @intCast(self.pc) });
-        try obj.put(allocator, "op", .{ .integer = @intCast(self.op) });
+        try obj.put("pc", .{ .integer = @intCast(self.pc) });
+        try obj.put("op", .{ .integer = @intCast(self.op) });
 
         // Format gas as hex string
         var gas_buf: [32]u8 = undefined;
         const gas_str = try std.fmt.bufPrint(&gas_buf, "0x{x}", .{self.gas});
-        try obj.put(allocator, "gas", .{ .string = try allocator.dupe(u8, gas_str) });
+        try obj.put("gas", .{ .string = try allocator.dupe(u8, gas_str) });
 
         var gas_cost_buf: [32]u8 = undefined;
         const gas_cost_str = try std.fmt.bufPrint(&gas_cost_buf, "0x{x}", .{self.gasCost});
-        try obj.put(allocator, "gasCost", .{ .string = try allocator.dupe(u8, gas_cost_str) });
+        try obj.put("gasCost", .{ .string = try allocator.dupe(u8, gas_cost_str) });
 
         // Memory as hex string if present
         if (self.memory) |mem| {
             const hex_mem = try allocator.alloc(u8, mem.len * 2 + 2);
-            const written = try std.fmt.bufPrint(hex_mem, "0x{x}", .{std.fmt.fmtSliceHexLower(mem)});
-            _ = written;
-            try obj.put(allocator, "memory", .{ .string = hex_mem });
+            hex_mem[0] = '0';
+            hex_mem[1] = 'x';
+            for (mem, 0..) |byte, i| {
+                _ = try std.fmt.bufPrint(hex_mem[2 + i * 2 ..][0..2], "{x:0>2}", .{byte});
+            }
+            try obj.put("memory", .{ .string = hex_mem });
         } else {
-            try obj.put(allocator, "memory", .null);
+            try obj.put("memory", .null);
         }
 
-        try obj.put(allocator, "memSize", .{ .integer = @intCast(self.memSize) });
+        try obj.put("memSize", .{ .integer = @intCast(self.memSize) });
 
         // Stack as array of hex strings
         var stack_arr = std.ArrayList(std.json.Value){};
@@ -49,24 +52,27 @@ pub const TraceEntry = struct {
             const val_str = try std.fmt.bufPrint(&val_buf, "0x{x}", .{val});
             try stack_arr.append(allocator, .{ .string = try allocator.dupe(u8, val_str) });
         }
-        try obj.put(allocator, "stack", .{ .array = stack_arr.items });
+        try obj.put("stack", .{ .array = stack_arr });
 
         // Return data as hex string if present
         if (self.returnData) |data| {
             const hex_data = try allocator.alloc(u8, data.len * 2 + 2);
-            const written = try std.fmt.bufPrint(hex_data, "0x{x}", .{std.fmt.fmtSliceHexLower(data)});
-            _ = written;
-            try obj.put(allocator, "returnData", .{ .string = hex_data });
+            hex_data[0] = '0';
+            hex_data[1] = 'x';
+            for (data, 0..) |byte, i| {
+                _ = try std.fmt.bufPrint(hex_data[2 + i * 2 ..][0..2], "{x:0>2}", .{byte});
+            }
+            try obj.put("returnData", .{ .string = hex_data });
         } else {
-            try obj.put(allocator, "returnData", .null);
+            try obj.put("returnData", .null);
         }
 
-        try obj.put(allocator, "depth", .{ .integer = @intCast(self.depth) });
-        try obj.put(allocator, "refund", .{ .integer = @intCast(self.refund) });
-        try obj.put(allocator, "opName", .{ .string = try allocator.dupe(u8, self.opName) });
+        try obj.put("depth", .{ .integer = @intCast(self.depth) });
+        try obj.put("refund", .{ .integer = @intCast(self.refund) });
+        try obj.put("opName", .{ .string = try allocator.dupe(u8, self.opName) });
 
         if (self.error_msg) |err| {
-            try obj.put(allocator, "error", .{ .string = try allocator.dupe(u8, err) });
+            try obj.put("error", .{ .string = try allocator.dupe(u8, err) });
         }
 
         return .{ .object = obj };
@@ -158,7 +164,7 @@ pub const Tracer = struct {
             try arr.append(self.allocator, entry_json);
         }
 
-        return .{ .array = arr.items };
+        return .{ .array = arr };
     }
 
     pub fn writeToFile(self: *const Tracer, path: []const u8) !void {
