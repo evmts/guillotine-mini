@@ -734,45 +734,29 @@ pub fn Evm(config: EvmConfig) type {
                 }
             } else {
                 // Clear all account state in EVM storage
-                try self.balances.put(addr, 0);
-                try self.code.put(addr, &[_]u8{});
-                try self.nonces.put(addr, 0);
-
+                // Note: In non-host mode, we use arena allocation so memory will be reclaimed
+                // when the arena is freed. We simply remove storage entries rather than trying to update them.
                 // Clear permanent storage for self-destructed account
                 // Per Python reference: destroy_account calls destroy_storage
-                // We need to remove all storage slots for this address from both storage and original_storage
                 var storage_it = self.storage.iterator();
-                var slots_to_remove = std.ArrayList(StorageSlotKey){};
-                try slots_to_remove.ensureTotalCapacity(self.arena.allocator(), 10);
                 while (storage_it.next()) |storage_entry| {
                     const key = storage_entry.key_ptr.*;
                     if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
-                        try slots_to_remove.append(self.arena.allocator(), key);
+                        _ = self.storage.fetchRemove(key);
                     }
                 }
-                // Also collect slots from original_storage
+                // Also clear from original_storage
                 var original_storage_it = self.original_storage.iterator();
                 while (original_storage_it.next()) |storage_entry| {
                     const key = storage_entry.key_ptr.*;
                     if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
-                        // Check if not already in list to avoid duplicates
-                        var already_exists = false;
-                        for (slots_to_remove.items) |existing_key| {
-                            if (existing_key.eql(key)) {
-                                already_exists = true;
-                                break;
-                            }
-                        }
-                        if (!already_exists) {
-                            try slots_to_remove.append(self.arena.allocator(), key);
-                        }
+                        _ = self.original_storage.fetchRemove(key);
                     }
                 }
-                // Remove collected slots (can't modify map while iterating)
-                for (slots_to_remove.items) |slot_key| {
-                    _ = self.storage.remove(slot_key);
-                    _ = self.original_storage.remove(slot_key);
-                }
+                // Clear account state by removing from maps
+                _ = self.balances.fetchRemove(addr);
+                _ = self.code.fetchRemove(addr);
+                _ = self.nonces.fetchRemove(addr);
             }
         }
 
