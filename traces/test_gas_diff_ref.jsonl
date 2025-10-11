@@ -1,4 +1,0 @@
-{"pc":0,"op":96,"opName":"PUSH1","gas":"1000000","gasCost":"3","stack":[],"depth":1}
-{"pc":2,"op":96,"opName":"PUSH1","gas":"999997","gasCost":"3","stack":["0x60"],"depth":1}
-{"pc":4,"op":85,"opName":"SSTORE","gas":"999994","gasCost":"20000","stack":["0x60","0x01"],"depth":1}
-{"pc":5,"op":0,"opName":"STOP","gas":"979994","gasCost":"0","stack":[],"depth":1}

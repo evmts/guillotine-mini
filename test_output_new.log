@@ -1,4 +1,0 @@
-no step named 'test-specs'
-  access the help menu with 'zig build -h'
-error: the following build command failed with exit code 1:
-.zig-cache/o/3113eeb52c67296ec447960f2c40e827/build /opt/homebrew/Cellar/zig/0.15.1/bin/zig /opt/homebrew/Cellar/zig/0.15.1/lib/zig /Users/williamcory/guillotine-mini .zig-cache /Users/williamcory/.cache/zig --seed 0xeb914c46 -Z5d6e0425093c63b9 test-specs
