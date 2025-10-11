@@ -12,13 +12,19 @@ const errors = @import("errors.zig");
 const trace = @import("trace.zig");
 const blake2 = @import("blake2.zig");
 const precompiles = @import("precompiles/precompiles.zig");
+const evm_config = @import("evm_config.zig");
+const EvmConfig = evm_config.EvmConfig;
+const storage_injector = @import("storage_injector.zig");
+const StorageInjector = storage_injector.StorageInjector;
 
 const Address = primitives.Address.Address;
 
 // Re-export host types for compatibility
 pub const HostInterface = host.HostInterface;
-pub const CallResult = host.CallResult;
 pub const Host = host.Host;
+
+// Re-export config
+pub const Config = EvmConfig;
 
 /// Access list storage key slot type
 pub const AccessListStorageKey = struct {
@@ -66,6 +72,25 @@ const StorageSlotKeyContext = struct {
     }
 };
 
+/// Async data request - written by get_storage/get_balance/etc when cache miss
+/// Read by executeUntilYieldOrComplete to build the return value
+pub const AsyncDataRequest = union(enum) {
+    none: void,
+    storage: struct {
+        address: Address,
+        slot: u256,
+    },
+    balance: struct {
+        address: Address,
+    },
+    code: struct {
+        address: Address,
+    },
+    nonce: struct {
+        address: Address,
+    },
+};
+
 pub const BlockContext = struct {
     chain_id: u256,
     block_number: u64,
@@ -78,9 +103,61 @@ pub const BlockContext = struct {
     blob_base_fee: u256,
 };
 
-/// EVM - Orchestrates execution like evm.zig
-pub const Evm = struct {
-    const Self = @This();
+/// Creates a configured EVM instance type.
+pub fn Evm(config: EvmConfig) type {
+    // Import new API types with config
+    const call_params = @import("call_params.zig");
+    const call_result = @import("call_result.zig");
+
+    return struct {
+        const Self = @This();
+
+        pub const CallParams = call_params.CallParams(config);
+        pub const CallResult = call_result.CallResult(config);
+
+        /// Input to callOrContinue - tagged union for starting or continuing execution
+        pub const CallOrContinueInput = union(enum) {
+            call: CallParams,
+            continue_with_storage: struct {
+                address: Address,
+                slot: u256,
+                value: u256,
+            },
+            continue_with_balance: struct {
+                address: Address,
+                balance: u256,
+            },
+            continue_with_code: struct {
+                address: Address,
+                code: []const u8,
+            },
+            continue_with_nonce: struct {
+                address: Address,
+                nonce: u64,
+            },
+            continue_after_commit: void,
+        };
+
+        /// Output from callOrContinue - tagged union for result or async request
+        pub const CallOrContinueOutput = union(enum) {
+            result: CallResult,
+            need_storage: struct {
+                address: Address,
+                slot: u256,
+            },
+            need_balance: struct {
+                address: Address,
+            },
+            need_code: struct {
+                address: Address,
+            },
+            need_nonce: struct {
+                address: Address,
+            },
+            ready_to_commit: struct {
+                changes_json: []const u8,
+            },
+        };
 
     frames: std.ArrayList(Frame),
     storage: std.AutoHashMap(StorageSlotKey, u256),
@@ -97,27 +174,38 @@ pub const Evm = struct {
     // Current call's balance snapshot for copy-on-write (for SELFDESTRUCT revert handling)
     // This is set at the start of inner_call and cleared at the end
     current_balance_snapshot: ?*std.AutoHashMap(Address, u256),
-    hardfork: Hardfork = Hardfork.DEFAULT,
+    hardfork: Hardfork,
     origin: Address,
     gas_price: u256,
     host: ?HostInterface,
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
     tracer: ?*trace.Tracer = null,
-    block_context: BlockContext = .{
-        .chain_id = 1,
-        .block_number = 0,
-        .block_timestamp = 0,
-        .block_difficulty = 0,
-        .block_prevrandao = 0,
-        .block_coinbase = primitives.ZERO_ADDRESS,
-        .block_gas_limit = 30_000_000,
-        .block_base_fee = 0,
-        .blob_base_fee = 0,
-    },
+    block_context: BlockContext,
     blob_versioned_hashes: []const [32]u8 = &[_][32]u8{},
+    // Stored state for call() - set via setter methods
+    pending_bytecode: []const u8 = &[_]u8{},
+    pending_access_list: ?AccessListParam = null,
 
-    pub fn init(allocator: std.mem.Allocator, h: ?HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext) !Self {
+    // Config-provided overrides (comptime known)
+    opcode_overrides: []const evm_config.OpcodeOverride,
+    precompile_overrides: []const evm_config.PrecompileOverride,
+
+    // Async storage injection
+    async_data_request: AsyncDataRequest = .none,
+    storage_injector: ?*StorageInjector = null,
+    // Buffer for state changes JSON (persists across yields)
+    pending_state_changes_buffer: [16384]u8 = undefined,
+    pending_state_changes_len: usize = 0,
+
+    /// Initialize a new EVM instance
+    /// Config provides defaults, but hardfork can be overridden at runtime
+    pub fn init(allocator: std.mem.Allocator, h: ?HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext, log_level: ?log.LogLevel) !Self {
+        // Set log level if provided
+        if (log_level) |level| {
+            log.setLogLevel(level);
+        }
+
         return Self{
             .frames = undefined,
             .storage = undefined,
@@ -132,7 +220,7 @@ pub const Evm = struct {
             .warm_storage_slots = undefined,
             .gas_refund = 0,
             .current_balance_snapshot = null,
-            .hardfork = hardfork orelse Hardfork.DEFAULT,
+            .hardfork = hardfork orelse config.hardfork,
             .block_context = block_context orelse .{
                 .chain_id = 1,
                 .block_number = 0,
@@ -140,7 +228,7 @@ pub const Evm = struct {
                 .block_difficulty = 0,
                 .block_prevrandao = 0,
                 .block_coinbase = primitives.ZERO_ADDRESS,
-                .block_gas_limit = 30_000_000,
+                .block_gas_limit = config.block_gas_limit,
                 .block_base_fee = 0,
                 .blob_base_fee = 0,
             },
@@ -150,7 +238,31 @@ pub const Evm = struct {
             .arena = std.heap.ArenaAllocator.init(allocator),
             .allocator = allocator,
             .tracer = null,
+            .opcode_overrides = config.opcode_overrides,
+            .precompile_overrides = config.precompile_overrides,
         };
+    }
+
+    /// Look up custom opcode handler override
+    /// Returns null if no override exists for this opcode
+    pub fn getOpcodeOverride(self: *const Self, opcode: u8) ?*const anyopaque {
+        for (self.opcode_overrides) |override| {
+            if (override.opcode == opcode) {
+                return override.handler;
+            }
+        }
+        return null;
+    }
+
+    /// Look up custom precompile override
+    /// Returns null if no override exists for this address
+    pub fn getPrecompileOverride(self: *const Self, address: Address) ?*const evm_config.PrecompileOverride {
+        for (self.precompile_overrides) |*override| {
+            if (override.address.equals(address)) {
+                return override;
+            }
+        }
+        return null;
     }
 
     /// Clean up resources
@@ -264,6 +376,98 @@ pub const Evm = struct {
         }
     }
 
+    /// Get nonce for an address
+    fn getNonce(self: *Self, address: Address) u64 {
+        if (self.host) |h| {
+            return h.getNonce(address);
+        }
+        return self.nonces.get(address) orelse 0;
+    }
+
+    /// Compute CREATE address: keccak256(rlp([sender, nonce]))[12:]
+    fn computeCreateAddress(self: *Self, sender: Address, nonce: u64) !Address {
+        _ = self;
+        // RLP encoding of [sender (20 bytes), nonce]
+        // For simplicity, use a fixed buffer (max size for nonce encoding is small)
+        var buffer: [64]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&buffer);
+        const writer = fbs.writer();
+
+        // Calculate nonce encoding length
+        const nonce_len: usize = blk: {
+            if (nonce == 0) break :blk 1;
+            if (nonce < 128) break :blk 1;
+            var n = nonce;
+            var len: usize = 0;
+            while (n > 0) : (n >>= 8) {
+                len += 1;
+            }
+            break :blk len + 1; // +1 for length prefix
+        };
+
+        // RLP list prefix
+        const list_len = 21 + nonce_len;
+        try writer.writeByte(0xc0 + @as(u8, @intCast(list_len)));
+
+        // RLP encode sender address (20 bytes, so 0x80 + 20 = 0x94)
+        try writer.writeByte(0x94);
+        try writer.writeAll(&sender.bytes);
+
+        // RLP encode nonce
+        if (nonce == 0) {
+            try writer.writeByte(0x80);
+        } else if (nonce < 128) {
+            try writer.writeByte(@intCast(nonce));
+        } else {
+            var nonce_bytes: [8]u8 = undefined;
+            std.mem.writeInt(u64, &nonce_bytes, nonce, .big);
+            var start: usize = 0;
+            while (start < 8 and nonce_bytes[start] == 0) : (start += 1) {}
+            const nonce_byte_len = 8 - start;
+            try writer.writeByte(0x80 + @as(u8, @intCast(nonce_byte_len)));
+            try writer.writeAll(nonce_bytes[start..]);
+        }
+
+        const rlp_data = fbs.getWritten();
+
+        // Compute keccak256 hash
+        var hash: [32]u8 = undefined;
+        std.crypto.hash.sha3.Keccak256.hash(rlp_data, &hash, .{});
+
+        // Take last 20 bytes as address
+        var addr: Address = undefined;
+        @memcpy(&addr.bytes, hash[12..32]);
+        return addr;
+    }
+
+    /// Compute CREATE2 address: keccak256(0xff ++ sender ++ salt ++ keccak256(init_code))[12:]
+    fn computeCreate2Address(self: *Self, sender: Address, salt: u256, init_code: []const u8) !Address {
+        _ = self;
+        // Compute keccak256(init_code)
+        var init_code_hash: [32]u8 = undefined;
+        std.crypto.hash.sha3.Keccak256.hash(init_code, &init_code_hash, .{});
+
+        // Compute keccak256(0xff ++ sender ++ salt ++ init_code_hash)
+        var buffer: [85]u8 = undefined; // 1 + 20 + 32 + 32
+        buffer[0] = 0xff;
+        @memcpy(buffer[1..21], &sender.bytes);
+
+        // Convert salt to bytes (big-endian)
+        var salt_bytes: [32]u8 = undefined;
+        std.mem.writeInt(u256, &salt_bytes, salt, .big);
+        @memcpy(buffer[21..53], &salt_bytes);
+
+        @memcpy(buffer[53..85], &init_code_hash);
+
+        var hash: [32]u8 = undefined;
+        std.crypto.hash.sha3.Keccak256.hash(&buffer, &hash, .{});
+
+        // Take last 20 bytes as address
+        var addr: Address = undefined;
+        @memcpy(&addr.bytes, hash[12..32]);
+        return addr;
+    }
+
     pub fn preWarmTransaction(self: *Self, target: Address) errors.CallError!void {
         var warm: [3]Address = undefined;
         var count: usize = 0;
@@ -308,28 +512,95 @@ pub const Evm = struct {
         try self.preWarmAddresses(precompile_addrs[0..precompile_count]);
     }
 
+    /// Set bytecode for the next call() invocation
+    pub fn setBytecode(self: *Self, bytecode: []const u8) void {
+        self.pending_bytecode = bytecode;
+    }
+
+    /// Set access list for the next call() invocation
+    pub fn setAccessList(self: *Self, access_list: ?AccessListParam) void {
+        self.pending_access_list = access_list;
+    }
+
+    /// Set blob versioned hashes for the next call() invocation
+    pub fn setBlobVersionedHashes(self: *Self, hashes: []const [32]u8) void {
+        self.blob_versioned_hashes = hashes;
+    }
+
     /// Execute bytecode (main entry point like evm.execute)
     pub fn call(
         self: *Self,
-        bytecode: []const u8,
-        gas: i64,
-        caller: Address,
-        address: Address,
-        value: u256,
-        calldata: []const u8,
-        access_list: ?AccessListParam,
-        blob_versioned_hashes: ?[]const [32]u8,
-    ) errors.CallError!CallResult {
+        params: CallParams,
+    ) CallResult {
+        // Helper to return failure - if allocation fails, return static failure
+        const makeFailure = struct {
+            fn call(allocator: std.mem.Allocator, gas_left: u64) CallResult {
+                return CallResult.failure(allocator, gas_left) catch CallResult{
+                    .success = false,
+                    .gas_left = gas_left,
+                    .output = &.{},
+                };
+            }
+        }.call;
+
+        // Validate parameters
+        params.validate() catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
+
+        // Extract common parameters
+        const caller = params.getCaller();
+        const gas = @as(i64, @intCast(params.getGas()));
+        const is_create = params.isCreate();
+
+        // Determine target address and value
+        const address: Address = if (is_create) blk: {
+            // For CREATE operations, compute the new contract address
+            if (params == .create2) {
+                // CREATE2: address = keccak256(0xff ++ caller ++ salt ++ keccak256(init_code))[12:]
+                const init_code = params.getInput();
+                const salt = params.create2.salt;
+                break :blk self.computeCreate2Address(caller, salt, init_code) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
+            } else {
+                // CREATE: address = keccak256(rlp([caller, nonce]))[12:]
+                const nonce = self.getNonce(caller);
+                break :blk self.computeCreateAddress(caller, nonce) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
+            }
+        } else params.get_to().?;
+
+        const value = switch (params) {
+            .call => |p| p.value,
+            .callcode => |p| p.value,
+            .create => |p| p.value,
+            .create2 => |p| p.value,
+            .delegatecall, .staticcall => 0,
+        };
+
+        const calldata = params.getInput();
+        const bytecode = self.pending_bytecode;
+        const blob_versioned_hashes = if (self.blob_versioned_hashes.len > 0) self.blob_versioned_hashes else null;
+        const access_list = self.pending_access_list;
+
         // Initialize transaction state
-        try self.initTransactionState(blob_versioned_hashes);
+        self.initTransactionState(blob_versioned_hashes) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
 
-        try self.preWarmTransaction(address);
+        self.preWarmTransaction(address) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
 
-        // Pre-warm access list (EIP-2930)
+        // Pre-warm access list (EIP-2929)
         if (access_list) |list| {
             // Pre-warm all addresses in access list
             for (list.addresses) |addr| {
-                _ = try self.warm_addresses.getOrPut(addr);
+                _ = self.warm_addresses.getOrPut(addr) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
             }
 
             // Pre-warm all storage keys in access list
@@ -338,7 +609,13 @@ pub const Evm = struct {
                     .address = entry.address,
                     .slot = entry.slot,
                 };
-                _ = try self.warm_storage_slots.getOrPut(key);
+                _ = self.warm_storage_slots.getOrPut(key) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
+
+                // If using storage injector, mark slot as warm but we still need to fetch value
+                // The slot is marked warm for gas accounting, but value fetching happens lazily
+                // when get_storage() is first called on this slot
             }
         }
 
@@ -346,11 +623,7 @@ pub const Evm = struct {
         if (value > 0 and self.host != null) {
             const sender_balance = if (self.host) |h| h.getBalance(caller) else 0;
             if (sender_balance < value) {
-                return CallResult{
-                    .success = false,
-                    .gas_left = 0,
-                    .output = &[_]u8{},
-                };
+                return makeFailure(self.arena.allocator(), 0);
             }
             if (self.host) |h| {
                 h.setBalance(caller, sender_balance - value);
@@ -364,7 +637,7 @@ pub const Evm = struct {
         // net of intrinsic costs, similar to inner_call().
 
         // Create and push frame onto stack
-        try self.frames.append(self.arena.allocator(), try Frame.init(
+        self.frames.append(self.arena.allocator(), Frame.init(
             self.arena.allocator(),
             bytecode,
             gas,
@@ -375,7 +648,11 @@ pub const Evm = struct {
             @as(*anyopaque, @ptrCast(self)),
             self.hardfork,
             false, // Top-level transaction is never static
-        ));
+        ) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        }) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
         defer _ = self.frames.pop();
 
         // Execute the frame (don't cache pointer - it may become invalid during nested calls)
@@ -390,16 +667,14 @@ pub const Evm = struct {
                 }
             }
             // Return failure (arena will clean up)
-            return CallResult{
-                .success = false,
-                .gas_left = 0,
-                .output = &[_]u8{},
-            };
+            return makeFailure(self.arena.allocator(), 0);
         };
 
         // Get frame results (refetch pointer after execution)
         const frame = &self.frames.items[self.frames.items.len - 1];
-        const output = try self.arena.allocator().alloc(u8, frame.output.len);
+        const output = self.arena.allocator().alloc(u8, frame.output.len) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
         @memcpy(output, frame.output);
 
         const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
@@ -418,11 +693,15 @@ pub const Evm = struct {
         }
 
         // Return result (execution gas left; intrinsic gas handled by caller)
-        const result = CallResult{
-            .success = !frame.reverted,
-            .gas_left = gas_left,
-            .output = output,
-        };
+        var result = if (frame.reverted)
+            CallResult.revert_with_data(self.arena.allocator(), gas_left, output) catch unreachable
+        else
+            CallResult.success_with_output(self.arena.allocator(), gas_left, output) catch unreachable;
+
+        // Set created address for CREATE operations
+        if (is_create and !frame.reverted) {
+            result.created_address = address;
+        }
 
         // Reset transaction-scoped caches
         self.warm_addresses.clearRetainingCapacity();
@@ -455,45 +734,29 @@ pub const Evm = struct {
                 }
             } else {
                 // Clear all account state in EVM storage
-                try self.balances.put(addr, 0);
-                try self.code.put(addr, &[_]u8{});
-                try self.nonces.put(addr, 0);
-
+                // Note: In non-host mode, we use arena allocation so memory will be reclaimed
+                // when the arena is freed. We simply remove storage entries rather than trying to update them.
                 // Clear permanent storage for self-destructed account
                 // Per Python reference: destroy_account calls destroy_storage
-                // We need to remove all storage slots for this address from both storage and original_storage
                 var storage_it = self.storage.iterator();
-                var slots_to_remove = std.ArrayList(StorageSlotKey){};
-                try slots_to_remove.ensureTotalCapacity(self.arena.allocator(), 10);
                 while (storage_it.next()) |storage_entry| {
                     const key = storage_entry.key_ptr.*;
                     if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
-                        try slots_to_remove.append(self.arena.allocator(), key);
+                        _ = self.storage.fetchRemove(key);
                     }
                 }
-                // Also collect slots from original_storage
+                // Also clear from original_storage
                 var original_storage_it = self.original_storage.iterator();
                 while (original_storage_it.next()) |storage_entry| {
                     const key = storage_entry.key_ptr.*;
                     if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
-                        // Check if not already in list to avoid duplicates
-                        var already_exists = false;
-                        for (slots_to_remove.items) |existing_key| {
-                            if (existing_key.eql(key)) {
-                                already_exists = true;
-                                break;
-                            }
-                        }
-                        if (!already_exists) {
-                            try slots_to_remove.append(self.arena.allocator(), key);
-                        }
+                        _ = self.original_storage.fetchRemove(key);
                     }
                 }
-                // Remove collected slots (can't modify map while iterating)
-                for (slots_to_remove.items) |slot_key| {
-                    _ = self.storage.remove(slot_key);
-                    _ = self.original_storage.remove(slot_key);
-                }
+                // Clear account state by removing from maps
+                _ = self.balances.fetchRemove(addr);
+                _ = self.code.fetchRemove(addr);
+                _ = self.nonces.fetchRemove(addr);
             }
         }
 
@@ -507,23 +770,285 @@ pub const Evm = struct {
         return result;
     }
 
+    /// Main async execution method - supports yielding for async requests
+    /// CRITICAL: NO defer statements that clean up state!
+    /// This wraps call() but supports yielding for async data requests
+    pub fn callOrContinue(
+        self: *Self,
+        input: CallOrContinueInput,
+    ) !CallOrContinueOutput {
+        switch (input) {
+            .call => |params| {
+                // Start new call - set up state
+                try self.initTransactionState(null);
+
+                if (self.storage_injector) |injector| {
+                    log.debug("callOrContinue: Storage injector enabled, clearing cache", .{});
+                    injector.clearCache();
+                } else {
+                    log.debug("callOrContinue: No storage injector", .{});
+                }
+
+                // Extract common parameters (same as call() method)
+                const caller = params.getCaller();
+                const gas = @as(i64, @intCast(params.getGas()));
+                const is_create = params.isCreate();
+
+                // Determine target address and value
+                const address: Address = if (is_create) blk: {
+                    if (params == .create2) {
+                        const init_code = params.getInput();
+                        const salt = params.create2.salt;
+                        break :blk try self.computeCreate2Address(caller, salt, init_code);
+                    } else {
+                        const nonce = self.getNonce(caller);
+                        break :blk try self.computeCreateAddress(caller, nonce);
+                    }
+                } else params.get_to().?;
+
+                const value = switch (params) {
+                    .call => |p| p.value,
+                    .callcode => |p| p.value,
+                    .create => |p| p.value,
+                    .create2 => |p| p.value,
+                    .delegatecall, .staticcall => 0,
+                };
+
+                const calldata = params.getInput();
+                const bytecode = self.pending_bytecode;
+
+                try self.preWarmTransaction(address);
+
+                // Pre-warm access list if present
+                if (self.pending_access_list) |list| {
+                    for (list.addresses) |addr| {
+                        _ = try self.warm_addresses.getOrPut(addr);
+                    }
+                    for (list.storage_keys) |entry| {
+                        const key = StorageSlotKey{
+                            .address = entry.address,
+                            .slot = entry.slot,
+                        };
+                        _ = try self.warm_storage_slots.getOrPut(key);
+                    }
+                }
+
+                // Transfer value if needed
+                if (value > 0 and self.host != null) {
+                    const sender_balance = if (self.host) |h| h.getBalance(caller) else 0;
+                    if (sender_balance < value) {
+                        return error.InsufficientBalance;
+                    }
+                    if (self.host) |h| {
+                        h.setBalance(caller, sender_balance - value);
+                        const recipient_balance = h.getBalance(address);
+                        h.setBalance(address, recipient_balance + value);
+                    }
+                }
+
+                // Create frame WITHOUT defer (critical!)
+                log.debug("callOrContinue: Creating frame with address={any}", .{address.bytes});
+                try self.frames.append(self.arena.allocator(), try Frame.init(
+                    self.arena.allocator(),
+                    bytecode,
+                    gas,
+                    caller,
+                    address,
+                    value,
+                    calldata,
+                    @as(*anyopaque, @ptrCast(self)),
+                    self.hardfork,
+                    false, // Top-level is never static
+                ));
+
+                // Execute (may yield)
+                return try self.executeUntilYieldOrComplete();
+            },
+
+            .continue_with_storage => |data| {
+                const key = StorageSlotKey{
+                    .address = data.address,
+                    .slot = data.slot,
+                };
+
+                // Store value in both cache and storage
+                if (self.storage_injector) |injector| {
+                    _ = try injector.storage_cache.put(key, data.value);
+                }
+
+                // Also put in self.storage so get_storage can find it
+                try self.storage.put(key, data.value);
+
+                // Clear the request
+                self.async_data_request = .none;
+
+                // Continue execution
+                return try self.executeUntilYieldOrComplete();
+            },
+
+            .continue_with_balance => |data| {
+                if (self.storage_injector) |injector| {
+                    try injector.balance_cache.put(data.address, data.balance);
+                }
+
+                // Clear the request
+                self.async_data_request = .none;
+
+                return try self.executeUntilYieldOrComplete();
+            },
+
+            .continue_after_commit => {
+                // Commit done - finalize and return result
+                return try self.finalizeAndReturnResult();
+            },
+
+            else => return error.UnsupportedContinueType,
+        }
+    }
+
+    /// Execute until we hit a yield point or complete
+    /// NO defer statements!
+    fn executeUntilYieldOrComplete(self: *Self) !CallOrContinueOutput {
+        while (self.frames.items.len > 0) {
+            const frame = &self.frames.items[self.frames.items.len - 1];
+
+            // Execute frame - may return error.NeedAsyncData
+            frame.execute() catch |err| {
+                if (err == error.NeedAsyncData) {
+                    // Read the request from evm.async_data_request
+                    return switch (self.async_data_request) {
+                        .storage => |req| .{ .need_storage = .{
+                            .address = req.address,
+                            .slot = req.slot,
+                        } },
+                        .balance => |req| .{ .need_balance = .{ .address = req.address } },
+                        .code => |req| .{ .need_code = .{ .address = req.address } },
+                        .nonce => |req| .{ .need_nonce = .{ .address = req.address } },
+                        .none => error.InvalidAsyncState,
+                    };
+                }
+
+                // Real error - return it (state preserved for debugging)
+                return err;
+            };
+
+            // Frame completed successfully
+            // Check if this is the last frame AND we have storage injector
+            if (self.frames.items.len == 1 and self.storage_injector != null) {
+                log.debug("executeUntilYieldOrComplete: Last frame, dumping changes", .{});
+                // Don't pop yet - need to dump changes first
+                const changes_json = try self.dumpStateChanges();
+                log.debug("executeUntilYieldOrComplete: changes_json.len = {}", .{changes_json.len});
+                return .{ .ready_to_commit = .{ .changes_json = changes_json } };
+            }
+
+            // Pop frame (safe - not returning early)
+            _ = self.frames.pop();
+        }
+
+        // All frames complete, no storage injector
+        return try self.finalizeAndReturnResult();
+    }
+
+    /// Finalize execution and return result
+    /// Called only when we're truly done (after commit if needed)
+    fn finalizeAndReturnResult(self: *Self) !CallOrContinueOutput {
+        // At this point frames should be empty OR we have one frame to finalize
+        if (self.frames.items.len > 0) {
+            const frame = self.frames.items[self.frames.items.len - 1];
+            const output = try self.arena.allocator().dupe(u8, frame.output);
+            const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
+            const success = !frame.reverted;
+
+            // NOW we can pop (we're returning the final result)
+            _ = self.frames.pop();
+
+            // Clean up transaction state (safe now)
+            self.warm_addresses.clearRetainingCapacity();
+            self.warm_storage_slots.clearRetainingCapacity();
+            self.transient_storage.clearRetainingCapacity();
+
+            return .{ .result = CallResult{
+                .success = success,
+                .gas_left = gas_left,
+                .output = output,
+            } };
+        }
+
+        return .{ .result = CallResult{
+            .success = true,
+            .gas_left = 0,
+            .output = &.{},
+        } };
+    }
+
+    /// Dump state changes to JSON
+    fn dumpStateChanges(self: *Self) ![]const u8 {
+        if (self.storage_injector) |injector| {
+            const result = try injector.dumpChanges(self);
+            log.debug("dumpStateChanges: Got {} bytes from injector", .{result.len});
+            // Copy to persistent buffer in Evm struct
+            const copy_len = @min(result.len, self.pending_state_changes_buffer.len);
+            if (copy_len > 0) {
+                @memcpy(self.pending_state_changes_buffer[0..copy_len], result[0..copy_len]);
+            }
+            self.pending_state_changes_len = copy_len;
+            return self.pending_state_changes_buffer[0..copy_len];
+        }
+        log.debug("dumpStateChanges: No injector, returning empty", .{});
+        self.pending_state_changes_len = 0;
+        return &.{};
+    }
+
     /// Handle inner call from frame (like evm.inner_call)
+    /// Execute a nested EVM call - used for calls from within the EVM (e.g., CALL, DELEGATECALL opcodes).
+    /// This handles nested calls and manages depth tracking.
+    /// Follows the same API pattern as guillotine performance EVM.
     pub fn inner_call(
         self: *Self,
-        address: Address,
-        value: u256,
-        input: []const u8,
-        gas: u64,
-        call_type: HostInterface.CallType,
-    ) errors.CallError!CallResult {
+        params: CallParams,
+    ) CallResult {
+        // Helper to return failure - if allocation fails, return static failure
+        const makeFailure = struct {
+            fn call(allocator: std.mem.Allocator, gas_left: u64) CallResult {
+                return CallResult.failure(allocator, gas_left) catch CallResult{
+                    .success = false,
+                    .gas_left = gas_left,
+                    .output = &.{},
+                };
+            }
+        }.call;
+        // Extract parameters from CallParams union
+        const address: Address = switch (params) {
+            .call => |p| p.to,
+            .callcode => |p| p.to,
+            .delegatecall => |p| p.to,
+            .staticcall => |p| p.to,
+            .create => unreachable, // CREATE should use inner_create
+            .create2 => unreachable, // CREATE2 should use inner_create
+        };
+
+        const value: u256 = if (params.hasValue()) switch (params) {
+            .call => |p| p.value,
+            .callcode => |p| p.value,
+            else => 0,
+        } else 0;
+
+        const input: []const u8 = params.getInput();
+        const gas: u64 = params.getGas();
+
+        // Determine call type
+        const call_type: enum { Call, CallCode, DelegateCall, StaticCall } = switch (params) {
+            .call => .Call,
+            .callcode => .CallCode,
+            .delegatecall => .DelegateCall,
+            .staticcall => .StaticCall,
+            else => unreachable,
+        };
         // Check call depth (STACK_DEPTH_LIMIT = 1024)
         // Per Python reference (system.py:297-300), depth exceeded refunds gas
         if (self.frames.items.len >= 1024) {
-            return CallResult{
-                .success = false,
-                .gas_left = gas,
-                .output = &[_]u8{},
-            };
+            return makeFailure(self.arena.allocator(), gas);
         }
 
         // Get caller and execution context address based on call type
@@ -545,7 +1070,10 @@ pub const Evm = struct {
         var transient_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
         var it = self.transient_storage.iterator();
         while (it.next()) |entry| {
-            try transient_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
+            transient_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                // Memory allocation failed during snapshot - fail the call
+                return makeFailure(self.arena.allocator(), gas);
+            };
         }
 
         // Snapshot selfdestructed_accounts before the call (EIP-6780 revert handling)
@@ -553,7 +1081,10 @@ pub const Evm = struct {
         var selfdestruct_snapshot = std.AutoHashMap(Address, void).init(self.arena.allocator());
         var selfdestruct_it = self.selfdestructed_accounts.iterator();
         while (selfdestruct_it.next()) |entry| {
-            try selfdestruct_snapshot.put(entry.key_ptr.*, {});
+            selfdestruct_snapshot.put(entry.key_ptr.*, {}) catch {
+                // Memory allocation failed during snapshot - fail the call
+                return makeFailure(self.arena.allocator(), gas);
+            };
         }
 
         // Snapshot balances before the call (for SELFDESTRUCT revert handling)
@@ -569,23 +1100,32 @@ pub const Evm = struct {
 
         // Pre-populate with caller and callee since we know they'll be affected
         if (self.host) |h| {
-            try balance_snapshot.put(frame_caller, h.getBalance(frame_caller));
-            try balance_snapshot.put(address, h.getBalance(address));
+            balance_snapshot.put(frame_caller, h.getBalance(frame_caller)) catch {
+                // Memory allocation failed during snapshot - fail the call
+                return makeFailure(self.arena.allocator(), gas);
+            };
+            balance_snapshot.put(address, h.getBalance(address)) catch {
+                // Memory allocation failed during snapshot - fail the call
+                return makeFailure(self.arena.allocator(), gas);
+            };
         } else {
             var balance_it = self.balances.iterator();
             while (balance_it.next()) |entry| {
-                try balance_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
+                balance_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                    // Memory allocation failed during snapshot - fail the call
+                    return makeFailure(self.arena.allocator(), gas);
+                };
             }
         }
 
         const execution_caller: Address = switch (call_type) {
-            .Call, .StaticCall, .Create, .Create2 => frame_caller,
+            .Call, .StaticCall => frame_caller,
             .DelegateCall => frame_caller_caller,
             .CallCode => frame_caller,
         };
 
         const execution_address: Address = switch (call_type) {
-            .Call, .StaticCall, .Create, .Create2 => address,
+            .Call, .StaticCall => address,
             .DelegateCall, .CallCode => frame_caller,
         };
 
@@ -595,11 +1135,7 @@ pub const Evm = struct {
             if (caller_balance < value) {
                 // Insufficient balance - call fails
                 // std.debug.print("CALL FAILED: insufficient balance (caller={any} needs {} has {})\n", .{frame_caller.bytes, value, caller_balance});
-                return CallResult{
-                    .success = false,
-                    .gas_left = gas,
-                    .output = &[_]u8{},
-                };
+                return makeFailure(self.arena.allocator(), gas);
             }
 
             // Transfer balance
@@ -609,9 +1145,15 @@ pub const Evm = struct {
                 const callee_balance = h.getBalance(address);
                 h.setBalance(address, callee_balance + value);
             } else {
-                try self.balances.put(frame_caller, caller_balance - value);
+                self.balances.put(frame_caller, caller_balance - value) catch {
+                    // Memory allocation failed during balance transfer - fail the call
+                    return makeFailure(self.arena.allocator(), gas);
+                };
                 const callee_balance = self.balances.get(address) orelse 0;
-                try self.balances.put(address, callee_balance + value);
+                self.balances.put(address, callee_balance + value) catch {
+                    // Memory allocation failed during balance transfer - fail the call
+                    return makeFailure(self.arena.allocator(), gas);
+                };
             }
         }
 
@@ -619,7 +1161,50 @@ pub const Evm = struct {
         const code = self.get_code(address);
         // std.debug.print("DEBUG inner_call: address={any} code.len={} frames={}\n", .{address.bytes, code.len, self.frames.items.len});
         if (code.len == 0) {
-            // Check if this is a precompile address (hardfork-aware)
+            // Check for JavaScript custom precompile handler first
+            const root_c = @import("root_c.zig");
+            var output_len: usize = 0;
+            var output_ptr: [*]u8 = undefined;
+            var gas_used: u64 = 0;
+
+            if (root_c.tryCallJsPrecompileHandler(
+                &address.bytes,
+                input.ptr,
+                input.len,
+                gas,
+                &output_len,
+                &output_ptr,
+                &gas_used,
+            )) {
+                // JavaScript precompile handler executed successfully
+                const output = if (output_len > 0) output_ptr[0..output_len] else &[_]u8{};
+                return CallResult{
+                    .success = true,
+                    .gas_left = gas - gas_used,
+                    .output = output,
+                };
+            }
+
+            // Check for config-based precompile override (native Zig handlers)
+            if (self.getPrecompileOverride(address)) |override| {
+                const result = override.execute(
+                    override.context,
+                    self.arena.allocator(),
+                    input,
+                    gas,
+                ) catch |err| {
+                    std.debug.print("Custom precompile execution error: {}\n", .{err});
+                    return makeFailure(self.arena.allocator(), 0);
+                };
+
+                return CallResult{
+                    .success = result.success,
+                    .gas_left = if (result.success) gas - result.gas_used else 0,
+                    .output = result.output,
+                };
+            }
+
+            // Check if this is a standard precompile address (hardfork-aware)
             if (precompiles.is_precompile(address, self.hardfork)) {
                 // Use the precompiles module to handle all precompile execution
                 const result = precompiles.execute_precompile(
@@ -631,11 +1216,7 @@ pub const Evm = struct {
                 ) catch |err| {
                     // On error, return failure
                     std.debug.print("Precompile execution error: {}\n", .{err});
-                    return CallResult{
-                        .success = false,
-                        .gas_left = 0,
-                        .output = &[_]u8{},
-                    };
+                    return makeFailure(self.arena.allocator(), 0);
                 };
 
                 return CallResult{
@@ -646,10 +1227,10 @@ pub const Evm = struct {
             }
 
             // For non-precompile empty accounts, return success with no output
-            return CallResult{
+            return CallResult.success_empty(self.arena.allocator(), gas) catch CallResult{
                 .success = true,
                 .gas_left = gas,
-                .output = &[_]u8{},
+                .output = &.{},
             };
         }
 
@@ -663,7 +1244,7 @@ pub const Evm = struct {
 
         // Safely cast gas to i64 - if it exceeds i64::MAX, cap it (shouldn't happen in practice)
         const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
-        try self.frames.append(self.arena.allocator(), try Frame.init(
+        self.frames.append(self.arena.allocator(), Frame.init(
             self.arena.allocator(),
             code,
             frame_gas,
@@ -674,7 +1255,11 @@ pub const Evm = struct {
             @as(*anyopaque, @ptrCast(self)),
             self.hardfork,
             is_static,
-        ));
+        ) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        }) catch {
+            return makeFailure(self.arena.allocator(), 0);
+        };
         errdefer _ = self.frames.pop();
 
         // Execute frame (don't cache pointer - it may become invalid during nested calls)
@@ -695,10 +1280,15 @@ pub const Evm = struct {
                 }
             } else {
                 // Restore all balances for non-host mode
+                // NOTE: Using arena allocator, so memory failures here are critical system failures
+                // We cannot recover gracefully, so we return failure result
                 self.balances.clearRetainingCapacity();
                 var balance_restore_it = balance_snapshot.iterator();
                 while (balance_restore_it.next()) |entry| {
-                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
+                    self.balances.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                        // Critical: cannot restore balances - return failure with remaining gas
+                        return makeFailure(self.arena.allocator(), 0);
+                    };
                 }
             }
 
@@ -706,14 +1296,13 @@ pub const Evm = struct {
             self.transient_storage.clearRetainingCapacity();
             var restore_it = transient_snapshot.iterator();
             while (restore_it.next()) |entry| {
-                try self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                    // Critical: cannot restore transient storage - return failure with remaining gas
+                    return makeFailure(self.arena.allocator(), 0);
+                };
             }
 
-            return CallResult{
-                .success = false,
-                .gas_left = 0,
-                .output = &[_]u8{},
-            };
+            return makeFailure(self.arena.allocator(), 0);
         };
 
         // Get frame results (refetch pointer after execution)
@@ -721,7 +1310,10 @@ pub const Evm = struct {
 
         // Store return data
         const output = if (frame.output.len > 0) blk: {
-            const output_copy = try self.arena.allocator().alloc(u8, frame.output.len);
+            const output_copy = self.arena.allocator().alloc(u8, frame.output.len) catch {
+                // Allocation failed - return empty output
+                break :blk &[_]u8{};
+            };
             @memcpy(output_copy, frame.output);
             break :blk output_copy;
         } else &[_]u8{};
@@ -746,7 +1338,7 @@ pub const Evm = struct {
             self.transient_storage.clearRetainingCapacity();
             var restore_it = transient_snapshot.iterator();
             while (restore_it.next()) |entry| {
-                try self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {};
             }
         }
 
@@ -756,7 +1348,7 @@ pub const Evm = struct {
             self.selfdestructed_accounts.clearRetainingCapacity();
             var restore_selfdestruct_it = selfdestruct_snapshot.iterator();
             while (restore_selfdestruct_it.next()) |entry| {
-                try self.selfdestructed_accounts.put(entry.key_ptr.*, {});
+                self.selfdestructed_accounts.put(entry.key_ptr.*, {}) catch {};
             }
         }
 
@@ -773,7 +1365,7 @@ pub const Evm = struct {
                 self.balances.clearRetainingCapacity();
                 var balance_restore_it = balance_snapshot.iterator();
                 while (balance_restore_it.next()) |entry| {
-                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
+                    self.balances.put(entry.key_ptr.*, entry.value_ptr.*) catch {};
                 }
             }
         }
@@ -1297,11 +1889,31 @@ pub const Evm = struct {
     }
 
     /// Get storage value (called by frame)
-    pub fn get_storage(self: *Self, address: Address, slot: u256) u256 {
+    pub fn get_storage(self: *Self, address: Address, slot: u256) !u256 {
+        const key = StorageSlotKey{ .address = address, .slot = slot };
+
+        // If using storage injector, check cache first
+        if (self.storage_injector) |injector| {
+            log.debug("get_storage: Using storage injector for slot {}", .{slot});
+            // Check cache first
+            if (injector.storage_cache.get(key)) |value| {
+                log.debug("get_storage: Cache HIT for slot {}, value={}", .{ slot, value });
+                return value; // Cache hit
+            }
+
+            // Cache miss - yield to fetch from async source
+            log.debug("get_storage: Cache MISS for slot {}, yielding", .{slot});
+            self.async_data_request = .{ .storage = .{
+                .address = address,
+                .slot = slot,
+            } };
+            return errors.CallError.NeedAsyncData;
+        }
+
+        // No injector - use host or internal HashMap
         if (self.host) |h| {
             return h.getStorage(address, slot);
         }
-        const key = StorageSlotKey{ .address = address, .slot = slot };
         return self.storage.get(key) orelse 0;
     }
 
@@ -1316,6 +1928,11 @@ pub const Evm = struct {
             else
                 self.storage.get(key) orelse 0;
             try self.original_storage.put(key, current);
+        }
+
+        // Mark dirty if using injector
+        if (self.storage_injector) |injector| {
+            try injector.markStorageDirty(address, slot);
         }
 
         if (self.host) |h| {
@@ -1390,4 +2007,248 @@ pub const Evm = struct {
             try frame.step();
         }
     }
-};
+    };
+}
+
+// Default EVM instance for backward compatibility
+pub const DefaultEvm = Evm(.{});
+
+// ============================================================================
+// Tests for Async Storage Injection (Phase 1: Core Types and Error Handling)
+// ============================================================================
+
+test "AsyncDataRequest - union size and field access" {
+    const testing = std.testing;
+
+    // Test none variant
+    const req_none = AsyncDataRequest{ .none = {} };
+    try testing.expect(req_none == .none);
+
+    // Test storage variant
+    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+    const req_storage = AsyncDataRequest{ .storage = .{
+        .address = addr,
+        .slot = 42,
+    } };
+    try testing.expect(req_storage == .storage);
+    try testing.expect(req_storage.storage.address.equals(addr));
+    try testing.expectEqual(42, req_storage.storage.slot);
+
+    // Test balance variant
+    const req_balance = AsyncDataRequest{ .balance = .{
+        .address = addr,
+    } };
+    try testing.expect(req_balance == .balance);
+    try testing.expect(req_balance.balance.address.equals(addr));
+
+    // Test code variant
+    const req_code = AsyncDataRequest{ .code = .{
+        .address = addr,
+    } };
+    try testing.expect(req_code == .code);
+    try testing.expect(req_code.code.address.equals(addr));
+
+    // Test nonce variant
+    const req_nonce = AsyncDataRequest{ .nonce = .{
+        .address = addr,
+    } };
+    try testing.expect(req_nonce == .nonce);
+    try testing.expect(req_nonce.nonce.address.equals(addr));
+}
+
+test "AsyncDataRequest - can write and read each variant" {
+    const testing = std.testing;
+
+    var request: AsyncDataRequest = .none;
+
+    // Write storage request
+    const addr = primitives.Address.from_hex("0xabcdef0123456789abcdef0123456789abcdef01") catch unreachable;
+    request = .{ .storage = .{ .address = addr, .slot = 100 } };
+    try testing.expect(request == .storage);
+    try testing.expectEqual(100, request.storage.slot);
+
+    // Write balance request
+    request = .{ .balance = .{ .address = addr } };
+    try testing.expect(request == .balance);
+
+    // Write back to none
+    request = .none;
+    try testing.expect(request == .none);
+}
+
+test "error.NeedAsyncData can be caught and identified" {
+    const testing = std.testing;
+
+    const TestFn = struct {
+        fn needsData() !void {
+            return errors.CallError.NeedAsyncData;
+        }
+    };
+
+    const result = TestFn.needsData();
+    try testing.expectError(errors.CallError.NeedAsyncData, result);
+}
+
+test "error.NeedAsyncData propagates through call stack" {
+    const testing = std.testing;
+
+    const TestFn = struct {
+        fn level3() !void {
+            return errors.CallError.NeedAsyncData;
+        }
+
+        fn level2() !void {
+            try level3();
+        }
+
+        fn level1() !void {
+            try level2();
+        }
+    };
+
+    const result = TestFn.level1();
+    try testing.expectError(errors.CallError.NeedAsyncData, result);
+}
+
+test "Evm.async_data_request field initialized to .none" {
+    const testing = std.testing;
+
+    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    defer evm.deinit();
+
+    try testing.expect(evm.async_data_request == .none);
+}
+
+test "Evm.async_data_request can write/read different request types" {
+    const testing = std.testing;
+
+    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    defer evm.deinit();
+
+    const addr = primitives.Address.from_hex("0x1111111111111111111111111111111111111111") catch unreachable;
+
+    // Write storage request
+    evm.async_data_request = .{ .storage = .{ .address = addr, .slot = 99 } };
+    try testing.expect(evm.async_data_request == .storage);
+    try testing.expectEqual(99, evm.async_data_request.storage.slot);
+
+    // Write balance request
+    evm.async_data_request = .{ .balance = .{ .address = addr } };
+    try testing.expect(evm.async_data_request == .balance);
+
+    // Clear request
+    evm.async_data_request = .none;
+    try testing.expect(evm.async_data_request == .none);
+}
+
+// ============================================================================
+// Tests for Phase 4: callOrContinue() and Async Execution
+// ============================================================================
+
+test "CallOrContinueInput/Output - can construct each variant" {
+    const testing = std.testing;
+
+    const addr = primitives.Address.from_hex("0x1111111111111111111111111111111111111111") catch unreachable;
+
+    // Test Input variants
+    const call_input: DefaultEvm.CallOrContinueInput = .{ .call = .{
+        .call = .{
+            .caller = addr,
+            .to = addr,
+            .gas = 1000,
+            .value = 0,
+            .input = &[_]u8{},
+        },
+    } };
+    try testing.expect(call_input == .call);
+
+    const storage_input: DefaultEvm.CallOrContinueInput = .{ .continue_with_storage = .{
+        .address = addr,
+        .slot = 42,
+        .value = 100,
+    } };
+    try testing.expect(storage_input == .continue_with_storage);
+
+    // Test Output variants
+    const result_output: DefaultEvm.CallOrContinueOutput = .{ .result = .{
+        .success = true,
+        .gas_left = 500,
+        .output = &[_]u8{},
+    } };
+    try testing.expect(result_output == .result);
+
+    const storage_output: DefaultEvm.CallOrContinueOutput = .{ .need_storage = .{
+        .address = addr,
+        .slot = 99,
+    } };
+    try testing.expect(storage_output == .need_storage);
+}
+
+test "callOrContinue - returns .need_storage on cache miss" {
+    const testing = std.testing;
+
+    // Create EVM with storage injector
+    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    defer evm.deinit();
+
+    var injector = try StorageInjector.init(evm.arena.allocator());
+    evm.storage_injector = &injector;
+
+    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+
+    // Bytecode: PUSH1 0x00, SLOAD - will trigger async request
+    const bytecode = [_]u8{ 0x60, 0x00, 0x54 }; // PUSH1 0, SLOAD
+    evm.pending_bytecode = &bytecode;
+
+    const params: DefaultEvm.CallParams = .{ .call = .{
+        .caller = addr,
+        .to = addr,
+        .gas = 100000,
+        .value = 0,
+        .input = &[_]u8{},
+    } };
+
+    const output = try evm.callOrContinue(.{ .call = params });
+
+    // Should yield with storage request
+    try testing.expect(output == .need_storage);
+    try testing.expectEqual(0, output.need_storage.slot);
+}
+
+test "callOrContinue - continue_with_storage resumes execution" {
+    const testing = std.testing;
+
+    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    defer evm.deinit();
+
+    var injector = try StorageInjector.init(evm.arena.allocator());
+    evm.storage_injector = &injector;
+
+    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+
+    // Bytecode: PUSH1 0x00, SLOAD, STOP
+    const bytecode = [_]u8{ 0x60, 0x00, 0x54, 0x00 };
+    evm.pending_bytecode = &bytecode;
+
+    const params: DefaultEvm.CallParams = .{ .call = .{
+        .caller = addr,
+        .to = addr,
+        .gas = 100000,
+        .value = 0,
+        .input = &[_]u8{},
+    } };
+
+    // First call - should yield
+    const output1 = try evm.callOrContinue(.{ .call = params });
+    try testing.expect(output1 == .need_storage);
+
+    // Continue with storage value
+    const output2 = try evm.callOrContinue(.{ .continue_with_storage = .{
+        .address = addr,
+        .slot = 0,
+        .value = 42,
+    } });
+
+    // Should complete with ready_to_commit (if storage injector) or result
+    try testing.expect(output2 == .ready_to_commit or output2 == .result);
+}

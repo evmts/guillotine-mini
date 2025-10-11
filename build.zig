@@ -266,8 +266,8 @@ pub fn build(b: *std.Build) void {
     const spec_test_step = b.step("specs", "Run execution-specs tests");
     spec_test_step.dependOn(&run_spec_tests.step);
 
-    // Add spec tests to main test step
-    test_step.dependOn(&run_spec_tests.step);
+    // Spec tests are separate - use `zig build specs` to run them
+    // test_step.dependOn(&run_spec_tests.step);
 
     // Create hardfork-specific test suites
     const hardforks = [_]struct { name: []const u8, desc: []const u8 }{
@@ -658,6 +658,14 @@ pub fn build(b: *std.Build) void {
         "evm_get_storage",
         "evm_set_balance",
         "evm_set_code",
+        "evm_set_access_list_addresses",
+        "evm_set_access_list_storage_keys",
+        "evm_set_blob_hashes",
+        // Async protocol functions
+        "evm_call_ffi",
+        "evm_continue_ffi",
+        "evm_get_state_changes",
+        "evm_enable_storage_injector",
     };
 
     const wasm_install = b.addInstallArtifact(wasm_lib, .{});

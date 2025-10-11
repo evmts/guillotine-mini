@@ -1,1 +1,0 @@
-Weekly limit reached ∙ resets Oct 8 at 3pm
