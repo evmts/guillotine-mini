@@ -165,6 +165,7 @@ pub fn Evm(config: EvmConfig) type {
     transient_storage: std.AutoHashMap(StorageSlotKey, u256),
     created_accounts: std.AutoHashMap(Address, void),
     selfdestructed_accounts: std.AutoHashMap(Address, void),  // EIP-6780: Track accounts marked for deletion
+    touched_accounts: std.AutoHashMap(Address, void),  // Pre-Paris: Track touched accounts for deletion if empty
     balances: std.AutoHashMap(Address, u256),
     nonces: std.AutoHashMap(Address, u64),
     code: std.AutoHashMap(Address, []const u8),
@@ -174,7 +175,8 @@ pub fn Evm(config: EvmConfig) type {
     // Current call's balance snapshot for copy-on-write (for SELFDESTRUCT revert handling)
     // This is set at the start of inner_call and cleared at the end
     current_balance_snapshot: ?*std.AutoHashMap(Address, u256),
-    hardfork: Hardfork,
+    hardfork: Hardfork = Hardfork.DEFAULT,
+    fork_transition: ?@import("hardfork.zig").ForkTransition = null,
     origin: Address,
     gas_price: u256,
     host: ?HostInterface,
@@ -213,6 +215,7 @@ pub fn Evm(config: EvmConfig) type {
             .transient_storage = undefined,
             .created_accounts = undefined,
             .selfdestructed_accounts = undefined,
+            .touched_accounts = undefined,
             .balances = undefined,
             .nonces = undefined,
             .code = undefined,
@@ -270,6 +273,14 @@ pub fn Evm(config: EvmConfig) type {
         self.arena.deinit();
     }
 
+    /// Get the active fork based on block context (handles fork transitions)
+    pub fn getActiveFork(self: *const Self) Hardfork {
+        if (self.fork_transition) |transition| {
+            return transition.getActiveFork(self.block_context.block_number, self.block_context.block_timestamp);
+        }
+        return self.hardfork;
+    }
+
     /// Initialize internal state (hash maps, lists, etc.) for transaction execution
     /// Must be called before any transaction execution (call or inner_create)
     pub fn initTransactionState(self: *Self, blob_versioned_hashes: ?[]const [32]u8) !void {
@@ -286,6 +297,7 @@ pub fn Evm(config: EvmConfig) type {
         self.transient_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
         self.created_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
         self.selfdestructed_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
+        self.touched_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
 
         // Set blob versioned hashes for EIP-4844
         // CRITICAL: Must copy blob hashes into arena to ensure correct lifetime
@@ -1087,6 +1099,24 @@ pub fn Evm(config: EvmConfig) type {
             };
         }
 
+        // Snapshot warm addresses before the call (EIP-2929)
+        // Per Python reference (incorporate_child_on_error), accessed_addresses
+        // are only propagated on success, not on failure
+        var warm_addresses_snapshot = std.AutoHashMap(Address, void).init(self.arena.allocator());
+        var warm_addr_it = self.warm_addresses.iterator();
+        while (warm_addr_it.next()) |entry| {
+            try warm_addresses_snapshot.put(entry.key_ptr.*, {});
+        }
+
+        // Snapshot warm storage slots before the call (EIP-2929)
+        // Per Python reference (incorporate_child_on_error), accessed_storage_keys
+        // are only propagated on success, not on failure
+        var warm_storage_snapshot = std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false).init(self.arena.allocator());
+        var warm_storage_it = self.warm_storage_slots.iterator();
+        while (warm_storage_it.next()) |entry| {
+            _ = try warm_storage_snapshot.put(entry.key_ptr.*, {});
+        }
+
         // Snapshot balances before the call (for SELFDESTRUCT revert handling)
         // We use copy-on-write: addresses are snapshotted when first modified
         var balance_snapshot = std.AutoHashMap(Address, u256).init(self.arena.allocator());
@@ -1270,6 +1300,20 @@ pub fn Evm(config: EvmConfig) type {
             // Per Python: incorporate_child_on_error does NOT add child's refund_counter
             self.gas_refund = refund_snapshot;
 
+            // Restore warm addresses on failure (EIP-2929)
+            self.warm_addresses.clearRetainingCapacity();
+            var warm_addr_restore_it = warm_addresses_snapshot.iterator();
+            while (warm_addr_restore_it.next()) |entry| {
+                try self.warm_addresses.put(entry.key_ptr.*, {});
+            }
+
+            // Restore warm storage slots on failure (EIP-2929)
+            self.warm_storage_slots.clearRetainingCapacity();
+            var warm_storage_restore_it = warm_storage_snapshot.iterator();
+            while (warm_storage_restore_it.next()) |entry| {
+                _ = try self.warm_storage_slots.put(entry.key_ptr.*, {});
+            }
+
             // Restore balances on failure (handles SELFDESTRUCT balance transfers)
             if (self.host) |h| {
                 // Restore all snapshotted balances for host mode
@@ -1330,6 +1374,24 @@ pub fn Evm(config: EvmConfig) type {
         // This applies to both reverts and exceptional halts
         if (frame.reverted) {
             self.gas_refund = refund_snapshot;
+        }
+
+        // Restore warm addresses on revert (EIP-2929)
+        if (frame.reverted) {
+            self.warm_addresses.clearRetainingCapacity();
+            var warm_addr_restore_it = warm_addresses_snapshot.iterator();
+            while (warm_addr_restore_it.next()) |entry| {
+                try self.warm_addresses.put(entry.key_ptr.*, {});
+            }
+        }
+
+        // Restore warm storage slots on revert (EIP-2929)
+        if (frame.reverted) {
+            self.warm_storage_slots.clearRetainingCapacity();
+            var warm_storage_restore_it = warm_storage_snapshot.iterator();
+            while (warm_storage_restore_it.next()) |entry| {
+                _ = try self.warm_storage_slots.put(entry.key_ptr.*, {});
+            }
         }
 
         // Restore transient storage on revert (EIP-1153)
