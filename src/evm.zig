@@ -172,9 +172,9 @@ pub fn Evm(config: EvmConfig) type {
     warm_addresses: std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false),
     warm_storage_slots: std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false),
     gas_refund: u64,
-    // Current call's balance snapshot for copy-on-write (for SELFDESTRUCT revert handling)
-    // This is set at the start of inner_call and cleared at the end
-    current_balance_snapshot: ?*std.AutoHashMap(Address, u256),
+    // Stack of balance snapshots for nested calls (for SELFDESTRUCT revert handling)
+    // Each call pushes a snapshot, and on revert we restore from that snapshot
+    balance_snapshot_stack: std.ArrayList(*std.AutoHashMap(Address, u256)),
     hardfork: Hardfork = Hardfork.DEFAULT,
     fork_transition: ?@import("hardfork.zig").ForkTransition = null,
     origin: Address,
@@ -222,8 +222,8 @@ pub fn Evm(config: EvmConfig) type {
             .warm_addresses = undefined,
             .warm_storage_slots = undefined,
             .gas_refund = 0,
-            .current_balance_snapshot = null,
-            .hardfork = hardfork orelse config.hardfork,
+            .balance_snapshot_stack = undefined,
+            .hardfork = hardfork orelse Hardfork.DEFAULT,
             .block_context = block_context orelse .{
                 .chain_id = 1,
                 .block_number = 0,
@@ -298,6 +298,7 @@ pub fn Evm(config: EvmConfig) type {
         self.created_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
         self.selfdestructed_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
         self.touched_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
+        self.balance_snapshot_stack = std.ArrayList(*std.AutoHashMap(Address, u256)){};
 
         // Set blob versioned hashes for EIP-4844
         // CRITICAL: Must copy blob hashes into arena to ensure correct lifetime
@@ -357,9 +358,13 @@ pub fn Evm(config: EvmConfig) type {
 
     /// Set balance with copy-on-write snapshot for revert handling
     /// This should be called instead of direct host.setBalance() when inside a frame
+    /// IMPORTANT: Snapshots the balance in ALL active snapshots on the stack, not just the current one.
+    /// This ensures that parent frames can restore state when they revert, even if the balance
+    /// was modified in a nested call.
     pub fn setBalanceWithSnapshot(self: *Self, addr: Address, new_balance: u256) !void {
-        // If we have a current snapshot, ensure this address is in it before modifying
-        if (self.current_balance_snapshot) |snapshot| {
+        // Snapshot in ALL active snapshots (from outermost to innermost)
+        // This ensures parent frames can restore state even if modified in nested calls
+        for (self.balance_snapshot_stack.items) |snapshot| {
             if (!snapshot.contains(addr)) {
                 // Snapshot the current balance before modifying
                 const current_balance = if (self.host) |h|
@@ -367,7 +372,6 @@ pub fn Evm(config: EvmConfig) type {
                 else
                     self.balances.get(addr) orelse 0;
                 try snapshot.put(addr, current_balance);
-                // std.debug.print("DEBUG: Snapshotting addr={any} old_balance={} new_balance={}\n", .{addr.bytes, current_balance, new_balance});
             }
         }
 
@@ -1117,36 +1121,44 @@ pub fn Evm(config: EvmConfig) type {
             _ = try warm_storage_snapshot.put(entry.key_ptr.*, {});
         }
 
-        // Snapshot balances before the call (for SELFDESTRUCT revert handling)
-        // We use copy-on-write: addresses are snapshotted when first modified
-        var balance_snapshot = std.AutoHashMap(Address, u256).init(self.arena.allocator());
+        // Snapshot original_storage before the call
+        // This is critical for correct SSTORE gas calculation after reverts
+        // When a call reverts, any entries added to original_storage during that call
+        // must be removed, otherwise subsequent SSTOREs will use stale original values
+        // and incorrectly calculate gas costs and refunds
+        var original_storage_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
+        var original_storage_it = self.original_storage.iterator();
+        while (original_storage_it.next()) |entry| {
+            try original_storage_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
 
-        // Set the snapshot pointer so frames can access it for copy-on-write
-        const prev_snapshot = self.current_balance_snapshot;
-        self.current_balance_snapshot = &balance_snapshot;
-        defer self.current_balance_snapshot = prev_snapshot;
-
-        // std.debug.print("DEBUG inner_call: setting snapshot pointer={*}\n", .{&balance_snapshot});
-
-        // Pre-populate with caller and callee since we know they'll be affected
+        // Snapshot storage before the call
+        // We need to track which slots existed and their values
+        // On revert, we restore to this exact state (remove new slots, restore modified slots)
+        var storage_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
         if (self.host) |h| {
-            balance_snapshot.put(frame_caller, h.getBalance(frame_caller)) catch {
-                // Memory allocation failed during snapshot - fail the call
-                return makeFailure(self.arena.allocator(), gas);
-            };
-            balance_snapshot.put(address, h.getBalance(address)) catch {
-                // Memory allocation failed during snapshot - fail the call
-                return makeFailure(self.arena.allocator(), gas);
-            };
+            // In host mode, we need to ask the host for current storage values
+            // But we don't have a way to enumerate all slots, so we track what we've seen
+            // For now, we'll snapshot original_storage keys since those are the accessed slots
+            var orig_it = self.original_storage.iterator();
+            while (orig_it.next()) |entry| {
+                const current_val = h.getStorage(entry.key_ptr.*.address, entry.key_ptr.*.slot);
+                try storage_snapshot.put(entry.key_ptr.*, current_val);
+            }
         } else {
-            var balance_it = self.balances.iterator();
-            while (balance_it.next()) |entry| {
-                balance_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                    // Memory allocation failed during snapshot - fail the call
-                    return makeFailure(self.arena.allocator(), gas);
-                };
+            var storage_it = self.storage.iterator();
+            while (storage_it.next()) |entry| {
+                try storage_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
             }
         }
+
+        // Snapshot balances before the call (for SELFDESTRUCT revert handling)
+        // We use copy-on-write: addresses are snapshotted when first modified via setBalanceWithSnapshot
+        var balance_snapshot = std.AutoHashMap(Address, u256).init(self.arena.allocator());
+
+        // Push the snapshot onto the stack so nested calls can snapshot in parent snapshots
+        try self.balance_snapshot_stack.append(self.arena.allocator(), &balance_snapshot);
+        defer _ = self.balance_snapshot_stack.pop();
 
         const execution_caller: Address = switch (call_type) {
             .Call, .StaticCall => frame_caller,
@@ -1168,22 +1180,10 @@ pub fn Evm(config: EvmConfig) type {
                 return makeFailure(self.arena.allocator(), gas);
             }
 
-            // Transfer balance
-            if (self.host) |h| {
-                h.setBalance(frame_caller, caller_balance - value);
-                const callee_balance = h.getBalance(address);
-                h.setBalance(address, callee_balance + value);
-            } else {
-                self.balances.put(frame_caller, caller_balance - value) catch {
-                    // Memory allocation failed during balance transfer - fail the call
-                    return makeFailure(self.arena.allocator(), gas);
-                };
-                const callee_balance = self.balances.get(address) orelse 0;
-                self.balances.put(address, callee_balance + value) catch {
-                    // Memory allocation failed during balance transfer - fail the call
-                    return makeFailure(self.arena.allocator(), gas);
-                };
-            }
+            // Transfer balance using snapshot mechanism for proper revert handling
+            try self.setBalanceWithSnapshot(frame_caller, caller_balance - value);
+            const callee_balance = if (self.host) |h| h.getBalance(address) else self.balances.get(address) orelse 0;
+            try self.setBalanceWithSnapshot(address, callee_balance + value);
         }
 
         // Get code for the target address
@@ -1314,24 +1314,51 @@ pub fn Evm(config: EvmConfig) type {
                 _ = try self.warm_storage_slots.put(entry.key_ptr.*, {});
             }
 
-            // Restore balances on failure (handles SELFDESTRUCT balance transfers)
-            if (self.host) |h| {
-                // Restore all snapshotted balances for host mode
-                var balance_restore_it = balance_snapshot.iterator();
-                while (balance_restore_it.next()) |entry| {
-                    h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
+            // Restore storage on failure
+            // IMPORTANT: Identify slots to delete BEFORE restoring original_storage
+            // First, identify slots that were added during the call (exist in original_storage but not in snapshot)
+            var added_slots = std.ArrayList(StorageSlotKey){};
+            try added_slots.ensureTotalCapacity(self.arena.allocator(), 10);
+            var orig_check_it = self.original_storage.iterator();
+            while (orig_check_it.next()) |entry| {
+                if (!original_storage_snapshot.contains(entry.key_ptr.*)) {
+                    try added_slots.append(self.arena.allocator(), entry.key_ptr.*);
                 }
-            } else {
-                // Restore all balances for non-host mode
-                // NOTE: Using arena allocator, so memory failures here are critical system failures
-                // We cannot recover gracefully, so we return failure result
-                self.balances.clearRetainingCapacity();
-                var balance_restore_it = balance_snapshot.iterator();
-                while (balance_restore_it.next()) |entry| {
-                    self.balances.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                        // Critical: cannot restore balances - return failure with remaining gas
-                        return makeFailure(self.arena.allocator(), 0);
-                    };
+            }
+
+            // Second, restore original_storage to remove entries added during the call
+            self.original_storage.clearRetainingCapacity();
+            var original_storage_restore_it = original_storage_snapshot.iterator();
+            while (original_storage_restore_it.next()) |entry| {
+                try self.original_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+
+            // Third, restore storage values from snapshot
+            var storage_restore_it = storage_snapshot.iterator();
+            while (storage_restore_it.next()) |entry| {
+                if (self.host) |h| {
+                    h.setStorage(entry.key_ptr.*.address, entry.key_ptr.*.slot, entry.value_ptr.*);
+                } else {
+                    try self.storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                }
+            }
+
+            // Fourth, delete slots that were added during the call
+            for (added_slots.items) |slot_key| {
+                if (self.host) |h| {
+                    h.setStorage(slot_key.address, slot_key.slot, 0);
+                } else {
+                    _ = self.storage.remove(slot_key);
+                }
+            }
+
+            // Restore balances on failure (handles SELFDESTRUCT balance transfers)
+            var balance_restore_it = balance_snapshot.iterator();
+            while (balance_restore_it.next()) |entry| {
+                if (self.host) |h| {
+                    h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
+                } else {
+                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
                 }
             }
 
@@ -1394,6 +1421,46 @@ pub fn Evm(config: EvmConfig) type {
             }
         }
 
+        // Restore storage on revert
+        if (frame.reverted) {
+            // IMPORTANT: Identify slots to delete BEFORE restoring original_storage
+            // First, identify slots that were added during the call (exist in original_storage but not in snapshot)
+            var added_slots = std.ArrayList(StorageSlotKey){};
+            try added_slots.ensureTotalCapacity(self.arena.allocator(), 10);
+            var orig_check_it = self.original_storage.iterator();
+            while (orig_check_it.next()) |entry| {
+                if (!original_storage_snapshot.contains(entry.key_ptr.*)) {
+                    try added_slots.append(self.arena.allocator(), entry.key_ptr.*);
+                }
+            }
+
+            // Second, restore original_storage to remove entries added during the call
+            self.original_storage.clearRetainingCapacity();
+            var original_storage_restore_it = original_storage_snapshot.iterator();
+            while (original_storage_restore_it.next()) |entry| {
+                try self.original_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+
+            // Third, restore storage values from snapshot
+            var storage_restore_it = storage_snapshot.iterator();
+            while (storage_restore_it.next()) |entry| {
+                if (self.host) |h| {
+                    h.setStorage(entry.key_ptr.*.address, entry.key_ptr.*.slot, entry.value_ptr.*);
+                } else {
+                    try self.storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                }
+            }
+
+            // Fourth, delete slots that were added during the call
+            for (added_slots.items) |slot_key| {
+                if (self.host) |h| {
+                    h.setStorage(slot_key.address, slot_key.slot, 0);
+                } else {
+                    _ = self.storage.remove(slot_key);
+                }
+            }
+        }
+
         // Restore transient storage on revert (EIP-1153)
         if (frame.reverted) {
             self.transient_storage.clearRetainingCapacity();
@@ -1415,11 +1482,11 @@ pub fn Evm(config: EvmConfig) type {
 
         // Restore balances on revert (handles SELFDESTRUCT balance transfers and value transfers)
         if (frame.reverted) {
-            if (self.host) |h| {
-                // Restore all snapshotted balances for host mode
-                var balance_restore_it = balance_snapshot.iterator();
-                while (balance_restore_it.next()) |entry| {
+            var balance_restore_it = balance_snapshot.iterator();
+            while (balance_restore_it.next()) |entry| {
+                if (self.host) |h| {
                     h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
+<<<<<<< HEAD
                 }
             } else {
                 // Restore all balances for non-host mode
@@ -1427,6 +1494,10 @@ pub fn Evm(config: EvmConfig) type {
                 var balance_restore_it = balance_snapshot.iterator();
                 while (balance_restore_it.next()) |entry| {
                     self.balances.put(entry.key_ptr.*, entry.value_ptr.*) catch {};
+=======
+                } else {
+                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
+>>>>>>> 0942fa7 (fix: Pass Cancun EIP-6780 revert tests (12 tests))
                 }
             }
         }
@@ -1701,19 +1772,20 @@ pub fn Evm(config: EvmConfig) type {
         // This is required for SELFDESTRUCT to correctly identify same-tx creations
         try self.created_accounts.put(new_address, {});
 
-        // Transfer balance if value > 0
+        // Snapshot balances before execution (for SELFDESTRUCT revert handling)
+        // We use copy-on-write: addresses are snapshotted when first modified via setBalanceWithSnapshot
+        var balance_snapshot = std.AutoHashMap(Address, u256).init(self.arena.allocator());
+
+        // Push the snapshot onto the stack so nested calls can snapshot in parent snapshots
+        try self.balance_snapshot_stack.append(self.arena.allocator(), &balance_snapshot);
+        defer _ = self.balance_snapshot_stack.pop();
+
+        // Transfer balance if value > 0 using snapshot mechanism for proper revert handling
         if (value > 0) {
-            if (self.host) |h| {
-                const caller_balance = h.getBalance(caller);
-                h.setBalance(caller, caller_balance - value);
-                const new_addr_balance = h.getBalance(new_address);
-                h.setBalance(new_address, new_addr_balance + value);
-            } else {
-                const caller_balance = self.balances.get(caller) orelse 0;
-                try self.balances.put(caller, caller_balance - value);
-                const new_addr_balance = self.balances.get(new_address) orelse 0;
-                try self.balances.put(new_address, new_addr_balance + value);
-            }
+            const caller_balance = if (self.host) |h| h.getBalance(caller) else self.balances.get(caller) orelse 0;
+            try self.setBalanceWithSnapshot(caller, caller_balance - value);
+            const new_addr_balance = if (self.host) |h| h.getBalance(new_address) else self.balances.get(new_address) orelse 0;
+            try self.setBalanceWithSnapshot(new_address, new_addr_balance + value);
         }
 
         // Snapshot selfdestructed_accounts before executing init code (EIP-6780 revert handling)
@@ -1752,18 +1824,13 @@ pub fn Evm(config: EvmConfig) type {
                 _ = self.nonces.remove(new_address);
             }
 
-            // Reverse value transfer on error
-            if (value > 0) {
+            // Restore balances on error (handles SELFDESTRUCT balance transfers and value transfers)
+            var balance_restore_it = balance_snapshot.iterator();
+            while (balance_restore_it.next()) |entry| {
                 if (self.host) |h| {
-                    const caller_balance = h.getBalance(caller);
-                    const new_addr_balance = h.getBalance(new_address);
-                    h.setBalance(caller, caller_balance + value);
-                    h.setBalance(new_address, new_addr_balance - value);
+                    h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
                 } else {
-                    const caller_balance = self.balances.get(caller) orelse 0;
-                    const new_addr_balance = self.balances.get(new_address) orelse 0;
-                    try self.balances.put(caller, caller_balance + value);
-                    try self.balances.put(new_address, new_addr_balance - value);
+                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
                 }
             }
 
@@ -1806,18 +1873,13 @@ pub fn Evm(config: EvmConfig) type {
                         _ = self.nonces.remove(new_address);
                     }
 
-                    // Reverse value transfer on code size failure
-                    if (value > 0) {
+                    // Restore balances on failure (handles SELFDESTRUCT balance transfers and value transfers)
+                    var balance_restore_it = balance_snapshot.iterator();
+                    while (balance_restore_it.next()) |entry| {
                         if (self.host) |h| {
-                            const caller_balance = h.getBalance(caller);
-                            const new_addr_balance = h.getBalance(new_address);
-                            h.setBalance(caller, caller_balance + value);
-                            h.setBalance(new_address, new_addr_balance - value);
+                            h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
                         } else {
-                            const caller_balance = self.balances.get(caller) orelse 0;
-                            const new_addr_balance = self.balances.get(new_address) orelse 0;
-                            try self.balances.put(caller, caller_balance + value);
-                            try self.balances.put(new_address, new_addr_balance - value);
+                            try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
                         }
                     }
 
@@ -1867,18 +1929,13 @@ pub fn Evm(config: EvmConfig) type {
                 _ = self.nonces.remove(new_address);
             }
 
-            // Reverse value transfer
-            if (value > 0) {
+            // Restore balances on revert (handles SELFDESTRUCT balance transfers and value transfers)
+            var balance_restore_it = balance_snapshot.iterator();
+            while (balance_restore_it.next()) |entry| {
                 if (self.host) |h| {
-                    const caller_balance = h.getBalance(caller);
-                    const new_addr_balance = h.getBalance(new_address);
-                    h.setBalance(caller, caller_balance + value);
-                    h.setBalance(new_address, new_addr_balance - value);
+                    h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
                 } else {
-                    const caller_balance = self.balances.get(caller) orelse 0;
-                    const new_addr_balance = self.balances.get(new_address) orelse 0;
-                    try self.balances.put(caller, caller_balance + value);
-                    try self.balances.put(new_address, new_addr_balance - value);
+                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
                 }
             }
 
