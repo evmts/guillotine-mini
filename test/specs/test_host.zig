@@ -182,6 +182,7 @@ pub const TestHost = struct {
     fn setStorage(ptr: *anyopaque, address: Address, slot: u256, value: u256) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
         const key = StorageSlotKey{ .address = address, .slot = slot };
+        // std.debug.print("DEBUG HOST: setStorage called, addr={any} slot={} value={}\n", .{address.bytes, slot, value});
         // EVM spec: storage slots with value 0 should be deleted, not stored
         if (value == 0) {
             _ = self.storage.remove(key);
@@ -189,6 +190,7 @@ pub const TestHost = struct {
             self.storage.put(key, value) catch {
                 // In a test context, we should not fail silently
                 // But the interface doesn't allow errors
+                // std.debug.print("DEBUG HOST: setStorage FAILED to put!\n", .{});
                 return;
             };
         }
