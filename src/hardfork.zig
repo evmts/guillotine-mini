@@ -134,3 +134,83 @@ pub const Hardfork = enum {
         return null;
     }
 };
+
+/// Represents a fork transition (e.g., ShanghaiToCancunAtTime15k)
+pub const ForkTransition = struct {
+    from_fork: Hardfork,
+    to_fork: Hardfork,
+    at_block: ?u64,
+    at_timestamp: ?u64,
+
+    /// Parse a transition fork name like "ShanghaiToCancunAtTime15k" or "BerlinToLondonAt5"
+    pub fn fromString(name: []const u8) ?ForkTransition {
+        const std = @import("std");
+
+        // Look for "To" pattern
+        const to_index = std.mem.indexOf(u8, name, "To") orelse return null;
+
+        // Extract "from" fork
+        const from_str = name[0..to_index];
+        const from_fork = Hardfork.fromString(from_str) orelse return null;
+
+        // Find "At" pattern
+        const at_index = std.mem.indexOf(u8, name[to_index..], "At") orelse return null;
+        const at_pos = to_index + at_index;
+
+        // Extract "to" fork
+        const to_str = name[to_index + 2..at_pos];
+        const to_fork = Hardfork.fromString(to_str) orelse return null;
+
+        // Parse the transition point
+        const transition_str = name[at_pos + 2..];
+
+        // Check if it's a timestamp (contains "Time") or block number
+        if (std.mem.indexOf(u8, transition_str, "Time") != null) {
+            // Extract number from "Time15k" -> "15k"
+            const time_index = std.mem.indexOf(u8, transition_str, "Time") orelse return null;
+            const num_str = transition_str[time_index + 4..];
+            const timestamp = parseNumber(num_str) orelse return null;
+            return ForkTransition{
+                .from_fork = from_fork,
+                .to_fork = to_fork,
+                .at_block = null,
+                .at_timestamp = timestamp,
+            };
+        } else {
+            // It's a block number
+            const block = parseNumber(transition_str) orelse return null;
+            return ForkTransition{
+                .from_fork = from_fork,
+                .to_fork = to_fork,
+                .at_block = block,
+                .at_timestamp = null,
+            };
+        }
+    }
+
+    /// Get the active fork at the given block number and timestamp
+    pub fn getActiveFork(self: ForkTransition, block_number: u64, timestamp: u64) Hardfork {
+        if (self.at_block) |at_block| {
+            return if (block_number >= at_block) self.to_fork else self.from_fork;
+        } else if (self.at_timestamp) |at_timestamp| {
+            return if (timestamp >= at_timestamp) self.to_fork else self.from_fork;
+        }
+        return self.to_fork;
+    }
+};
+
+/// Parse a number from a string like "15k" or "5"
+fn parseNumber(str: []const u8) ?u64 {
+    const std = @import("std");
+
+    if (str.len == 0) return null;
+
+    // Check for 'k' suffix (multiply by 1000)
+    if (str[str.len - 1] == 'k') {
+        const num_str = str[0..str.len - 1];
+        const base = std.fmt.parseInt(u64, num_str, 10) catch return null;
+        return base * 1000;
+    }
+
+    return std.fmt.parseInt(u64, str, 10) catch null;
+}

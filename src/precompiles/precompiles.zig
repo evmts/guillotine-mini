@@ -21,6 +21,9 @@ const Address = primitives.Address;
 const crypto = @import("crypto");
 const build_options = @import("build_options");
 
+/// Re-export KZG setup module for test initialization
+pub const kzg_setup = @import("kzg_setup.zig");
+
 /// Precompile addresses (Ethereum mainnet)
 pub const ECRECOVER_ADDRESS = primitives.Address.from_u256(1);
 pub const SHA256_ADDRESS = primitives.Address.from_u256(2);
@@ -409,19 +412,16 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
     else
         0; // No minimum before Berlin
 
-    if (input.len < 96) {
-        const empty_output = try allocator.alloc(u8, 0);
-        return PrecompileOutput{
-            .output = empty_output,
-            .gas_used = if (min_gas > 0) min_gas else 0,
-            .success = true,
-        };
+    // Parse lengths (zero-pad if input is too short, matching Python buffer_read behavior)
+    var padded_header: [96]u8 = [_]u8{0} ** 96;
+    const header_copy_len = @min(input.len, 96);
+    if (header_copy_len > 0) {
+        @memcpy(padded_header[0..header_copy_len], input[0..header_copy_len]);
     }
 
-    // Parse lengths
-    const base_len = bytesToU32(input[0..32]);
-    const exp_len = bytesToU32(input[32..64]);
-    const mod_len = bytesToU32(input[64..96]);
+    const base_len = bytesToU32(padded_header[0..32]);
+    const exp_len = bytesToU32(padded_header[32..64]);
+    const mod_len = bytesToU32(padded_header[64..96]);
 
     // EIP-7823: Upper bounds check (Prague+)
     // If any of base_len, exp_len, or mod_len exceeds 1024 bytes, the call fails
@@ -437,40 +437,21 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
         }
     }
 
-    // Validate input length
-    // Use u64 to avoid overflow when adding large u32 values
-    const expected_len_u64: u64 = 96 + @as(u64, base_len) + @as(u64, exp_len) + @as(u64, mod_len);
-    if (expected_len_u64 > input.len) {
-        const empty_output = try allocator.alloc(u8, 0);
-        return PrecompileOutput{
-            .output = empty_output,
-            .gas_used = if (min_gas > 0) min_gas else 0,
-            .success = true,
-        };
-    }
-
-    // Extract base, exp, mod
-    var offset: usize = 96;
-    const base = input[offset .. offset + base_len];
-    offset += base_len;
-    const exp = input[offset .. offset + exp_len];
-    offset += exp_len;
-    const mod = input[offset .. offset + mod_len];
-
-    // Handle special cases
-    if (mod_len == 0) {
-        const empty_output = try allocator.alloc(u8, 0);
-        return PrecompileOutput{
-            .output = empty_output,
-            .gas_used = if (min_gas > 0) min_gas else 0,
-            .success = true,
-        };
-    }
-
-    // Calculate gas cost (EIP-198 / EIP-7883)
-    // Read first 32 bytes of exponent (let bytesToU256 handle padding correctly)
+    // Calculate gas cost FIRST (before any validation), matching Python spec behavior
+    // Read first 32 bytes of exponent from input (zero-pad if reading past end)
+    const exp_start: usize = 96 + base_len;
     const exp_head_len = @min(exp_len, 32);
-    const exp_head_bytes = if (exp_head_len > 0) exp[0..exp_head_len] else &[_]u8{};
+
+    // Read exp_head, zero-padding if we go past the input length
+    var exp_head_bytes_buf: [32]u8 = [_]u8{0} ** 32;
+    if (exp_start < input.len) {
+        const available = input.len - exp_start;
+        const to_copy = @min(exp_head_len, @as(u32, @intCast(available)));
+        if (to_copy > 0) {
+            @memcpy(exp_head_bytes_buf[0..to_copy], input[exp_start .. exp_start + to_copy]);
+        }
+    }
+    const exp_head_bytes = exp_head_bytes_buf[0..exp_head_len];
     const exp_head_u256 = bytesToU256(exp_head_bytes);
 
     // Calculate multiplication complexity
@@ -515,6 +496,7 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
     const cost = if (cost_u128 > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(cost_u128));
     const required_gas = if (min_gas > 0) @max(min_gas, cost) else cost;
 
+    // Check gas limit AFTER calculating gas cost (matching Python: charge_gas happens before operation)
     if (gas_limit < required_gas) {
         return PrecompileOutput{
             .output = &.{},
@@ -523,8 +505,88 @@ pub fn execute_modexp(allocator: std.mem.Allocator, input: []const u8, gas_limit
         };
     }
 
+    // Now validate input and perform the operation
+    // Handle special case: base_length == 0 and modulus_length == 0 (Python line 48)
+    if (base_len == 0 and mod_len == 0) {
+        const empty_output = try allocator.alloc(u8, 0);
+        return PrecompileOutput{
+            .output = empty_output,
+            .gas_used = required_gas,
+            .success = true,
+        };
+    }
+
+    // Extract base, exp, mod (zero-pad if reading past input)
+    // Apply reasonable memory limits to prevent DoS
+    // Use the same limit as EIP-7823 (Prague) for safety across all forks
+    const MAX_SAFE_LENGTH: u32 = 10 * 1024; // 10 KB - reasonable for test scenarios
+    if (base_len > MAX_SAFE_LENGTH or exp_len > MAX_SAFE_LENGTH or mod_len > MAX_SAFE_LENGTH) {
+        // Input lengths too large for allocation, but gas was already charged
+        // Return error consuming all remaining gas
+        return PrecompileOutput{
+            .output = &.{},
+            .gas_used = gas_limit,
+            .success = false,
+        };
+    }
+
+    // Allocate and zero-initialize buffers for base, exp, mod
+    const base = try allocator.alloc(u8, base_len);
+    defer allocator.free(base);
+    if (base.len > 0) @memset(base, 0);
+
+    const exp = try allocator.alloc(u8, exp_len);
+    defer allocator.free(exp);
+    if (exp.len > 0) @memset(exp, 0);
+
+    const mod = try allocator.alloc(u8, mod_len);
+    defer allocator.free(mod);
+    if (mod.len > 0) @memset(mod, 0);
+
+    // Copy from input, handling cases where input is shorter than expected
+    var offset: usize = 96;
+    if (base.len > 0 and offset < input.len) {
+        const base_copy_len = @min(base_len, @as(u32, @intCast(input.len - offset)));
+        if (base_copy_len > 0) {
+            @memcpy(base[0..base_copy_len], input[offset .. offset + base_copy_len]);
+        }
+    }
+    offset += base_len;
+    if (exp.len > 0 and offset < input.len) {
+        const exp_copy_len = @min(exp_len, @as(u32, @intCast(input.len - offset)));
+        if (exp_copy_len > 0) {
+            @memcpy(exp[0..exp_copy_len], input[offset .. offset + exp_copy_len]);
+        }
+    }
+    offset += exp_len;
+    if (mod.len > 0 and offset < input.len) {
+        const mod_copy_len = @min(mod_len, @as(u32, @intCast(input.len - offset)));
+        if (mod_copy_len > 0) {
+            @memcpy(mod[0..mod_copy_len], input[offset .. offset + mod_copy_len]);
+        }
+    }
+
     // Perform modular exponentiation
     const output = try allocator.alloc(u8, mod_len);
+
+    // Check if modulus VALUE is zero (Python line 60)
+    // If modulus is 0, return zeros without calling modexp
+    var mod_is_zero = true;
+    for (mod) |byte| {
+        if (byte != 0) {
+            mod_is_zero = false;
+            break;
+        }
+    }
+
+    if (mod_is_zero) {
+        @memset(output, 0);
+        return PrecompileOutput{
+            .output = output,
+            .gas_used = required_gas,
+            .success = true,
+        };
+    }
 
     // Use the actual modexp implementation from crypto module
     crypto.ModExp.unaudited_modexp(allocator, base, exp, mod, output) catch {
@@ -567,7 +629,8 @@ fn calculateIterationCount(exp_len: u32, exp_head: u256) u64 {
 /// Calculate multiplication complexity for EIP-2565 (Berlin)
 /// Simplified formula: ((max_length + 7) / 8)^2
 fn calculateMultiplicationComplexityBerlin(max_len: u32) u64 {
-    const words: u64 = (max_len + 7) / 8;
+    // Cast to u64 first to prevent overflow when max_len is close to u32::MAX
+    const words: u64 = (@as(u64, max_len) + 7) / 8;
     return words * words;
 }
 
@@ -599,12 +662,13 @@ fn calculateIterationCountBerlin(exp_len: u32, exp_head: u256) u64 {
 /// Based on EIP-7883 spec with new constants
 fn calculateMultiplicationComplexityOsaka(max_len: u32) u64 {
     // EIP-7883 constants
-    const WORD_SIZE: u32 = 8;
+    const WORD_SIZE: u64 = 8;
     const MAX_LENGTH_THRESHOLD: u32 = 32;
     const LARGE_BASE_MODULUS_MULTIPLIER: u64 = 2;
 
     // Ceiling division: (max_len + WORD_SIZE - 1) / WORD_SIZE
-    const words: u64 = (max_len + WORD_SIZE - 1) / WORD_SIZE;
+    // Cast to u64 first to prevent overflow when max_len is close to u32::MAX
+    const words: u64 = (@as(u64, max_len) + WORD_SIZE - 1) / WORD_SIZE;
 
     if (max_len <= MAX_LENGTH_THRESHOLD) {
         // For small inputs (<= 32 bytes): fixed cost of 16
@@ -973,7 +1037,6 @@ pub fn execute_point_evaluation(allocator: std.mem.Allocator, input: []const u8,
 
     // Ensure KZG settings are initialized; try lazy init from embedded data if not
     // Failure raises KZGProofError (ExceptionalHalt) which consumes ALL gas
-    const kzg_setup = @import("kzg_setup.zig");
     if (!kzg_setup.isInitialized()) {
         kzg_setup.init() catch {
             return PrecompileOutput{ .output = &.{}, .gas_used = gas_limit, .success = false };
@@ -1670,10 +1733,8 @@ test "execute_blake2f with Istanbul test vector" {
 
 test "execute_point_evaluation without kzg setup" {
     const testing = std.testing;
-    
+
     // Try to use point evaluation without KZG setup
-    const kzg_setup = @import("kzg_setup.zig");
-    
     // Skip if already initialized
     if (kzg_setup.isInitialized()) {
         return;

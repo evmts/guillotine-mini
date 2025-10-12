@@ -39,6 +39,7 @@ pub const HostInterface = host.HostInterface;
 // Export Hardfork
 pub const hardfork = @import("hardfork.zig");
 pub const Hardfork = hardfork.Hardfork;
+pub const ForkTransition = hardfork.ForkTransition;
 
 // Export errors
 pub const errors = @import("errors.zig");
