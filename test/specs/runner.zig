@@ -431,17 +431,35 @@ fn processRlpTransaction(
     }
 
     // Calculate intrinsic gas cost
-    var intrinsic_gas: u64 = primitives.GasConstants.TxGas; // 21000 for regular transactions
+    // Contract creation transactions cost 53000 base gas, regular transactions cost 21000
+    const is_contract_creation = std.mem.eql(u8, &to_addr.bytes, &primitives.ZERO_ADDRESS.bytes);
+    var intrinsic_gas: u64 = if (is_contract_creation)
+        primitives.GasConstants.TxGasContractCreation // 53000 for contract creation
+    else
+        primitives.GasConstants.TxGas; // 21000 for regular transactions
+    // EIP-2028 (Istanbul): Reduced non-zero calldata cost from 68 to 16 gas
+    const non_zero_gas = if (evm_instance.hardfork.isBefore(.ISTANBUL))
+        primitives.GasConstants.TxDataNonZeroGasPreIstanbul // 68 for pre-Istanbul
+    else
+        primitives.GasConstants.TxDataNonZeroGas; // 16 for Istanbul+
     for (tx_data) |byte| {
         if (byte == 0) {
             intrinsic_gas += primitives.GasConstants.TxDataZeroGas; // 4
         } else {
-            intrinsic_gas += primitives.GasConstants.TxDataNonZeroGas; // 16
+            intrinsic_gas += non_zero_gas;
         }
     }
 
     // Add access list cost (EIP-2930, Berlin+)
     intrinsic_gas += access_list_gas_cost;
+
+    // EIP-3860 (Shanghai+): Add init code cost for contract creation transactions
+    // Cost is 2 gas per word (32 bytes) of init code
+    if (is_contract_creation and evm_instance.hardfork.isAtLeast(.SHANGHAI)) {
+        const init_code_words = (tx_data.len + 31) / 32;
+        const init_code_cost = @as(u64, @intCast(init_code_words)) * primitives.GasConstants.InitcodeWordGas;
+        intrinsic_gas += init_code_cost;
+    }
 
     // Check if gas_limit is sufficient for intrinsic gas
     if (gas_limit < intrinsic_gas) {
@@ -1328,8 +1346,13 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             else
                 primitives.GasConstants.TxGas; // 21000 for regular transactions
 
-            // Add calldata cost (4 gas per zero byte, 16 gas per non-zero byte)
+            // Add calldata cost (4 gas per zero byte, 16/68 gas per non-zero byte)
             // Also track counts for EIP-7623 floor calculation (Prague+)
+            // EIP-2028 (Istanbul): Reduced non-zero calldata cost from 68 to 16 gas
+            const non_zero_gas_cost = if (evm_instance.hardfork.isBefore(.ISTANBUL))
+                primitives.GasConstants.TxDataNonZeroGasPreIstanbul // 68 for pre-Istanbul
+            else
+                primitives.GasConstants.TxDataNonZeroGas; // 16 for Istanbul+
             var zero_bytes: u64 = 0;
             var non_zero_bytes: u64 = 0;
             for (tx_data) |byte| {
@@ -1337,7 +1360,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     intrinsic_gas += primitives.GasConstants.TxDataZeroGas; // 4
                     zero_bytes += 1;
                 } else {
-                    intrinsic_gas += primitives.GasConstants.TxDataNonZeroGas; // 16
+                    intrinsic_gas += non_zero_gas_cost;
                     non_zero_bytes += 1;
                 }
             }
@@ -1606,6 +1629,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             } else null;
 
             // Process authorization list for EIP-7702 (Prague+)
+            // Track which authorities get refunds (for existing accounts)
+            var auth_refund_count: u64 = 0;
             if (tx.object.get("authorizationList")) |auth_list_json| {
                 if (auth_list_json == .array) {
                     for (auth_list_json.array.items) |auth_json| {
@@ -1627,6 +1652,16 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                             // Check if authority nonce matches
                             const auth_current_nonce = test_host.getNonce(auth);
                             if (auth_current_nonce == auth_nonce) {
+                                // Check if authority account exists (has balance or code)
+                                // Per EIP-7702: refund PER_AUTH_BASE_COST (12500) for existing accounts
+                                const auth_balance = test_host.balances.get(auth) orelse 0;
+                                const auth_code = test_host.code.get(auth);
+                                const account_exists = auth_balance > 0 or (auth_code != null and auth_code.?.len > 0);
+
+                                if (account_exists) {
+                                    auth_refund_count += 1;
+                                }
+
                                 // Set delegation designation code: 0xef0100 + address (20 bytes)
                                 var delegation_code: [23]u8 = undefined;
                                 delegation_code[0] = 0xef;
@@ -1705,6 +1740,14 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Note: result.gas_left can be > execution_gas if CALL stipend was not fully used
             const execution_gas_used = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
             const gas_used_before_refunds = intrinsic_gas + execution_gas_used;
+
+            // Add authorization list refunds (EIP-7702, Prague+)
+            // Per EIP-7702: refund PER_AUTH_BASE_COST (12500) per existing account
+            // NOTE: This must be done AFTER initTransactionState (which resets gas_refund to 0)
+            if (auth_refund_count > 0 and evm_instance.hardfork.isAtLeast(.PRAGUE)) {
+                const auth_refund = auth_refund_count * primitives.Authorization.PER_AUTH_BASE_COST;
+                evm_instance.gas_refund += auth_refund;
+            }
 
             // Apply gas refunds (EIP-3529: capped at 1/2 of gas used pre-London, 1/5 post-London)
             // NOTE: The refund cap is based on TOTAL gas used (including intrinsic gas), not just execution gas
