@@ -215,19 +215,37 @@ pub fn build(b: *std.Build) void {
             ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean; fi",
         });
 
-    // Generate Zig test wrappers from JSON fixtures
-    const generate_zig_tests = b.addSystemCommand(&.{
+    // Generate Zig test wrappers from JSON fixtures for STATE TESTS
+    const generate_zig_state_tests = b.addSystemCommand(&.{
         "python3",
         "scripts/generate_spec_tests.py",
+        "state",
     });
-    generate_zig_tests.step.dependOn(&fill_specs.step);
+    generate_zig_state_tests.step.dependOn(&fill_specs.step);
 
-    // Update test/specs/root.zig with generated test imports
-    const update_spec_root = b.addSystemCommand(&.{
+    // Generate Zig test wrappers from JSON fixtures for BLOCKCHAIN TESTS
+    const generate_zig_blockchain_tests = b.addSystemCommand(&.{
+        "python3",
+        "scripts/generate_spec_tests.py",
+        "blockchain",
+    });
+    generate_zig_blockchain_tests.step.dependOn(&fill_specs.step);
+
+    // Update test/specs/root.zig with generated test imports for STATE TESTS
+    const update_spec_root_state = b.addSystemCommand(&.{
         "python3",
         "scripts/update_spec_root.py",
+        "state",
     });
-    update_spec_root.step.dependOn(&generate_zig_tests.step);
+    update_spec_root_state.step.dependOn(&generate_zig_state_tests.step);
+
+    // Update test/specs/root.zig with generated test imports for BLOCKCHAIN TESTS
+    const update_spec_root_blockchain = b.addSystemCommand(&.{
+        "python3",
+        "scripts/update_spec_root.py",
+        "blockchain",
+    });
+    update_spec_root_blockchain.step.dependOn(&generate_zig_blockchain_tests.step);
 
     const spec_runner_mod = b.addModule("spec_runner", .{
         .root_source_file = b.path("test/specs/root.zig"),
@@ -239,7 +257,16 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const spec_tests = b.addTest(.{
+    // Create separate test executables for state tests and blockchain tests
+    const spec_tests_state = b.addTest(.{
+        .root_module = spec_runner_mod,
+        .test_runner = .{
+            .path = b.path("test_runner.zig"),
+            .mode = .simple,
+        },
+    });
+
+    const spec_tests_blockchain = b.addTest(.{
         .root_module = spec_runner_mod,
         .test_runner = .{
             .path = b.path("test_runner.zig"),
@@ -249,25 +276,40 @@ pub fn build(b: *std.Build) void {
 
     // Link BN254 library for precompile support
     if (bn254_lib) |lib| {
-        spec_tests.root_module.linkLibrary(lib);
+        spec_tests_state.root_module.linkLibrary(lib);
+        spec_tests_blockchain.root_module.linkLibrary(lib);
     }
 
     // Make spec test compilation depend on test generation pipeline
-    spec_tests.step.dependOn(&update_spec_root.step);
+    spec_tests_state.step.dependOn(&update_spec_root_state.step);
+    spec_tests_blockchain.step.dependOn(&update_spec_root_blockchain.step);
 
     // Set log level to error only (suppress debug output from tests)
     const log_options = b.addOptions();
     log_options.addOption(std.log.Level, "log_level", .err);
-    spec_tests.root_module.addOptions("build_options", log_options);
+    spec_tests_state.root_module.addOptions("build_options", log_options);
+    spec_tests_blockchain.root_module.addOptions("build_options", log_options);
 
-    const run_spec_tests = b.addRunArtifact(spec_tests);
-    run_spec_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
+    // Run artifacts for state tests
+    const run_spec_tests_state = b.addRunArtifact(spec_tests_state);
+    run_spec_tests_state.setCwd(b.path(".")); // Set working directory to project root for test file paths
+    run_spec_tests_state.setEnvironmentVariable("TEST_TYPE", "state");
 
-    const spec_test_step = b.step("specs", "Run execution-specs tests");
-    spec_test_step.dependOn(&run_spec_tests.step);
+    // Run artifacts for blockchain tests
+    const run_spec_tests_blockchain = b.addRunArtifact(spec_tests_blockchain);
+    run_spec_tests_blockchain.setCwd(b.path(".")); // Set working directory to project root for test file paths
+    run_spec_tests_blockchain.setEnvironmentVariable("TEST_TYPE", "blockchain");
 
-    // Spec tests are separate - use `zig build specs` to run them
-    // test_step.dependOn(&run_spec_tests.step);
+    // Main spec test step - runs STATE TESTS ONLY by default
+    const spec_test_step = b.step("specs", "Run execution-specs STATE tests");
+    spec_test_step.dependOn(&run_spec_tests_state.step);
+
+    // Blockchain test step - runs BLOCKCHAIN TESTS ONLY
+    const spec_blockchain_test_step = b.step("specs-blockchain", "Run execution-specs BLOCKCHAIN tests");
+    spec_blockchain_test_step.dependOn(&run_spec_tests_blockchain.step);
+
+    // Add state tests to main test step (default behavior)
+    test_step.dependOn(&run_spec_tests_state.step);
 
     // Create hardfork-specific test suites
     const hardforks = [_]struct { name: []const u8, desc: []const u8 }{
@@ -323,10 +365,10 @@ pub fn build(b: *std.Build) void {
         .{ .name = "cancun-tstore-contexts-clear", .filter = "tstorage_clear_after_tx", .desc = "Cancun EIP-1153 clear after tx tests (4 tests)" },
         .{ .name = "cancun-mcopy", .filter = "eip5656_mcopy", .desc = "Cancun EIP-5656 MCOPY tests" },
         // Split selfdestruct into smaller chunks (was 1166 tests, now ~50-300 each)
-        .{ .name = "cancun-selfdestruct-basic", .filter = "selfdestruct/selfdestruct", .desc = "Cancun EIP-6780 basic SELFDESTRUCT tests (306 tests)" },
+        .{ .name = "cancun-selfdestruct-basic", .filter = "test_selfdestruct_py", .desc = "Cancun EIP-6780 basic SELFDESTRUCT tests (306 tests)" },
         .{ .name = "cancun-selfdestruct-collision", .filter = "dynamic_create2_selfdestruct_collision", .desc = "Cancun EIP-6780 create2 collision tests (52 tests)" },
         .{ .name = "cancun-selfdestruct-reentrancy", .filter = "reentrancy_selfdestruct_revert", .desc = "Cancun EIP-6780 reentrancy revert tests (36 tests)" },
-        .{ .name = "cancun-selfdestruct-revert", .filter = "selfdestruct_revert/selfdestruct", .desc = "Cancun EIP-6780 revert tests (12 tests)" },
+        .{ .name = "cancun-selfdestruct-revert", .filter = "test_selfdestruct_revert_py", .desc = "Cancun EIP-6780 revert tests (12 tests)" },
         .{ .name = "cancun-blobbasefee", .filter = "eip7516_blobgasfee", .desc = "Cancun EIP-7516 BLOBBASEFEE tests" },
         // Split blob precompile into smaller chunks (was 1073 tests, now ~50-310 each)
         .{ .name = "cancun-blob-precompile-basic", .filter = "test_point_evaluation_precompile_py", .desc = "Cancun EIP-4844 point evaluation basic tests (310 tests)" },
@@ -444,12 +486,13 @@ pub fn build(b: *std.Build) void {
                 sub_tests.root_module.linkLibrary(lib);
             }
 
-            sub_tests.step.dependOn(&update_spec_root.step);
+            sub_tests.step.dependOn(&update_spec_root_state.step);
             sub_tests.root_module.addOptions("build_options", log_options);
 
             const run_sub_tests = b.addRunArtifact(sub_tests);
             run_sub_tests.setCwd(b.path("."));
             run_sub_tests.setEnvironmentVariable("TEST_FILTER", sub_target.filter);
+            run_sub_tests.setEnvironmentVariable("TEST_TYPE", "state");
 
             const step_name = b.fmt("specs-{s}", .{sub_target.name});
             const sub_step = b.step(step_name, sub_target.desc);
@@ -473,12 +516,13 @@ pub fn build(b: *std.Build) void {
             fork_tests.root_module.linkLibrary(lib);
         }
 
-        fork_tests.step.dependOn(&update_spec_root.step);
+        fork_tests.step.dependOn(&update_spec_root_state.step);
         fork_tests.root_module.addOptions("build_options", log_options);
 
         const run_fork_tests = b.addRunArtifact(fork_tests);
         run_fork_tests.setCwd(b.path("."));
         run_fork_tests.setEnvironmentVariable("TEST_FILTER", fork.name);
+        run_fork_tests.setEnvironmentVariable("TEST_TYPE", "state");
 
         const step_name = b.fmt("specs-{s}", .{fork.name});
         const fork_step = b.step(step_name, fork.desc);
@@ -512,12 +556,13 @@ pub fn build(b: *std.Build) void {
             eip_tests.root_module.linkLibrary(lib);
         }
 
-        eip_tests.step.dependOn(&update_spec_root.step);
+        eip_tests.step.dependOn(&update_spec_root_state.step);
         eip_tests.root_module.addOptions("build_options", log_options);
 
         const run_eip_tests = b.addRunArtifact(eip_tests);
         run_eip_tests.setCwd(b.path("."));
         run_eip_tests.setEnvironmentVariable("TEST_FILTER", suite.filter);
+        run_eip_tests.setEnvironmentVariable("TEST_TYPE", "state");
 
         const step_name = b.fmt("specs-{s}", .{suite.name});
         const eip_step = b.step(step_name, suite.desc);
