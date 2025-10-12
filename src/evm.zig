@@ -652,6 +652,100 @@ pub fn Evm(config: EvmConfig) type {
         // before calling this function. This function receives gas that's already
         // net of intrinsic costs, similar to inner_call().
 
+        // Check if this is a precompile address with empty bytecode (like inner_call)
+        if (bytecode.len == 0) {
+            // Check if this is a precompile address (hardfork-aware)
+            if (precompiles.is_precompile(address, self.hardfork)) {
+                // Use the precompiles module to handle all precompile execution
+                const result = precompiles.execute_precompile(
+                    self.arena.allocator(),
+                    address,
+                    calldata,
+                    @intCast(gas),
+                    self.hardfork,
+                ) catch |err| {
+                    // On error, return failure
+                    std.debug.print("Precompile execution error: {}\n", .{err});
+                    // Reverse value transfer on error
+                    if (value > 0 and self.host != null) {
+                        if (self.host) |h| {
+                            const sender_balance = h.getBalance(caller);
+                            const recipient_balance = h.getBalance(address);
+                            h.setBalance(caller, sender_balance + value);
+                            h.setBalance(address, recipient_balance - value);
+                        }
+                    }
+                    return CallResult{
+                        .success = false,
+                        .gas_left = 0,
+                        .output = &[_]u8{},
+                    };
+                };
+
+                // Reset transaction-scoped caches
+                self.warm_addresses.clearRetainingCapacity();
+                self.warm_storage_slots.clearRetainingCapacity();
+
+                // Clear transient storage at end of transaction (EIP-1153)
+                self.transient_storage.clearRetainingCapacity();
+
+                // Delete selfdestructed accounts at end of transaction (EIP-6780)
+                var selfdestruct_it = self.selfdestructed_accounts.iterator();
+                while (selfdestruct_it.next()) |entry| {
+                    const addr = entry.key_ptr.*;
+                    if (self.host) |h| {
+                        // Clear all account state: balance (should already be 0), code, nonce, and storage
+                        h.setBalance(addr, 0);
+                        h.setCode(addr, &[_]u8{});
+                        h.setNonce(addr, 0);
+
+                        // Clear permanent storage for self-destructed account
+                        var storage_it = self.storage.iterator();
+                        while (storage_it.next()) |storage_entry| {
+                            const key = storage_entry.key_ptr.*;
+                            if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
+                                h.setStorage(addr, key.slot, 0);
+                            }
+                        }
+                    } else {
+                        // Clear all account state in EVM storage
+                        try self.balances.put(addr, 0);
+                        try self.code.put(addr, &[_]u8{});
+                        try self.nonces.put(addr, 0);
+
+                        // Clear storage
+                        var storage_it = self.storage.iterator();
+                        while (storage_it.next()) |storage_entry| {
+                            const key = storage_entry.key_ptr.*;
+                            if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
+                                _ = self.storage.remove(key);
+                            }
+                        }
+                    }
+                }
+                self.selfdestructed_accounts.clearRetainingCapacity();
+
+                return CallResult{
+                    .success = result.success,
+                    .gas_left = if (result.success) @as(u64, @intCast(gas)) - result.gas_used else 0,
+                    .output = result.output,
+                };
+            }
+
+            // For non-precompile empty accounts, return success with no output
+            // Reset transaction-scoped caches
+            self.warm_addresses.clearRetainingCapacity();
+            self.warm_storage_slots.clearRetainingCapacity();
+            self.transient_storage.clearRetainingCapacity();
+            self.selfdestructed_accounts.clearRetainingCapacity();
+
+            return CallResult{
+                .success = true,
+                .gas_left = @intCast(gas),
+                .output = &[_]u8{},
+            };
+        }
+
         // Create and push frame onto stack
         self.frames.append(self.arena.allocator(), Frame.init(
             self.arena.allocator(),
@@ -1772,6 +1866,29 @@ pub fn Evm(config: EvmConfig) type {
         // This is required for SELFDESTRUCT to correctly identify same-tx creations
         try self.created_accounts.put(new_address, {});
 
+        // Snapshot gas refunds before executing init code
+        // Per Python reference (vm/__init__.py:incorporate_child_on_error), failed creates do not
+        // propagate refunds to parent. Only incorporate_child_on_success adds child refunds.
+        const refund_snapshot = self.gas_refund;
+
+        // Snapshot warm addresses before executing init code (EIP-2929)
+        // Per Python reference (incorporate_child_on_error), accessed_addresses
+        // are only propagated on success, not on failure
+        var warm_addresses_snapshot = std.AutoHashMap(Address, void).init(self.arena.allocator());
+        var warm_addr_it = self.warm_addresses.iterator();
+        while (warm_addr_it.next()) |entry| {
+            try warm_addresses_snapshot.put(entry.key_ptr.*, {});
+        }
+
+        // Snapshot warm storage slots before executing init code (EIP-2929)
+        // Per Python reference (incorporate_child_on_error), accessed_storage_keys
+        // are only propagated on success, not on failure
+        var warm_storage_snapshot = std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false).init(self.arena.allocator());
+        var warm_storage_it = self.warm_storage_slots.iterator();
+        while (warm_storage_it.next()) |entry| {
+            _ = try warm_storage_snapshot.put(entry.key_ptr.*, {});
+        }
+
         // Snapshot balances before execution (for SELFDESTRUCT revert handling)
         // We use copy-on-write: addresses are snapshotted when first modified via setBalanceWithSnapshot
         var balance_snapshot = std.AutoHashMap(Address, u256).init(self.arena.allocator());
@@ -1824,6 +1941,24 @@ pub fn Evm(config: EvmConfig) type {
                 _ = self.nonces.remove(new_address);
             }
 
+            // Restore gas refunds on failure
+            // Per Python: incorporate_child_on_error does NOT add child's refund_counter
+            self.gas_refund = refund_snapshot;
+
+            // Restore warm addresses on failure (EIP-2929)
+            self.warm_addresses.clearRetainingCapacity();
+            var warm_addr_restore_it = warm_addresses_snapshot.iterator();
+            while (warm_addr_restore_it.next()) |entry| {
+                try self.warm_addresses.put(entry.key_ptr.*, {});
+            }
+
+            // Restore warm storage slots on failure (EIP-2929)
+            self.warm_storage_slots.clearRetainingCapacity();
+            var warm_storage_restore_it = warm_storage_snapshot.iterator();
+            while (warm_storage_restore_it.next()) |entry| {
+                _ = try self.warm_storage_slots.put(entry.key_ptr.*, {});
+            }
+
             // Restore balances on error (handles SELFDESTRUCT balance transfers and value transfers)
             var balance_restore_it = balance_snapshot.iterator();
             while (balance_restore_it.next()) |entry| {
@@ -1871,6 +2006,24 @@ pub fn Evm(config: EvmConfig) type {
                         h.setNonce(new_address, 0);
                     } else {
                         _ = self.nonces.remove(new_address);
+                    }
+
+                    // Restore gas refunds on failure
+                    // Per Python: incorporate_child_on_error does NOT add child's refund_counter
+                    self.gas_refund = refund_snapshot;
+
+                    // Restore warm addresses on failure (EIP-2929)
+                    self.warm_addresses.clearRetainingCapacity();
+                    var warm_addr_restore_it = warm_addresses_snapshot.iterator();
+                    while (warm_addr_restore_it.next()) |entry| {
+                        try self.warm_addresses.put(entry.key_ptr.*, {});
+                    }
+
+                    // Restore warm storage slots on failure (EIP-2929)
+                    self.warm_storage_slots.clearRetainingCapacity();
+                    var warm_storage_restore_it = warm_storage_snapshot.iterator();
+                    while (warm_storage_restore_it.next()) |entry| {
+                        _ = try self.warm_storage_slots.put(entry.key_ptr.*, {});
                     }
 
                     // Restore balances on failure (handles SELFDESTRUCT balance transfers and value transfers)
