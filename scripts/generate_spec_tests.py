@@ -23,7 +23,7 @@ def sanitize_test_name(name: str) -> str:
     return sanitized
 
 
-def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path) -> int:
+def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path, repo_root: Path) -> int:
     """Generate a Zig test file for a JSON test file. Returns number of tests generated."""
     # Read and parse JSON to get test names
     try:
@@ -76,7 +76,8 @@ def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path) -> i
 
         # Absolute path to JSON file from repository root
         # When tests run, cwd is the repository root
-        json_abs_path = f"execution-specs/tests/eest/static/state_tests/{rel_path}"
+        # Construct path relative to repo_root
+        json_abs_path = str((specs_root / rel_path).relative_to(repo_root))
 
         zig_code.append(f'test "{unique_test_name}" {{')
         zig_code.append("    const allocator = testing.allocator;")
@@ -107,11 +108,27 @@ def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path) -> i
 
 
 def main():
+    import sys
+
+    # Get test type from command line argument
+    test_type = sys.argv[1] if len(sys.argv) > 1 else "state"
+
+    if test_type not in ["state", "blockchain"]:
+        print(f"Error: Invalid test type '{test_type}'. Must be 'state' or 'blockchain'", file=sys.stderr)
+        sys.exit(1)
+
     # Get the repository root
     script_dir = Path(__file__).parent
     repo_root = script_dir.parent
-    specs_root = repo_root / "execution-specs" / "tests" / "eest" / "static" / "state_tests"
-    output_root = repo_root / "test" / "specs" / "generated"
+    specs_base = repo_root / "execution-specs" / "tests" / "eest" / "static" / "state_tests"
+
+    # Select appropriate test directory based on test type
+    if test_type == "state":
+        specs_root = specs_base / "state_tests"
+        output_root = repo_root / "test" / "specs" / "generated_state"
+    else:  # blockchain
+        specs_root = specs_base / "blockchain_tests"
+        output_root = repo_root / "test" / "specs" / "generated_blockchain"
 
     # Clean output directory
     if output_root.exists():
@@ -121,18 +138,18 @@ def main():
 
     # Find all JSON test files (excluding .meta directories)
     json_files = [f for f in specs_root.rglob("*.json") if ".meta" not in f.parts]
-    print(f"Found {len(json_files)} JSON test files")
-    print(f"Generating all test files...")
+    print(f"Found {len(json_files)} {test_type.upper()} test JSON files")
+    print(f"Generating {test_type} test files...")
 
     # Generate test files
     total_tests = 0
     for i, json_file in enumerate(json_files, 1):
         if i % 100 == 0:
             print(f"Progress: {i}/{len(json_files)} files...")
-        test_count = generate_test_file(json_file, output_root, specs_root)
+        test_count = generate_test_file(json_file, output_root, specs_root, repo_root)
         total_tests += test_count
 
-    print(f"\nGenerated {total_tests} zig tests in {output_root}")
+    print(f"\nGenerated {total_tests} {test_type} zig tests in {output_root}")
 
 
 if __name__ == "__main__":
