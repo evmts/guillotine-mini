@@ -26,6 +26,7 @@ Analyze the current git repository state and create atomic, conventional commits
    - IDE directories: `.vscode/`, `.idea/`, `.vs/`
    - Build artifacts: `node_modules/`, `target/debug/`, `target/release/`, `.zig-cache/`, `zig-out/`
    - OS files: `.DS_Store`, `Thumbs.db`
+   - **Submodules**: NEVER commit, clean, or modify any files within git submodules (e.g., `execution-specs/`)
 
    Explain what files were filtered out and why.
 
@@ -101,5 +102,7 @@ Before creating any commits:
 2. Ensure build artifacts and temporary files are properly filtered
 3. Check that test files are not mixed with production code changes
 4. Confirm that each commit represents a logical, atomic change
+5. **NEVER commit submodule changes** - Submodules should be managed separately and not included in commits
+6. **NEVER clean or modify submodule files** - Leave all submodule directories untouched
 
 Arguments: $ARGUMENTS
