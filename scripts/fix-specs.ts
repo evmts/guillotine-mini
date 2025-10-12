@@ -42,11 +42,18 @@ const TEST_SUITES: TestSuite[] = [
   // Cancun sub-targets (broken up from large test suite)
   { name: 'cancun-tstore-basic', command: 'zig build specs-cancun-tstore-basic', description: 'Cancun EIP-1153 basic TLOAD/TSTORE tests' },
   { name: 'cancun-tstore-reentrancy', command: 'zig build specs-cancun-tstore-reentrancy', description: 'Cancun EIP-1153 reentrancy tests' },
-  { name: 'cancun-tstore-contexts', command: 'zig build specs-cancun-tstore-contexts', description: 'Cancun EIP-1153 execution context tests' },
+  { name: 'cancun-tstore-contexts-execution', command: 'zig build specs-cancun-tstore-contexts-execution', description: 'Cancun EIP-1153 execution context tests (60 tests)' },
+  { name: 'cancun-tstore-contexts-tload-reentrancy', command: 'zig build specs-cancun-tstore-contexts-tload-reentrancy', description: 'Cancun EIP-1153 tload reentrancy tests (48 tests)' },
+  { name: 'cancun-tstore-contexts-reentrancy', command: 'zig build specs-cancun-tstore-contexts-reentrancy', description: 'Cancun EIP-1153 reentrancy context tests (20 tests)' },
+  { name: 'cancun-tstore-contexts-create', command: 'zig build specs-cancun-tstore-contexts-create', description: 'Cancun EIP-1153 create context tests (20 tests)' },
+  { name: 'cancun-tstore-contexts-selfdestruct', command: 'zig build specs-cancun-tstore-contexts-selfdestruct', description: 'Cancun EIP-1153 selfdestruct tests (12 tests)' },
+  { name: 'cancun-tstore-contexts-clear', command: 'zig build specs-cancun-tstore-contexts-clear', description: 'Cancun EIP-1153 clear after tx tests (4 tests)' },
   { name: 'cancun-mcopy', command: 'zig build specs-cancun-mcopy', description: 'Cancun EIP-5656 MCOPY tests' },
   { name: 'cancun-blobbasefee', command: 'zig build specs-cancun-blobbasefee', description: 'Cancun EIP-7516 BLOBBASEFEE tests' },
-  { name: 'cancun-blob-precompile', command: 'zig build specs-cancun-blob-precompile', description: 'Cancun EIP-4844 point evaluation precompile tests' },
-  { name: 'cancun-blob-opcodes', command: 'zig build specs-cancun-blob-opcodes', description: 'Cancun EIP-4844 BLOBHASH opcode tests' },
+  { name: 'cancun-blob-precompile-basic', command: 'zig build specs-cancun-blob-precompile-basic', description: 'Cancun EIP-4844 point evaluation basic tests (310 tests)' },
+  { name: 'cancun-blob-precompile-gas', command: 'zig build specs-cancun-blob-precompile-gas', description: 'Cancun EIP-4844 point evaluation gas tests (48 tests)' },
+  { name: 'cancun-blob-opcodes-basic', command: 'zig build specs-cancun-blob-opcodes-basic', description: 'Cancun EIP-4844 BLOBHASH basic tests (75 tests)' },
+  { name: 'cancun-blob-opcodes-contexts', command: 'zig build specs-cancun-blob-opcodes-contexts', description: 'Cancun EIP-4844 BLOBHASH context tests (23 tests)' },
   { name: 'cancun-blob-tx-small', command: 'zig build specs-cancun-blob-tx-small', description: 'Cancun EIP-4844 small blob transaction tests' },
   { name: 'cancun-blob-tx-subtraction', command: 'zig build specs-cancun-blob-tx-subtraction', description: 'Cancun EIP-4844 blob gas subtraction tests' },
   { name: 'cancun-blob-tx-insufficient', command: 'zig build specs-cancun-blob-tx-insufficient', description: 'Cancun EIP-4844 insufficient balance tests' },
@@ -78,10 +85,11 @@ const TEST_SUITES: TestSuite[] = [
 
   // Shanghai EIPs
   { name: 'shanghai-warmcoinbase', command: 'zig build specs-shanghai-warmcoinbase', description: 'Shanghai EIP-3651 warm coinbase tests' },
-  { name: 'shanghai-initcode', command: 'zig build specs-shanghai-initcode', description: 'Shanghai EIP-3860 initcode tests' },
+  { name: 'shanghai-initcode-basic', command: 'zig build specs-shanghai-initcode-basic', description: 'Shanghai EIP-3860 initcode basic tests (162 tests)' },
+  { name: 'shanghai-initcode-eof', command: 'zig build specs-shanghai-initcode-eof', description: 'Shanghai EIP-3860 initcode EOF tests (24 tests)' },
 
-  // Smaller hardforks (no sub-targets needed)
-  { name: 'byzantium', command: 'zig build specs-byzantium', description: 'Byzantium hardfork tests' },
+  // Byzantium sub-targets
+  { name: 'byzantium-modexp', command: 'zig build specs-byzantium-modexp', description: 'Byzantium EIP-198 modexp precompile tests (352 tests)' },
   // Berlin sub-targets (broken up from large test suite)
   { name: 'berlin-acl', command: 'zig build specs-berlin-acl', description: 'Berlin EIP-2930 access list account storage tests' },
   { name: 'berlin-intrinsic-gas-cost', command: 'zig build specs-berlin-intrinsic-gas-cost', description: 'Berlin EIP-2930 transaction intrinsic gas cost tests' },
@@ -98,9 +106,14 @@ const TEST_SUITES: TestSuite[] = [
   { name: 'frontier-push', command: 'zig build specs-frontier-push', description: 'Frontier PUSH tests' },
   { name: 'frontier-stack', command: 'zig build specs-frontier-stack', description: 'Frontier stack overflow tests' },
   { name: 'frontier-opcodes', command: 'zig build specs-frontier-opcodes', description: 'Frontier all opcodes tests' },
-  { name: 'constantinople', command: 'zig build specs-constantinople', description: 'Constantinople hardfork tests' },
-  { name: 'istanbul', command: 'zig build specs-istanbul', description: 'Istanbul hardfork tests' },
-  { name: 'cancun-selfdestruct', command: 'zig build specs-cancun-selfdestruct', description: 'Cancun EIP-6780 SELFDESTRUCT tests' },
+  { name: 'constantinople-bitshift', command: 'zig build specs-constantinople-bitshift', description: 'Constantinople EIP-145 bitwise shift tests (~250 tests)' },
+  { name: 'constantinople-create2', command: 'zig build specs-constantinople-create2', description: 'Constantinople EIP-1014 CREATE2 tests (~250 tests)' },
+  { name: 'istanbul-blake2', command: 'zig build specs-istanbul-blake2', description: 'Istanbul EIP-152 BLAKE2 precompile tests' },
+  { name: 'istanbul-chainid', command: 'zig build specs-istanbul-chainid', description: 'Istanbul EIP-1344 CHAINID tests' },
+  { name: 'cancun-selfdestruct-basic', command: 'zig build specs-cancun-selfdestruct-basic', description: 'Cancun EIP-6780 basic SELFDESTRUCT tests (306 tests)' },
+  { name: 'cancun-selfdestruct-collision', command: 'zig build specs-cancun-selfdestruct-collision', description: 'Cancun EIP-6780 create2 collision tests (52 tests)' },
+  { name: 'cancun-selfdestruct-reentrancy', command: 'zig build specs-cancun-selfdestruct-reentrancy', description: 'Cancun EIP-6780 reentrancy revert tests (36 tests)' },
+  { name: 'cancun-selfdestruct-revert', command: 'zig build specs-cancun-selfdestruct-revert', description: 'Cancun EIP-6780 revert tests (12 tests)' },
 ];
 
 interface TestResult {
@@ -122,12 +135,15 @@ interface FixAttempt {
 
 class SpecFixerPipeline {
   private reportsDir = join(REPO_ROOT, "reports", "spec-fixes");
-  private maxAttemptsPerSuite = 3;
+  private maxAttemptsPerSuite = 2;
   private fixAttempts: FixAttempt[] = [];
   private knownIssues: KnownIssuesDatabase;
   private agentEnabled: boolean;
+  private testType: "state" | "blockchain";
 
-  constructor() {
+  constructor(testType: "state" | "blockchain" = "state") {
+    this.testType = testType;
+
     if (!existsSync(this.reportsDir)) {
       mkdirSync(this.reportsDir, { recursive: true });
     }
@@ -142,6 +158,8 @@ class SpecFixerPipeline {
         "ℹ️  ANTHROPIC_API_KEY not set. Agent auto-fix disabled. Tests will run, but no AI fixes will be attempted.",
       );
     }
+
+    console.log(`🎯 Running ${testType.toUpperCase()} tests`);
   }
 
   private loadKnownIssues(): KnownIssuesDatabase {
@@ -280,12 +298,107 @@ ${Object.entries(issue.gas_costs)
     // Include known issues context if available
     const knownIssueContext = this.getKnownIssueContext(suite.name);
 
+    // Load previous pipeline summaries if they exist
+    const pipelineSummaryPath = join(this.reportsDir, "pipeline-summary.md");
+    const pipelineAiSummaryPath = join(this.reportsDir, "pipeline-summary-ai.md");
+    let previousRunContext = "";
+
+    if (existsSync(pipelineSummaryPath) || existsSync(pipelineAiSummaryPath)) {
+      try {
+        let summaryContent = "";
+
+        // Load AI narrative summary first (high-level overview)
+        if (existsSync(pipelineAiSummaryPath)) {
+          const aiSummary = readFileSync(pipelineAiSummaryPath, "utf-8");
+          summaryContent += `### Executive Summary\n\n${aiSummary}\n\n`;
+        }
+
+        // Then load detailed structured summary
+        if (existsSync(pipelineSummaryPath)) {
+          const pipelineSummary = readFileSync(pipelineSummaryPath, "utf-8");
+          summaryContent += `### Detailed Results\n\n${pipelineSummary}`;
+        }
+
+        if (summaryContent) {
+          previousRunContext = `
+<previous_run_summary>
+## Previous Pipeline Run
+
+${summaryContent}
+
+**Note**: This summary shows what was attempted in the last pipeline run. Use it to understand patterns, learn from previous attempts, and avoid repeating unsuccessful approaches.
+</previous_run_summary>
+`;
+        }
+      } catch (error) {
+        console.warn(`⚠️  Could not load previous pipeline summary: ${error}`);
+      }
+    }
+
+    // Load previous attempt reports for THIS specific suite
+    // This includes:
+    // 1. All attempts from PREVIOUS pipeline runs
+    // 2. Attempts 1 through (attemptNumber-1) from THIS CURRENT run
+    let previousAttemptContext = "";
+    try {
+      const files = readdirSync(this.reportsDir).filter((f) => f.endsWith(".md"));
+      const suiteAttempts: { attempt: number; file: string; content: string }[] = [];
+
+      const prefix = `${suite.name}-attempt`;
+      for (const f of files) {
+        if (f.startsWith(prefix)) {
+          const m = f.match(/attempt(\d+)\.md$/);
+          if (m) {
+            const attemptNum = parseInt(m[1], 10);
+            // Include all existing reports from previous runs,
+            // AND reports from earlier attempts in this run (attemptNum < attemptNumber)
+            // This means on attempt 1, we see previous run attempts
+            // On attempt 2, we see previous run attempts + attempt 1 from this run
+            // On attempt 3, we see previous run attempts + attempts 1 & 2 from this run
+            const fullPath = join(this.reportsDir, f);
+            if (existsSync(fullPath)) {
+              const content = readFileSync(fullPath, "utf-8");
+              suiteAttempts.push({ attempt: attemptNum, file: f, content });
+            }
+          }
+        }
+      }
+
+      // Sort by attempt number
+      suiteAttempts.sort((a, b) => a.attempt - b.attempt);
+
+      if (suiteAttempts.length > 0) {
+        let attemptsContent = "";
+        for (const { attempt, file, content } of suiteAttempts) {
+          attemptsContent += `\n### Attempt ${attempt} (${file})\n\n${truncate(content, 30 * 1024)}\n\n---\n`;
+        }
+
+        previousAttemptContext = `
+<previous_attempts_for_this_suite>
+## Previous Attempts for ${suite.name}
+
+Found ${suiteAttempts.length} previous attempt(s) for this suite. Review what was tried before:
+
+${attemptsContent}
+
+**Note**: These include attempts from previous pipeline runs AND earlier attempts from this current run. Learn from what worked, what didn't, and what approaches were already tried.
+</previous_attempts_for_this_suite>
+`;
+      }
+    } catch (error) {
+      console.warn(`⚠️  Could not load previous attempt reports for ${suite.name}: ${error}`);
+    }
+
     const prompt = `<task>
 Fix the failing tests in ${suite.description}.
 Command: \`${suite.command}\`
 </task>
 
 ${knownIssueContext}
+
+${previousAttemptContext}
+
+${previousRunContext}
 
 <context>
 You're debugging an EVM implementation in Zig. The goal is to make all tests pass by fixing bugs in the implementation.
@@ -352,7 +465,7 @@ Fix the failing tests. Use your judgment on the best approach - trace analysis i
         prompt,
         options: {
           model: "claude-sonnet-4-5-20250929",
-          maxTurns: 1000,
+          maxTurns: 350,
           maxThinkingTokens: 32000,
           permissionMode: "bypassPermissions",
           cwd: REPO_ROOT,
@@ -579,10 +692,11 @@ Create the commit now using git commands.
 
   async runAll(): Promise<void> {
     console.log(`\n${"█".repeat(80)}`);
-    console.log(`🎯 GUILLOTINE SPEC FIXER PIPELINE`);
+    console.log(`🎯 GUILLOTINE SPEC FIXER PIPELINE - ${this.testType.toUpperCase()} TESTS`);
     console.log(`${"█".repeat(80)}`);
     console.log(`Total Test Suites: ${TEST_SUITES.length}`);
     console.log(`Max Attempts Per Suite: ${this.maxAttemptsPerSuite}`);
+    console.log(`Test Type: ${this.testType}`);
     console.log(`${"█".repeat(80)}\n`);
 
     const pipelineStart = Date.now();
@@ -857,7 +971,10 @@ function truncate(text: string, maxBytes: number): string {
 // CLI
 async function main() {
   const args = process.argv.slice(2);
-  const pipeline = new SpecFixerPipeline();
+
+  // Check for BLOCKCHAIN_TESTS environment variable
+  const testType: "state" | "blockchain" = process.env.BLOCKCHAIN_TESTS === "true" ? "blockchain" : "state";
+  const pipeline = new SpecFixerPipeline(testType);
 
   if (args.length === 0) {
     // Run all test suites
@@ -870,8 +987,12 @@ async function main() {
 Guillotine Spec Fixer Pipeline
 
 Usage:
-  bun run scripts/fix-specs.ts              # Run all test suites
+  bun run scripts/fix-specs.ts              # Run all STATE test suites
+  BLOCKCHAIN_TESTS=true bun run scripts/fix-specs.ts  # Run all BLOCKCHAIN test suites
   bun run scripts/fix-specs.ts suite <name> # Run specific test suite
+
+Environment Variables:
+  BLOCKCHAIN_TESTS=true     Run blockchain tests instead of state tests (default: state)
 
 Available test suites:
 ${TEST_SUITES.map((s) => `  ${s.name.padEnd(25)} - ${s.description}`).join("\n")}
@@ -879,6 +1000,7 @@ ${TEST_SUITES.map((s) => `  ${s.name.padEnd(25)} - ${s.description}`).join("\n")
 Examples:
   bun run scripts/fix-specs.ts suite cancun
   bun run scripts/fix-specs.ts suite shanghai-push0
+  BLOCKCHAIN_TESTS=true bun run scripts/fix-specs.ts
     `);
   }
 }
