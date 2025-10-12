@@ -426,6 +426,8 @@ See `src/root_c.zig` for full API.
 
 > **Critical for debugging**: Python execution-specs are the authoritative source. When in doubt, trust Python code over intuition, docs, or Yellow Paper.
 
+> **⚠️ IMPORTANT**: The `execution-specs/` directory is a git submodule containing the official Ethereum execution specifications. **NEVER commit, clean, or modify any files within this submodule.** It should be managed separately and left untouched during normal development.
+
 ### File Location Mapping
 
 | Problem Area | Python Reference | Zig Implementation |
