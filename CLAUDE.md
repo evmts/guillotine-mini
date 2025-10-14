@@ -697,6 +697,7 @@ if (self.hardfork.isAtLeast(.CANCUN)) {
 - ❌ Forget to charge gas before operations (Python charges first)
 - ❌ Modify test files (only change `src/` implementations)
 - ❌ **CRITICAL: Silently ignore errors with `catch {}`** - ALL errors MUST be handled and/or propagated properly. Never use `catch {}` to suppress errors (e.g., `slots_to_remove.append(allocator, key) catch {}` is forbidden). Either handle the error meaningfully or propagate it with `try`. The only exception is when the function signature explicitly cannot return errors (non-error-union return type), in which case the function design should be reconsidered.
+- ❌ **NEVER create .backup files** - We use git for version control. Never create files with .backup, .bak, .old, or similar extensions. Use git branches/stashes instead.
 
 ---
 
