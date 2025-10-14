@@ -3,13 +3,11 @@ const std = @import("std");
 const primitives = @import("primitives");
 const GasConstants = primitives.GasConstants;
 const Address = primitives.Address.Address;
-const evm_mod = @import("../evm.zig");
-const Evm = evm_mod.DefaultEvm;
-const CallParams = Evm.CallParams;
 const precompiles = @import("../precompiles/precompiles.zig");
 
 /// Handlers struct - provides system operation handlers for a Frame type
-/// The FrameType must have methods and fields appropriate for system operations
+/// The FrameType must have methods: getEvm, consumeGas, popStack, pushStack
+/// and fields appropriate for system operations
 pub fn Handlers(FrameType: type) type {
     return struct {
         /// Helper functions

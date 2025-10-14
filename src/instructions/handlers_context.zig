@@ -146,7 +146,7 @@ pub fn Handlers(FrameType: type) type {
         /// CODESIZE opcode (0x38) - Get size of code running in current environment
         pub fn codesize(frame: *FrameType) FrameType.EvmError!void {
             try frame.consumeGas(GasConstants.GasQuickStep);
-            try frame.pushStack(frame.bytecode.len);
+            try frame.pushStack(frame.bytecode.len());
             frame.pc += 1;
         }
 
@@ -169,8 +169,7 @@ pub fn Handlers(FrameType: type) type {
             var i: u32 = 0;
             while (i < len) : (i += 1) {
                 const src_idx_u32 = try add_u32(src_off, i);
-                const src_idx: usize = @intCast(src_idx_u32);
-                const byte = if (src_idx < frame.bytecode.len) frame.bytecode[src_idx] else 0;
+                const byte = frame.bytecode.getOpcode(src_idx_u32) orelse 0;
                 const dst_idx = try add_u32(dest_off, i);
                 try frame.writeMemory(dst_idx, byte);
             }

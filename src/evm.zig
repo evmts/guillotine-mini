@@ -16,23 +16,21 @@ const EvmConfig = evm_config.EvmConfig;
 const storage_injector = @import("storage_injector.zig");
 const StorageInjector = storage_injector.StorageInjector;
 
-const Address = primitives.Address.Address;
-
 /// Access list storage key slot type
 pub const AccessListStorageKey = struct {
-    address: Address,
+    address: primitives.Address,
     slot: u256,
 };
 
 /// Access list parameter type for EIP-2930
 pub const AccessListParam = struct {
-    addresses: []const Address,
+    addresses: []const primitives.Address,
     storage_keys: []const AccessListStorageKey,
 };
 
 /// Storage slot key for tracking
 pub const StorageSlotKey = struct {
-    address: Address,
+    address: primitives.Address,
     slot: u256,
 
     pub fn hash(key: StorageSlotKey) u32 {
@@ -48,7 +46,7 @@ pub const StorageSlotKey = struct {
 };
 
 // Context for Address ArrayHashMap
-const AddressContext = std.array_hash_map.AutoContext(Address);
+const AddressContext = std.array_hash_map.AutoContext(primitives.Address);
 
 // Context for hashing/equality of StorageSlotKey for ArrayHashMap
 const StorageSlotKeyContext = struct {
@@ -69,17 +67,17 @@ const StorageSlotKeyContext = struct {
 pub const AsyncDataRequest = union(enum) {
     none: void,
     storage: struct {
-        address: Address,
+        address: primitives.Address,
         slot: u256,
     },
     balance: struct {
-        address: Address,
+        address: primitives.Address,
     },
     code: struct {
-        address: Address,
+        address: primitives.Address,
     },
     nonce: struct {
-        address: Address,
+        address: primitives.Address,
     },
 };
 
@@ -89,14 +87,18 @@ pub const BlockContext = struct {
     block_timestamp: u64,
     block_difficulty: u256,
     block_prevrandao: u256,
-    block_coinbase: Address,
+    block_coinbase: primitives.Address,
     block_gas_limit: u64,
     block_base_fee: u256,
     blob_base_fee: u256,
 };
 
 /// Creates a configured EVM instance type.
-pub fn Evm(config: EvmConfig) type {
+pub fn Evm(comptime config: EvmConfig) type {
+    // Import Frame with matching config
+    const frame_mod = @import("frame.zig");
+    const FrameType = frame_mod.Frame(config);
+
     // Import new API types with config
     const call_params = @import("call_params.zig");
     const call_result = @import("call_result.zig");
@@ -111,20 +113,20 @@ pub fn Evm(config: EvmConfig) type {
         pub const CallOrContinueInput = union(enum) {
             call: CallParams,
             continue_with_storage: struct {
-                address: Address,
+                address: primitives.Address,
                 slot: u256,
                 value: u256,
             },
             continue_with_balance: struct {
-                address: Address,
+                address: primitives.Address,
                 balance: u256,
             },
             continue_with_code: struct {
-                address: Address,
+                address: primitives.Address,
                 code: []const u8,
             },
             continue_with_nonce: struct {
-                address: Address,
+                address: primitives.Address,
                 nonce: u64,
             },
             continue_after_commit: void,
@@ -134,42 +136,42 @@ pub fn Evm(config: EvmConfig) type {
         pub const CallOrContinueOutput = union(enum) {
             result: CallResult,
             need_storage: struct {
-                address: Address,
+                address: primitives.Address,
                 slot: u256,
             },
             need_balance: struct {
-                address: Address,
+                address: primitives.Address,
             },
             need_code: struct {
-                address: Address,
+                address: primitives.Address,
             },
             need_nonce: struct {
-                address: Address,
+                address: primitives.Address,
             },
             ready_to_commit: struct {
                 changes_json: []const u8,
             },
         };
 
-    frames: std.ArrayList(Frame),
+    frames: std.ArrayList(FrameType),
     storage: std.AutoHashMap(StorageSlotKey, u256),
     original_storage: std.AutoHashMap(StorageSlotKey, u256),
     transient_storage: std.AutoHashMap(StorageSlotKey, u256),
-    created_accounts: std.AutoHashMap(Address, void),
-    selfdestructed_accounts: std.AutoHashMap(Address, void),  // EIP-6780: Track accounts marked for deletion
-    touched_accounts: std.AutoHashMap(Address, void),  // Pre-Paris: Track touched accounts for deletion if empty
-    balances: std.AutoHashMap(Address, u256),
-    nonces: std.AutoHashMap(Address, u64),
-    code: std.AutoHashMap(Address, []const u8),
-    warm_addresses: std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false),
+    created_accounts: std.AutoHashMap(primitives.Address, void),
+    selfdestructed_accounts: std.AutoHashMap(primitives.Address, void),  // EIP-6780: Track accounts marked for deletion
+    touched_accounts: std.AutoHashMap(primitives.Address, void),  // Pre-Paris: Track touched accounts for deletion if empty
+    balances: std.AutoHashMap(primitives.Address, u256),
+    nonces: std.AutoHashMap(primitives.Address, u64),
+    code: std.AutoHashMap(primitives.Address, []const u8),
+    warm_addresses: std.array_hash_map.ArrayHashMap(primitives.Address, void, AddressContext, false),
     warm_storage_slots: std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false),
     gas_refund: u64,
     // Stack of balance snapshots for nested calls (for SELFDESTRUCT revert handling)
     // Each call pushes a snapshot, and on revert we restore from that snapshot
-    balance_snapshot_stack: std.ArrayList(*std.AutoHashMap(Address, u256)),
+    balance_snapshot_stack: std.ArrayList(*std.AutoHashMap(primitives.Address, u256)),
     hardfork: Hardfork = Hardfork.DEFAULT,
     fork_transition: ?@import("hardfork.zig").ForkTransition = null,
-    origin: Address,
+    origin: primitives.Address,
     gas_price: u256,
     host: ?host.HostInterface,
     arena: std.heap.ArenaAllocator,
@@ -251,7 +253,7 @@ pub fn Evm(config: EvmConfig) type {
 
     /// Look up custom precompile override
     /// Returns null if no override exists for this address
-    pub fn getPrecompileOverride(self: *const Self, address: Address) ?*const evm_config.PrecompileOverride {
+    pub fn getPrecompileOverride(self: *const Self, address: primitives.Address) ?*const evm_config.PrecompileOverride {
         for (self.precompile_overrides) |*override| {
             if (override.address.equals(address)) {
                 return override;
@@ -278,19 +280,19 @@ pub fn Evm(config: EvmConfig) type {
     pub fn initTransactionState(self: *Self, blob_versioned_hashes: ?[]const [32]u8) !void {
         const arena_allocator = self.arena.allocator();
         self.storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
-        self.balances = std.AutoHashMap(Address, u256).init(arena_allocator);
-        self.nonces = std.AutoHashMap(Address, u64).init(arena_allocator);
-        self.code = std.AutoHashMap(Address, []const u8).init(arena_allocator);
-        self.warm_addresses = std.array_hash_map.ArrayHashMap(Address, void, AddressContext, false).init(arena_allocator);
+        self.balances = std.AutoHashMap(primitives.Address, u256).init(arena_allocator);
+        self.nonces = std.AutoHashMap(primitives.Address, u64).init(arena_allocator);
+        self.code = std.AutoHashMap(primitives.Address, []const u8).init(arena_allocator);
+        self.warm_addresses = std.array_hash_map.ArrayHashMap(primitives.Address, void, AddressContext, false).init(arena_allocator);
         self.warm_storage_slots = std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false).init(arena_allocator);
-        self.frames = std.ArrayList(Frame){};
+        self.frames = std.ArrayList(FrameType){};
         try self.frames.ensureTotalCapacity(arena_allocator, 16);
         self.original_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
         self.transient_storage = std.AutoHashMap(StorageSlotKey, u256).init(arena_allocator);
-        self.created_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
-        self.selfdestructed_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
-        self.touched_accounts = std.AutoHashMap(Address, void).init(arena_allocator);
-        self.balance_snapshot_stack = std.ArrayList(*std.AutoHashMap(Address, u256)){};
+        self.created_accounts = std.AutoHashMap(primitives.Address, void).init(arena_allocator);
+        self.selfdestructed_accounts = std.AutoHashMap(primitives.Address, void).init(arena_allocator);
+        self.touched_accounts = std.AutoHashMap(primitives.Address, void).init(arena_allocator);
+        self.balance_snapshot_stack = std.ArrayList(*std.AutoHashMap(primitives.Address, u256)){};
 
         // Set blob versioned hashes for EIP-4844
         // CRITICAL: Must copy blob hashes into arena to ensure correct lifetime
@@ -313,7 +315,7 @@ pub fn Evm(config: EvmConfig) type {
         self.tracer = tracer;
     }
 
-    pub fn accessAddress(self: *Self, address: Address) !u64 {
+    pub fn accessAddress(self: *Self, address: primitives.Address) !u64 {
         if (self.hardfork.isBefore(.BERLIN)) {
             @branchHint(.cold);
             // Pre-Berlin: No warm/cold access costs (EIP-2929 introduced in Berlin)
@@ -329,7 +331,7 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     /// Access a storage slot and return the gas cost (EIP-2929 warm/cold)
-    pub fn accessStorageSlot(self: *Self, contract_address: Address, slot: u256) !u64 {
+    pub fn accessStorageSlot(self: *Self, contract_address: primitives.Address, slot: u256) !u64 {
         if (self.hardfork.isBefore(.BERLIN)) {
             @branchHint(.cold);
             // EIP-1884 (Istanbul): SLOAD increased from 200 to 800 gas
@@ -353,7 +355,7 @@ pub fn Evm(config: EvmConfig) type {
     /// IMPORTANT: Snapshots the balance in ALL active snapshots on the stack, not just the current one.
     /// This ensures that parent frames can restore state when they revert, even if the balance
     /// was modified in a nested call.
-    pub fn setBalanceWithSnapshot(self: *Self, addr: Address, new_balance: u256) !void {
+    pub fn setBalanceWithSnapshot(self: *Self, addr: primitives.Address, new_balance: u256) !void {
         // Snapshot in ALL active snapshots (from outermost to innermost)
         // This ensures parent frames can restore state even if modified in nested calls
         for (self.balance_snapshot_stack.items) |snapshot| {
@@ -376,7 +378,7 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     /// Pre-warm addresses for transaction initialization
-    fn preWarmAddresses(self: *Self, addresses: []const Address) !void {
+    fn preWarmAddresses(self: *Self, addresses: []const primitives.Address) !void {
         for (addresses) |addr| {
             _ = self.warm_addresses.getOrPut(addr) catch {
                 return errors.CallError.StorageError;
@@ -385,7 +387,7 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     /// Get nonce for an address
-    fn getNonce(self: *Self, address: Address) u64 {
+    fn getNonce(self: *Self, address: primitives.Address) u64 {
         if (self.host) |h| {
             return h.getNonce(address);
         }
@@ -393,7 +395,7 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     /// Compute CREATE address: keccak256(rlp([sender, nonce]))[12:]
-    fn computeCreateAddress(self: *Self, sender: Address, nonce: u64) !Address {
+    fn computeCreateAddress(self: *Self, sender: primitives.Address, nonce: u64) !primitives.Address {
         _ = self;
         // RLP encoding of [sender (20 bytes), nonce]
         // For simplicity, use a fixed buffer (max size for nonce encoding is small)
@@ -443,13 +445,13 @@ pub fn Evm(config: EvmConfig) type {
         std.crypto.hash.sha3.Keccak256.hash(rlp_data, &hash, .{});
 
         // Take last 20 bytes as address
-        var addr: Address = undefined;
+        var addr: primitives.Address = undefined;
         @memcpy(&addr.bytes, hash[12..32]);
         return addr;
     }
 
     /// Compute CREATE2 address: keccak256(0xff ++ sender ++ salt ++ keccak256(init_code))[12:]
-    fn computeCreate2Address(self: *Self, sender: Address, salt: u256, init_code: []const u8) !Address {
+    fn computeCreate2Address(self: *Self, sender: primitives.Address, salt: u256, init_code: []const u8) !primitives.Address {
         _ = self;
         // Compute keccak256(init_code)
         var init_code_hash: [32]u8 = undefined;
@@ -471,17 +473,17 @@ pub fn Evm(config: EvmConfig) type {
         std.crypto.hash.sha3.Keccak256.hash(&buffer, &hash, .{});
 
         // Take last 20 bytes as address
-        var addr: Address = undefined;
+        var addr: primitives.Address = undefined;
         @memcpy(&addr.bytes, hash[12..32]);
         return addr;
     }
 
-    pub fn preWarmTransaction(self: *Self, target: Address) errors.CallError!void {
+    pub fn preWarmTransaction(self: *Self, target: primitives.Address) errors.CallError!void {
         // EIP-2929 (Berlin+): Pre-warm addresses at transaction start
         // Pre-Berlin: no warm/cold distinction, so skip this entirely
         if (!self.hardfork.isAtLeast(.BERLIN)) return;
 
-        var warm: [3]Address = undefined;
+        var warm: [3]primitives.Address = undefined;
         var count: usize = 0;
 
         warm[count] = self.origin;
@@ -515,10 +517,10 @@ pub fn Evm(config: EvmConfig) type {
         else
             0x09; // Berlin-Istanbul: Up to BLAKE2F
 
-        var precompile_addrs: [0x12]Address = undefined;
+        var precompile_addrs: [0x12]primitives.Address = undefined;
         var i: usize = 0;
         while (i < precompile_count) : (i += 1) {
-            precompile_addrs[i] = Address.from_u256(i + 1);
+            precompile_addrs[i] = primitives.Address.from_u256(i + 1);
         }
         try self.preWarmAddresses(precompile_addrs[0..precompile_count]);
     }
@@ -565,7 +567,7 @@ pub fn Evm(config: EvmConfig) type {
         const is_create = params.isCreate();
 
         // Determine target address and value
-        const address: Address = if (is_create) blk: {
+        const address: primitives.Address = if (is_create) blk: {
             // For CREATE operations, compute the new contract address
             if (params == .create2) {
                 // CREATE2: address = keccak256(0xff ++ caller ++ salt ++ keccak256(init_code))[12:]
@@ -704,9 +706,10 @@ pub fn Evm(config: EvmConfig) type {
                         }
                     } else {
                         // Clear all account state in EVM storage
-                        try self.balances.put(addr, 0);
-                        try self.code.put(addr, &[_]u8{});
-                        try self.nonces.put(addr, 0);
+                        // If allocation fails during cleanup, skip clearing (transaction is ending anyway)
+                        self.balances.put(addr, 0) catch continue;
+                        self.code.put(addr, &[_]u8{}) catch continue;
+                        self.nonces.put(addr, 0) catch continue;
 
                         // Clear storage
                         var storage_it = self.storage.iterator();
@@ -742,7 +745,7 @@ pub fn Evm(config: EvmConfig) type {
         }
 
         // Create and push frame onto stack
-        self.frames.append(self.arena.allocator(), Frame.init(
+        self.frames.append(self.arena.allocator(), FrameType.init(
             self.arena.allocator(),
             bytecode,
             gas,
@@ -900,7 +903,7 @@ pub fn Evm(config: EvmConfig) type {
                 const is_create = params.isCreate();
 
                 // Determine target address and value
-                const address: Address = if (is_create) blk: {
+                const address: primitives.Address = if (is_create) blk: {
                     if (params == .create2) {
                         const init_code = params.getInput();
                         const salt = params.create2.salt;
@@ -953,7 +956,7 @@ pub fn Evm(config: EvmConfig) type {
 
                 // Create frame WITHOUT defer (critical!)
                 log.debug("callOrContinue: Creating frame with address={any}", .{address.bytes});
-                try self.frames.append(self.arena.allocator(), try Frame.init(
+                try self.frames.append(self.arena.allocator(), try FrameType.init(
                     self.arena.allocator(),
                     bytecode,
                     gas,
@@ -1124,7 +1127,7 @@ pub fn Evm(config: EvmConfig) type {
             }
         }.call;
         // Extract parameters from CallParams union
-        const address: Address = switch (params) {
+        const address: primitives.Address = switch (params) {
             .call => |p| p.to,
             .callcode => |p| p.to,
             .delegatecall => |p| p.to,
@@ -1183,7 +1186,7 @@ pub fn Evm(config: EvmConfig) type {
 
         // Snapshot selfdestructed_accounts before the call (EIP-6780 revert handling)
         // On revert, accounts marked for deletion during the reverted call must be removed
-        var selfdestruct_snapshot = std.AutoHashMap(Address, void).init(self.arena.allocator());
+        var selfdestruct_snapshot = std.AutoHashMap(primitives.Address, void).init(self.arena.allocator());
         var selfdestruct_it = self.selfdestructed_accounts.iterator();
         while (selfdestruct_it.next()) |entry| {
             selfdestruct_snapshot.put(entry.key_ptr.*, {}) catch {
@@ -1195,10 +1198,12 @@ pub fn Evm(config: EvmConfig) type {
         // Snapshot warm addresses before the call (EIP-2929)
         // Per Python reference (incorporate_child_on_error), accessed_addresses
         // are only propagated on success, not on failure
-        var warm_addresses_snapshot = std.AutoHashMap(Address, void).init(self.arena.allocator());
+        var warm_addresses_snapshot = std.AutoHashMap(primitives.Address, void).init(self.arena.allocator());
         var warm_addr_it = self.warm_addresses.iterator();
         while (warm_addr_it.next()) |entry| {
-            try warm_addresses_snapshot.put(entry.key_ptr.*, {});
+            warm_addresses_snapshot.put(entry.key_ptr.*, {}) catch {
+                return makeFailure(self.arena.allocator(), gas);
+            };
         }
 
         // Snapshot warm storage slots before the call (EIP-2929)
@@ -1207,7 +1212,9 @@ pub fn Evm(config: EvmConfig) type {
         var warm_storage_snapshot = std.array_hash_map.ArrayHashMap(StorageSlotKey, void, StorageSlotKeyContext, false).init(self.arena.allocator());
         var warm_storage_it = self.warm_storage_slots.iterator();
         while (warm_storage_it.next()) |entry| {
-            _ = try warm_storage_snapshot.put(entry.key_ptr.*, {});
+            _ = warm_storage_snapshot.put(entry.key_ptr.*, {}) catch {
+                return makeFailure(self.arena.allocator(), gas);
+            };
         }
 
         // Snapshot original_storage before the call
@@ -1218,7 +1225,9 @@ pub fn Evm(config: EvmConfig) type {
         var original_storage_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
         var original_storage_it = self.original_storage.iterator();
         while (original_storage_it.next()) |entry| {
-            try original_storage_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
+            original_storage_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                return makeFailure(self.arena.allocator(), gas);
+            };
         }
 
         // Snapshot storage before the call
@@ -1232,30 +1241,36 @@ pub fn Evm(config: EvmConfig) type {
             var orig_it = self.original_storage.iterator();
             while (orig_it.next()) |entry| {
                 const current_val = h.getStorage(entry.key_ptr.*.address, entry.key_ptr.*.slot);
-                try storage_snapshot.put(entry.key_ptr.*, current_val);
+                storage_snapshot.put(entry.key_ptr.*, current_val) catch {
+                    return makeFailure(self.arena.allocator(), gas);
+                };
             }
         } else {
             var storage_it = self.storage.iterator();
             while (storage_it.next()) |entry| {
-                try storage_snapshot.put(entry.key_ptr.*, entry.value_ptr.*);
+                storage_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                    return makeFailure(self.arena.allocator(), gas);
+                };
             }
         }
 
         // Snapshot balances before the call (for SELFDESTRUCT revert handling)
         // We use copy-on-write: addresses are snapshotted when first modified via setBalanceWithSnapshot
-        var balance_snapshot = std.AutoHashMap(Address, u256).init(self.arena.allocator());
+        var balance_snapshot = std.AutoHashMap(primitives.Address, u256).init(self.arena.allocator());
 
         // Push the snapshot onto the stack so nested calls can snapshot in parent snapshots
-        try self.balance_snapshot_stack.append(self.arena.allocator(), &balance_snapshot);
+        self.balance_snapshot_stack.append(self.arena.allocator(), &balance_snapshot) catch {
+            return makeFailure(self.arena.allocator(), gas);
+        };
         defer _ = self.balance_snapshot_stack.pop();
 
-        const execution_caller: Address = switch (call_type) {
+        const execution_caller: primitives.Address = switch (call_type) {
             .Call, .StaticCall => frame_caller,
             .DelegateCall => frame_caller_caller,
             .CallCode => frame_caller,
         };
 
-        const execution_address: Address = switch (call_type) {
+        const execution_address: primitives.Address = switch (call_type) {
             .Call, .StaticCall => address,
             .DelegateCall, .CallCode => frame_caller,
         };
@@ -1270,9 +1285,13 @@ pub fn Evm(config: EvmConfig) type {
             }
 
             // Transfer balance using snapshot mechanism for proper revert handling
-            try self.setBalanceWithSnapshot(frame_caller, caller_balance - value);
+            self.setBalanceWithSnapshot(frame_caller, caller_balance - value) catch {
+                return makeFailure(self.arena.allocator(), gas);
+            };
             const callee_balance = if (self.host) |h| h.getBalance(address) else self.balances.get(address) orelse 0;
-            try self.setBalanceWithSnapshot(address, callee_balance + value);
+            self.setBalanceWithSnapshot(address, callee_balance + value) catch {
+                return makeFailure(self.arena.allocator(), gas);
+            };
         }
 
         // Get code for the target address
@@ -1362,7 +1381,7 @@ pub fn Evm(config: EvmConfig) type {
 
         // Safely cast gas to i64 - if it exceeds i64::MAX, cap it (shouldn't happen in practice)
         const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
-        self.frames.append(self.arena.allocator(), Frame.init(
+        self.frames.append(self.arena.allocator(), FrameType.init(
             self.arena.allocator(),
             code,
             frame_gas,
@@ -1393,25 +1412,33 @@ pub fn Evm(config: EvmConfig) type {
             self.warm_addresses.clearRetainingCapacity();
             var warm_addr_restore_it = warm_addresses_snapshot.iterator();
             while (warm_addr_restore_it.next()) |entry| {
-                try self.warm_addresses.put(entry.key_ptr.*, {});
+                self.warm_addresses.put(entry.key_ptr.*, {}) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
             }
 
             // Restore warm storage slots on failure (EIP-2929)
             self.warm_storage_slots.clearRetainingCapacity();
             var warm_storage_restore_it = warm_storage_snapshot.iterator();
             while (warm_storage_restore_it.next()) |entry| {
-                _ = try self.warm_storage_slots.put(entry.key_ptr.*, {});
+                _ = self.warm_storage_slots.put(entry.key_ptr.*, {}) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
             }
 
             // Restore storage on failure
             // IMPORTANT: Identify slots to delete BEFORE restoring original_storage
             // First, identify slots that were added during the call (exist in original_storage but not in snapshot)
             var added_slots = std.ArrayList(StorageSlotKey){};
-            try added_slots.ensureTotalCapacity(self.arena.allocator(), 10);
+            added_slots.ensureTotalCapacity(self.arena.allocator(), 10) catch {
+                return makeFailure(self.arena.allocator(), 0);
+            };
             var orig_check_it = self.original_storage.iterator();
             while (orig_check_it.next()) |entry| {
                 if (!original_storage_snapshot.contains(entry.key_ptr.*)) {
-                    try added_slots.append(self.arena.allocator(), entry.key_ptr.*);
+                    added_slots.append(self.arena.allocator(), entry.key_ptr.*) catch {
+                        return makeFailure(self.arena.allocator(), 0);
+                    };
                 }
             }
 
@@ -1419,7 +1446,9 @@ pub fn Evm(config: EvmConfig) type {
             self.original_storage.clearRetainingCapacity();
             var original_storage_restore_it = original_storage_snapshot.iterator();
             while (original_storage_restore_it.next()) |entry| {
-                try self.original_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                self.original_storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
             }
 
             // Third, restore storage values from snapshot
@@ -1428,7 +1457,9 @@ pub fn Evm(config: EvmConfig) type {
                 if (self.host) |h| {
                     h.setStorage(entry.key_ptr.*.address, entry.key_ptr.*.slot, entry.value_ptr.*);
                 } else {
-                    try self.storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                    self.storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                        return makeFailure(self.arena.allocator(), 0);
+                    };
                 }
             }
 
@@ -1447,7 +1478,9 @@ pub fn Evm(config: EvmConfig) type {
                 if (self.host) |h| {
                     h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
                 } else {
-                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
+                    self.balances.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                        return makeFailure(self.arena.allocator(), 0);
+                    };
                 }
             }
 
@@ -1497,7 +1530,9 @@ pub fn Evm(config: EvmConfig) type {
             self.warm_addresses.clearRetainingCapacity();
             var warm_addr_restore_it = warm_addresses_snapshot.iterator();
             while (warm_addr_restore_it.next()) |entry| {
-                try self.warm_addresses.put(entry.key_ptr.*, {});
+                self.warm_addresses.put(entry.key_ptr.*, {}) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
             }
         }
 
@@ -1506,7 +1541,9 @@ pub fn Evm(config: EvmConfig) type {
             self.warm_storage_slots.clearRetainingCapacity();
             var warm_storage_restore_it = warm_storage_snapshot.iterator();
             while (warm_storage_restore_it.next()) |entry| {
-                _ = try self.warm_storage_slots.put(entry.key_ptr.*, {});
+                _ = self.warm_storage_slots.put(entry.key_ptr.*, {}) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
             }
         }
 
@@ -1515,11 +1552,15 @@ pub fn Evm(config: EvmConfig) type {
             // IMPORTANT: Identify slots to delete BEFORE restoring original_storage
             // First, identify slots that were added during the call (exist in original_storage but not in snapshot)
             var added_slots = std.ArrayList(StorageSlotKey){};
-            try added_slots.ensureTotalCapacity(self.arena.allocator(), 10);
+            added_slots.ensureTotalCapacity(self.arena.allocator(), 10) catch {
+                return makeFailure(self.arena.allocator(), 0);
+            };
             var orig_check_it = self.original_storage.iterator();
             while (orig_check_it.next()) |entry| {
                 if (!original_storage_snapshot.contains(entry.key_ptr.*)) {
-                    try added_slots.append(self.arena.allocator(), entry.key_ptr.*);
+                    added_slots.append(self.arena.allocator(), entry.key_ptr.*) catch {
+                        return makeFailure(self.arena.allocator(), 0);
+                    };
                 }
             }
 
@@ -1527,7 +1568,9 @@ pub fn Evm(config: EvmConfig) type {
             self.original_storage.clearRetainingCapacity();
             var original_storage_restore_it = original_storage_snapshot.iterator();
             while (original_storage_restore_it.next()) |entry| {
-                try self.original_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                self.original_storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                    return makeFailure(self.arena.allocator(), 0);
+                };
             }
 
             // Third, restore storage values from snapshot
@@ -1536,7 +1579,9 @@ pub fn Evm(config: EvmConfig) type {
                 if (self.host) |h| {
                     h.setStorage(entry.key_ptr.*.address, entry.key_ptr.*.slot, entry.value_ptr.*);
                 } else {
-                    try self.storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                    self.storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                        return makeFailure(self.arena.allocator(), 0);
+                    };
                 }
             }
 
@@ -1576,7 +1621,9 @@ pub fn Evm(config: EvmConfig) type {
                 if (self.host) |h| {
                     h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
                 } else {
-                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
+                    self.balances.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                        return makeFailure(self.arena.allocator(), 0);
+                    };
                 }
             }
         }
@@ -1600,7 +1647,7 @@ pub fn Evm(config: EvmConfig) type {
         init_code: []const u8,
         gas: u64,
         salt: ?u256,
-    ) errors.CallError!struct { address: Address, success: bool, gas_left: u64, output: []const u8 } {
+    ) errors.CallError!struct { address: primitives.Address, success: bool, gas_left: u64, output: []const u8 } {
         // Track if this is a top-level create (contract-creation transaction)
         // We detect this when there is no active frame yet.
         // Used to avoid double-incrementing the sender's nonce (runner already increments it)
@@ -1678,7 +1725,7 @@ pub fn Evm(config: EvmConfig) type {
 
             var addr_bytes: [20]u8 = undefined;
             @memcpy(&addr_bytes, addr_hash[12..32]);
-            break :blk Address{ .bytes = addr_bytes };
+            break :blk primitives.Address{ .bytes = addr_bytes };
         } else blk: {
             // CREATE: keccak256(rlp([sender, nonce]))[12:]
             // For top-level creates: nonce was already incremented by runner, so subtract 1
@@ -1746,7 +1793,7 @@ pub fn Evm(config: EvmConfig) type {
 
             var addr_bytes: [20]u8 = undefined;
             @memcpy(&addr_bytes, addr_hash[12..32]);
-            break :blk Address{ .bytes = addr_bytes };
+            break :blk primitives.Address{ .bytes = addr_bytes };
         };
 
         // EIP-3860: Check init code size limit (Shanghai and later)
@@ -1859,7 +1906,7 @@ pub fn Evm(config: EvmConfig) type {
         // Snapshot warm addresses before executing init code (EIP-2929)
         // Per Python reference (incorporate_child_on_error), accessed_addresses
         // are only propagated on success, not on failure
-        var warm_addresses_snapshot = std.AutoHashMap(Address, void).init(self.arena.allocator());
+        var warm_addresses_snapshot = std.AutoHashMap(primitives.Address, void).init(self.arena.allocator());
         var warm_addr_it = self.warm_addresses.iterator();
         while (warm_addr_it.next()) |entry| {
             try warm_addresses_snapshot.put(entry.key_ptr.*, {});
@@ -1876,7 +1923,7 @@ pub fn Evm(config: EvmConfig) type {
 
         // Snapshot balances before execution (for SELFDESTRUCT revert handling)
         // We use copy-on-write: addresses are snapshotted when first modified via setBalanceWithSnapshot
-        var balance_snapshot = std.AutoHashMap(Address, u256).init(self.arena.allocator());
+        var balance_snapshot = std.AutoHashMap(primitives.Address, u256).init(self.arena.allocator());
 
         // Push the snapshot onto the stack so nested calls can snapshot in parent snapshots
         try self.balance_snapshot_stack.append(self.arena.allocator(), &balance_snapshot);
@@ -1892,14 +1939,14 @@ pub fn Evm(config: EvmConfig) type {
 
         // Snapshot selfdestructed_accounts before executing init code (EIP-6780 revert handling)
         // If CREATE fails, any SELFDESTRUCTs in the init code must be reverted
-        var create_selfdestruct_snapshot = std.AutoHashMap(Address, void).init(self.arena.allocator());
+        var create_selfdestruct_snapshot = std.AutoHashMap(primitives.Address, void).init(self.arena.allocator());
         var create_selfdestruct_it = self.selfdestructed_accounts.iterator();
         while (create_selfdestruct_it.next()) |entry| {
             try create_selfdestruct_snapshot.put(entry.key_ptr.*, {});
         }
 
         // Execute initialization code
-        try self.frames.append(self.arena.allocator(), try Frame.init(
+        try self.frames.append(self.arena.allocator(), try FrameType.init(
             self.arena.allocator(),
             init_code,
             @intCast(child_gas),
@@ -2109,14 +2156,14 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     /// Get balance of an address (called by frame)
-    pub fn get_balance(self: *Self, address: Address) u256 {
+    pub fn get_balance(self: *Self, address: primitives.Address) u256 {
         if (self.host) |h| return h.getBalance(address);
         return self.balances.get(address) orelse 0;
     }
 
     /// Get code for an address
     /// EIP-7702: Handle delegation designation (0xef0100 + address)
-    pub fn get_code(self: *Self, address: Address) []const u8 {
+    pub fn get_code(self: *Self, address: primitives.Address) []const u8 {
         const raw_code = if (self.host) |h|
             h.getCode(address)
         else
@@ -2127,7 +2174,7 @@ pub fn Evm(config: EvmConfig) type {
             raw_code[0] == 0xef and raw_code[1] == 0x01 and raw_code[2] == 0x00)
         {
             // Extract delegated address (bytes 3-22, 20 bytes)
-            var delegated_addr: Address = undefined;
+            var delegated_addr: primitives.Address = undefined;
             @memcpy(&delegated_addr.bytes, raw_code[3..23]);
 
             // Recursively get code from delegated address
@@ -2145,7 +2192,7 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     /// Get storage value (called by frame)
-    pub fn get_storage(self: *Self, address: Address, slot: u256) !u256 {
+    pub fn get_storage(self: *Self, address: primitives.Address, slot: u256) !u256 {
         const key = StorageSlotKey{ .address = address, .slot = slot };
 
         // If using storage injector, check cache first
@@ -2174,7 +2221,7 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     /// Set storage value (called by frame)
-    pub fn set_storage(self: *Self, address: Address, slot: u256, value: u256) !void {
+    pub fn set_storage(self: *Self, address: primitives.Address, slot: u256, value: u256) !void {
         const key = StorageSlotKey{ .address = address, .slot = slot };
 
         // Track original value on first write in transaction
@@ -2205,7 +2252,7 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     /// Get original storage value (before transaction modifications)
-    pub fn get_original_storage(self: *Self, address: Address, slot: u256) u256 {
+    pub fn get_original_storage(self: *Self, address: primitives.Address, slot: u256) u256 {
         const key = StorageSlotKey{ .address = address, .slot = slot };
         // If we have tracked the original, return it
         if (self.original_storage.get(key)) |original| {
@@ -2220,13 +2267,13 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     /// Get transient storage value (EIP-1153)
-    pub fn get_transient_storage(self: *Self, address: Address, slot: u256) u256 {
+    pub fn get_transient_storage(self: *Self, address: primitives.Address, slot: u256) u256 {
         const key = StorageSlotKey{ .address = address, .slot = slot };
         return self.transient_storage.get(key) orelse 0;
     }
 
     /// Set transient storage value (EIP-1153)
-    pub fn set_transient_storage(self: *Self, address: Address, slot: u256, value: u256) !void {
+    pub fn set_transient_storage(self: *Self, address: primitives.Address, slot: u256, value: u256) !void {
         const key = StorageSlotKey{ .address = address, .slot = slot };
         if (value == 0) {
             _ = self.transient_storage.remove(key);
@@ -2236,7 +2283,7 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     /// Get current frame (top of the frame stack)
-    pub fn getCurrentFrame(self: *Self) ?*Frame {
+    pub fn getCurrentFrame(self: *Self) ?*FrameType {
         if (self.frames.items.len > 0) return &self.frames.items[self.frames.items.len - 1];
         return null;
     }
@@ -2265,7 +2312,3 @@ pub fn Evm(config: EvmConfig) type {
     }
     };
 }
-
-// Default EVM instance for backward compatibility
-pub const DefaultEvm = Evm(.{});
-
