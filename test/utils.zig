@@ -107,55 +107,55 @@ pub fn extractTestName(full_name: []const u8) []const u8 {
     return full_name;
 }
 
-pub fn formatDuration(writer: anytype, ns: u64) void {
+pub fn formatDuration(writer: anytype, ns: u64) !void {
     if (ns < 1_000) {
-        std.fmt.format(writer, "{s}{d} ns{s}", .{ Color.gray, ns, Color.reset }) catch {};
+        try std.fmt.format(writer, "{s}{d} ns{s}", .{ Color.gray, ns, Color.reset });
     } else if (ns < 1_000_000) {
-        std.fmt.format(writer, "{s}{d:.2} μs{s}", .{ Color.gray, @as(f64, @floatFromInt(ns)) / 1_000.0, Color.reset }) catch {};
+        try std.fmt.format(writer, "{s}{d:.2} μs{s}", .{ Color.gray, @as(f64, @floatFromInt(ns)) / 1_000.0, Color.reset });
     } else if (ns < 1_000_000_000) {
-        std.fmt.format(writer, "{s}{d:.2} ms{s}", .{ Color.gray, @as(f64, @floatFromInt(ns)) / 1_000_000.0, Color.reset }) catch {};
+        try std.fmt.format(writer, "{s}{d:.2} ms{s}", .{ Color.gray, @as(f64, @floatFromInt(ns)) / 1_000_000.0, Color.reset });
     } else {
-        std.fmt.format(writer, "{s}{d:.2} s{s}", .{ Color.yellow, @as(f64, @floatFromInt(ns)) / 1_000_000_000.0, Color.reset }) catch {};
+        try std.fmt.format(writer, "{s}{d:.2} s{s}", .{ Color.yellow, @as(f64, @floatFromInt(ns)) / 1_000_000_000.0, Color.reset });
     }
 }
 
-pub fn clearLine(writer: anytype) void {
-    std.fmt.format(writer, "\r\x1b[K", .{}) catch {};
+pub fn clearLine(writer: anytype) !void {
+    try std.fmt.format(writer, "\r\x1b[K", .{});
 }
 
 pub fn clearScreen(writer: anytype) !void {
     try std.fmt.format(writer, "\x1b[2J\x1b[H", .{});
 }
 
-pub fn moveCursorUp(writer: anytype, lines: usize) void {
-    std.fmt.format(writer, "\x1b[{d}A", .{lines}) catch {};
+pub fn moveCursorUp(writer: anytype, lines: usize) !void {
+    try std.fmt.format(writer, "\x1b[{d}A", .{lines});
 }
 
-pub fn printProgress(writer: anytype, current: usize, total: usize, suite_name: []const u8) void {
-    clearLine(writer);
+pub fn printProgress(writer: anytype, current: usize, total: usize, suite_name: []const u8) !void {
+    try clearLine(writer);
     const percent = (current * 100) / total;
 
     // Progress bar
     const bar_width = 20;
     const filled = (current * bar_width) / total;
 
-    std.fmt.format(writer, " {s}⠙{s} ", .{ Color.cyan, Color.reset }) catch {};
+    try std.fmt.format(writer, " {s}⠙{s} ", .{ Color.cyan, Color.reset });
 
     // Progress bar
-    std.fmt.format(writer, "{s}[{s}", .{ Color.dim, Color.reset }) catch {};
+    try std.fmt.format(writer, "{s}[{s}", .{ Color.dim, Color.reset });
     for (0..bar_width) |i| {
         if (i < filled) {
-            std.fmt.format(writer, "{s}━{s}", .{ Color.bright_cyan, Color.reset }) catch {};
+            try std.fmt.format(writer, "{s}━{s}", .{ Color.bright_cyan, Color.reset });
         } else {
-            std.fmt.format(writer, "{s}━{s}", .{ Color.gray, Color.reset }) catch {};
+            try std.fmt.format(writer, "{s}━{s}", .{ Color.gray, Color.reset });
         }
     }
-    std.fmt.format(writer, "{s}]{s} ", .{ Color.dim, Color.reset }) catch {};
+    try std.fmt.format(writer, "{s}]{s} ", .{ Color.dim, Color.reset });
 
-    std.fmt.format(writer, "{s}{d}%{s} ", .{ Color.bright_cyan, percent, Color.reset }) catch {};
-    std.fmt.format(writer, "{s}|{s} ", .{ Color.dim, Color.reset }) catch {};
-    std.fmt.format(writer, "{s}{s}{s}", .{ Color.gray, suite_name, Color.reset }) catch {};
-    std.fmt.format(writer, " {s}[{d}/{d}]{s}", .{ Color.dim, current, total, Color.reset }) catch {};
+    try std.fmt.format(writer, "{s}{d}%{s} ", .{ Color.bright_cyan, percent, Color.reset });
+    try std.fmt.format(writer, "{s}|{s} ", .{ Color.dim, Color.reset });
+    try std.fmt.format(writer, "{s}{s}{s}", .{ Color.gray, suite_name, Color.reset });
+    try std.fmt.format(writer, " {s}[{d}/{d}]{s}", .{ Color.dim, current, total, Color.reset });
 }
 
 pub fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestResult {
@@ -218,7 +218,10 @@ pub fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestRe
             const now = std.time.nanoTimestamp();
             if (now >= deadline) {
                 // Timeout - kill the child process
-                std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+                std.posix.kill(pid, std.posix.SIG.KILL) catch |err| {
+                    // If we can't kill the process, report it but continue cleanup
+                    std.debug.print("Warning: Failed to kill timed-out test process {d}: {}\n", .{ pid, err });
+                };
                 _ = std.posix.waitpid(pid, 0); // Clean up zombie
                 timed_out = true;
                 break;
@@ -405,7 +408,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
         }
 
         try std.fmt.format(writer, " ", .{});
-        formatDuration(writer, suite_duration);
+        try formatDuration(writer, suite_duration);
         try std.fmt.format(writer, "\n", .{});
 
         // Print all test names with pass/fail status on same line
@@ -906,7 +909,7 @@ pub fn printSlowestTests(writer: anytype, results: []TestResult, count: usize) !
             t.test_name,
             Color.reset,
         });
-        formatDuration(writer, t.duration_ns);
+        try formatDuration(writer, t.duration_ns);
         try std.fmt.format(writer, "\n", .{});
     }
 }

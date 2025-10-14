@@ -463,7 +463,7 @@ pub fn Frame(comptime config: EvmConfig) type {
                 const gas_before = @as(u64, @intCast(@max(self.gas_remaining, 0)));
 
                 // Get memory slice for tracing
-                const mem_slice = self.getMemorySlice(self.allocator) catch null;
+                const mem_slice = try self.getMemorySlice(self.allocator);
 
                 // Execute opcode first to measure actual gas cost
                 const pc_before = self.pc;
@@ -472,7 +472,7 @@ pub fn Frame(comptime config: EvmConfig) type {
                 const actual_gas_cost = gas_before - gas_after;
 
                 // Capture trace entry with actual gas cost
-                tracer.captureState(
+                try tracer.captureState(
                     @as(u64, pc_before),
                     opcode,
                     gas_before,
@@ -483,7 +483,7 @@ pub fn Frame(comptime config: EvmConfig) type {
                     evm.frames.items.len,
                     @as(i64, @intCast(evm.gas_refund)),
                     opcode_utils.getOpName(opcode),
-                ) catch {};
+                );
                 return;
             }
 

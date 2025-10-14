@@ -110,7 +110,9 @@ pub fn runJsonTestWithPathAndName(allocator: std.mem.Allocator, test_case: std.j
             if (hardforks_to_test.items.len > 1) {
                 for (hardforks_to_test.items) |hf| {
                     runJsonTestImplForFork(allocator, test_case, null, hf) catch |err| {
-                        generateTraceDiffOnFailure(allocator, test_case, test_file_path, test_name) catch {};
+                        generateTraceDiffOnFailure(allocator, test_case, test_file_path, test_name) catch |trace_err| {
+                            std.debug.print("Warning: Failed to generate trace diff for failed test: {}\n", .{trace_err});
+                        };
                         return err;
                     };
                 }
@@ -121,7 +123,9 @@ pub fn runJsonTestWithPathAndName(allocator: std.mem.Allocator, test_case: std.j
 
     // Single hardfork or no post section - use original logic
     runJsonTestImpl(allocator, test_case, null) catch |err| {
-        generateTraceDiffOnFailure(allocator, test_case, test_file_path, test_name) catch {};
+        generateTraceDiffOnFailure(allocator, test_case, test_file_path, test_name) catch |trace_err| {
+            std.debug.print("Warning: Failed to generate trace diff for failed test: {}\n", .{trace_err});
+        };
         return err;
     };
 }
@@ -891,7 +895,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
 
     // Create EVM with test host and detected hardfork
     const host_interface = test_host.hostInterface();
-    var evm_instance = try evm_mod.Evm.init(allocator, host_interface, hardfork, block_ctx);
+    const Evm = evm_mod.Evm(.{});  // Use default config
+    var evm_instance = try Evm.init(allocator, host_interface, hardfork, block_ctx, null);
     defer evm_instance.deinit();
 
     // Attach tracer if provided
