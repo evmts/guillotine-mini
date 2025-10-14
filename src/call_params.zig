@@ -1,3 +1,4 @@
+const std = @import("std");
 const primitives = @import("primitives");
 const Address = primitives.Address;
 
@@ -270,4 +271,3 @@ pub fn CallParams(config: anytype) type {
     };
 }
 
-const std = @import("std");
