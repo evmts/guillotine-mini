@@ -1761,7 +1761,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 };
             } else blk: {
                 // Regular call - use call method
-                const call_params = evm_module.CallParams{ .call = .{
+                const call_params = evm_mod.CallParams{ .call = .{
                     .caller = sender,
                     .to = target_addr,
                     .value = value,
