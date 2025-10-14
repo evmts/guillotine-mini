@@ -18,7 +18,7 @@ pub fn Handlers(FrameType: type) type {
             // Access cost already includes the full SLOAD gas cost (100 for warm, 2100 for cold)
             try frame.consumeGas(access_cost);
 
-            const value = try evm.get_storage(frame.address, key);
+            const value = try evm.storage.get(frame.address, key);
             try frame.pushStack(value);
             frame.pc += 1;
         }
@@ -42,12 +42,12 @@ pub fn Handlers(FrameType: type) type {
             const value = try frame.popStack();
 
             // Get current value for gas calculation
-            const current_value = try evm.get_storage(frame.address, key);
+            const current_value = try evm.storage.get(frame.address, key);
 
             // Calculate gas cost based on hardfork
             const gas_cost = if (evm.hardfork.isAtLeast(.ISTANBUL)) blk: {
                 // EIP-2200 (Istanbul+): Complex storage gas metering with dirty tracking
-                const original_value = evm.get_original_storage(frame.address, key);
+                const original_value = evm.storage.getOriginal(frame.address, key);
 
                 // EIP-2929 (Berlin+): Check if storage slot is cold and warm it
                 const access_cost = try evm.accessStorageSlot(frame.address, key);
@@ -79,7 +79,7 @@ pub fn Handlers(FrameType: type) type {
             // Refund logic (hardfork-dependent)
             if (evm.hardfork.isAtLeast(.ISTANBUL) and evm.hardfork.isBefore(.LONDON)) {
                 // EIP-2200 (Istanbul-London): Complex net gas metering refund logic
-                const original_value = evm.get_original_storage(frame.address, key);
+                const original_value = evm.storage.getOriginal(frame.address, key);
 
                 if (current_value != value) {
                     // Case 1: Clearing storage for the first time in the transaction
@@ -111,7 +111,7 @@ pub fn Handlers(FrameType: type) type {
             } else if (evm.hardfork.isAtLeast(.LONDON)) {
                 // EIP-3529 (London+): Refund logic matching Python cancun/vm/instructions/storage.py lines 106-124
                 // IMPORTANT: All three refund cases are independent checks (not else-if), matching Python
-                const original_value = evm.get_original_storage(frame.address, key);
+                const original_value = evm.storage.getOriginal(frame.address, key);
 
                 // Refund Counter Calculation (only when value changes)
                 if (current_value != value) {
@@ -150,7 +150,7 @@ pub fn Handlers(FrameType: type) type {
                 }
             }
 
-            try evm.set_storage(frame.address, key, value);
+            try evm.storage.set(frame.address, key, value);
             frame.pc += 1;
         }
 
@@ -163,7 +163,7 @@ pub fn Handlers(FrameType: type) type {
 
             try frame.consumeGas(GasConstants.TLoadGas);
             const key = try frame.popStack();
-            const value = evm.get_transient_storage(frame.address, key);
+            const value = evm.storage.getTransient(frame.address, key);
             try frame.pushStack(value);
             frame.pc += 1;
         }
@@ -181,7 +181,7 @@ pub fn Handlers(FrameType: type) type {
             try frame.consumeGas(GasConstants.TStoreGas);
             const key = try frame.popStack();
             const value = try frame.popStack();
-            try evm.set_transient_storage(frame.address, key, value);
+            try evm.storage.setTransient(frame.address, key, value);
             frame.pc += 1;
         }
     };

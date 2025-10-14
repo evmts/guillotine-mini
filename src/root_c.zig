@@ -74,6 +74,7 @@ const Evm = evm.Evm(.{});
 const CallResult = Evm.CallResult;
 const CallParams = Evm.CallParams;
 const StorageSlotKey = evm.StorageSlotKey;
+const AccessListStorageKey = primitives.AccessList.StorageSlotKey;
 const StorageInjector = @import("storage_injector.zig").StorageInjector;
 const primitives = @import("primitives");
 const Address = primitives.Address.Address;
@@ -99,7 +100,7 @@ const ExecutionContext = struct {
     value: u256,
     calldata: []const u8,
     access_list_addresses: []Address,
-    access_list_storage_keys: []evm.AccessListStorageKey,
+    access_list_storage_keys: []AccessListStorageKey,
     blob_versioned_hashes: ?[]const [32]u8,
     result: ?CallResult,
 };
@@ -136,7 +137,7 @@ export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize, log_level:
         .value = 0,
         .calldata = &[_]u8{},
         .access_list_addresses = &[_]Address{},
-        .access_list_storage_keys = &[_]evm.AccessListStorageKey{},
+        .access_list_storage_keys = &[_]AccessListStorageKey{},
         .blob_versioned_hashes = null,
         .result = null,
     };
@@ -316,11 +317,11 @@ export fn evm_set_access_list_storage_keys(
         }
 
         if (count == 0) {
-            ctx.access_list_storage_keys = &[_]evm.AccessListStorageKey{};
+            ctx.access_list_storage_keys = &[_]AccessListStorageKey{};
             return true;
         }
 
-        const keys = allocator.alloc(evm.AccessListStorageKey, count) catch return false;
+        const keys = allocator.alloc(AccessListStorageKey, count) catch return false;
         var i: usize = 0;
         while (i < count) : (i += 1) {
             var addr: Address = undefined;
@@ -380,14 +381,44 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
 
         if (ctx.bytecode.len == 0) return false;
 
-        // Build access list if provided
-        const access_list = if (ctx.access_list_addresses.len > 0 or ctx.access_list_storage_keys.len > 0)
-            evm.AccessListParam{
-                .addresses = ctx.access_list_addresses,
-                .storage_keys = ctx.access_list_storage_keys,
+        // Build EIP-2930 access list from flat C API format
+        var access_list_entries = std.array_list.AlignedManaged(primitives.AccessList.AccessListEntry, null).init(allocator);
+        defer access_list_entries.deinit();
+
+        // Add addresses
+        for (ctx.access_list_addresses) |addr| {
+            // Find storage keys for this address
+            var keys = std.array_list.AlignedManaged([32]u8, null).init(allocator);
+            defer keys.deinit();
+
+            for (ctx.access_list_storage_keys) |sk| {
+                if (sk.address.eql(addr)) {
+                    var hash: [32]u8 = undefined;
+                    std.mem.writeInt(u256, &hash, sk.slot, .big);
+                    keys.append(hash) catch return false;
+                }
             }
+
+            const keys_slice = keys.toOwnedSlice() catch return false;
+            access_list_entries.append(.{
+                .address = addr,
+                .storage_keys = keys_slice,
+            }) catch {
+                allocator.free(keys_slice);
+                return false;
+            };
+        }
+
+        const access_list = if (access_list_entries.items.len > 0)
+            access_list_entries.toOwnedSlice() catch return false
         else
             null;
+        defer if (access_list) |list| {
+            for (list) |entry| {
+                allocator.free(entry.storage_keys);
+            }
+            allocator.free(list);
+        };
 
         // Create CallParams for regular CALL operation
         const call_params = CallParams{ .call = .{
@@ -502,8 +533,7 @@ export fn evm_set_storage(
             value = (value << 8) | value_bytes[i];
         }
 
-        const key = StorageSlotKey{ .address = address, .slot = slot };
-        ctx.evm.storage.put(key, value) catch return false;
+        ctx.evm.storage.storage.put(StorageSlotKey{ .address = address, .slot = slot }, value) catch return false;
         return true;
     }
     return false;
@@ -530,7 +560,7 @@ export fn evm_get_storage(
         }
 
         const key = StorageSlotKey{ .address = address, .slot = slot };
-        const value = ctx.evm.storage.get(key) orelse 0;
+        const value = ctx.evm.storage.storage.get(key) orelse 0;
 
         // Convert u256 to bytes (big-endian)
         i = 32;
@@ -677,14 +707,52 @@ export fn evm_call_ffi(
             return false;
         }
 
-        // Build access list if provided
-        const access_list = if (ctx.access_list_addresses.len > 0 or ctx.access_list_storage_keys.len > 0)
-            evm.AccessListParam{
-                .addresses = ctx.access_list_addresses,
-                .storage_keys = ctx.access_list_storage_keys,
+        // Build EIP-2930 access list from flat C API format
+        var access_list_entries = std.array_list.AlignedManaged(primitives.AccessList.AccessListEntry, null).init(allocator);
+        defer access_list_entries.deinit();
+
+        for (ctx.access_list_addresses) |addr| {
+            var keys = std.array_list.AlignedManaged([32]u8, null).init(allocator);
+            defer keys.deinit();
+
+            for (ctx.access_list_storage_keys) |sk| {
+                if (sk.address.eql(addr)) {
+                    var hash: [32]u8 = undefined;
+                    std.mem.writeInt(u256, &hash, sk.slot, .big);
+                    keys.append(hash) catch {
+                        request_out.output_type = 255;
+                        return false;
+                    };
+                }
+            }
+
+            const keys_slice = keys.toOwnedSlice() catch {
+                request_out.output_type = 255;
+                return false;
+            };
+            access_list_entries.append(.{
+                .address = addr,
+                .storage_keys = keys_slice,
+            }) catch {
+                allocator.free(keys_slice);
+                request_out.output_type = 255;
+                return false;
+            };
+        }
+
+        const access_list = if (access_list_entries.items.len > 0)
+            access_list_entries.toOwnedSlice() catch {
+                request_out.output_type = 255;
+                return false;
             }
         else
             null;
+        defer if (access_list) |list| {
+            for (list) |entry| {
+                allocator.free(entry.storage_keys);
+            }
+            allocator.free(list);
+        };
 
         // Set bytecode, access list, and blob hashes BEFORE calling
         ctx.evm.setBytecode(ctx.bytecode);
@@ -791,7 +859,7 @@ export fn evm_enable_storage_injector(handle: ?*EvmHandle) bool {
             return false;
         };
 
-        ctx.evm.storage_injector = injector_ptr;
+        ctx.evm.storage.storage_injector = injector_ptr;
         return true;
     }
     return false;

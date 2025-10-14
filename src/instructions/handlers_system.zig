@@ -789,10 +789,10 @@ pub fn Handlers(FrameType: type) type {
 
             // EIP-2929 (Berlin): Check if beneficiary is warm, add cold access cost if needed
             if (frame.hardfork.isAtLeast(.BERLIN)) {
-                const is_warm = evm_ptr.warm_addresses.contains(beneficiary);
+                const is_warm = evm_ptr.access_list_manager.isAddressWarm(beneficiary);
                 if (!is_warm) {
                     gas_cost += GasConstants.ColdAccountAccessCost; // +2600
-                    try evm_ptr.warm_addresses.put(beneficiary, {});
+                    _ = try evm_ptr.access_list_manager.accessAddress(beneficiary);
                 }
             }
 

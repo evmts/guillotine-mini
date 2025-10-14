@@ -12,8 +12,8 @@ pub const PrecompileOutput = evm_config.PrecompileOutput;
 pub const evm = @import("evm.zig");
 pub const Evm = evm.Evm;
 pub const StorageSlotKey = evm.StorageSlotKey;
-pub const AccessListParam = evm.AccessListParam;
-pub const AccessListStorageKey = evm.AccessListStorageKey;
+// AccessListParam removed - use primitives.AccessList.AccessList instead
+// AccessListStorageKey is now primitives.AccessList.StorageSlotKey
 pub const BlockContext = evm.BlockContext;
 
 // Export CallParams and CallResult (polymorphic API with guillotine core)

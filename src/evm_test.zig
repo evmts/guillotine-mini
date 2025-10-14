@@ -3,9 +3,10 @@ const std = @import("std");
 const primitives = @import("primitives");
 const errors = @import("errors.zig");
 const evm = @import("evm.zig");
+const storage = @import("storage.zig");
 const Evm = evm.Evm(.{}); // Default config
 const StorageInjector = @import("storage_injector.zig").StorageInjector;
-const AsyncDataRequest = evm.AsyncDataRequest;
+const AsyncDataRequest = storage.AsyncDataRequest;
 
 test "AsyncDataRequest - union size and field access" {
     const testing = std.testing;
@@ -106,7 +107,7 @@ test "Evm.async_data_request field initialized to .none" {
     var evm_instance = try Evm.init(testing.allocator, null, null, null, null);
     defer evm_instance.deinit();
 
-    try testing.expect(evm_instance.async_data_request == .none);
+    try testing.expect(evm_instance.storage.async_data_request == .none);
 }
 
 test "Evm.async_data_request can write/read different request types" {
@@ -118,17 +119,17 @@ test "Evm.async_data_request can write/read different request types" {
     const addr = primitives.Address.from_hex("0x1111111111111111111111111111111111111111") catch unreachable;
 
     // Write storage request
-    evm_instance.async_data_request = .{ .storage = .{ .address = addr, .slot = 99 } };
-    try testing.expect(evm_instance.async_data_request == .storage);
-    try testing.expectEqual(99, evm_instance.async_data_request.storage.slot);
+    evm_instance.storage.async_data_request = .{ .storage = .{ .address = addr, .slot = 99 } };
+    try testing.expect(evm_instance.storage.async_data_request == .storage);
+    try testing.expectEqual(99, evm_instance.storage.async_data_request.storage.slot);
 
     // Write balance request
-    evm_instance.async_data_request = .{ .balance = .{ .address = addr } };
-    try testing.expect(evm_instance.async_data_request == .balance);
+    evm_instance.storage.async_data_request = .{ .balance = .{ .address = addr } };
+    try testing.expect(evm_instance.storage.async_data_request == .balance);
 
     // Clear request
-    evm_instance.async_data_request = .none;
-    try testing.expect(evm_instance.async_data_request == .none);
+    evm_instance.storage.async_data_request = .none;
+    try testing.expect(evm_instance.storage.async_data_request == .none);
 }
 
 // ============================================================================
@@ -182,7 +183,7 @@ test "callOrContinue - returns .need_storage on cache miss" {
     defer evm_instance.deinit();
 
     var injector = try StorageInjector.init(evm_instance.arena.allocator());
-    evm_instance.storage_injector = &injector;
+    evm_instance.storage.storage_injector = &injector;
 
     const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
 
@@ -212,7 +213,7 @@ test "callOrContinue - continue_with_storage resumes execution" {
     defer evm_instance.deinit();
 
     var injector = try StorageInjector.init(evm_instance.arena.allocator());
-    evm_instance.storage_injector = &injector;
+    evm_instance.storage.storage_injector = &injector;
 
     const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
 
