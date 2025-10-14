@@ -58,12 +58,30 @@ src/
 | **Filtered tests** | By hardfork/EIP/opcode | `TEST_FILTER="Cancun" zig build specs` |
 | **Trace tests** | EIP-3155 trace capture/comparison | `zig build test-trace` |
 | **Watch mode** | Auto-reload on changes | `zig build test-watch` |
+| **Engine tests** | Consensus-layer format tests | `INCLUDE_ENGINE_TESTS=1 zig build specs` |
 
 **Prerequisites:**
 - Zig 0.15.1 or later
 - Python 3.8+ (for test generation and reference implementation)
 - uv (Python package manager) for spec fixture generation: `brew install uv`
 - Bun (for TS helpers/agents): `brew install bun`
+
+### Test Scope and Filtering
+
+**Engine API Tests (Optional)**
+
+By default, `blockchain_test_engine` format tests are **disabled** because they test consensus-layer functionality (block validation, Engine API payloads) rather than core EVM execution. These tests are out of scope for an EVM library like guillotine-mini (similar to how REVM doesn't implement Engine API).
+
+To include them for comprehensive testing:
+```bash
+INCLUDE_ENGINE_TESTS=1 zig build specs
+```
+
+**What's tested:**
+- ✅ **Default**: Pure EVM execution (opcodes, gas, state transitions, precompiles)
+- ✅ **Default**: Transaction processing and hardfork-specific EVM changes
+- ❌ **Disabled**: Block validation, consensus rules, Engine API server implementation
+- ❌ **Disabled**: Withdrawal timing edge cases (consensus-layer concern)
 
 ### Helper Scripts
 
