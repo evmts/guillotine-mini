@@ -21,18 +21,8 @@ pub fn Handlers(FrameType: type) type {
             try frame.consumeGas(GasConstants.GasFastestStep);
             const push_size = opcode - 0x5f;
 
-            // Check bounds - need to read push_size bytes after the opcode
-            const pc_usize: usize = @intCast(frame.pc);
-            const ps_usize: usize = push_size;
-            if (pc_usize + ps_usize >= frame.bytecode.len) {
-                return error.InvalidPush;
-            }
-
-            // Read immediate value from bytecode
-            var value: u256 = 0;
-            for (0..push_size) |i| {
-                value = (value << 8) | frame.bytecode[pc_usize + 1 + i];
-            }
+            // Use the bytecode module's readImmediate method
+            const value = frame.readImmediate(push_size) orelse return error.InvalidPush;
 
             try frame.pushStack(value);
             frame.pc += 1 + push_size;

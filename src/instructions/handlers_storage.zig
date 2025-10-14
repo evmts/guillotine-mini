@@ -4,15 +4,13 @@ const primitives = @import("primitives");
 const GasConstants = primitives.GasConstants;
 
 /// Handlers struct - provides storage operation handlers for a Frame type
-/// The FrameType must have methods: consumeGas, popStack, pushStack
-/// and fields: pc, address, is_static, evm_ptr
+/// The FrameType must have methods: consumeGas, popStack, pushStack, getEvm
+/// and fields: pc, address, is_static
 pub fn Handlers(FrameType: type) type {
-    const Evm = @import("../evm.zig").DefaultEvm;
-
     return struct {
         /// SLOAD opcode (0x54) - Load word from storage
         pub fn sload(frame: *FrameType) FrameType.EvmError!void {
-            const evm: *Evm = @ptrCast(@alignCast(frame.evm_ptr));
+            const evm = frame.getEvm();
             const key = try frame.popStack();
 
             // EIP-2929: charge warm/cold storage access cost and warm the slot
@@ -27,7 +25,7 @@ pub fn Handlers(FrameType: type) type {
 
         /// SSTORE opcode (0x55) - Save word to storage
         pub fn sstore(frame: *FrameType) FrameType.EvmError!void {
-            const evm: *Evm = @ptrCast(@alignCast(frame.evm_ptr));
+            const evm = frame.getEvm();
 
             // EIP-214: SSTORE cannot modify state in static call context
             if (frame.is_static) return error.StaticCallViolation;
@@ -158,7 +156,7 @@ pub fn Handlers(FrameType: type) type {
 
         /// TLOAD opcode (0x5c) - Load word from transient storage (EIP-1153)
         pub fn tload(frame: *FrameType) FrameType.EvmError!void {
-            const evm: *Evm = @ptrCast(@alignCast(frame.evm_ptr));
+            const evm = frame.getEvm();
 
             // EIP-1153: TLOAD was introduced in Cancun hardfork
             if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;
@@ -172,7 +170,7 @@ pub fn Handlers(FrameType: type) type {
 
         /// TSTORE opcode (0x5d) - Save word to transient storage (EIP-1153)
         pub fn tstore(frame: *FrameType) FrameType.EvmError!void {
-            const evm: *Evm = @ptrCast(@alignCast(frame.evm_ptr));
+            const evm = frame.getEvm();
 
             // EIP-1153: TSTORE was introduced in Cancun hardfork
             if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;

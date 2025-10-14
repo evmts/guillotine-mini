@@ -5,8 +5,8 @@ const GasConstants = primitives.GasConstants;
 
 /// Handlers struct - provides control flow operation handlers for a Frame type
 /// The FrameType must have methods: consumeGas, popStack, pushStack, readMemory
-/// and fields: pc (program counter), stopped, reverted, valid_jumpdests, output,
-/// memory_size, allocator, evm_ptr
+/// and fields: pc (program counter), stopped, reverted, bytecode (with isValidJumpDest),
+/// output, memory_size, allocator, evm_ptr
 pub fn Handlers(FrameType: type) type {
     return struct {
         /// STOP opcode (0x00) - Halts execution
@@ -22,7 +22,7 @@ pub fn Handlers(FrameType: type) type {
             const dest_pc = std.math.cast(u32, dest) orelse return error.OutOfBounds;
 
             // Validate jump destination
-            if (!frame.valid_jumpdests.contains(dest_pc)) return error.InvalidJump;
+            if (!frame.bytecode.isValidJumpDest(dest_pc)) return error.InvalidJump;
 
             frame.pc = dest_pc;
         }
@@ -37,7 +37,7 @@ pub fn Handlers(FrameType: type) type {
                 const dest_pc = std.math.cast(u32, dest) orelse return error.OutOfBounds;
 
                 // Validate jump destination
-                if (!frame.valid_jumpdests.contains(dest_pc)) return error.InvalidJump;
+                if (!frame.bytecode.isValidJumpDest(dest_pc)) return error.InvalidJump;
 
                 frame.pc = dest_pc;
             } else {

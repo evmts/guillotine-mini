@@ -10,6 +10,7 @@ const opcode_utils = @import("opcode.zig");
 const precompiles = @import("precompiles/precompiles.zig");
 const evm_mod = @import("evm.zig");
 const EvmConfig = @import("evm_config.zig").EvmConfig;
+const Bytecode = @import("bytecode.zig").Bytecode;
 
 // Handler modules
 const handlers_arithmetic = @import("instructions/handlers_arithmetic.zig");
@@ -25,7 +26,9 @@ const handlers_control_flow = @import("instructions/handlers_control_flow.zig");
 const handlers_log = @import("instructions/handlers_log.zig");
 const handlers_system = @import("instructions/handlers_system.zig");
 
-pub const Frame = struct {
+/// Creates a configured Frame type that matches the given Evm config.
+pub fn Frame(comptime config: EvmConfig) type {
+    return struct {
     const Self = @This();
     pub const EvmError = @import("errors.zig").CallError;
 
@@ -43,76 +46,31 @@ pub const Frame = struct {
     const LogHandlers = handlers_log.Handlers(Self);
     const SystemHandlers = handlers_system.Handlers(Self);
 
-    // Stack
     stack: std.ArrayList(u256),
-
-    // Memory
     memory: std.AutoHashMap(u32, u8),
     memory_size: u32,
-
-    // Execution state
     pc: u32,
     gas_remaining: i64,
-    bytecode: []const u8,
-
-    // Valid jump destinations for JUMP/JUMPI
-    valid_jumpdests: std.AutoArrayHashMap(u32, void),
-
-    // Call context
+    bytecode: Bytecode,
     caller: Address,
     address: Address,
     value: u256,
     calldata: []const u8,
-
-    // Output
     output: []u8,
     return_data: []const u8,
-
-    // Execution status
     stopped: bool,
     reverted: bool,
-
-    // Reference to Evm (like Frame has evm_ptr)
     evm_ptr: *anyopaque,
-
-    // Allocator for frame operations
     allocator: std.mem.Allocator,
-
-    // EIP-3074 AUTH state
     authorized: ?u256,
     call_depth: u32,
-
-    // Active hardfork configuration for gas rules
     hardfork: Hardfork,
-
-    // Static call flag (for STATICCALL - EIP-214)
     is_static: bool,
-
-    /// Analyze bytecode to identify valid JUMPDEST locations
-    fn validateJumpDests(_: std.mem.Allocator, bytecode: []const u8, valid_jumpdests: *std.AutoArrayHashMap(u32, void)) !void {
-        var pc: u32 = 0;
-        while (pc < bytecode.len) {
-            const opcode = bytecode[pc];
-
-            // Check if this is a JUMPDEST
-            if (opcode == 0x5b) {
-                try valid_jumpdests.put(pc, {});
-                pc += 1;
-            } else if (opcode >= 0x60 and opcode <= 0x7f) {
-                // PUSH1 through PUSH32
-                const push_size = opcode - 0x5f; // Number of bytes to push
-                // Skip the PUSH opcode and its immediate data
-                pc += 1 + push_size;
-            } else {
-                pc += 1;
-            }
-        }
-    }
 
     /// Initialize a new frame
     pub fn init(
         allocator: std.mem.Allocator,
-        bytecode: []const u8,
+        bytecode_raw: []const u8,
         gas: i64,
         caller: Address,
         address: Address,
@@ -130,9 +88,8 @@ pub const Frame = struct {
         errdefer memory_map.deinit();
 
         // Analyze bytecode to identify valid jump destinations
-        var valid_jumpdests = std.AutoArrayHashMap(u32, void).init(allocator);
-        errdefer valid_jumpdests.deinit();
-        try validateJumpDests(allocator, bytecode, &valid_jumpdests);
+        var bytecode = try Bytecode.init(allocator, bytecode_raw);
+        errdefer bytecode.deinit();
 
         return Self{
             .stack = stack,
@@ -141,7 +98,6 @@ pub const Frame = struct {
             .pc = 0,
             .gas_remaining = gas,
             .bytecode = bytecode,
-            .valid_jumpdests = valid_jumpdests,
             .caller = caller,
             .address = address,
             .value = value,
@@ -165,14 +121,14 @@ pub const Frame = struct {
         // The arena will clean up all memory at once when Evm is destroyed
         self.stack.deinit(self.allocator);
         self.memory.deinit();
-        self.valid_jumpdests.deinit();
+        self.bytecode.deinit();
         // No need to free output or return_data when using arena
     }
 
-    /// Get the Evm instance with the default config
+    /// Get the Evm instance matching this Frame's config
     /// This is a helper for handlers that need to access the EVM
-    pub fn getEvm(self: *Self) *evm_mod.DefaultEvm {
-        return @as(*evm_mod.DefaultEvm, @ptrCast(@alignCast(self.evm_ptr)));
+    pub fn getEvm(self: *Self) *evm_mod.Evm(config) {
+        return @ptrCast(@alignCast(self.evm_ptr));
     }
 
     /// Push value onto stack
@@ -232,27 +188,12 @@ pub const Frame = struct {
 
     /// Get current opcode
     pub fn getCurrentOpcode(self: *const Self) ?u8 {
-        if (self.pc >= self.bytecode.len) {
-            return null;
-        }
-        return self.bytecode[self.pc];
+        return self.bytecode.getOpcode(self.pc);
     }
 
     /// Read immediate data for PUSH operations
     pub fn readImmediate(self: *const Self, size: u8) ?u256 {
-        const pc_usize: usize = @intCast(self.pc);
-        const size_usize: usize = size;
-        if (pc_usize + 1 + size_usize > self.bytecode.len) {
-            return null;
-        }
-
-        var result: u256 = 0;
-        var i: u8 = 0;
-        while (i < size) : (i += 1) {
-            const idx: usize = pc_usize + 1 + i;
-            result = (result << 8) | self.bytecode[idx];
-        }
-        return result;
+        return self.bytecode.readImmediate(self.pc, size);
     }
 
     /// ----------------------------------- GAS ---------------------------------- ///
@@ -510,7 +451,7 @@ pub const Frame = struct {
 
     /// Execute a single step
     pub fn step(self: *Self) EvmError!void {
-        if (self.stopped or self.reverted or self.pc >= self.bytecode.len) {
+        if (self.stopped or self.reverted or self.pc >= self.bytecode.len()) {
             return;
         }
         const opcode = self.getCurrentOpcode() orelse return;
@@ -552,7 +493,7 @@ pub const Frame = struct {
     pub fn execute(self: *Self) EvmError!void {
         var iteration_count: u64 = 0;
         const max_iterations: u64 = 10_000_000; // Prevent infinite loops (reasonable limit ~10M ops)
-        while (!self.stopped and !self.reverted and self.pc < self.bytecode.len) {
+        while (!self.stopped and !self.reverted and self.pc < self.bytecode.len()) {
             iteration_count += 1;
             if (iteration_count > max_iterations) {
                 return error.ExecutionTimeout;
@@ -560,4 +501,5 @@ pub const Frame = struct {
             try self.step();
         }
     }
-};
+    };
+}
