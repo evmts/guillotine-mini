@@ -2,9 +2,10 @@
 const std = @import("std");
 const crypto = @import("crypto");
 const ckzg = crypto.c_kzg;
+const trusted_setup = @import("../kzg/trusted_setup.zig");
 
 /// Embedded trusted setup data
-const trusted_setup_data = @embedFile("../kzg/trusted_setup.txt");
+const trusted_setup_data = trusted_setup.data;
 
 /// Global initialization state
 var initialized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);

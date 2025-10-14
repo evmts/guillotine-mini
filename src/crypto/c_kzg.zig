@@ -1,5 +1,6 @@
 /// C-KZG bindings for EIP-4844 support
 const std = @import("std");
+const trusted_setup = @import("../kzg/trusted_setup.zig");
 
 // Import the official zig bindings
 const ckzg = @import("c_kzg");
@@ -22,16 +23,9 @@ pub const FIELD_ELEMENTS_PER_BLOB = ckzg.FIELD_ELEMENTS_PER_BLOB;
 // Re-export error type
 pub const KZGError = ckzg.KZGError;
 
-/// Load trusted setup from file
-pub fn loadTrustedSetupFile(trusted_setup_path: []const u8, precompute: u64) KZGError!void {
-    const file = std.fs.cwd().openFile(trusted_setup_path, .{}) catch return KZGError.FileNotFound;
-    defer file.close();
-    
-    const file_data = file.readToEndAlloc(std.heap.page_allocator, 1024 * 1024 * 10) catch return KZGError.MallocError;
-    defer std.heap.page_allocator.free(file_data);
-    
-    try ckzg.loadTrustedSetupFromText(file_data, precompute);
-}
+// Re-export core functions
+pub const loadTrustedSetupFromText = ckzg.loadTrustedSetupFromText;
+pub const loadTrustedSetupFile = ckzg.loadTrustedSetupFile;
 
 /// Free the trusted setup
 pub fn freeTrustedSetup() KZGError!void {
@@ -54,16 +48,10 @@ pub const verifyKZGProof = ckzg.verifyKZGProof;
 
 test "c_kzg basic functionality" {
     const testing = std.testing;
-    
-    // This test requires the trusted setup file to be present
-    const trusted_setup_path = "src/kzg/trusted_setup.txt";
-    std.fs.cwd().access(trusted_setup_path, .{}) catch {
-        // File doesn't exist, skip test
-        return;
-    };
-    
-    try loadTrustedSetupFile(trusted_setup_path, 0);
+
+    // Load the trusted setup from embedded data
+    try loadTrustedSetupFromText(trusted_setup.data, 0);
     defer freeTrustedSetup() catch {};
-    
+
     // If we get here without error, the trusted setup loaded successfully
 }
