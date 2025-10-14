@@ -97,13 +97,6 @@ pub fn build(b: *std.Build) void {
     // Add crypto import to primitives (circular dependency)
     primitives_mod.addImport("crypto", crypto_mod);
 
-    // Create blake2 module
-    const blake2_mod = b.addModule("blake2", .{
-        .root_source_file = b.path("src/blake2.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     // Create precompiles module
     const precompiles_mod = b.addModule("precompiles", .{
         .root_source_file = b.path("src/precompiles/precompiles.zig"),
@@ -112,7 +105,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
-            .{ .name = "blake2", .module = blake2_mod },
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
@@ -139,7 +131,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "crypto", .module = crypto_mod },
-            .{ .name = "blake2", .module = blake2_mod },
             // Ensure nested modules can access build options (e.g., precompiles)
             .{ .name = "build_options", .module = build_options_mod },
         },
@@ -184,7 +175,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "crypto", .module = crypto_mod },
-            .{ .name = "blake2", .module = blake2_mod },
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
@@ -645,13 +635,6 @@ pub fn build(b: *std.Build) void {
     // Add crypto import to primitives (circular dependency)
     wasm_primitives_mod.addImport("crypto", wasm_crypto_mod);
 
-    // Create WASM blake2 module
-    const wasm_blake2_mod = b.addModule("wasm_blake2", .{
-        .root_source_file = b.path("src/blake2.zig"),
-        .target = wasm_target,
-        .optimize = .ReleaseSmall,
-    });
-
     // Create WASM precompiles module
     const wasm_precompiles_mod = b.addModule("wasm_precompiles", .{
         .root_source_file = b.path("src/precompiles/precompiles.zig"),
@@ -660,7 +643,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "primitives", .module = wasm_primitives_mod },
             .{ .name = "crypto", .module = wasm_crypto_mod },
-            .{ .name = "blake2", .module = wasm_blake2_mod },
             .{ .name = "build_options", .module = wasm_build_options_mod },
         },
     });
@@ -674,7 +656,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "primitives", .module = wasm_primitives_mod },
             .{ .name = "crypto", .module = wasm_crypto_mod },
             .{ .name = "precompiles", .module = wasm_precompiles_mod },
-            .{ .name = "blake2", .module = wasm_blake2_mod },
             .{ .name = "build_options", .module = wasm_build_options_mod },
         },
     });
