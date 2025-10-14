@@ -485,6 +485,10 @@ pub fn Evm(config: EvmConfig) type {
     }
 
     pub fn preWarmTransaction(self: *Self, target: Address) errors.CallError!void {
+        // EIP-2929 (Berlin+): Pre-warm addresses at transaction start
+        // Pre-Berlin: no warm/cold distinction, so skip this entirely
+        if (!self.hardfork.isAtLeast(.BERLIN)) return;
+
         var warm: [3]Address = undefined;
         var count: usize = 0;
 
@@ -496,6 +500,7 @@ pub fn Evm(config: EvmConfig) type {
             count += 1;
         }
 
+        // EIP-3651 (Shanghai+): Coinbase address is pre-warmed at transaction start
         if (self.hardfork.isAtLeast(.SHANGHAI)) {
             @branchHint(.likely);
             warm[count] = self.block_context.block_coinbase;
@@ -505,10 +510,8 @@ pub fn Evm(config: EvmConfig) type {
         // Pre-warm origin, target, and coinbase
         try self.preWarmAddresses(warm[0..count]);
 
-        // Pre-warm precompiles if Berlin+
+        // Pre-warm precompiles
         // EIP-2929: Precompiles are always warm at transaction start
-        if (!self.hardfork.isAtLeast(.BERLIN)) return;
-
         // Determine number of precompiles based on hardfork
         // Berlin-Istanbul: 0x01-0x09 (9 precompiles: ECRECOVER through BLAKE2F)
         // Cancun+: 0x01-0x0A (10 precompiles, added KZG point evaluation at 0x0A via EIP-4844)

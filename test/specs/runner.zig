@@ -13,6 +13,19 @@ const Hardfork = evm_mod.Hardfork;
 // Error type for tests that are not yet implemented
 pub const TestTodo = error.TestTodo;
 
+// Configuration for test filtering
+// Engine API format tests are consensus-layer tests (block validation, Engine API payloads)
+// and are not core EVM execution tests. They're disabled by default but can be enabled
+// via the INCLUDE_ENGINE_TESTS environment variable for comprehensive testing.
+pub const Config = struct {
+    include_engine_tests: bool,
+
+    pub fn fromEnv() Config {
+        const include_engine = std.process.hasEnvVarConstant("INCLUDE_ENGINE_TESTS");
+        return .{ .include_engine_tests = include_engine };
+    }
+};
+
 // Taylor series approximation of factor * e^(numerator/denominator)
 // This implements the fake_exponential function from EIP-4844
 fn taylorExponential(factor: u256, numerator: u256, denominator: u256) u256 {
@@ -48,6 +61,34 @@ pub fn runJsonTestWithPath(allocator: std.mem.Allocator, test_case: std.json.Val
 }
 
 pub fn runJsonTestWithPathAndName(allocator: std.mem.Allocator, test_case: std.json.Value, test_file_path: ?[]const u8, test_name: ?[]const u8) !void {
+    // Load configuration
+    const config = Config.fromEnv();
+
+    // Check if this is an Engine API format test (blockchain_test_engine)
+    const is_engine_test = blk: {
+        // Check for engineNewPayloads field (primary indicator)
+        if (test_case.object.get("engineNewPayloads")) |_| {
+            break :blk true;
+        }
+        // Also check test name/path for "blockchain_test_engine"
+        if (test_name) |name| {
+            if (std.mem.indexOf(u8, name, "blockchain_test_engine") != null) {
+                break :blk true;
+            }
+        }
+        if (test_file_path) |path| {
+            if (std.mem.indexOf(u8, path, "blockchain_test_engine") != null) {
+                break :blk true;
+            }
+        }
+        break :blk false;
+    };
+
+    // Skip engine tests if not explicitly enabled
+    if (is_engine_test and !config.include_engine_tests) {
+        return error.SkipZigTest;
+    }
+
     // Check if test has multiple hardforks in post section
     const post = test_case.object.get("post");
     if (post) |p| {
