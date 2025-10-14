@@ -122,7 +122,6 @@ pub const EventLog = @import("event_log.zig");
 // Logging
 pub const logs = @import("logs.zig");
 
-
 // Export common constants
 pub const ZERO_ADDRESS = Address.ZERO_ADDRESS;
 pub const EMPTY_CODE_HASH = State.EMPTY_CODE_HASH;

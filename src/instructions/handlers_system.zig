@@ -9,6 +9,8 @@ const precompiles = @import("../precompiles/precompiles.zig");
 /// The FrameType must have methods: getEvm, consumeGas, popStack, pushStack
 /// and fields appropriate for system operations
 pub fn Handlers(FrameType: type) type {
+    const CallParams = FrameType.EvmType.CallParams;
+
     return struct {
         /// Helper functions
         inline fn wordCount(bytes: u64) u64 {

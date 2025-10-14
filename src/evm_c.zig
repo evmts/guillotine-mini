@@ -96,7 +96,7 @@ export fn evm_set_execution_context(
     gas: i64,
     caller_bytes: [*]const u8,
     address_bytes: [*]const u8,
-    value_bytes: [*]const u8,  // 32 bytes representing u256
+    value_bytes: [*]const u8, // 32 bytes representing u256
     calldata: [*]const u8,
     calldata_len: usize,
 ) bool {
@@ -249,7 +249,7 @@ export fn evm_get_output(handle: ?*EvmHandle, buffer: [*]u8, buffer_len: usize) 
 export fn evm_set_storage(
     handle: ?*EvmHandle,
     address_bytes: [*]const u8,
-    slot_bytes: [*]const u8,  // 32 bytes
+    slot_bytes: [*]const u8, // 32 bytes
     value_bytes: [*]const u8, // 32 bytes
 ) bool {
     if (handle) |h| {
@@ -283,8 +283,8 @@ export fn evm_set_storage(
 export fn evm_get_storage(
     handle: ?*EvmHandle,
     address_bytes: [*]const u8,
-    slot_bytes: [*]const u8,  // 32 bytes
-    value_bytes: [*]u8,       // 32 bytes output
+    slot_bytes: [*]const u8, // 32 bytes
+    value_bytes: [*]u8, // 32 bytes output
 ) bool {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));

@@ -89,15 +89,15 @@ pub export fn evm_get_precompile_id(address: ?*const CAddress) u8 {
 /// @return Error code
 pub export fn evm_create_precompile_address(precompile_id: u8, address_out: ?*CAddress) c_int {
     const addr = address_out orelse return EVM_PRECOMPILE_ERROR_NULL_POINTER;
-    
+
     if (precompile_id == 0 or precompile_id > 10) {
         return EVM_PRECOMPILE_ERROR_INVALID_INPUT;
     }
-    
+
     // Create address: 19 zero bytes + precompile_id
     @memset(&addr.bytes, 0);
     addr.bytes[19] = precompile_id;
-    
+
     return EVM_PRECOMPILE_SUCCESS;
 }
 
@@ -112,26 +112,20 @@ pub export fn evm_create_precompile_address(precompile_id: u8, address_out: ?*CA
 /// @param gas_limit Gas limit for execution
 /// @param result Output result structure
 /// @return Error code
-pub export fn evm_execute_precompile(
-    address: ?*const CAddress,
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_execute_precompile(address: ?*const CAddress, input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     const addr = address orelse return EVM_PRECOMPILE_ERROR_NULL_POINTER;
     const res = result orelse return EVM_PRECOMPILE_ERROR_NULL_POINTER;
-    
+
     // Initialize result
     res.success = 0;
     res.gas_used = 0;
     res.output_ptr = undefined;
     res.output_len = 0;
     res.error_code = EVM_PRECOMPILE_SUCCESS;
-    
+
     const native_addr: Address = addr.bytes;
     const input_slice = if (input) |ptr| ptr[0..input_len] else &[_]u8{};
-    
+
     // Execute precompile (hardcode CANCUN for C API)
     const Hardfork = @import("../hardfork.zig").Hardfork;
     const output = precompiles.execute_precompile(allocator, native_addr, input_slice, gas_limit, Hardfork.CANCUN) catch |err| {
@@ -145,13 +139,13 @@ pub export fn evm_execute_precompile(
         };
         return res.error_code;
     };
-    
+
     // Fill result
     res.success = if (output.success) 1 else 0;
     res.gas_used = output.gas_used;
     res.output_ptr = @constCast(output.output.ptr);
     res.output_len = output.output.len;
-    
+
     return EVM_PRECOMPILE_SUCCESS;
 }
 
@@ -162,17 +156,11 @@ pub export fn evm_execute_precompile(
 /// @param gas_limit Gas limit for execution
 /// @param result Output result structure
 /// @return Error code
-pub export fn evm_execute_precompile_by_id(
-    precompile_id: u8,
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_execute_precompile_by_id(precompile_id: u8, input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     var address: CAddress = undefined;
     const addr_result = evm_create_precompile_address(precompile_id, &address);
     if (addr_result != EVM_PRECOMPILE_SUCCESS) return addr_result;
-    
+
     return evm_execute_precompile(&address, input, input_len, gas_limit, result);
 }
 
@@ -186,12 +174,7 @@ pub export fn evm_execute_precompile_by_id(
 /// @param gas_limit Gas limit
 /// @param result Output result
 /// @return Error code
-pub export fn evm_ecrecover(
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_ecrecover(input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     return evm_execute_precompile_by_id(PRECOMPILE_ECRECOVER, input, input_len, gas_limit, result);
 }
 
@@ -201,12 +184,7 @@ pub export fn evm_ecrecover(
 /// @param gas_limit Gas limit
 /// @param result Output result (32-byte hash)
 /// @return Error code
-pub export fn evm_sha256(
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_sha256(input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     return evm_execute_precompile_by_id(PRECOMPILE_SHA256, input, input_len, gas_limit, result);
 }
 
@@ -216,12 +194,7 @@ pub export fn evm_sha256(
 /// @param gas_limit Gas limit
 /// @param result Output result (32-byte with 20-byte hash + 12 zero padding)
 /// @return Error code
-pub export fn evm_ripemd160(
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_ripemd160(input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     return evm_execute_precompile_by_id(PRECOMPILE_RIPEMD160, input, input_len, gas_limit, result);
 }
 
@@ -231,12 +204,7 @@ pub export fn evm_ripemd160(
 /// @param gas_limit Gas limit
 /// @param result Output result (exact copy of input)
 /// @return Error code
-pub export fn evm_identity(
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_identity(input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     return evm_execute_precompile_by_id(PRECOMPILE_IDENTITY, input, input_len, gas_limit, result);
 }
 
@@ -246,12 +214,7 @@ pub export fn evm_identity(
 /// @param gas_limit Gas limit
 /// @param result Output result ((base^exp) % mod)
 /// @return Error code
-pub export fn evm_modexp(
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_modexp(input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     return evm_execute_precompile_by_id(PRECOMPILE_MODEXP, input, input_len, gas_limit, result);
 }
 
@@ -261,12 +224,7 @@ pub export fn evm_modexp(
 /// @param gas_limit Gas limit
 /// @param result Output result (x(32) + y(32) = 64 bytes)
 /// @return Error code
-pub export fn evm_ecadd(
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_ecadd(input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     return evm_execute_precompile_by_id(PRECOMPILE_ECADD, input, input_len, gas_limit, result);
 }
 
@@ -276,12 +234,7 @@ pub export fn evm_ecadd(
 /// @param gas_limit Gas limit
 /// @param result Output result (x(32) + y(32) = 64 bytes)
 /// @return Error code
-pub export fn evm_ecmul(
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_ecmul(input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     return evm_execute_precompile_by_id(PRECOMPILE_ECMUL, input, input_len, gas_limit, result);
 }
 
@@ -291,12 +244,7 @@ pub export fn evm_ecmul(
 /// @param gas_limit Gas limit
 /// @param result Output result (32 bytes: 1 if valid pairing, 0 otherwise)
 /// @return Error code
-pub export fn evm_ecpairing(
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_ecpairing(input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     return evm_execute_precompile_by_id(PRECOMPILE_ECPAIRING, input, input_len, gas_limit, result);
 }
 
@@ -306,12 +254,7 @@ pub export fn evm_ecpairing(
 /// @param gas_limit Gas limit
 /// @param result Output result (64-byte BLAKE2b state)
 /// @return Error code
-pub export fn evm_blake2f(
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_blake2f(input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     return evm_execute_precompile_by_id(PRECOMPILE_BLAKE2F, input, input_len, gas_limit, result);
 }
 
@@ -321,12 +264,7 @@ pub export fn evm_blake2f(
 /// @param gas_limit Gas limit
 /// @param result Output result (64 bytes)
 /// @return Error code
-pub export fn evm_point_evaluation(
-    input: ?[*]const u8,
-    input_len: usize,
-    gas_limit: u64,
-    result: ?*CPrecompileResult
-) c_int {
+pub export fn evm_point_evaluation(input: ?[*]const u8, input_len: usize, gas_limit: u64, result: ?*CPrecompileResult) c_int {
     return evm_execute_precompile_by_id(PRECOMPILE_POINT_EVALUATION, input, input_len, gas_limit, result);
 }
 
@@ -460,16 +398,16 @@ pub export fn evm_precompile_test_address() c_int {
     for (1..11) |id| {
         var addr: CAddress = undefined;
         if (evm_create_precompile_address(@intCast(id), &addr) != EVM_PRECOMPILE_SUCCESS) return -1;
-        
+
         if (evm_is_precompile(&addr) != 1) return -2;
         if (evm_get_precompile_id(&addr) != id) return -3;
     }
-    
+
     // Test invalid address
     var invalid_addr: CAddress = undefined;
     @memset(&invalid_addr.bytes, 0xFF);
     if (evm_is_precompile(&invalid_addr) != 0) return -4;
-    
+
     return 0;
 }
 
@@ -477,18 +415,18 @@ pub export fn evm_precompile_test_address() c_int {
 pub export fn evm_precompile_test_identity() c_int {
     const test_data = "Hello, World!";
     var result: CPrecompileResult = undefined;
-    
+
     const ret = evm_identity(test_data.ptr, test_data.len, 1000, &result);
     if (ret != EVM_PRECOMPILE_SUCCESS) return -1;
-    
+
     defer evm_precompile_free_result(&result);
-    
+
     if (result.success != 1) return -2;
     if (result.output_len != test_data.len) return -3;
-    
+
     const output_slice = result.output_ptr[0..result.output_len];
     if (!std.mem.eql(u8, test_data, output_slice)) return -4;
-    
+
     return 0;
 }
 
@@ -496,15 +434,15 @@ pub export fn evm_precompile_test_identity() c_int {
 pub export fn evm_precompile_test_sha256() c_int {
     const test_data = "abc";
     var result: CPrecompileResult = undefined;
-    
+
     const ret = evm_sha256(test_data.ptr, test_data.len, 1000, &result);
     if (ret != EVM_PRECOMPILE_SUCCESS) return -1;
-    
+
     defer evm_precompile_free_result(&result);
-    
+
     if (result.success != 1) return -2;
     if (result.output_len != 32) return -3;
-    
+
     // Check that we got some hash output (not all zeros)
     const output_slice = result.output_ptr[0..result.output_len];
     var all_zero = true;
@@ -515,7 +453,7 @@ pub export fn evm_precompile_test_sha256() c_int {
         }
     }
     if (all_zero) return -4;
-    
+
     return 0;
 }
 
@@ -524,11 +462,11 @@ pub export fn evm_precompile_test_gas_costs() c_int {
     // Test base gas costs
     if (evm_precompile_base_gas_cost(PRECOMPILE_ECRECOVER) != precompiles.GasCosts.ECRECOVER) return -1;
     if (evm_precompile_base_gas_cost(PRECOMPILE_ECADD) != precompiles.GasCosts.ECADD) return -2;
-    
+
     // Test dynamic gas costs
     if (evm_sha256_gas_cost(64) <= evm_sha256_gas_cost(32)) return -3; // Larger input should cost more
     if (evm_identity_gas_cost(64) <= evm_identity_gas_cost(32)) return -4;
-    
+
     return 0;
 }
 
