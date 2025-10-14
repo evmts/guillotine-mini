@@ -1600,7 +1600,9 @@ pub fn Evm(comptime config: EvmConfig) type {
                 self.transient_storage.clearRetainingCapacity();
                 var restore_it = transient_snapshot.iterator();
                 while (restore_it.next()) |entry| {
-                    self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {};
+                    self.transient_storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
+                        return makeFailure(self.arena.allocator(), 0);
+                    };
                 }
             }
 
@@ -1610,7 +1612,9 @@ pub fn Evm(comptime config: EvmConfig) type {
                 self.selfdestructed_accounts.clearRetainingCapacity();
                 var restore_selfdestruct_it = selfdestruct_snapshot.iterator();
                 while (restore_selfdestruct_it.next()) |entry| {
-                    self.selfdestructed_accounts.put(entry.key_ptr.*, {}) catch {};
+                    self.selfdestructed_accounts.put(entry.key_ptr.*, {}) catch {
+                        return makeFailure(self.arena.allocator(), 0);
+                    };
                 }
             }
 
