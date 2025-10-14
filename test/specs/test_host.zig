@@ -65,7 +65,6 @@ pub const TestHost = struct {
         return .{
             .ptr = self,
             .vtable = &.{
-                .innerCall = innerCall,
                 .getBalance = getBalance,
                 .setBalance = setBalanceVTable,
                 .getCode = getCode,
@@ -108,30 +107,6 @@ pub const TestHost = struct {
     }
 
     // HostInterface vtable implementations
-    fn innerCall(ptr: *anyopaque, gas: u64, address: Address, value: u256, input: []const u8, call_type: HostInterface.CallType) CallResult {
-        _ = input;
-        _ = call_type;
-        const self: *Self = @ptrCast(@alignCast(ptr));
-
-        // Simple stub implementation:
-        // 1. Don't execute code (would need full EVM for proper nested calls)
-        // 2. For now, just return success without executing
-        // TODO: Implement proper nested call execution with code execution
-
-        // Note: Balance transfers should be handled by the calling EVM/frame,
-        // not here in innerCall. The caller should deduct from sender and add to receiver.
-        // For now, we just return success to allow tests to proceed.
-        _ = self;
-        _ = address;
-        _ = value;
-
-        return .{
-            .success = true,
-            .gas_left = gas,
-            .output = &[_]u8{},
-        };
-    }
-
     fn getBalance(ptr: *anyopaque, address: Address) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.balances.get(address) orelse 0;

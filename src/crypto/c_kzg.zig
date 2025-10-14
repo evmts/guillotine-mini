@@ -46,11 +46,14 @@ pub fn computeKZGProof(blob: *const Blob, z: *const Bytes32) KZGError!struct { p
 pub const verifyKZGProof = ckzg.verifyKZGProof;
 
 test "c_kzg basic functionality" {
-    const testing = std.testing;
-
     // Load the trusted setup from embedded data
     try loadTrustedSetupFromText(trusted_setup.data, 0);
-    defer freeTrustedSetup() catch {};
+    defer freeTrustedSetup() catch |err| {
+        // Only acceptable error is TrustedSetupNotLoaded (already freed)
+        if (err != error.TrustedSetupNotLoaded) {
+            @panic("Unexpected error during KZG trusted setup cleanup in test");
+        }
+    };
 
     // If we get here without error, the trusted setup loaded successfully
 }

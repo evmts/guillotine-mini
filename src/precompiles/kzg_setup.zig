@@ -72,8 +72,14 @@ pub fn deinit(allocator: std.mem.Allocator) void {
     if (!initialized.load(.acquire)) return;
 
     _ = allocator; // allocator unused
-    // Free via Zig binding; ignore error if not loaded
-    crypto.c_kzg.freeTrustedSetup() catch {};
+    // Free via Zig binding; only ignore TrustedSetupNotLoaded error
+    crypto.c_kzg.freeTrustedSetup() catch |err| {
+        // Only acceptable error is TrustedSetupNotLoaded (already freed or never loaded)
+        // Any other error should be reported
+        if (err != error.TrustedSetupNotLoaded) {
+            @panic("Unexpected error during KZG trusted setup cleanup");
+        }
+    };
 
     initialized.store(false, .release);
 }
