@@ -10,7 +10,6 @@ const Hardfork = @import("hardfork.zig").Hardfork;
 const host = @import("host.zig");
 const errors = @import("errors.zig");
 const trace = @import("trace.zig");
-const blake2 = @import("blake2.zig");
 const precompiles = @import("precompiles/precompiles.zig");
 const evm_config = @import("evm_config.zig");
 const EvmConfig = evm_config.EvmConfig;
@@ -18,13 +17,6 @@ const storage_injector = @import("storage_injector.zig");
 const StorageInjector = storage_injector.StorageInjector;
 
 const Address = primitives.Address.Address;
-
-// Re-export host types for compatibility
-pub const HostInterface = host.HostInterface;
-pub const Host = host.Host;
-
-// Re-export config
-pub const Config = EvmConfig;
 
 /// Access list storage key slot type
 pub const AccessListStorageKey = struct {
@@ -179,7 +171,7 @@ pub fn Evm(config: EvmConfig) type {
     fork_transition: ?@import("hardfork.zig").ForkTransition = null,
     origin: Address,
     gas_price: u256,
-    host: ?HostInterface,
+    host: ?host.HostInterface,
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
     tracer: ?*trace.Tracer = null,
@@ -202,7 +194,7 @@ pub fn Evm(config: EvmConfig) type {
 
     /// Initialize a new EVM instance
     /// Config provides defaults, but hardfork can be overridden at runtime
-    pub fn init(allocator: std.mem.Allocator, h: ?HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext, log_level: ?log.LogLevel) !Self {
+    pub fn init(allocator: std.mem.Allocator, h: ?host.HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext, log_level: ?log.LogLevel) !Self {
         // Set log level if provided
         if (log_level) |level| {
             log.setLogLevel(level);
@@ -1583,18 +1575,8 @@ pub fn Evm(config: EvmConfig) type {
             while (balance_restore_it.next()) |entry| {
                 if (self.host) |h| {
                     h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
-<<<<<<< HEAD
-                }
-            } else {
-                // Restore all balances for non-host mode
-                self.balances.clearRetainingCapacity();
-                var balance_restore_it = balance_snapshot.iterator();
-                while (balance_restore_it.next()) |entry| {
-                    self.balances.put(entry.key_ptr.*, entry.value_ptr.*) catch {};
-=======
                 } else {
                     try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
->>>>>>> 0942fa7 (fix: Pass Cancun EIP-6780 revert tests (12 tests))
                 }
             }
         }
@@ -2287,242 +2269,3 @@ pub fn Evm(config: EvmConfig) type {
 // Default EVM instance for backward compatibility
 pub const DefaultEvm = Evm(.{});
 
-// ============================================================================
-// Tests for Async Storage Injection (Phase 1: Core Types and Error Handling)
-// ============================================================================
-
-test "AsyncDataRequest - union size and field access" {
-    const testing = std.testing;
-
-    // Test none variant
-    const req_none = AsyncDataRequest{ .none = {} };
-    try testing.expect(req_none == .none);
-
-    // Test storage variant
-    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
-    const req_storage = AsyncDataRequest{ .storage = .{
-        .address = addr,
-        .slot = 42,
-    } };
-    try testing.expect(req_storage == .storage);
-    try testing.expect(req_storage.storage.address.equals(addr));
-    try testing.expectEqual(42, req_storage.storage.slot);
-
-    // Test balance variant
-    const req_balance = AsyncDataRequest{ .balance = .{
-        .address = addr,
-    } };
-    try testing.expect(req_balance == .balance);
-    try testing.expect(req_balance.balance.address.equals(addr));
-
-    // Test code variant
-    const req_code = AsyncDataRequest{ .code = .{
-        .address = addr,
-    } };
-    try testing.expect(req_code == .code);
-    try testing.expect(req_code.code.address.equals(addr));
-
-    // Test nonce variant
-    const req_nonce = AsyncDataRequest{ .nonce = .{
-        .address = addr,
-    } };
-    try testing.expect(req_nonce == .nonce);
-    try testing.expect(req_nonce.nonce.address.equals(addr));
-}
-
-test "AsyncDataRequest - can write and read each variant" {
-    const testing = std.testing;
-
-    var request: AsyncDataRequest = .none;
-
-    // Write storage request
-    const addr = primitives.Address.from_hex("0xabcdef0123456789abcdef0123456789abcdef01") catch unreachable;
-    request = .{ .storage = .{ .address = addr, .slot = 100 } };
-    try testing.expect(request == .storage);
-    try testing.expectEqual(100, request.storage.slot);
-
-    // Write balance request
-    request = .{ .balance = .{ .address = addr } };
-    try testing.expect(request == .balance);
-
-    // Write back to none
-    request = .none;
-    try testing.expect(request == .none);
-}
-
-test "error.NeedAsyncData can be caught and identified" {
-    const testing = std.testing;
-
-    const TestFn = struct {
-        fn needsData() !void {
-            return errors.CallError.NeedAsyncData;
-        }
-    };
-
-    const result = TestFn.needsData();
-    try testing.expectError(errors.CallError.NeedAsyncData, result);
-}
-
-test "error.NeedAsyncData propagates through call stack" {
-    const testing = std.testing;
-
-    const TestFn = struct {
-        fn level3() !void {
-            return errors.CallError.NeedAsyncData;
-        }
-
-        fn level2() !void {
-            try level3();
-        }
-
-        fn level1() !void {
-            try level2();
-        }
-    };
-
-    const result = TestFn.level1();
-    try testing.expectError(errors.CallError.NeedAsyncData, result);
-}
-
-test "Evm.async_data_request field initialized to .none" {
-    const testing = std.testing;
-
-    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
-    defer evm.deinit();
-
-    try testing.expect(evm.async_data_request == .none);
-}
-
-test "Evm.async_data_request can write/read different request types" {
-    const testing = std.testing;
-
-    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
-    defer evm.deinit();
-
-    const addr = primitives.Address.from_hex("0x1111111111111111111111111111111111111111") catch unreachable;
-
-    // Write storage request
-    evm.async_data_request = .{ .storage = .{ .address = addr, .slot = 99 } };
-    try testing.expect(evm.async_data_request == .storage);
-    try testing.expectEqual(99, evm.async_data_request.storage.slot);
-
-    // Write balance request
-    evm.async_data_request = .{ .balance = .{ .address = addr } };
-    try testing.expect(evm.async_data_request == .balance);
-
-    // Clear request
-    evm.async_data_request = .none;
-    try testing.expect(evm.async_data_request == .none);
-}
-
-// ============================================================================
-// Tests for Phase 4: callOrContinue() and Async Execution
-// ============================================================================
-
-test "CallOrContinueInput/Output - can construct each variant" {
-    const testing = std.testing;
-
-    const addr = primitives.Address.from_hex("0x1111111111111111111111111111111111111111") catch unreachable;
-
-    // Test Input variants
-    const call_input: DefaultEvm.CallOrContinueInput = .{ .call = .{
-        .call = .{
-            .caller = addr,
-            .to = addr,
-            .gas = 1000,
-            .value = 0,
-            .input = &[_]u8{},
-        },
-    } };
-    try testing.expect(call_input == .call);
-
-    const storage_input: DefaultEvm.CallOrContinueInput = .{ .continue_with_storage = .{
-        .address = addr,
-        .slot = 42,
-        .value = 100,
-    } };
-    try testing.expect(storage_input == .continue_with_storage);
-
-    // Test Output variants
-    const result_output: DefaultEvm.CallOrContinueOutput = .{ .result = .{
-        .success = true,
-        .gas_left = 500,
-        .output = &[_]u8{},
-    } };
-    try testing.expect(result_output == .result);
-
-    const storage_output: DefaultEvm.CallOrContinueOutput = .{ .need_storage = .{
-        .address = addr,
-        .slot = 99,
-    } };
-    try testing.expect(storage_output == .need_storage);
-}
-
-test "callOrContinue - returns .need_storage on cache miss" {
-    const testing = std.testing;
-
-    // Create EVM with storage injector
-    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
-    defer evm.deinit();
-
-    var injector = try StorageInjector.init(evm.arena.allocator());
-    evm.storage_injector = &injector;
-
-    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
-
-    // Bytecode: PUSH1 0x00, SLOAD - will trigger async request
-    const bytecode = [_]u8{ 0x60, 0x00, 0x54 }; // PUSH1 0, SLOAD
-    evm.pending_bytecode = &bytecode;
-
-    const params: DefaultEvm.CallParams = .{ .call = .{
-        .caller = addr,
-        .to = addr,
-        .gas = 100000,
-        .value = 0,
-        .input = &[_]u8{},
-    } };
-
-    const output = try evm.callOrContinue(.{ .call = params });
-
-    // Should yield with storage request
-    try testing.expect(output == .need_storage);
-    try testing.expectEqual(0, output.need_storage.slot);
-}
-
-test "callOrContinue - continue_with_storage resumes execution" {
-    const testing = std.testing;
-
-    var evm = try DefaultEvm.init(testing.allocator, null, null, null, null);
-    defer evm.deinit();
-
-    var injector = try StorageInjector.init(evm.arena.allocator());
-    evm.storage_injector = &injector;
-
-    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
-
-    // Bytecode: PUSH1 0x00, SLOAD, STOP
-    const bytecode = [_]u8{ 0x60, 0x00, 0x54, 0x00 };
-    evm.pending_bytecode = &bytecode;
-
-    const params: DefaultEvm.CallParams = .{ .call = .{
-        .caller = addr,
-        .to = addr,
-        .gas = 100000,
-        .value = 0,
-        .input = &[_]u8{},
-    } };
-
-    // First call - should yield
-    const output1 = try evm.callOrContinue(.{ .call = params });
-    try testing.expect(output1 == .need_storage);
-
-    // Continue with storage value
-    const output2 = try evm.callOrContinue(.{ .continue_with_storage = .{
-        .address = addr,
-        .slot = 0,
-        .value = 42,
-    } });
-
-    // Should complete with ready_to_commit (if storage injector) or result
-    try testing.expect(output2 == .ready_to_commit or output2 == .result);
-}

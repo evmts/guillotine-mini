@@ -56,4 +56,5 @@ pub const getOpName = opcode.getOpName;
 
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("evm_test.zig");
 }
