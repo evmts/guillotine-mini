@@ -116,7 +116,7 @@ pub fn main() !void {
             const suite_name = utils.extractSuiteName(t.name);
 
             if (has_tty and output_format == .pretty) {
-                utils.printProgress(stdout, i + 1, test_indices.items.len, suite_name);
+                try utils.printProgress(stdout, i + 1, test_indices.items.len, suite_name);
                 try stdout_file.writeAll(stdout_buffer.items);
                 stdout_buffer.clearRetainingCapacity();
             }
@@ -126,7 +126,7 @@ pub fn main() !void {
         }
 
         if (has_tty and output_format == .pretty) {
-            utils.clearLine(stdout);
+            try utils.clearLine(stdout);
             try stdout_file.writeAll(stdout_buffer.items);
             stdout_buffer.clearRetainingCapacity();
         }
@@ -301,6 +301,6 @@ fn printPrettySummary(writer: anytype, results: []TestResult, duration_ns: u64, 
         Color.bold,
         Color.reset,
     });
-    utils.formatDuration(writer, duration_ns);
+    try utils.formatDuration(writer, duration_ns);
     try writer.print("\n\n", .{});
 }

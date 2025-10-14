@@ -1033,20 +1033,15 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             if (test_host.code.get(beacon_roots_address)) |beacon_code| {
                 // Execute system call to beacon roots contract
                 // This call uses system address as caller and has 30M gas
-                if (evm_instance.call(
-                    beacon_code,
-                    30_000_000, // SYSTEM_TRANSACTION_GAS
-                    system_address,
-                    beacon_roots_address,
-                    0, // value = 0
-                    parent_beacon_root,
-                    null, // no access list
-                    null, // no blob hashes
-                )) |_| {
-                    // System call successful
-                } else |_| {
-                    // System call failures are ignored per spec
-                }
+                _ = beacon_code; // Bytecode is fetched via host interface
+                const call_result = evm_instance.call(.{ .call = .{
+                    .caller = system_address,
+                    .to = beacon_roots_address,
+                    .value = 0,
+                    .input = parent_beacon_root,
+                    .gas = 30_000_000, // SYSTEM_TRANSACTION_GAS
+                } });
+                _ = call_result; // System call failures are ignored per spec
             }
         }
     }
@@ -1082,20 +1077,15 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             if (test_host.code.get(history_storage_address)) |history_code| {
                 // Execute system call to history storage contract
                 // This call uses system address as caller and has 30M gas
-                if (evm_instance.call(
-                    history_code,
-                    30_000_000, // SYSTEM_TRANSACTION_GAS
-                    system_address,
-                    history_storage_address,
-                    0, // value = 0
-                    parent_hash,
-                    null, // no access list
-                    null, // no blob hashes
-                )) |_| {
-                    // System call successful
-                } else |_| {
-                    // System call failures are ignored per spec
-                }
+                _ = history_code; // Bytecode is fetched via host interface
+                const call_result = evm_instance.call(.{ .call = .{
+                    .caller = system_address,
+                    .to = history_storage_address,
+                    .value = 0,
+                    .input = parent_hash,
+                    .gas = 30_000_000, // SYSTEM_TRANSACTION_GAS
+                } });
+                _ = call_result; // System call failures are ignored per spec
             }
         }
     }
