@@ -325,13 +325,13 @@ pub fn execute_sha256(allocator: std.mem.Allocator, input: []const u8, gas_limit
     // Compute SHA-256 hash using SIMD-accelerated implementation
     const output = try allocator.alloc(u8, 32);
     var hash: [32]u8 = undefined;
-    
+
     // Get vector size from build options or default to auto-detect
     const vector_size = if (@hasDecl(build_options, "vector_length"))
         build_options.vector_length
     else
         comptime std.simd.suggestVectorLengthForCpu(u8, @import("builtin").target.cpu) orelse 1;
-    
+
     const SHA256 = crypto.SHA256_Accel.SHA256_Accel(vector_size);
     SHA256.hash(input, &hash);
     @memcpy(output, &hash);
@@ -721,7 +721,6 @@ pub fn execute_ecadd(allocator: std.mem.Allocator, input: []const u8, gas_limit:
     const copy_len = @min(input.len, 128);
     @memcpy(padded_input[0..copy_len], input[0..copy_len]);
 
-
     // Parse points
     const x1 = bytesToU256(padded_input[0..32]);
     const y1 = bytesToU256(padded_input[32..64]);
@@ -800,7 +799,6 @@ pub fn execute_ecmul(allocator: std.mem.Allocator, input: []const u8, gas_limit:
     const copy_len = @min(input.len, 96);
     @memcpy(padded_input[0..copy_len], input[0..copy_len]);
 
-
     // Parse point and scalar
     const x = bytesToU256(padded_input[0..32]);
     const y = bytesToU256(padded_input[32..64]);
@@ -877,7 +875,6 @@ pub fn execute_ecpairing(allocator: std.mem.Allocator, input: []const u8, gas_li
             .success = false,
         };
     }
-
 
     const output = try allocator.alloc(u8, 32);
     @memset(output, 0);
@@ -1075,11 +1072,7 @@ pub fn execute_point_evaluation(allocator: std.mem.Allocator, input: []const u8,
     u256ToBytes(FIELD_ELEMENTS_PER_BLOB, output[0..32]);
     u256ToBytes(BLS_MODULUS, output[32..64]);
 
-    return PrecompileOutput{
-        .output = output,
-        .gas_used = required_gas,
-        .success = true
-    };
+    return PrecompileOutput{ .output = output, .gas_used = required_gas, .success = true };
 }
 
 // Utility functions for byte manipulation
@@ -1148,7 +1141,7 @@ pub fn execute_bls12_381_g1_multiexp(allocator: std.mem.Allocator, input: []cons
     // Dynamic gas based on number of pairs
     const num_pairs = input.len / 160;
     const required_gas = GasCosts.BLS12_381_G1_MULTIEXP_BASE * num_pairs;
-    
+
     if (gas_limit < required_gas) {
         return PrecompileOutput{
             .output = &.{},
@@ -1205,7 +1198,7 @@ pub fn execute_bls12_381_pairing(allocator: std.mem.Allocator, input: []const u8
     // Dynamic gas based on number of pairs
     const num_pairs = input.len / 384;
     const required_gas = GasCosts.BLS12_381_PAIRING_BASE + GasCosts.BLS12_381_PAIRING_PER_PAIR * num_pairs;
-    
+
     if (gas_limit < required_gas) {
         return PrecompileOutput{
             .output = &.{},
@@ -1245,7 +1238,7 @@ fn bytesToU256(bytes: []const u8) u256 {
     // Ensure we have exactly 32 bytes, padding with zeros if necessary
     var padded: [32]u8 = [_]u8{0} ** 32;
     const copy_len = @min(bytes.len, 32);
-    @memcpy(padded[32 - copy_len..], bytes[0..copy_len]);
+    @memcpy(padded[32 - copy_len ..], bytes[0..copy_len]);
     return std.mem.readInt(u256, &padded, .big);
 }
 
@@ -1444,12 +1437,12 @@ test "execute_ripemd160 precompile" {
 
     try testing.expect(result.success);
     try testing.expectEqual(@as(usize, 32), result.output.len);
-    
+
     // Expected RIPEMD-160 hash of "abc" (20 bytes hash + 12 zero padding)
     const expected = [_]u8{
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x8e, 0xb2, 0x08, 0xf7, 0xe0, 0x5d, 0x98, 0x7a, 0x9b, 0x04,
-        0x4a, 0x8e, 0x98, 0xc6, 0xb0, 0x87, 0xf1, 0x5a, 0x0b, 0xfc,
+        0x8e, 0xb2, 0x08, 0xf7, 0xe0, 0x5d, 0x98, 0x7a, 0x9b, 0x04, 0x4a, 0x8e,
+        0x98, 0xc6, 0xb0, 0x87, 0xf1, 0x5a, 0x0b, 0xfc,
     };
     try testing.expectEqualSlices(u8, &expected, result.output);
 }
@@ -1463,7 +1456,7 @@ test "execute_ecadd precompile" {
 
     const result = try execute_ecadd(testing.allocator, &input, GasCosts.ECADD + 100, .ISTANBUL);
     defer testing.allocator.free(result.output);
-    
+
     try testing.expect(result.success);
     try testing.expectEqual(@as(usize, 64), result.output.len);
     // Result should be identity (all zeros)
@@ -1483,7 +1476,7 @@ test "execute_ecmul precompile" {
 
     const result = try execute_ecmul(testing.allocator, &input, GasCosts.ECMUL + 100, .ISTANBUL);
     defer testing.allocator.free(result.output);
-    
+
     try testing.expect(result.success);
     try testing.expectEqual(@as(usize, 64), result.output.len);
     // Result should be identity (all zeros)
@@ -1499,7 +1492,7 @@ test "execute_ecpairing precompile - empty input" {
     const input = &[_]u8{};
     const result = try execute_ecpairing(testing.allocator, input, GasCosts.ECPAIRING_BASE, .ISTANBUL);
     defer testing.allocator.free(result.output);
-    
+
     try testing.expect(result.success);
     try testing.expectEqual(@as(usize, 32), result.output.len);
     // Should return 1 (true) for empty pairing
@@ -1511,7 +1504,7 @@ test "execute_ecpairing precompile - empty input" {
 
 test "execute_blake2f precompile" {
     const testing = std.testing;
-    
+
     // Valid blake2f input (213 bytes)
     var input = [_]u8{0} ** 213;
     // rounds (4 bytes)
@@ -1521,10 +1514,10 @@ test "execute_blake2f precompile" {
     // t (16 bytes) - offset counters
     // f (1 byte) - final block flag
     input[212] = 1; // final block
-    
+
     const result = try execute_blake2f(testing.allocator, &input, 1000);
     defer testing.allocator.free(result.output);
-    
+
     try testing.expect(result.success);
     try testing.expectEqual(@as(usize, 64), result.output.len);
     try testing.expectEqual(@as(u64, 12), result.gas_used); // 12 rounds * 1 gas per round
@@ -1532,10 +1525,10 @@ test "execute_blake2f precompile" {
 
 test "execute_modexp edge cases" {
     const testing = std.testing;
-    
+
     // Test: 0^0 mod 5 = 1 (by convention)
     var input: [128]u8 = [_]u8{0} ** 128;
-    
+
     // base_len = 1
     input[31] = 1;
     // exp_len = 1
@@ -1546,10 +1539,10 @@ test "execute_modexp edge cases" {
     // exp = 0 (already zero)
     // mod = 5
     input[98] = 5;
-    
+
     const result = try execute_modexp(testing.allocator, &input, 10000, @import("../hardfork.zig").Hardfork.CANCUN);
     defer testing.allocator.free(result.output);
-    
+
     try testing.expect(result.success);
     try testing.expectEqual(@as(usize, 1), result.output.len);
     // 0^0 mod 5 = 1
@@ -1558,11 +1551,11 @@ test "execute_modexp edge cases" {
 
 test "execute_ecrecover valid signature" {
     const testing = std.testing;
-    
+
     // This is a real signature from Ethereum mainnet
     // Message hash, v, r, s values from a known transaction
     var input = [_]u8{0} ** 128;
-    
+
     // Message hash (32 bytes)
     const hash = [_]u8{
         0x7c, 0x80, 0xc6, 0x8e, 0x60, 0x3b, 0xf0, 0x9a,
@@ -1571,11 +1564,11 @@ test "execute_ecrecover valid signature" {
         0x6e, 0x0a, 0x23, 0xbe, 0xbd, 0x02, 0x3c, 0x23,
     };
     @memcpy(input[0..32], &hash);
-    
+
     // v = 27 (recovery id)
     input[63] = 27;
-    
-    // r (32 bytes) 
+
+    // r (32 bytes)
     const r = [_]u8{
         0xa8, 0x89, 0xc0, 0xea, 0x64, 0xd6, 0xb8, 0xef,
         0x9a, 0x8a, 0x01, 0x96, 0x4f, 0x2f, 0x20, 0x18,
@@ -1583,7 +1576,7 @@ test "execute_ecrecover valid signature" {
         0x42, 0x50, 0x5f, 0xd1, 0xa8, 0xee, 0xa6, 0x60,
     };
     @memcpy(input[64..96], &r);
-    
+
     // s (32 bytes)
     const s = [_]u8{
         0x2a, 0x55, 0x0e, 0x6f, 0x48, 0xfb, 0x9d, 0x95,
@@ -1592,10 +1585,10 @@ test "execute_ecrecover valid signature" {
         0xd2, 0xbc, 0x2e, 0xc8, 0x07, 0x1f, 0xfb, 0x10,
     };
     @memcpy(input[96..128], &s);
-    
+
     const result = try execute_ecrecover(testing.allocator, &input, GasCosts.ECRECOVER + 100);
     defer testing.allocator.free(result.output);
-    
+
     try testing.expect(result.success);
     try testing.expectEqual(@as(usize, 32), result.output.len);
     // Should return a valid address (20 bytes) with 12 bytes of zero padding
@@ -1653,13 +1646,13 @@ test "execute_ecpairing wrong input length" {
 
 test "execute_blake2f invalid final flag" {
     const testing = std.testing;
-    
+
     // Valid length but invalid final flag
     var input = [_]u8{0} ** 213;
     input[212] = 2; // Invalid flag (must be 0 or 1)
-    
+
     const result = try execute_blake2f(testing.allocator, &input, 1000);
-    
+
     try testing.expect(!result.success);
 }
 
@@ -1724,7 +1717,7 @@ test "execute_blake2f with Istanbul test vector" {
     // Compare outputs
     for (result.output, 0..) |byte, i| {
         if (byte != expected[i]) {
-            std.debug.print("\nMismatch at byte {}: got 0x{x:0>2}, expected 0x{x:0>2}\n", .{i, byte, expected[i]});
+            std.debug.print("\nMismatch at byte {}: got 0x{x:0>2}, expected 0x{x:0>2}\n", .{ i, byte, expected[i] });
         }
     }
 
@@ -1739,10 +1732,10 @@ test "execute_point_evaluation without kzg setup" {
     if (kzg_setup.isInitialized()) {
         return;
     }
-    
+
     var input = [_]u8{0} ** 192;
     const result = try execute_point_evaluation(testing.allocator, &input, GasCosts.POINT_EVALUATION + 100);
-    
+
     // Should fail without KZG setup
     try testing.expect(!result.success);
 }
@@ -1763,7 +1756,7 @@ test "precompile address boundary checks" {
 
 test "execute_all_precompiles smoke test" {
     const testing = std.testing;
-    
+
     // Test that execute function correctly dispatches to all precompiles
     const addresses = [_]primitives.Address.Address{
         ECRECOVER_ADDRESS,
@@ -1777,7 +1770,7 @@ test "execute_all_precompiles smoke test" {
         BLAKE2F_ADDRESS,
         POINT_EVALUATION_ADDRESS,
     };
-    
+
     for (addresses) |addr| {
         const result = try execute_precompile(testing.allocator, addr, &[_]u8{}, 100000, .CANCUN);
         defer if (result.output.len > 0) testing.allocator.free(result.output);

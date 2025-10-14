@@ -180,7 +180,7 @@ export fn evm_set_execution_context(
     gas: i64,
     caller_bytes: [*]const u8,
     address_bytes: [*]const u8,
-    value_bytes: [*]const u8,  // 32 bytes representing u256
+    value_bytes: [*]const u8, // 32 bytes representing u256
     calldata: [*]const u8,
     calldata_len: usize,
 ) bool {
@@ -223,15 +223,15 @@ export fn evm_set_execution_context(
 /// Set blockchain context (required before execution)
 export fn evm_set_blockchain_context(
     handle: ?*EvmHandle,
-    chain_id_bytes: [*]const u8,  // 32 bytes
+    chain_id_bytes: [*]const u8, // 32 bytes
     block_number: u64,
     block_timestamp: u64,
-    block_difficulty_bytes: [*]const u8,  // 32 bytes
-    block_prevrandao_bytes: [*]const u8,  // 32 bytes
-    block_coinbase_bytes: [*]const u8,  // 20 bytes
+    block_difficulty_bytes: [*]const u8, // 32 bytes
+    block_prevrandao_bytes: [*]const u8, // 32 bytes
+    block_coinbase_bytes: [*]const u8, // 20 bytes
     block_gas_limit: u64,
-    block_base_fee_bytes: [*]const u8,  // 32 bytes
-    blob_base_fee_bytes: [*]const u8,  // 32 bytes
+    block_base_fee_bytes: [*]const u8, // 32 bytes
+    blob_base_fee_bytes: [*]const u8, // 32 bytes
 ) void {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
@@ -272,7 +272,7 @@ export fn evm_set_blockchain_context(
 /// Set access list addresses (EIP-2930) - call before execute
 export fn evm_set_access_list_addresses(
     handle: ?*EvmHandle,
-    addresses: [*]const u8,  // Packed 20-byte addresses
+    addresses: [*]const u8, // Packed 20-byte addresses
     count: usize,
 ) bool {
     if (handle) |h| {
@@ -303,8 +303,8 @@ export fn evm_set_access_list_addresses(
 /// Set access list storage keys (EIP-2930) - call before execute
 export fn evm_set_access_list_storage_keys(
     handle: ?*EvmHandle,
-    addresses: [*]const u8,  // Packed 20-byte addresses
-    slots: [*]const u8,  // Packed 32-byte slots
+    addresses: [*]const u8, // Packed 20-byte addresses
+    slots: [*]const u8, // Packed 32-byte slots
     count: usize,
 ) bool {
     if (handle) |h| {
@@ -345,7 +345,7 @@ export fn evm_set_access_list_storage_keys(
 /// Set blob versioned hashes (EIP-4844) - call before execute
 export fn evm_set_blob_hashes(
     handle: ?*EvmHandle,
-    hashes: [*]const u8,  // Packed 32-byte hashes
+    hashes: [*]const u8, // Packed 32-byte hashes
     count: usize,
 ) bool {
     if (handle) |h| {
@@ -479,7 +479,7 @@ export fn evm_get_output(handle: ?*EvmHandle, buffer: [*]u8, buffer_len: usize) 
 export fn evm_set_storage(
     handle: ?*EvmHandle,
     address_bytes: [*]const u8,
-    slot_bytes: [*]const u8,  // 32 bytes
+    slot_bytes: [*]const u8, // 32 bytes
     value_bytes: [*]const u8, // 32 bytes
 ) bool {
     if (handle) |h| {
@@ -513,8 +513,8 @@ export fn evm_set_storage(
 export fn evm_get_storage(
     handle: ?*EvmHandle,
     address_bytes: [*]const u8,
-    slot_bytes: [*]const u8,  // 32 bytes
-    value_bytes: [*]u8,       // 32 bytes output
+    slot_bytes: [*]const u8, // 32 bytes
+    value_bytes: [*]u8, // 32 bytes output
 ) bool {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));

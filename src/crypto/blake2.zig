@@ -528,8 +528,21 @@ test "blake2f compression - RFC 7693 Appendix A test vector (EIP-152)" {
     // m_hex: "6162630000...0000"
     var m = [16]u64{
         0x0000000000636261, // "abc" in little-endian
-        0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
     };
 
     const t = [2]u64{ 3, 0 }; // 3 bytes processed

@@ -276,7 +276,7 @@ pub fn encode_eip1559_for_signing(allocator: Allocator, tx: Eip1559Transaction) 
 pub fn encode_access_list(allocator: Allocator, access_list: []const AccessListItem) ![]u8 {
     var output = std.array_list.AlignedManaged(u8, null).init(allocator);
     defer output.deinit();
-    
+
     try encode_access_list_internal(allocator, access_list, &output);
     return output.toOwnedSlice();
 }

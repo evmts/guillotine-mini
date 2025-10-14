@@ -3,7 +3,7 @@ const std = @import("std");
 const primitives = @import("primitives");
 const errors = @import("errors.zig");
 const evm = @import("evm.zig");
-const DefaultEvm = evm.DefaultEvm;
+const Evm = evm.Evm(.{}); // Default config
 const StorageInjector = @import("storage_injector.zig").StorageInjector;
 const AsyncDataRequest = evm.AsyncDataRequest;
 
@@ -103,7 +103,7 @@ test "error.NeedAsyncData propagates through call stack" {
 test "Evm.async_data_request field initialized to .none" {
     const testing = std.testing;
 
-    var evm_instance = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    var evm_instance = try Evm.init(testing.allocator, null, null, null, null);
     defer evm_instance.deinit();
 
     try testing.expect(evm_instance.async_data_request == .none);
@@ -112,7 +112,7 @@ test "Evm.async_data_request field initialized to .none" {
 test "Evm.async_data_request can write/read different request types" {
     const testing = std.testing;
 
-    var evm_instance = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    var evm_instance = try Evm.init(testing.allocator, null, null, null, null);
     defer evm_instance.deinit();
 
     const addr = primitives.Address.from_hex("0x1111111111111111111111111111111111111111") catch unreachable;
@@ -141,7 +141,7 @@ test "CallOrContinueInput/Output - can construct each variant" {
     const addr = primitives.Address.from_hex("0x1111111111111111111111111111111111111111") catch unreachable;
 
     // Test Input variants
-    const call_input: DefaultEvm.CallOrContinueInput = .{ .call = .{
+    const call_input: Evm.CallOrContinueInput = .{ .call = .{
         .call = .{
             .caller = addr,
             .to = addr,
@@ -152,7 +152,7 @@ test "CallOrContinueInput/Output - can construct each variant" {
     } };
     try testing.expect(call_input == .call);
 
-    const storage_input: DefaultEvm.CallOrContinueInput = .{ .continue_with_storage = .{
+    const storage_input: Evm.CallOrContinueInput = .{ .continue_with_storage = .{
         .address = addr,
         .slot = 42,
         .value = 100,
@@ -160,14 +160,14 @@ test "CallOrContinueInput/Output - can construct each variant" {
     try testing.expect(storage_input == .continue_with_storage);
 
     // Test Output variants
-    const result_output: DefaultEvm.CallOrContinueOutput = .{ .result = .{
+    const result_output: Evm.CallOrContinueOutput = .{ .result = .{
         .success = true,
         .gas_left = 500,
         .output = &[_]u8{},
     } };
     try testing.expect(result_output == .result);
 
-    const storage_output: DefaultEvm.CallOrContinueOutput = .{ .need_storage = .{
+    const storage_output: Evm.CallOrContinueOutput = .{ .need_storage = .{
         .address = addr,
         .slot = 99,
     } };
@@ -178,7 +178,7 @@ test "callOrContinue - returns .need_storage on cache miss" {
     const testing = std.testing;
 
     // Create EVM with storage injector
-    var evm_instance = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    var evm_instance = try Evm.init(testing.allocator, null, null, null, null);
     defer evm_instance.deinit();
 
     var injector = try StorageInjector.init(evm_instance.arena.allocator());
@@ -190,7 +190,7 @@ test "callOrContinue - returns .need_storage on cache miss" {
     const bytecode = [_]u8{ 0x60, 0x00, 0x54 }; // PUSH1 0, SLOAD
     evm_instance.pending_bytecode = &bytecode;
 
-    const params: DefaultEvm.CallParams = .{ .call = .{
+    const params: Evm.CallParams = .{ .call = .{
         .caller = addr,
         .to = addr,
         .gas = 100000,
@@ -208,7 +208,7 @@ test "callOrContinue - returns .need_storage on cache miss" {
 test "callOrContinue - continue_with_storage resumes execution" {
     const testing = std.testing;
 
-    var evm_instance = try DefaultEvm.init(testing.allocator, null, null, null, null);
+    var evm_instance = try Evm.init(testing.allocator, null, null, null, null);
     defer evm_instance.deinit();
 
     var injector = try StorageInjector.init(evm_instance.arena.allocator());
@@ -220,7 +220,7 @@ test "callOrContinue - continue_with_storage resumes execution" {
     const bytecode = [_]u8{ 0x60, 0x00, 0x54, 0x00 };
     evm_instance.pending_bytecode = &bytecode;
 
-    const params: DefaultEvm.CallParams = .{ .call = .{
+    const params: Evm.CallParams = .{ .call = .{
         .caller = addr,
         .to = addr,
         .gas = 100000,

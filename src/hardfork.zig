@@ -158,17 +158,17 @@ pub const ForkTransition = struct {
         const at_pos = to_index + at_index;
 
         // Extract "to" fork
-        const to_str = name[to_index + 2..at_pos];
+        const to_str = name[to_index + 2 .. at_pos];
         const to_fork = Hardfork.fromString(to_str) orelse return null;
 
         // Parse the transition point
-        const transition_str = name[at_pos + 2..];
+        const transition_str = name[at_pos + 2 ..];
 
         // Check if it's a timestamp (contains "Time") or block number
         if (std.mem.indexOf(u8, transition_str, "Time") != null) {
             // Extract number from "Time15k" -> "15k"
             const time_index = std.mem.indexOf(u8, transition_str, "Time") orelse return null;
-            const num_str = transition_str[time_index + 4..];
+            const num_str = transition_str[time_index + 4 ..];
             const timestamp = parseNumber(num_str) orelse return null;
             return ForkTransition{
                 .from_fork = from_fork,
@@ -207,7 +207,7 @@ fn parseNumber(str: []const u8) ?u64 {
 
     // Check for 'k' suffix (multiply by 1000)
     if (str[str.len - 1] == 'k') {
-        const num_str = str[0..str.len - 1];
+        const num_str = str[0 .. str.len - 1];
         const base = std.fmt.parseInt(u64, num_str, 10) catch return null;
         return base * 1000;
     }

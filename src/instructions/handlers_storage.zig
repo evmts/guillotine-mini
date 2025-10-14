@@ -69,9 +69,9 @@ pub fn Handlers(FrameType: type) type {
                 // If setting zero to non-zero: 20,000 gas
                 // Otherwise: 5,000 gas
                 break :blk if (current_value == 0 and value != 0)
-                    GasConstants.SstoreSetGas  // 20,000
+                    GasConstants.SstoreSetGas // 20,000
                 else
-                    GasConstants.SstoreResetGas;  // 5,000
+                    GasConstants.SstoreResetGas; // 5,000
             };
 
             try frame.consumeGas(gas_cost);
@@ -84,7 +84,7 @@ pub fn Handlers(FrameType: type) type {
                 if (current_value != value) {
                     // Case 1: Clearing storage for the first time in the transaction
                     if (original_value != 0 and current_value != 0 and value == 0) {
-                        evm.add_refund(15000);  // GAS_STORAGE_CLEAR_REFUND
+                        evm.add_refund(15000); // GAS_STORAGE_CLEAR_REFUND
                     }
 
                     // Case 2: Reversing a previous clear (was cleared earlier, now non-zero)
@@ -100,11 +100,11 @@ pub fn Handlers(FrameType: type) type {
                         if (original_value == 0) {
                             // Slot was originally empty and was SET earlier (cost 20000)
                             // Now restored to 0, refund the difference: 20000 - 100 = 19900
-                            evm.add_refund(20000 - 100);  // GAS_STORAGE_SET - GAS_SLOAD
+                            evm.add_refund(20000 - 100); // GAS_STORAGE_SET - GAS_SLOAD
                         } else {
                             // Slot was originally non-empty and was UPDATED earlier (cost 5000)
                             // Now restored to original, refund: 5000 - 100 = 4900
-                            evm.add_refund(5000 - 100);  // GAS_STORAGE_UPDATE - GAS_SLOAD
+                            evm.add_refund(5000 - 100); // GAS_STORAGE_UPDATE - GAS_SLOAD
                         }
                     }
                 }
@@ -117,7 +117,7 @@ pub fn Handlers(FrameType: type) type {
                 if (current_value != value) {
                     // Case 1: Clearing storage for the first time in the transaction (line 107-109)
                     if (original_value != 0 and current_value != 0 and value == 0) {
-                        evm.add_refund(GasConstants.SstoreRefundGas);  // 4,800 (GAS_STORAGE_CLEAR_REFUND)
+                        evm.add_refund(GasConstants.SstoreRefundGas); // 4,800 (GAS_STORAGE_CLEAR_REFUND)
                     }
 
                     // Case 2: Reversing a previous clear (line 111-113)
@@ -146,7 +146,7 @@ pub fn Handlers(FrameType: type) type {
             } else {
                 // Pre-Istanbul (Frontier-Constantinople-Petersburg): Simple clear refund
                 if (current_value != 0 and value == 0) {
-                    evm.add_refund(15000);  // GAS_STORAGE_CLEAR_REFUND
+                    evm.add_refund(15000); // GAS_STORAGE_CLEAR_REFUND
                 }
             }
 

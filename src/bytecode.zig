@@ -113,7 +113,7 @@ test "analyzeJumpDests: simple JUMPDEST" {
 test "analyzeJumpDests: PUSH data containing JUMPDEST opcode" {
     const code = [_]u8{
         0x60, 0x5b, // PUSH1 0x5b (pushes JUMPDEST opcode as data)
-        0x5b,       // JUMPDEST (actual valid jump destination)
+        0x5b, // JUMPDEST (actual valid jump destination)
     };
     var valid_jumpdests = std.AutoArrayHashMap(u32, void).init(std.testing.allocator);
     defer valid_jumpdests.deinit();

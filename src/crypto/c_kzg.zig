@@ -32,7 +32,6 @@ pub fn freeTrustedSetup() KZGError!void {
     try ckzg.freeTrustedSetup();
 }
 
-
 /// Blob to KZG commitment
 pub fn blobToKzgCommitment(blob: *const Blob) KZGError!KZGCommitment {
     return try ckzg.blobToKZGCommitment(blob);
