@@ -6,27 +6,13 @@ const host = @import("host.zig");
 const errors = @import("errors.zig");
 const log = @import("logger.zig");
 const storage_injector = @import("storage_injector.zig");
+const async_executor = @import("async_executor.zig");
 
 // Re-export from primitives for convenience
 pub const StorageSlotKey = primitives.AccessList.StorageSlotKey;
 
-/// Async data request - written when cache miss occurs
-pub const AsyncDataRequest = union(enum) {
-    none: void,
-    storage: struct {
-        address: primitives.Address,
-        slot: u256,
-    },
-    balance: struct {
-        address: primitives.Address,
-    },
-    code: struct {
-        address: primitives.Address,
-    },
-    nonce: struct {
-        address: primitives.Address,
-    },
-};
+// Re-export AsyncDataRequest from async_executor
+pub const AsyncDataRequest = async_executor.AsyncDataRequest;
 
 /// Storage manager - handles all storage operations for the EVM
 pub const Storage = struct {
