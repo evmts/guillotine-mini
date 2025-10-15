@@ -137,10 +137,11 @@ pub fn Handlers(FrameType: type) type {
             // Gas cost calculation based on hardfork
             var gas_cost: u64 = 0;
 
-            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat 700 gas
-            // Pre-Berlin: Use flat 700 gas base cost
+            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat base cost
+            // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
+            // Pre-Tangerine Whistle: Use 40 gas base cost
             if (evm.hardfork.isBefore(.BERLIN)) {
-                gas_cost = GasConstants.CallGas; // 700
+                gas_cost = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) 40 else GasConstants.CallGas;
             }
 
             if (value_arg > 0) {
@@ -214,8 +215,11 @@ pub fn Handlers(FrameType: type) type {
             else
                 available_gas_without_stipend;
 
-            // NOW charge the base cost
-            try frame.consumeGas(gas_cost);
+            // NOW charge the total cost (extra costs + forwardable gas)
+            // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
+            // where message_call_gas.cost = gas + extra_gas
+            const total_cost = gas_cost + available_gas_without_stipend;
+            try frame.consumeGas(total_cost);
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
@@ -270,16 +274,12 @@ pub fn Handlers(FrameType: type) type {
             const success_val: u256 = if (result.success) 1 else 0;
             try frame.pushStack(success_val);
 
-            // Update gas - only charge caller for gas without stipend
-            // The stipend is free additional gas for the callee
-            const gas_used_total = available_gas - result.gas_left;
-            const gas_used_by_caller = @min(gas_used_total, available_gas_without_stipend);
-            // Safely cast gas_used_by_caller - if it exceeds i64::MAX, clamp gas_remaining to 0
-            const gas_used_i64 = std.math.cast(i64, gas_used_by_caller) orelse {
-                frame.gas_remaining = 0;
-                return error.OutOfGas;
-            };
-            frame.gas_remaining -= gas_used_i64;
+            // Refund unused gas (including any unused stipend)
+            // Per Python: evm.gas_left += child_evm.gas_left
+            // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
+            const gas_to_refund = @min(result.gas_left, available_gas);
+            const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
+            frame.gas_remaining = @min(frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
 
             frame.pc += 1;
         }
@@ -309,10 +309,11 @@ pub fn Handlers(FrameType: type) type {
             // Gas cost calculation based on hardfork
             var gas_cost: u64 = 0;
 
-            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat 700 gas
-            // Pre-Berlin: Use flat 700 gas base cost
+            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat base cost
+            // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
+            // Pre-Tangerine Whistle: Use 40 gas base cost
             if (evm.hardfork.isBefore(.BERLIN)) {
-                gas_cost = GasConstants.CallGas; // 700
+                gas_cost = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) 40 else GasConstants.CallGas;
             }
 
             if (value_arg > 0) {
@@ -357,8 +358,11 @@ pub fn Handlers(FrameType: type) type {
             else
                 available_gas_without_stipend;
 
-            // NOW charge the base cost
-            try frame.consumeGas(gas_cost);
+            // NOW charge the total cost (extra costs + forwardable gas)
+            // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
+            // where message_call_gas.cost = gas + extra_gas
+            const total_cost = gas_cost + available_gas_without_stipend;
+            try frame.consumeGas(total_cost);
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
@@ -411,10 +415,12 @@ pub fn Handlers(FrameType: type) type {
             // Push success status
             try frame.pushStack(if (result.success) 1 else 0);
 
-            // Update gas - only charge caller for gas without stipend
-            const gas_used_total = available_gas - result.gas_left;
-            const gas_used_by_caller = @min(gas_used_total, available_gas_without_stipend);
-            frame.gas_remaining -= @intCast(gas_used_by_caller);
+            // Refund unused gas (including any unused stipend)
+            // Per Python: evm.gas_left += child_evm.gas_left
+            // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
+            const gas_to_refund = @min(result.gas_left, available_gas);
+            const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
+            frame.gas_remaining = @min(frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
 
             frame.pc += 1;
         }
@@ -445,10 +451,11 @@ pub fn Handlers(FrameType: type) type {
             // Gas cost calculation based on hardfork
             var gas_cost: u64 = 0;
 
-            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat 700 gas
-            // Pre-Berlin: Use flat 700 gas base cost
+            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat base cost
+            // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
+            // Pre-Tangerine Whistle: Use 40 gas base cost
             if (evm.hardfork.isBefore(.BERLIN)) {
-                gas_cost = GasConstants.CallGas; // 700
+                gas_cost = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) 40 else GasConstants.CallGas;
             }
 
             // EIP-2929 (Berlin+): access target account (warm/cold)
@@ -575,10 +582,11 @@ pub fn Handlers(FrameType: type) type {
             // Gas cost calculation based on hardfork
             var call_gas_cost: u64 = 0;
 
-            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat 700 gas
-            // Pre-Berlin: Use flat 700 gas base cost
+            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat base cost
+            // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
+            // Pre-Tangerine Whistle: Use 40 gas base cost
             if (evm.hardfork.isBefore(.BERLIN)) {
-                call_gas_cost = GasConstants.CallGas; // 700
+                call_gas_cost = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) 40 else GasConstants.CallGas;
             }
 
             // EIP-2929 (Berlin+): access target account (warm/cold)

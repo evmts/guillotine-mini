@@ -15,11 +15,18 @@ pub fn Handlers(FrameType: type) type {
             frame.pc += 1;
         }
 
-        /// PUSH1-PUSH32 opcodes (0x60-0x7f) - Push immediate value onto stack
+        /// PUSH0-PUSH32 opcodes (0x5f-0x7f) - Push immediate value onto stack
         /// Opcode determines number of bytes to read from bytecode
+        /// PUSH0 (0x5f) costs 2 gas, PUSH1-PUSH32 (0x60-0x7f) cost 3 gas
         pub fn push(frame: *FrameType, opcode: u8) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasFastestStep);
             const push_size = opcode - 0x5f;
+
+            // PUSH0 costs GAS_BASE (2 gas), PUSH1-PUSH32 cost GAS_VERY_LOW (3 gas)
+            if (push_size == 0) {
+                try frame.consumeGas(GasConstants.GasQuickStep);
+            } else {
+                try frame.consumeGas(GasConstants.GasFastestStep);
+            }
 
             // Use the bytecode module's readImmediate method
             const value = frame.readImmediate(push_size) orelse return error.InvalidPush;
