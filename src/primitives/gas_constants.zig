@@ -1682,3 +1682,15 @@ pub const GAS_BLS_G2_MUL: u64 = 22500;
 pub const GAS_BLS_G2_MAP: u64 = 23800;
 pub const GAS_BLS_PAIRING_BASE: u64 = 43000;
 pub const GAS_BLS_PAIRING_PER_PAIR: u64 = 65000;
+
+// ============================================================================
+// EIP-7623: Increase Calldata Cost (Prague)
+// ============================================================================
+
+/// Floor gas cost per calldata token (Prague+)
+/// EIP-7623 introduces a floor price to prevent underpricing of calldata-heavy transactions
+pub const FLOOR_CALLDATA_COST: u64 = 10;
+
+/// Standard gas cost per calldata token (Prague+)
+/// This is the actual gas charged (floor is only used for validation)
+pub const STANDARD_CALLDATA_TOKEN_COST: u64 = 4;
