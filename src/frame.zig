@@ -200,6 +200,11 @@ pub fn Frame(comptime config: EvmConfig) type {
         /// ----------------------------------- GAS ---------------------------------- ///
         /// Consume gas
         pub fn consumeGas(self: *Self, amount: u64) EvmError!void {
+            // If gas checks are disabled, this is a noop
+            if (!config.enable_gas_checks) {
+                return;
+            }
+
             // Check if amount is too large to fit in i64 or exceeds remaining gas
             if (amount > std.math.maxInt(i64) or self.gas_remaining < @as(i64, @intCast(amount))) {
                 self.gas_remaining = 0;
@@ -211,6 +216,11 @@ pub fn Frame(comptime config: EvmConfig) type {
         /// Calculate memory expansion cost
         /// The total memory cost for n words is: 3n + n²/512, where a word is 32 bytes.
         pub fn memoryExpansionCost(self: *const Self, end_bytes: u64) u64 {
+            // If gas checks are disabled, memory expansion is free
+            if (!config.enable_gas_checks) {
+                return 0;
+            }
+
             const current_size = @as(u64, self.memory_size);
 
             if (end_bytes <= current_size) return 0;
