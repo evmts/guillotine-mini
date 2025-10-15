@@ -11,6 +11,11 @@ const trusted_setup_data = trusted_setup.data;
 var initialized: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 var init_mutex = std.Thread.Mutex{};
 
+/// Global mutex for KZG proof verification
+/// The C-KZG library is not thread-safe for concurrent verification operations,
+/// so we serialize all verify calls to ensure correctness
+var verify_mutex = std.Thread.Mutex{};
+
 /// Initialize the KZG trusted setup from embedded data
 /// This should be called once during application startup
 /// Thread-safe for concurrent calls
@@ -87,6 +92,19 @@ pub fn deinit(allocator: std.mem.Allocator) void {
 /// Check if KZG is initialized
 pub fn isInitialized() bool {
     return initialized.load(.acquire);
+}
+
+/// Thread-safe wrapper for KZG proof verification
+/// Serializes all verification calls to ensure thread safety
+pub fn verifyKZGProofThreadSafe(
+    commitment: *const crypto.c_kzg.KZGCommitment,
+    z: *const crypto.c_kzg.Bytes32,
+    y: *const crypto.c_kzg.Bytes32,
+    proof: *const crypto.c_kzg.KZGProof,
+) !bool {
+    verify_mutex.lock();
+    defer verify_mutex.unlock();
+    return try crypto.c_kzg.verifyKZGProof(commitment, z, y, proof);
 }
 
 test "KZG setup initialization" {

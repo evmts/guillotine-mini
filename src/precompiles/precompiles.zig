@@ -1053,9 +1053,9 @@ pub fn execute_point_evaluation(allocator: std.mem.Allocator, input: []const u8,
     @memcpy(&commitment, commitment_bytes);
     @memcpy(&proof, proof_bytes);
 
-    // Verify the KZG proof
+    // Verify the KZG proof (thread-safe due to C-KZG library limitations)
     // Per Python spec (lines 59-65), verification failure raises KZGProofError (ExceptionalHalt) which consumes ALL gas
-    const valid = crypto.c_kzg.verifyKZGProof(&commitment, &z, &y, &proof) catch {
+    const valid = kzg_setup.verifyKZGProofThreadSafe(&commitment, &z, &y, &proof) catch {
         return PrecompileOutput{ .output = &.{}, .gas_used = gas_limit, .success = false };
     };
 

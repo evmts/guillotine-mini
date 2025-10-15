@@ -252,7 +252,7 @@ fn extractHardfork(test_case: std.json.Value) ?Hardfork {
 /// Process an RLP-encoded transaction (from blockchain tests)
 fn processRlpTransaction(
     allocator: std.mem.Allocator,
-    evm_instance: *evm_mod.Evm,
+    evm_instance: anytype,
     test_host: *TestHost,
     rlp_hex: []const u8,
     block_ctx: ?evm_mod.BlockContext,
@@ -449,7 +449,7 @@ fn processRlpTransaction(
                         for (addr_bytes, 0..) |b, i| {
                             addr.bytes[i] = b;
                         }
-                        _ = try evm_instance.warm_addresses.getOrPut(addr);
+                        _ = try evm_instance.access_list_manager.warm_addresses.getOrPut(addr);
 
                         // Pre-warm storage keys
                         if (entry.List.len >= 2) {
@@ -465,7 +465,7 @@ fn processRlpTransaction(
                                         key = (key << 8) | b;
                                     }
                                     const storage_key = evm_mod.StorageSlotKey{ .address = addr, .slot = key };
-                                    _ = try evm_instance.warm_storage_slots.getOrPut(storage_key);
+                                    _ = try evm_instance.access_list_manager.warm_storage_slots.getOrPut(storage_key);
                                 }
                             }
                         }
@@ -560,13 +560,14 @@ fn processRlpTransaction(
     } else {
         // CALL transaction - use call with bytecode
         const bytecode = test_host.code.get(to_addr) orelse &[_]u8{};
-        const result = evm_instance.call(bytecode, @intCast(execution_gas), sender, to_addr, value, tx_data, null, null) catch |err| {
-            // Refund gas on failure
-            const refund = @as(u256, gas_limit) * gas_price;
-            const new_balance = test_host.balances.get(sender) orelse 0;
-            try test_host.balances.put(sender, new_balance + refund);
-            return err;
-        };
+        evm_instance.setBytecode(bytecode);
+        const result = evm_instance.call(.{ .call = .{
+            .caller = sender,
+            .to = to_addr,
+            .value = value,
+            .input = tx_data,
+            .gas = @intCast(execution_gas),
+        } });
 
         // Calculate gas used before refunds (intrinsic + execution)
         const execution_gas_used = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
@@ -1121,10 +1122,13 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
 
             // Parse gas price (legacy) or compute effective gas price (EIP-1559)
             var priority_fee_per_gas: u256 = 0;
+            // Track max fees for upfront balance check (EIP-1559)
+            var max_fee_per_gas_for_validation: u256 = 0;
             if (tx.object.get("gasPrice")) |gp| {
                 const gas_price_str = gp.string;
                 const gas_price = if (gas_price_str.len == 0) 0 else try std.fmt.parseInt(u256, gas_price_str, 0);
                 evm_instance.gas_price = gas_price;
+                max_fee_per_gas_for_validation = gas_price; // For legacy, max = actual
                 // If a base fee is present, only the tip (gas_price - base_fee) goes to coinbase.
                 // For blockchain tests, use base fee from block header. Otherwise use env.currentBaseFee.
                 const base_fee_for_priority: u256 = if (block_header_base_fee) |bhf|
@@ -1143,6 +1147,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             } else if (tx.object.get("maxFeePerGas")) |max_fee| {
                 // EIP-1559 transaction
                 const max_fee_per_gas = try parseIntFromJson(max_fee);
+                max_fee_per_gas_for_validation = max_fee_per_gas; // Store for upfront check
                 const max_priority_fee = if (tx.object.get("maxPriorityFeePerGas")) |mpf|
                     try parseIntFromJson(mpf)
                 else
@@ -1209,7 +1214,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                 if (b.string.len == 0) 0 else try std.fmt.parseInt(u256, b.string, 0)
                             else
                                 0;
-                            const upfront_gas_cost = @as(u256, gas_limit) * evm_instance.gas_price;
+                            // Use max_fee_per_gas for affordability check (not effective price)
+                            const upfront_gas_cost = @as(u256, gas_limit) * max_fee_per_gas_for_validation;
                             if (acct_balance >= (upfront_gas_cost + value)) {
                                 chosen = addr;
                                 break; // good match
@@ -1240,10 +1246,15 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 break :blk try parseAddress(to_str);
             } else null;
 
+            // Parse maxFeePerBlobGas for EIP-4844 transactions
+            var max_fee_per_blob_gas: u256 = 0;
+            if (tx.object.get("maxFeePerBlobGas")) |max_blob_fee| {
+                max_fee_per_blob_gas = try parseIntFromJson(max_blob_fee);
+            }
+
             // Parse blob versioned hashes if present (EIP-4844)
             var blob_hashes_storage: ?[]const [32]u8 = null;
             if (tx.object.get("blobVersionedHashes")) |blob_hashes_json| {
-                std.debug.print("DEBUG: Found blob transaction with {} hashes\n", .{blob_hashes_json.array.items.len});
                 // EIP-4844: Blob transactions cannot be used for contract creation
                 // Check if this is a contract creation (to is null or empty)
                 if (to == null) {
@@ -1334,10 +1345,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
 
                 // Validate blob hash versions (EIP-4844: must be 0x01)
-                for (blob_hashes_array, 0..) |hash, idx| {
-                    std.debug.print("DEBUG: Validating blob hash {d}: version byte = 0x{x}\n", .{idx, hash[0]});
+                for (blob_hashes_array) |hash| {
                     if (hash[0] != 0x01) {
-                        std.debug.print("DEBUG: Invalid blob hash version detected!\n", .{});
                         // Transaction should be rejected - check if test expects this
                         if (test_case.object.get("post")) |post| {
                             const fork_data = if (hardfork) |hf| switch (hf) {
@@ -1552,50 +1561,87 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Calculate execution gas (gas available after intrinsic cost)
             const execution_gas = gas_limit - intrinsic_gas;
 
-            // Calculate blob gas fee upfront for EIP-4844 transactions
+            // Calculate blob gas fee for EIP-4844 transactions
+            // For upfront check: use max_fee_per_blob_gas (worst case)
+            // For actual deduction: use actual blob_base_fee (effective price)
+            var blob_gas_fee_for_validation: u256 = 0;
             var blob_gas_fee: u256 = 0;
             if (blob_hashes_storage) |blob_hashes| {
                 const blob_count = blob_hashes.len;
 
-                // Use blob_base_fee from block context (already calculated during block context creation)
-                // This ensures consistent blob gas price throughout transaction execution
+                // Use blob_base_fee from block context for actual deduction
                 const blob_gas_price = evm_instance.block_context.blob_base_fee;
 
                 // Each blob uses 131072 (2^17) gas
                 const blob_gas_per_blob: u256 = 131072;
                 const total_blob_gas = @as(u256, @intCast(blob_count)) * blob_gas_per_blob;
 
+                // Actual fee for deduction (uses effective blob_gas_price)
                 blob_gas_fee = total_blob_gas * blob_gas_price;
+
+                // Max fee for upfront check (uses max_fee_per_blob_gas)
+                blob_gas_fee_for_validation = total_blob_gas * max_fee_per_blob_gas;
             }
 
             // Per Ethereum spec: sender must have sufficient funds for upfront gas + blob fee + value
-            const upfront_gas_cost = @as(u256, gas_limit) * evm_instance.gas_price;
+            // Use max_fee_per_gas and max_fee_per_blob_gas for upfront check (worst case)
+            const upfront_gas_cost_for_validation = @as(u256, gas_limit) * max_fee_per_gas_for_validation;
             const sender_balance = test_host.balances.get(sender) orelse 0;
-            if (sender_balance < (upfront_gas_cost + blob_gas_fee + value)) {
+            const total_required = upfront_gas_cost_for_validation + blob_gas_fee_for_validation + value;
+            if (sender_balance < total_required) {
                 continue;
             }
+
+            // Actual upfront deduction uses effective gas price
+            const upfront_gas_cost = @as(u256, gas_limit) * evm_instance.gas_price;
 
             // Increment sender's nonce (consumed even on REVERT/OOG after inclusion)
             const current_nonce = test_host.getNonce(sender);
             try test_host.setNonce(sender, current_nonce + 1);
 
             // Charge sender for full gas limit + blob gas fee upfront (refunds applied after execution)
-            try test_host.setBalance(sender, sender_balance - upfront_gas_cost - blob_gas_fee);
+            const new_balance = sender_balance - upfront_gas_cost - blob_gas_fee;
+            try test_host.setBalance(sender, new_balance);
+
+            // Handle value transfer for transactions with zero execution gas
+            // When execution_gas=0, the EVM call will fail validation, so we must
+            // transfer value here in the test runner before attempting the call
+            const target_addr = to orelse primitives.ZERO_ADDRESS;
+            var value_for_evm_call = value;  // Value to pass to EVM (0 if we transfer here)
+
+            if (value > 0 and to != null and execution_gas == 0) {
+                // Execution gas is 0, so EVM call will fail validation.
+                // Transfer value here in test runner.
+                const sender_balance_after_gas = test_host.balances.get(sender) orelse 0;
+                if (sender_balance_after_gas < value) {
+                    // This should never happen since we already checked total balance,
+                    // but handle it gracefully
+                    continue;
+                }
+                // Transfer value
+                try test_host.setBalance(sender, sender_balance_after_gas - value);
+                const recipient_balance = test_host.balances.get(target_addr) orelse 0;
+                try test_host.setBalance(target_addr, recipient_balance + value);
+                value_for_evm_call = 0;  // Don't let EVM transfer value again
+            }
 
             // Get contract code
-            const target_addr = to orelse primitives.ZERO_ADDRESS;
             const bytecode = test_host.code.get(target_addr) orelse &[_]u8{};
 
             // Parse access list for EIP-2930 (Berlin+)
-            var access_list_addrs_storage: ?[]Address = null;
-            defer if (access_list_addrs_storage) |addrs| allocator.free(addrs);
-            var access_list_slots_storage: ?[]evm_mod.AccessListStorageKey = null;
-            defer if (access_list_slots_storage) |slots| allocator.free(slots);
+            var access_list_entries_storage: ?[]primitives.AccessList.AccessListEntry = null;
+            defer if (access_list_entries_storage) |entries| {
+                // Free storage_keys for each entry
+                for (entries) |entry| {
+                    allocator.free(entry.storage_keys);
+                }
+                allocator.free(entries);
+            };
 
             // Parse access list from either "accessList" (blockchain tests) or "accessLists" (state tests)
             const has_access_list_singular = tx.object.get("accessList") != null;
             const access_list_json_opt = tx.object.get("accessList") orelse tx.object.get("accessLists");
-            const access_list_param: ?evm_mod.AccessListParam = if (access_list_json_opt) |access_list_data| blk: {
+            const access_list_param: ?primitives.AccessList.AccessList = if (access_list_json_opt) |access_list_data| blk: {
                 // Determine which format we have
                 const access_list_array = if (has_access_list_singular) blk2: {
                     // Handle accessList (singular) - direct array
@@ -1614,54 +1660,53 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     break :blk null;
                 };
 
-                // First pass: count addresses and storage keys
+                // First pass: count addresses
                 var addr_count: usize = 0;
-                var slot_count: usize = 0;
                 for (access_list_array.items) |entry| {
                     if (entry.object.get("address")) |_| {
                         addr_count += 1;
-                        if (entry.object.get("storageKeys")) |keys| {
-                            if (keys == .array) {
-                                slot_count += keys.array.items.len;
-                            }
-                        }
                     }
                 }
 
-                // Allocate arrays
-                const addrs = try allocator.alloc(Address, addr_count);
-                access_list_addrs_storage = addrs;
-                const slots = try allocator.alloc(evm_mod.AccessListStorageKey, slot_count);
-                access_list_slots_storage = slots;
+                // Allocate array of entries
+                const entries = try allocator.alloc(primitives.AccessList.AccessListEntry, addr_count);
+                access_list_entries_storage = entries;
 
-                // Second pass: populate arrays
-                var addr_idx: usize = 0;
-                var slot_idx: usize = 0;
+                // Second pass: populate entries
+                var entry_idx: usize = 0;
                 for (access_list_array.items) |entry| {
                     if (entry.object.get("address")) |addr_json| {
                         const addr = try parseAddress(addr_json.string);
-                        addrs[addr_idx] = addr;
-                        addr_idx += 1;
 
+                        // Count storage keys for this address
+                        var key_count: usize = 0;
                         if (entry.object.get("storageKeys")) |keys| {
                             if (keys == .array) {
-                                for (keys.array.items) |key_json| {
+                                key_count = keys.array.items.len;
+                            }
+                        }
+
+                        // Allocate and populate storage keys
+                        const storage_keys = try allocator.alloc([32]u8, key_count);
+                        if (entry.object.get("storageKeys")) |keys| {
+                            if (keys == .array) {
+                                for (keys.array.items, 0..) |key_json, i| {
                                     const slot = try std.fmt.parseInt(u256, key_json.string, 0);
-                                    slots[slot_idx] = .{
-                                        .address = addr,
-                                        .slot = slot,
-                                    };
-                                    slot_idx += 1;
+                                    // Convert u256 to [32]u8 (big-endian)
+                                    std.mem.writeInt(u256, &storage_keys[i], slot, .big);
                                 }
                             }
                         }
+
+                        entries[entry_idx] = .{
+                            .address = addr,
+                            .storage_keys = storage_keys,
+                        };
+                        entry_idx += 1;
                     }
                 }
 
-                break :blk .{
-                    .addresses = addrs,
-                    .storage_keys = slots,
-                };
+                break :blk entries;
             } else null;
 
             // Process authorization list for EIP-7702 (Prague+)
@@ -1718,7 +1763,11 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             }
 
             // Execute transaction
-            const result = if (to == null) blk: {
+            // Use separate if/else instead of if-else expression to avoid type mismatch issues
+            var result_success: bool = undefined;
+            var result_gas_left: u64 = undefined;
+
+            if (to == null) {
                 // Contract creation transaction - use inner_create
                 // First, initialize transaction state (hash maps, etc.)
                 try evm_instance.initTransactionState(blob_hashes_storage);
@@ -1728,19 +1777,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
 
                 // Pre-warm access list (EIP-2930)
                 if (access_list_param) |list| {
-                    // Pre-warm all addresses in access list
-                    for (list.addresses) |addr| {
-                        _ = try evm_instance.warm_addresses.getOrPut(addr);
-                    }
-
-                    // Pre-warm all storage keys in access list
-                    for (list.storage_keys) |entry| {
-                        const key = evm_mod.StorageSlotKey{
-                            .address = entry.address,
-                            .slot = entry.slot,
-                        };
-                        _ = try evm_instance.warm_storage_slots.getOrPut(key);
-                    }
+                    try evm_instance.access_list_manager.preWarmFromAccessList(list);
                 }
 
                 const create_result = try evm_instance.inner_create(
@@ -1749,28 +1786,28 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     execution_gas,
                     null,  // no salt for regular CREATE (only CREATE2 uses salt)
                 );
-                break :blk evm_mod.CallResult{
-                    .success = create_result.success,
-                    .gas_left = create_result.gas_left,
-                    .output = &[_]u8{},  // CREATE doesn't return data, just address on stack
-                };
-            } else blk: {
+                result_success = create_result.success;
+                result_gas_left = create_result.gas_left;
+            } else {
                 // Regular call - use call method
-                const call_params = evm_mod.CallParams{ .call = .{
-                    .caller = sender,
-                    .to = target_addr,
-                    .value = value,
-                    .input = tx_data,
-                    .gas = @intCast(execution_gas),
-                } };
                 // Set bytecode, access list, and blob hashes before calling
                 evm_instance.setBytecode(bytecode);
                 evm_instance.setAccessList(access_list_param);
                 if (blob_hashes_storage) |hashes| {
                     evm_instance.setBlobVersionedHashes(hashes);
                 }
-                break :blk evm_instance.call(call_params);
-            };
+                const call_result = evm_instance.call(.{ .call = .{
+                    .caller = sender,
+                    .to = target_addr,
+                    .value = value_for_evm_call,
+                    .input = tx_data,
+                    .gas = @intCast(execution_gas),
+                } });
+                result_success = call_result.success;
+                result_gas_left = call_result.gas_left;
+            }
+
+            const result = .{ .success = result_success, .gas_left = result_gas_left };
 
             // Calculate gas used BEFORE applying refunds
             // Note: result.gas_left can be > execution_gas if CALL stipend was not fully used
