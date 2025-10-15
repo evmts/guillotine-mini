@@ -16,6 +16,7 @@ const EvmConfig = evm_config.EvmConfig;
 const storage_injector = @import("storage_injector.zig");
 const StorageInjector = storage_injector.StorageInjector;
 const storage_mod = @import("storage.zig");
+const async_executor_mod = @import("async_executor.zig");
 
 // Re-export from primitives for convenience
 pub const StorageSlotKey = primitives.AccessList.StorageSlotKey;
@@ -57,49 +58,12 @@ pub fn Evm(comptime config: EvmConfig) type {
         pub const CallParams = call_params.CallParams(config);
         pub const CallResult = call_result.CallResult(config);
 
-        /// Input to callOrContinue - tagged union for starting or continuing execution
-        pub const CallOrContinueInput = union(enum) {
-            call: CallParams,
-            continue_with_storage: struct {
-                address: primitives.Address,
-                slot: u256,
-                value: u256,
-            },
-            continue_with_balance: struct {
-                address: primitives.Address,
-                balance: u256,
-            },
-            continue_with_code: struct {
-                address: primitives.Address,
-                code: []const u8,
-            },
-            continue_with_nonce: struct {
-                address: primitives.Address,
-                nonce: u64,
-            },
-            continue_after_commit: void,
-        };
+        // Create AsyncExecutor type for this EVM
+        pub const AsyncExecutorType = async_executor_mod.AsyncExecutor(Self, CallParams, CallResult);
 
-        /// Output from callOrContinue - tagged union for result or async request
-        pub const CallOrContinueOutput = union(enum) {
-            result: CallResult,
-            need_storage: struct {
-                address: primitives.Address,
-                slot: u256,
-            },
-            need_balance: struct {
-                address: primitives.Address,
-            },
-            need_code: struct {
-                address: primitives.Address,
-            },
-            need_nonce: struct {
-                address: primitives.Address,
-            },
-            ready_to_commit: struct {
-                changes_json: []const u8,
-            },
-        };
+        // Re-export async types from executor
+        pub const CallOrContinueInput = AsyncExecutorType.CallOrContinueInput;
+        pub const CallOrContinueOutput = AsyncExecutorType.CallOrContinueOutput;
 
         frames: std.ArrayList(FrameType),
         storage: Storage,
@@ -135,6 +99,9 @@ pub fn Evm(comptime config: EvmConfig) type {
         // Buffer for state changes JSON (persists across yields)
         pending_state_changes_buffer: [16384]u8 = undefined,
         pending_state_changes_len: usize = 0,
+
+        // Async executor (initialized after Self is fully constructed)
+        async_executor: ?AsyncExecutorType = null,
 
         /// Initialize a new EVM instance
         /// Config provides defaults, but hardfork can be overridden at runtime
@@ -176,6 +143,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .tracer = null,
                 .opcode_overrides = config.opcode_overrides,
                 .precompile_overrides = config.precompile_overrides,
+                .async_executor = null, // Initialized when needed
             };
         }
 
@@ -312,7 +280,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Get nonce for an address
-        fn getNonce(self: *Self, address: primitives.Address) u64 {
+        pub fn getNonce(self: *Self, address: primitives.Address) u64 {
             if (self.host) |h| {
                 return h.getNonce(address);
             }
@@ -320,7 +288,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Compute CREATE address: keccak256(rlp([sender, nonce]))[12:]
-        fn computeCreateAddress(self: *Self, sender: primitives.Address, nonce: u64) !primitives.Address {
+        pub fn computeCreateAddress(self: *Self, sender: primitives.Address, nonce: u64) !primitives.Address {
             _ = self;
             // RLP encoding of [sender (20 bytes), nonce]
             // For simplicity, use a fixed buffer (max size for nonce encoding is small)
@@ -376,7 +344,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Compute CREATE2 address: keccak256(0xff ++ sender ++ salt ++ keccak256(init_code))[12:]
-        fn computeCreate2Address(self: *Self, sender: primitives.Address, salt: u256, init_code: []const u8) !primitives.Address {
+        pub fn computeCreate2Address(self: *Self, sender: primitives.Address, salt: u256, init_code: []const u8) !primitives.Address {
             _ = self;
             // Compute keccak256(init_code)
             var init_code_hash: [32]u8 = undefined;
@@ -789,129 +757,18 @@ pub fn Evm(comptime config: EvmConfig) type {
             self: *Self,
             input: CallOrContinueInput,
         ) !CallOrContinueOutput {
-            switch (input) {
-                .call => |params| {
-                    // Start new call - set up state
-                    try self.initTransactionState(null);
-
-                    if (self.storage.storage_injector) |injector| {
-                        log.debug("callOrContinue: Storage injector enabled, clearing cache", .{});
-                        injector.clearCache();
-                    } else {
-                        log.debug("callOrContinue: No storage injector", .{});
-                    }
-
-                    // Extract common parameters (same as call() method)
-                    const caller = params.getCaller();
-                    const gas = @as(i64, @intCast(params.getGas()));
-                    const is_create = params.isCreate();
-
-                    // Determine target address and value
-                    const address: primitives.Address = if (is_create) blk: {
-                        if (params == .create2) {
-                            const init_code = params.getInput();
-                            const salt = params.create2.salt;
-                            break :blk try self.computeCreate2Address(caller, salt, init_code);
-                        } else {
-                            const nonce = self.getNonce(caller);
-                            break :blk try self.computeCreateAddress(caller, nonce);
-                        }
-                    } else params.get_to().?;
-
-                    const value = switch (params) {
-                        .call => |p| p.value,
-                        .callcode => |p| p.value,
-                        .create => |p| p.value,
-                        .create2 => |p| p.value,
-                        .delegatecall, .staticcall => 0,
-                    };
-
-                    const calldata = params.getInput();
-                    const bytecode = self.pending_bytecode;
-
-                    try self.preWarmTransaction(address);
-
-                    // Pre-warm access list if present (EIP-2929/EIP-2930)
-                    if (self.pending_access_list) |list| {
-                        try self.access_list_manager.preWarmFromAccessList(list);
-                    }
-
-                    // Transfer value if needed
-                    if (value > 0 and self.host != null) {
-                        const sender_balance = if (self.host) |h| h.getBalance(caller) else 0;
-                        if (sender_balance < value) {
-                            return error.InsufficientBalance;
-                        }
-                        if (self.host) |h| {
-                            h.setBalance(caller, sender_balance - value);
-                            const recipient_balance = h.getBalance(address);
-                            h.setBalance(address, recipient_balance + value);
-                        }
-                    }
-
-                    // Create frame WITHOUT defer (critical!)
-                    log.debug("callOrContinue: Creating frame with address={any}", .{address.bytes});
-                    try self.frames.append(self.arena.allocator(), try FrameType.init(
-                        self.arena.allocator(),
-                        bytecode,
-                        gas,
-                        caller,
-                        address,
-                        value,
-                        calldata,
-                        @as(*anyopaque, @ptrCast(self)),
-                        self.hardfork,
-                        false, // Top-level is never static
-                    ));
-
-                    // Execute (may yield)
-                    return try self.executeUntilYieldOrComplete();
-                },
-
-                .continue_with_storage => |data| {
-                    const key = StorageSlotKey{
-                        .address = data.address,
-                        .slot = data.slot,
-                    };
-
-                    // Store value in both cache and storage
-                    if (self.storage.storage_injector) |injector| {
-                        _ = try injector.storage_cache.put(key, data.value);
-                    }
-
-                    // Also put in self.storage so get_storage can find it
-                    try self.storage.putInCache(data.address, data.slot, data.value);
-
-                    // Clear the request
-                    self.storage.async_data_request = .none;
-
-                    // Continue execution
-                    return try self.executeUntilYieldOrComplete();
-                },
-
-                .continue_with_balance => |data| {
-                    if (self.storage.storage_injector) |injector| {
-                        try injector.balance_cache.put(data.address, data.balance);
-                    }
-
-                    // Clear the request
-                    self.storage.async_data_request = .none;
-
-                    return try self.executeUntilYieldOrComplete();
-                },
-
-                .continue_after_commit => {
-                    // Commit done - finalize and return result
-                    return try self.finalizeAndReturnResult();
-                },
-
-                else => return error.UnsupportedContinueType,
+            // Initialize async executor on first use
+            if (self.async_executor == null) {
+                self.async_executor = AsyncExecutorType.init(self);
             }
+
+            // Delegate to async executor
+            return try self.async_executor.?.callOrContinue(input);
         }
 
         /// Execute until we hit a yield point or complete
         /// NO defer statements!
-        fn executeUntilYieldOrComplete(self: *Self) !CallOrContinueOutput {
+        pub fn executeUntilYieldOrComplete(self: *Self) !CallOrContinueOutput {
             while (self.frames.items.len > 0) {
                 const frame = &self.frames.items[self.frames.items.len - 1];
 
@@ -955,7 +812,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         /// Finalize execution and return result
         /// Called only when we're truly done (after commit if needed)
-        fn finalizeAndReturnResult(self: *Self) !CallOrContinueOutput {
+        pub fn finalizeAndReturnResult(self: *Self) !CallOrContinueOutput {
             // At this point frames should be empty OR we have one frame to finalize
             if (self.frames.items.len > 0) {
                 const frame = self.frames.items[self.frames.items.len - 1];
@@ -985,7 +842,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Dump state changes to JSON
-        fn dumpStateChanges(self: *Self) ![]const u8 {
+        pub fn dumpStateChanges(self: *Self) ![]const u8 {
             if (self.storage.storage_injector) |injector| {
                 const result = try injector.dumpChanges(self);
                 log.debug("dumpStateChanges: Got {} bytes from injector", .{result.len});
