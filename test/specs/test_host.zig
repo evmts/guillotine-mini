@@ -98,7 +98,13 @@ pub const TestHost = struct {
     }
 
     pub fn setNonce(self: *Self, address: Address, nonce: u64) !void {
-        try self.nonces.put(address, nonce);
+        if (nonce == 0) {
+            // Remove entry when nonce is 0 to properly handle account deletion/revert
+            // This matches Ethereum semantics where an account with nonce=0, balance=0, and no code doesn't exist
+            _ = self.nonces.remove(address);
+        } else {
+            try self.nonces.put(address, nonce);
+        }
     }
 
     // Post-state validation methods
