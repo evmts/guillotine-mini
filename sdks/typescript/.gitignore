@@ -1,7 +1,0 @@
-node_modules/
-dist/
-*.log
-.DS_Store
-
-# WASM source (copy from ../../zig-out/bin/guillotine_mini.wasm before building)
-wasm/*.wasm
