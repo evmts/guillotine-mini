@@ -491,8 +491,11 @@ pub fn Handlers(FrameType: type) type {
                 gas_after_charge;
             const available_gas = @min(gas_limit, max_gas);
 
-            // NOW charge the base cost
-            try frame.consumeGas(gas_cost);
+            // NOW charge the total cost (base cost + forwarded gas)
+            // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
+            // where message_call_gas.cost = gas + extra_gas
+            const total_cost = gas_cost + available_gas;
+            try frame.consumeGas(total_cost);
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
@@ -544,14 +547,12 @@ pub fn Handlers(FrameType: type) type {
             // Push success status
             try frame.pushStack(if (result.success) 1 else 0);
 
-            // Update gas
-            const gas_used = available_gas - result.gas_left;
-            // Safely cast gas_used - if it exceeds i64::MAX, clamp gas_remaining to 0
-            const gas_used_i64 = std.math.cast(i64, gas_used) orelse {
-                frame.gas_remaining = 0;
-                return error.OutOfGas;
-            };
-            frame.gas_remaining -= gas_used_i64;
+            // Refund unused gas
+            // Per Python: evm.gas_left += child_evm.gas_left
+            // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
+            const gas_to_refund = @min(result.gas_left, available_gas);
+            const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
+            frame.gas_remaining = @min(frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
 
             frame.pc += 1;
         }
@@ -622,8 +623,11 @@ pub fn Handlers(FrameType: type) type {
                 gas_after_charge;
             const available_gas = @min(gas_limit, max_gas);
 
-            // NOW charge the base cost
-            try frame.consumeGas(call_gas_cost);
+            // NOW charge the total cost (base cost + forwarded gas)
+            // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
+            // where message_call_gas.cost = gas + extra_gas
+            const total_cost = call_gas_cost + available_gas;
+            try frame.consumeGas(total_cost);
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
@@ -675,14 +679,12 @@ pub fn Handlers(FrameType: type) type {
             // Push success status
             try frame.pushStack(if (result.success) 1 else 0);
 
-            // Update gas
-            const gas_used = available_gas - result.gas_left;
-            // Safely cast gas_used - if it exceeds i64::MAX, clamp gas_remaining to 0
-            const gas_used_i64 = std.math.cast(i64, gas_used) orelse {
-                frame.gas_remaining = 0;
-                return error.OutOfGas;
-            };
-            frame.gas_remaining -= gas_used_i64;
+            // Refund unused gas
+            // Per Python: evm.gas_left += child_evm.gas_left
+            // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
+            const gas_to_refund = @min(result.gas_left, available_gas);
+            const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
+            frame.gas_remaining = @min(frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
 
             frame.pc += 1;
         }
@@ -796,11 +798,13 @@ pub fn Handlers(FrameType: type) type {
             var gas_cost = frame.selfdestructGasCost();
 
             // EIP-2929 (Berlin): Check if beneficiary is warm, add cold access cost if needed
+            // Per Python reference: if beneficiary not in evm.accessed_addresses, add it and charge cold access
             if (frame.hardfork.isAtLeast(.BERLIN)) {
                 const is_warm = evm_ptr.access_list_manager.isAddressWarm(beneficiary);
                 if (!is_warm) {
+                    // Mark as warm (equivalent to Python: evm.accessed_addresses.add(beneficiary))
+                    try evm_ptr.access_list_manager.preWarmAddresses(&[_]primitives.Address{beneficiary});
                     gas_cost += GasConstants.ColdAccountAccessCost; // +2600
-                    _ = try evm_ptr.access_list_manager.accessAddress(beneficiary);
                 }
             }
 
@@ -844,31 +848,33 @@ pub fn Handlers(FrameType: type) type {
                 // 1. Reduce sender balance by amount
                 // 2. Increase recipient balance by amount
                 // When sender == recipient, the balance stays the same (decreased then increased)
-                if (self_balance > 0) {
-                    // Step 1: Reduce originator balance
-                    try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
 
-                    // Step 2: Increase beneficiary balance
-                    // IMPORTANT: Must read beneficiary balance AFTER step 1 to handle sender == recipient case
-                    const beneficiary_balance = if (evm_ptr.host) |h|
-                        h.getBalance(beneficiary)
-                    else
-                        evm_ptr.balances.get(beneficiary) orelse 0;
-                    try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
-                }
+                // Always call move_ether, even if balance is 0 (Python always calls it)
+                // Step 1: Reduce originator balance
+                try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
+
+                // Step 2: Increase beneficiary balance
+                // IMPORTANT: Must read beneficiary balance AFTER step 1 to handle sender == recipient case
+                const beneficiary_balance = if (evm_ptr.host) |h|
+                    h.getBalance(beneficiary)
+                else
+                    evm_ptr.balances.get(beneficiary) orelse 0;
+                try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
             } else {
                 // Pre-Cancun: Use old balance transfer logic
-                // 1. Read both balances
-                // 2. Set beneficiary balance to beneficiary + originator
-                // 3. Set originator balance to 0 (unconditionally - burns ether if sender == recipient)
-                if (self_balance > 0) {
-                    const beneficiary_balance = if (evm_ptr.host) |h|
-                        h.getBalance(beneficiary)
-                    else
-                        evm_ptr.balances.get(beneficiary) orelse 0;
-                    try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
-                }
-                // Always set originator balance to 0 (even if balance is 0, for consistency)
+                // Per Python reference (Shanghai): Read beneficiary balance BEFORE modifying anything
+                // This ensures correct behavior when beneficiary == originator
+                const beneficiary_balance = if (evm_ptr.host) |h|
+                    h.getBalance(beneficiary)
+                else
+                    evm_ptr.balances.get(beneficiary) orelse 0;
+
+                // First Transfer to beneficiary (Python comment)
+                try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
+
+                // Next, Zero the balance of the address being deleted (must come after
+                // sending to beneficiary in case the contract named itself as the beneficiary).
+                // (Python comment)
                 try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
             }
 
@@ -884,8 +890,8 @@ pub fn Handlers(FrameType: type) type {
 
                     // EIP-6780: Set originator balance to 0 UNCONDITIONALLY when created in same tx
                     // This matches Python reference: set_account_balance(state, originator, U256(0))
-                    // - If beneficiary != originator: this is a no-op (balance already 0 from move_ether)
-                    // - If beneficiary == originator: this burns the ether (overriding move_ether's increase)
+                    // This is needed for the self-destruct-to-self case where beneficiary == originator
+                    // to burn the ether (overriding move_ether's balance increase)
                     try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
                 }
                 // If not created in same tx: balance transferred but code/storage/nonce persist
