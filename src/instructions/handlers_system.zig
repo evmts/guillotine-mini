@@ -799,13 +799,18 @@ pub fn Handlers(FrameType: type) type {
 
             // EIP-2929 (Berlin): Check if beneficiary is warm, add cold access cost if needed
             // Per Python reference: if beneficiary not in evm.accessed_addresses, add it and charge cold access
+            // IMPORTANT: Unlike CALL which always charges an access cost (warm=100 or cold=2600),
+            // SELFDESTRUCT only charges if the beneficiary is cold (not already accessed)
             if (frame.hardfork.isAtLeast(.BERLIN)) {
                 const is_warm = evm_ptr.access_list_manager.isAddressWarm(beneficiary);
                 if (!is_warm) {
-                    // Mark as warm (equivalent to Python: evm.accessed_addresses.add(beneficiary))
-                    try evm_ptr.access_list_manager.preWarmAddresses(&[_]primitives.Address{beneficiary});
+                    // Mark as warm and charge cold access cost
+                    // We must mark it warm BEFORE charging to match Python's behavior
+                    // (Python: evm.accessed_addresses.add(beneficiary) then gas_cost += GAS_COLD_ACCOUNT_ACCESS)
+                    _ = try evm_ptr.access_list_manager.warm_addresses.getOrPut(beneficiary);
                     gas_cost += GasConstants.ColdAccountAccessCost; // +2600
                 }
+                // If already warm: no additional cost (unlike CALL which charges 100 for warm access)
             }
 
             const self_balance = if (evm_ptr.host) |h|
