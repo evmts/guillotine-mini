@@ -163,7 +163,7 @@ pub fn Frame(comptime config: EvmConfig) type {
         }
 
         /// Calculate word-aligned memory size for EVM compliance
-        inline fn wordAlignedSize(bytes: u64) u32 {
+        pub inline fn wordAlignedSize(bytes: u64) u32 {
             const words = wordCount(bytes);
             return @intCast(words * 32);
         }

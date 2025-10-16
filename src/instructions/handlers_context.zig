@@ -25,6 +25,12 @@ pub fn Handlers(FrameType: type) type {
             return (size + 31) / 32;
         }
 
+        /// Calculate word-aligned memory size for EVM compliance
+        fn wordAlignedSize(bytes: u64) u32 {
+            const words = wordCount(bytes);
+            return @intCast(words * 32);
+        }
+
         /// ADDRESS opcode (0x30) - Get address of currently executing account
         pub fn address(frame: *FrameType) FrameType.EvmError!void {
             try frame.consumeGas(GasConstants.GasQuickStep);
@@ -243,12 +249,22 @@ pub fn Handlers(FrameType: type) type {
                 const mem_cost = frame.memoryExpansionCost(end);
                 try frame.consumeGas(mem_cost);
 
-                // For Frame, just write zeros to memory
-                _ = offset;
+                // Update memory size after charging for expansion
+                const aligned_ext = wordAlignedSize(end);
+                if (aligned_ext > frame.memory_size) frame.memory_size = aligned_ext;
+
+                // Get the code from the external address
+                const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
+
+                // Copy code to memory
+                const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
                 var i: u32 = 0;
                 while (i < len) : (i += 1) {
                     const addr = try add_u32(dest, i);
-                    try frame.writeMemory(addr, 0);
+                    const src_idx = off + i;
+                    // If src_idx is beyond the code length, write 0 (per EVM spec)
+                    const byte = if (src_idx < code.len) code[src_idx] else 0;
+                    try frame.writeMemory(addr, byte);
                 }
             } else {
                 // EIP-150/EIP-2929: charge account access cost even if size is zero
@@ -295,6 +311,10 @@ pub fn Handlers(FrameType: type) type {
             const mem_cost6 = frame.memoryExpansionCost(end_bytes_ret);
             const copy_cost = copyGasCost(len);
             try frame.consumeGas(GasConstants.GasFastestStep + mem_cost6 + copy_cost);
+
+            // Update memory size after charging for expansion
+            const aligned_ret = wordAlignedSize(end_bytes_ret);
+            if (aligned_ret > frame.memory_size) frame.memory_size = aligned_ret;
 
             // Copy return data to memory
             var i: u32 = 0;

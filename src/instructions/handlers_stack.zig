@@ -21,8 +21,12 @@ pub fn Handlers(FrameType: type) type {
         pub fn push(frame: *FrameType, opcode: u8) FrameType.EvmError!void {
             const push_size = opcode - 0x5f;
 
-            // PUSH0 costs GAS_BASE (2 gas), PUSH1-PUSH32 cost GAS_VERY_LOW (3 gas)
+            // EIP-3855: PUSH0 was introduced in Shanghai hardfork
             if (push_size == 0) {
+                const evm = frame.getEvm();
+                if (evm.hardfork.isBefore(.SHANGHAI)) {
+                    return error.InvalidOpcode;
+                }
                 try frame.consumeGas(GasConstants.GasQuickStep);
             } else {
                 try frame.consumeGas(GasConstants.GasFastestStep);
