@@ -551,6 +551,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                             .success = false,
                             .gas_left = 0,
                             .output = &[_]u8{},
+                            .refund_counter = self.gas_refund,
                         };
                     };
 
@@ -601,6 +602,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                         .success = result.success,
                         .gas_left = if (result.success) @as(u64, @intCast(gas)) - result.gas_used else 0,
                         .output = result.output,
+                        .refund_counter = self.gas_refund,
                     };
                 }
 
@@ -614,6 +616,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     .success = true,
                     .gas_left = @intCast(gas),
                     .output = &[_]u8{},
+                    .refund_counter = self.gas_refund,
                 };
             }
 
@@ -831,6 +834,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     .success = success,
                     .gas_left = gas_left,
                     .output = output,
+                    .refund_counter = self.gas_refund,
                 } };
             }
 
@@ -838,6 +842,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .success = true,
                 .gas_left = 0,
                 .output = &.{},
+                .refund_counter = self.gas_refund,
             } };
         }
 
