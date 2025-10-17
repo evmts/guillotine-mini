@@ -30,18 +30,18 @@ TEST_FILTER="push0" zig build specs
 |----------|--------|-------|
 | Frontier | ✅ **PASSING** | All tests pass |
 | Homestead | ✅ **PASSING** | All tests pass |
-| Byzantium | ⚠️ Partial (85%) | 54/352 failures (MODEXP edge cases) |
-| Constantinople | ⚠️ Partial (78%) | 112/508 failures (CREATE2 return data) |
-| Istanbul | ⚠️ Partial (95%) | 113/2165 failures (non-Blake2 tests) |
+| Byzantium | ✅ **PASSING** | All tests pass |
+| Constantinople | ✅ **PASSING** | All tests pass |
+| Istanbul | ✅ **PASSING** | All tests pass |
 | Berlin | ✅ **PASSING** | All tests pass |
 | Paris | ✅ **PASSING** | All tests pass |
 | London | ✅ **PASSING** | All tests pass |
-| Shanghai | ⚠️ Partial (93%) | 76/1090 failures (EIP-3860 initcode) |
-| Cancun | ⏱️ Timeout | Needs investigation |
+| Shanghai | ✅ **PASSING** | All tests pass |
+| Cancun | ✅ **PASSING** | All tests pass |
 | Prague | ✅ **PASSING** | All tests pass |
 | Osaka | ✅ **PASSING** | All tests pass |
 
-**Recent Fix**: BLAKE2F precompile (EIP-152) - resolved 246 test failures by correcting sigma permutation table ✅
+**All hardfork tests passing!** Recent fixes include BLAKE2F precompile (EIP-152), MODEXP edge cases, CREATE2 return data handling, EIP-3860 initcode limits, and EIP-6780 SELFDESTRUCT behavior.
 
 ## Architecture
 
