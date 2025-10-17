@@ -460,6 +460,9 @@ export fn evm_get_gas_used(handle: ?*EvmHandle) i64 {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
         if (ctx.result) |result| {
+            // Note: The test runner calculates gas used directly from evm_instance.gas_refund,
+            // so this function's refund logic is actually unused. However, we keep it here
+            // for consistency with the CallResult API.
             const gas_used = @as(i64, @intCast(ctx.gas)) - @as(i64, @intCast(result.gas_left));
             return gas_used;
         }

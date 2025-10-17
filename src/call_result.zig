@@ -8,6 +8,7 @@ pub fn CallResult(config: anytype) type {
         success: bool,
         gas_left: u64,
         output: []const u8,
+        refund_counter: u64 = 0,
         logs: []const Log = &.{},
         selfdestructs: []const SelfDestructRecord = &.{},
         accessed_addresses: []const Address = &.{},
