@@ -149,7 +149,7 @@ pub fn Handlers(FrameType: type) type {
 
                 // Check if target is a precompile (hardfork-aware)
                 // Precompiles are considered to always exist and should not incur new account cost
-                const is_precompile = precompiles.is_precompile(call_address, evm.hardfork);
+                const is_precompile = precompiles.isPrecompile(call_address, evm.hardfork);
 
                 // EIP-150: Check if target account exists
                 // If calling non-existent account with value, add account creation cost

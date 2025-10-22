@@ -9,7 +9,8 @@ const storage_injector = @import("storage_injector.zig");
 const async_executor = @import("async_executor.zig");
 
 // Re-export from primitives for convenience
-pub const StorageSlotKey = primitives.AccessList.StorageSlotKey;
+pub const StorageKey = primitives.State.StorageKey;
+pub const StorageSlotKey = StorageKey; // Backwards compatibility alias
 
 // Re-export AsyncDataRequest from async_executor
 pub const AsyncDataRequest = async_executor.AsyncDataRequest;
@@ -54,7 +55,7 @@ pub const Storage = struct {
 
     /// Get storage value
     pub fn get(self: *Storage, address: primitives.Address, slot: u256) !u256 {
-        const key = StorageSlotKey{ .address = address, .slot = slot };
+        const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
 
         // If using storage injector, check cache first
         if (self.storage_injector) |injector| {
@@ -129,13 +130,13 @@ pub const Storage = struct {
 
     /// Get transient storage value (EIP-1153)
     pub fn getTransient(self: *Storage, address: primitives.Address, slot: u256) u256 {
-        const key = StorageSlotKey{ .address = address, .slot = slot };
+        const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
         return self.transient.get(key) orelse 0;
     }
 
     /// Set transient storage value (EIP-1153)
     pub fn setTransient(self: *Storage, address: primitives.Address, slot: u256, value: u256) !void {
-        const key = StorageSlotKey{ .address = address, .slot = slot };
+        const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
         if (value == 0) {
             _ = self.transient.remove(key);
         } else {
