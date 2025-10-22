@@ -184,7 +184,7 @@ test "EvmConfig - precompile overrides" {
     const config = EvmConfig{
         .precompile_overrides = &[_]PrecompileOverride{
             .{
-                .address = Address.from_u256(1),
+                .address = Address.fromU256(1),
                 .execute = struct {
                     fn exec(ctx: ?*anyopaque, allocator: std.mem.Allocator, input: []const u8, gas_limit: u64) anyerror!PrecompileOutput {
                         _ = ctx;
@@ -204,7 +204,7 @@ test "EvmConfig - precompile overrides" {
     };
 
     try testing.expectEqual(@as(usize, 1), config.precompile_overrides.len);
-    try testing.expectEqual(Address.from_u256(1), config.precompile_overrides[0].address);
+    try testing.expectEqual(Address.fromU256(1), config.precompile_overrides[0].address);
 }
 
 test "EvmConfig - loop quota" {
