@@ -1,4 +1,4 @@
-# Minimal, spec‑focused EVM in Zig with rich tooling for execution‑spec tests, tracing, and diffing.
+# Tiny Powerful Embeddeble EVM
 
 <img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/cab3c97d-6245-4b82-8828-f1ef300925d8" />
 
