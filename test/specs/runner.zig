@@ -464,7 +464,7 @@ fn processRlpTransaction(
                                     for (key_bytes) |b| {
                                         key = (key << 8) | b;
                                     }
-                                    const storage_key = evm_mod.StorageSlotKey{ .address = addr, .slot = key };
+                                    const storage_key = evm_mod.StorageKey{ .address = addr.bytes, .slot = key };
                                     _ = try evm_instance.access_list_manager.warm_storage_slots.getOrPut(storage_key);
                                 }
                             }

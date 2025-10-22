@@ -140,7 +140,9 @@ pub fn Handlers(FrameType: type) type {
                 }
                 break :blk len;
             };
-            const dynamic_gas = GasConstants.ExpByteCost * byte_len;
+            // EIP-160: GAS_EXPONENTIATION_PER_BYTE = 50 (missing from primitives lib)
+            const EXP_BYTE_COST: u64 = 50;
+            const dynamic_gas = EXP_BYTE_COST * byte_len;
             try frame.consumeGas(GasConstants.GasSlowStep + dynamic_gas);
 
             // Compute result (wrapping on overflow)

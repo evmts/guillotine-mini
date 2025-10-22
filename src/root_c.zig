@@ -73,8 +73,8 @@ pub fn tryCallJsPrecompileHandler(
 const Evm = evm.Evm(.{});
 const CallResult = Evm.CallResult;
 const CallParams = Evm.CallParams;
-const StorageSlotKey = evm.StorageSlotKey;
-const AccessListStorageKey = primitives.AccessList.StorageSlotKey;
+const StorageKey = evm.StorageKey;
+const AccessListStorageKey = primitives.State.StorageKey;
 const StorageInjector = @import("storage_injector.zig").StorageInjector;
 const primitives = @import("primitives");
 const Address = primitives.Address.Address;
@@ -115,7 +115,7 @@ export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize, log_level:
         return null;
     };
 
-    const Hardfork = @import("hardfork.zig").Hardfork;
+    const Hardfork = primitives.Hardfork;
     const hardfork_slice = hardfork_name[0..hardfork_len];
     const hardfork = if (hardfork_len == 0) null else Hardfork.fromString(hardfork_slice);
 
@@ -334,7 +334,7 @@ export fn evm_set_access_list_storage_keys(
                 slot = (slot << 8) | slots[i * 32 + j];
             }
 
-            keys[i] = .{ .address = addr, .slot = slot };
+            keys[i] = .{ .address = addr.bytes, .slot = slot };
         }
 
         ctx.access_list_storage_keys = keys;
@@ -392,7 +392,7 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
             defer keys.deinit();
 
             for (ctx.access_list_storage_keys) |sk| {
-                if (sk.address.eql(addr)) {
+                if (std.mem.eql(u8, &sk.address, &addr.bytes)) {
                     var hash: [32]u8 = undefined;
                     std.mem.writeInt(u256, &hash, sk.slot, .big);
                     keys.append(hash) catch return false;
@@ -536,7 +536,7 @@ export fn evm_set_storage(
             value = (value << 8) | value_bytes[i];
         }
 
-        ctx.evm.storage.storage.put(StorageSlotKey{ .address = address, .slot = slot }, value) catch return false;
+        ctx.evm.storage.storage.put(StorageKey{ .address = address.bytes, .slot = slot }, value) catch return false;
         return true;
     }
     return false;
@@ -562,7 +562,7 @@ export fn evm_get_storage(
             slot = (slot << 8) | slot_bytes[i];
         }
 
-        const key = StorageSlotKey{ .address = address, .slot = slot };
+        const key = StorageKey{ .address = address.bytes, .slot = slot };
         const value = ctx.evm.storage.storage.get(key) orelse 0;
 
         // Convert u256 to bytes (big-endian)
@@ -719,7 +719,7 @@ export fn evm_call_ffi(
             defer keys.deinit();
 
             for (ctx.access_list_storage_keys) |sk| {
-                if (sk.address.eql(addr)) {
+                if (std.mem.eql(u8, &sk.address, &addr.bytes)) {
                     var hash: [32]u8 = undefined;
                     std.mem.writeInt(u256, &hash, sk.slot, .big);
                     keys.append(hash) catch {

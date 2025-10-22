@@ -162,22 +162,22 @@ pub fn LruCache(comptime K: type, comptime V: type, comptime capacity: usize) ty
     };
 }
 
-// Import StorageSlotKey from evm.zig to avoid duplication
+// Import StorageKey from evm.zig to avoid duplication
 const evm_module = @import("evm.zig");
-const StorageSlotKey = evm_module.StorageSlotKey;
+const StorageKey = evm_module.StorageKey;
 
 /// Storage Injector - manages LRU cache and dirty tracking for async storage
 pub const StorageInjector = struct {
     allocator: std.mem.Allocator,
 
     // LRU cache (check before sending message)
-    storage_cache: std.AutoHashMap(StorageSlotKey, u256),
+    storage_cache: std.AutoHashMap(StorageKey, u256),
     balance_cache: std.AutoHashMap(Address, u256),
     code_cache: std.AutoHashMap(Address, []const u8),
     nonce_cache: std.AutoHashMap(Address, u64),
 
     // Dirty tracking (for change dump)
-    dirty_storage: std.AutoHashMap(StorageSlotKey, void),
+    dirty_storage: std.AutoHashMap(StorageKey, void),
     dirty_balances: std.AutoHashMap(Address, void),
     dirty_nonces: std.AutoHashMap(Address, void),
     dirty_codes: std.AutoHashMap(Address, void),
@@ -185,11 +185,11 @@ pub const StorageInjector = struct {
     pub fn init(allocator: std.mem.Allocator) !StorageInjector {
         return StorageInjector{
             .allocator = allocator,
-            .storage_cache = std.AutoHashMap(StorageSlotKey, u256).init(allocator),
+            .storage_cache = std.AutoHashMap(StorageKey, u256).init(allocator),
             .balance_cache = std.AutoHashMap(Address, u256).init(allocator),
             .code_cache = std.AutoHashMap(Address, []const u8).init(allocator),
             .nonce_cache = std.AutoHashMap(Address, u64).init(allocator),
-            .dirty_storage = std.AutoHashMap(StorageSlotKey, void).init(allocator),
+            .dirty_storage = std.AutoHashMap(StorageKey, void).init(allocator),
             .dirty_balances = std.AutoHashMap(Address, void).init(allocator),
             .dirty_nonces = std.AutoHashMap(Address, void).init(allocator),
             .dirty_codes = std.AutoHashMap(Address, void).init(allocator),
@@ -209,7 +209,7 @@ pub const StorageInjector = struct {
 
     /// Mark storage slot as dirty (called by Evm.set_storage)
     pub fn markStorageDirty(self: *StorageInjector, address: Address, slot: u256) !void {
-        const key = StorageSlotKey{ .address = address, .slot = slot };
+        const key = StorageKey{ .address = address, .slot = slot };
         try self.dirty_storage.put(key, {});
     }
 
@@ -274,7 +274,7 @@ test "StorageInjector - markStorageDirty adds to dirty set" {
     defer injector.deinit();
 
     const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
-    const key = StorageSlotKey{ .address = addr, .slot = 42 };
+    const key = StorageKey{ .address = addr, .slot = 42 };
 
     try injector.markStorageDirty(addr, 42);
 
@@ -304,7 +304,7 @@ test "StorageInjector - clearCache clears all state" {
     defer injector.deinit();
 
     const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
-    const key = StorageSlotKey{ .address = addr, .slot = 42 };
+    const key = StorageKey{ .address = addr, .slot = 42 };
 
     // Add some data
     try injector.storage_cache.put(key, 100);
@@ -431,16 +431,16 @@ test "StorageInjector - dumpChanges with empty dirty sets" {
 
     // Create minimal mock EVM for testing
     const MockEvm = struct {
-        original_storage: std.AutoHashMap(StorageSlotKey, u256),
-        storage: std.AutoHashMap(StorageSlotKey, u256),
+        original_storage: std.AutoHashMap(StorageKey, u256),
+        storage: std.AutoHashMap(StorageKey, u256),
         balances: std.AutoHashMap(Address, u256),
         nonces: std.AutoHashMap(Address, u64),
         code: std.AutoHashMap(Address, []const u8),
     };
 
     var mock_evm = MockEvm{
-        .original_storage = std.AutoHashMap(StorageSlotKey, u256).init(testing.allocator),
-        .storage = std.AutoHashMap(StorageSlotKey, u256).init(testing.allocator),
+        .original_storage = std.AutoHashMap(StorageKey, u256).init(testing.allocator),
+        .storage = std.AutoHashMap(StorageKey, u256).init(testing.allocator),
         .balances = std.AutoHashMap(Address, u256).init(testing.allocator),
         .nonces = std.AutoHashMap(Address, u64).init(testing.allocator),
         .code = std.AutoHashMap(Address, []const u8).init(testing.allocator),
@@ -466,20 +466,20 @@ test "StorageInjector - dumpChanges with storage change" {
 
     const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
     const slot: u256 = 42;
-    const key = StorageSlotKey{ .address = addr, .slot = slot };
+    const key = StorageKey{ .address = addr, .slot = slot };
 
     // Mock EVM
     const MockEvm = struct {
-        original_storage: std.AutoHashMap(StorageSlotKey, u256),
-        storage: std.AutoHashMap(StorageSlotKey, u256),
+        original_storage: std.AutoHashMap(StorageKey, u256),
+        storage: std.AutoHashMap(StorageKey, u256),
         balances: std.AutoHashMap(Address, u256),
         nonces: std.AutoHashMap(Address, u64),
         code: std.AutoHashMap(Address, []const u8),
     };
 
     var mock_evm = MockEvm{
-        .original_storage = std.AutoHashMap(StorageSlotKey, u256).init(testing.allocator),
-        .storage = std.AutoHashMap(StorageSlotKey, u256).init(testing.allocator),
+        .original_storage = std.AutoHashMap(StorageKey, u256).init(testing.allocator),
+        .storage = std.AutoHashMap(StorageKey, u256).init(testing.allocator),
         .balances = std.AutoHashMap(Address, u256).init(testing.allocator),
         .nonces = std.AutoHashMap(Address, u64).init(testing.allocator),
         .code = std.AutoHashMap(Address, []const u8).init(testing.allocator),

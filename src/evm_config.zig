@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const Hardfork = @import("hardfork.zig").Hardfork;
 const primitives = @import("primitives");
+const Hardfork = primitives.Hardfork;
 const Address = primitives.Address.Address;
 
 /// Custom precompile implementation with optional context pointer for FFI

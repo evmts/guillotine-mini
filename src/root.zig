@@ -33,10 +33,10 @@ pub const Frame = frame.Frame;
 pub const host = @import("host.zig");
 pub const HostInterface = host.HostInterface;
 
-// Export Hardfork
-pub const hardfork = @import("hardfork.zig");
-pub const Hardfork = hardfork.Hardfork;
-pub const ForkTransition = hardfork.ForkTransition;
+// Export Hardfork from primitives
+const primitives = @import("primitives");
+pub const Hardfork = primitives.Hardfork;
+pub const ForkTransition = primitives.ForkTransition;
 
 // Export errors
 pub const errors = @import("errors.zig");

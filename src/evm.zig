@@ -6,7 +6,7 @@ const log = @import("logger.zig");
 const primitives = @import("primitives");
 const GasConstants = primitives.GasConstants;
 const Frame = @import("frame.zig").Frame;
-const Hardfork = @import("hardfork.zig").Hardfork;
+const Hardfork = primitives.Hardfork;
 const host = @import("host.zig");
 const errors = @import("errors.zig");
 const trace = @import("trace.zig");
@@ -17,11 +17,12 @@ const storage_injector = @import("storage_injector.zig");
 const StorageInjector = storage_injector.StorageInjector;
 const storage_mod = @import("storage.zig");
 const async_executor_mod = @import("async_executor.zig");
+const access_list_manager_mod = @import("access_list_manager.zig");
+const AccessListManager = access_list_manager_mod.AccessListManager;
+const AccessListSnapshot = access_list_manager_mod.AccessListSnapshot;
 
-// Re-export from primitives for convenience
-pub const StorageSlotKey = primitives.AccessList.StorageSlotKey;
-pub const AccessListManager = primitives.AccessList.AccessListManager;
-pub const AccessListSnapshot = primitives.AccessList.AccessListSnapshot;
+// Re-export StorageKey from primitives (renamed from StorageKey)
+pub const StorageKey = primitives.State.StorageKey;
 
 // Re-export from storage module
 pub const Storage = storage_mod.Storage;
@@ -79,7 +80,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         // Each call pushes a snapshot, and on revert we restore from that snapshot
         balance_snapshot_stack: std.ArrayList(*std.AutoHashMap(primitives.Address, u256)),
         hardfork: Hardfork = Hardfork.DEFAULT,
-        fork_transition: ?@import("hardfork.zig").ForkTransition = null,
+        fork_transition: ?primitives.ForkTransition = null,
         origin: primitives.Address,
         gas_price: u256,
         host: ?host.HostInterface,
@@ -527,9 +528,9 @@ pub fn Evm(comptime config: EvmConfig) type {
             // Check if this is a precompile address with empty bytecode (like inner_call)
             if (bytecode.len == 0) {
                 // Check if this is a precompile address (hardfork-aware)
-                if (precompiles.is_precompile(address, self.hardfork)) {
+                if (precompiles.isPrecompile(address, self.hardfork)) {
                     // Use the precompiles module to handle all precompile execution
-                    const result = precompiles.execute_precompile(
+                    const result = precompiles.execute(
                         self.arena.allocator(),
                         address,
                         calldata,
@@ -931,7 +932,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // Snapshot transient storage before the call (EIP-1153)
             // Transient storage must be reverted on call failure
-            var transient_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
+            var transient_snapshot = std.AutoHashMap(StorageKey, u256).init(self.arena.allocator());
             var it = self.storage.transient.iterator();
             while (it.next()) |entry| {
                 transient_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
@@ -964,7 +965,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             // When a call reverts, any entries added to original_storage during that call
             // must be removed, otherwise subsequent SSTOREs will use stale original values
             // and incorrectly calculate gas costs and refunds
-            var original_storage_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
+            var original_storage_snapshot = std.AutoHashMap(StorageKey, u256).init(self.arena.allocator());
             var original_storage_it = self.storage.original_storage.iterator();
             while (original_storage_it.next()) |entry| {
                 original_storage_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
@@ -975,14 +976,15 @@ pub fn Evm(comptime config: EvmConfig) type {
             // Snapshot storage before the call
             // We need to track which slots existed and their values
             // On revert, we restore to this exact state (remove new slots, restore modified slots)
-            var storage_snapshot = std.AutoHashMap(StorageSlotKey, u256).init(self.arena.allocator());
+            var storage_snapshot = std.AutoHashMap(StorageKey, u256).init(self.arena.allocator());
             if (self.host) |h| {
                 // In host mode, we need to ask the host for current storage values
                 // But we don't have a way to enumerate all slots, so we track what we've seen
                 // For now, we'll snapshot original_storage keys since those are the accessed slots
                 var orig_it = self.storage.original_storage.iterator();
                 while (orig_it.next()) |entry| {
-                    const current_val = h.getStorage(entry.key_ptr.*.address, entry.key_ptr.*.slot);
+                    const addr = primitives.Address.Address{ .bytes = entry.key_ptr.*.address };
+                    const current_val = h.getStorage(addr, entry.key_ptr.*.slot);
                     storage_snapshot.put(entry.key_ptr.*, current_val) catch {
                         return makeFailure(self.arena.allocator(), gas);
                     };
@@ -1158,7 +1160,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 // Restore storage on failure
                 // IMPORTANT: Identify slots to delete BEFORE restoring original_storage
                 // First, identify slots that were added during the call (exist in original_storage but not in snapshot)
-                var added_slots = std.ArrayList(StorageSlotKey){};
+                var added_slots = std.ArrayList(StorageKey){};
                 added_slots.ensureTotalCapacity(self.arena.allocator(), 10) catch {
                     return makeFailure(self.arena.allocator(), 0);
                 };
@@ -1265,7 +1267,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             if (frame.reverted) {
                 // IMPORTANT: Identify slots to delete BEFORE restoring original_storage
                 // First, identify slots that were added during the call (exist in original_storage but not in snapshot)
-                var added_slots = std.ArrayList(StorageSlotKey){};
+                var added_slots = std.ArrayList(StorageKey){};
                 added_slots.ensureTotalCapacity(self.arena.allocator(), 10) catch {
                     return makeFailure(self.arena.allocator(), 0);
                 };

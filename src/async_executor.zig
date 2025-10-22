@@ -7,7 +7,7 @@ const log = @import("logger.zig");
 const errors = @import("errors.zig");
 const storage_mod = @import("storage.zig");
 
-pub const StorageSlotKey = primitives.AccessList.StorageSlotKey;
+pub const StorageKey = primitives.State.StorageKey;
 
 /// Async data request - written when cache miss occurs
 pub const AsyncDataRequest = union(enum) {
@@ -103,8 +103,8 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
                 },
 
                 .continue_with_storage => |data| {
-                    const key = StorageSlotKey{
-                        .address = data.address,
+                    const key = StorageKey{
+                        .address = data.address.bytes,
                         .slot = data.slot,
                     };
 
