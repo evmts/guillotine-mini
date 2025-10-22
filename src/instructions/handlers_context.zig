@@ -34,7 +34,7 @@ pub fn Handlers(FrameType: type) type {
         /// ADDRESS opcode (0x30) - Get address of currently executing account
         pub fn address(frame: *FrameType) FrameType.EvmError!void {
             try frame.consumeGas(GasConstants.GasQuickStep);
-            const addr_u256 = primitives.Address.to_u256(frame.address);
+            const addr_u256 = primitives.Address.toU256(frame.address);
             try frame.pushStack(addr_u256);
             frame.pc += 1;
         }
@@ -73,7 +73,7 @@ pub fn Handlers(FrameType: type) type {
         pub fn origin(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
             try frame.consumeGas(GasConstants.GasQuickStep);
-            const origin_u256 = primitives.Address.to_u256(evm.origin);
+            const origin_u256 = primitives.Address.toU256(evm.origin);
             try frame.pushStack(origin_u256);
             frame.pc += 1;
         }
@@ -81,7 +81,7 @@ pub fn Handlers(FrameType: type) type {
         /// CALLER opcode (0x33) - Get caller address
         pub fn caller(frame: *FrameType) FrameType.EvmError!void {
             try frame.consumeGas(GasConstants.GasQuickStep);
-            const caller_u256 = primitives.Address.to_u256(frame.caller);
+            const caller_u256 = primitives.Address.toU256(frame.caller);
             try frame.pushStack(caller_u256);
             frame.pc += 1;
         }
@@ -195,7 +195,7 @@ pub fn Handlers(FrameType: type) type {
             const evm = frame.getEvm();
             // Get code size of external account
             const addr_int = try frame.popStack();
-            const ext_addr = primitives.Address.from_u256(addr_int);
+            const ext_addr = primitives.Address.fromU256(addr_int);
 
             // Gas cost: hardfork-aware
             // Berlin+: cold/warm access (2600/100)
@@ -224,7 +224,7 @@ pub fn Handlers(FrameType: type) type {
             const offset = try frame.popStack();
             const size = try frame.popStack();
 
-            const ext_addr = primitives.Address.from_u256(addr_int);
+            const ext_addr = primitives.Address.fromU256(addr_int);
 
             // Gas cost calculation
             if (size > 0) {
@@ -335,7 +335,7 @@ pub fn Handlers(FrameType: type) type {
 
             // Get code hash of external account
             const addr_int = try frame.popStack();
-            const ext_addr = primitives.Address.from_u256(addr_int);
+            const ext_addr = primitives.Address.fromU256(addr_int);
 
             // Gas cost: hardfork-aware
             // Berlin+: cold/warm access (2600/100)

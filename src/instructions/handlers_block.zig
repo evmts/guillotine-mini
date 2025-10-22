@@ -28,7 +28,7 @@ pub fn Handlers(FrameType: type) type {
         pub fn coinbase(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
             try frame.consumeGas(GasConstants.GasQuickStep);
-            const coinbase_u256 = primitives.Address.to_u256(evm.block_context.block_coinbase);
+            const coinbase_u256 = primitives.Address.toU256(evm.block_context.block_coinbase);
             try frame.pushStack(coinbase_u256);
             frame.pc += 1;
         }

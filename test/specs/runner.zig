@@ -258,7 +258,7 @@ fn processRlpTransaction(
     block_ctx: ?evm_mod.BlockContext,
 ) !void {
     // Decode hex to bytes
-    const rlp_bytes = try primitives.Hex.hex_to_bytes(allocator, rlp_hex);
+    const rlp_bytes = try primitives.Hex.hexToBytes(allocator, rlp_hex);
     defer allocator.free(rlp_bytes);
 
     // Check if transaction is typed (EIP-2718)
@@ -660,7 +660,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                 defer allocator.free(hex_data);
 
                                 if (hex_data.len > 2) {
-                                    const code_bytes = try primitives.Hex.hex_to_bytes(allocator, hex_data);
+                                    const code_bytes = try primitives.Hex.hexToBytes(allocator, hex_data);
                                     defer allocator.free(code_bytes);
                                     try test_host.setCode(address, code_bytes);
                                 }
@@ -995,7 +995,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         }
 
         if (found_parent_root) {
-            const parent_beacon_root = try primitives.Hex.hex_to_bytes(allocator, parent_beacon_root_hex);
+            const parent_beacon_root = try primitives.Hex.hexToBytes(allocator, parent_beacon_root_hex);
             defer allocator.free(parent_beacon_root);
 
             // Extract block timestamp for the beacon root call
@@ -1071,7 +1071,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         }
 
         if (found_parent_hash) {
-            const parent_hash = try primitives.Hex.hex_to_bytes(allocator, parent_hash_hex);
+            const parent_hash = try primitives.Hex.hexToBytes(allocator, parent_hash_hex);
             defer allocator.free(parent_hash);
 
             // Get history storage contract code from pre-state
@@ -1106,7 +1106,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 const hex = try parseHexData(allocator, data_str);
                 defer allocator.free(hex);
                 if (hex.len > 2) {
-                    const bytes = try primitives.Hex.hex_to_bytes(allocator, hex);
+                    const bytes = try primitives.Hex.hexToBytes(allocator, hex);
                     break :blk bytes;
                 } else {
                     break :blk try allocator.alloc(u8, 0);
@@ -1336,7 +1336,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 const blob_hashes_array = try allocator.alloc([32]u8, blob_count);
                 for (blob_hashes_json.array.items, 0..) |hash_json, i| {
                     const hash_str = hash_json.string;
-                    const hash_bytes = try primitives.Hex.hex_to_bytes(allocator, hash_str);
+                    const hash_bytes = try primitives.Hex.hexToBytes(allocator, hash_str);
                     defer allocator.free(hash_bytes);
                     if (hash_bytes.len != 32) {
                         return error.InvalidBlobHash;

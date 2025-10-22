@@ -3,7 +3,7 @@ const std = @import("std");
 const primitives = @import("primitives");
 const GasConstants = primitives.GasConstants;
 const Address = primitives.Address.Address;
-const precompiles = @import("../precompiles/precompiles.zig");
+const precompiles = @import("precompiles");
 
 /// Handlers struct - provides system operation handlers for a Frame type
 /// The FrameType must have methods: getEvm, consumeGas, popStack, pushStack

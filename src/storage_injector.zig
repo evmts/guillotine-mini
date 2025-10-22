@@ -273,7 +273,7 @@ test "StorageInjector - markStorageDirty adds to dirty set" {
     var injector = try StorageInjector.init(testing.allocator);
     defer injector.deinit();
 
-    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+    const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
     const key = StorageSlotKey{ .address = addr, .slot = 42 };
 
     try injector.markStorageDirty(addr, 42);
@@ -287,7 +287,7 @@ test "StorageInjector - multiple marks for same slot (idempotent)" {
     var injector = try StorageInjector.init(testing.allocator);
     defer injector.deinit();
 
-    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+    const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
 
     try injector.markStorageDirty(addr, 42);
     try injector.markStorageDirty(addr, 42);
@@ -303,7 +303,7 @@ test "StorageInjector - clearCache clears all state" {
     var injector = try StorageInjector.init(testing.allocator);
     defer injector.deinit();
 
-    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+    const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
     const key = StorageSlotKey{ .address = addr, .slot = 42 };
 
     // Add some data
@@ -464,7 +464,7 @@ test "StorageInjector - dumpChanges with storage change" {
     var injector = try StorageInjector.init(testing.allocator);
     defer injector.deinit();
 
-    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+    const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
     const slot: u256 = 42;
     const key = StorageSlotKey{ .address = addr, .slot = slot };
 

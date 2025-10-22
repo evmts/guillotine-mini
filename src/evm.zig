@@ -10,7 +10,7 @@ const Hardfork = @import("hardfork.zig").Hardfork;
 const host = @import("host.zig");
 const errors = @import("errors.zig");
 const trace = @import("trace.zig");
-const precompiles = @import("precompiles/precompiles.zig");
+const precompiles = @import("precompiles");
 const evm_config = @import("evm_config.zig");
 const EvmConfig = evm_config.EvmConfig;
 const storage_injector = @import("storage_injector.zig");
@@ -413,7 +413,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             var precompile_addrs: [0x12]primitives.Address = undefined;
             var i: usize = 0;
             while (i < precompile_count) : (i += 1) {
-                precompile_addrs[i] = primitives.Address.from_u256(i + 1);
+                precompile_addrs[i] = primitives.Address.fromU256(i + 1);
             }
             try self.preWarmAddresses(precompile_addrs[0..precompile_count]);
         }

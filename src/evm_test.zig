@@ -16,7 +16,7 @@ test "AsyncDataRequest - union size and field access" {
     try testing.expect(req_none == .none);
 
     // Test storage variant
-    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+    const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
     const req_storage = AsyncDataRequest{ .storage = .{
         .address = addr,
         .slot = 42,
@@ -53,7 +53,7 @@ test "AsyncDataRequest - can write and read each variant" {
     var request: AsyncDataRequest = .none;
 
     // Write storage request
-    const addr = primitives.Address.from_hex("0xabcdef0123456789abcdef0123456789abcdef01") catch unreachable;
+    const addr = primitives.Address.fromHex("0xabcdef0123456789abcdef0123456789abcdef01") catch unreachable;
     request = .{ .storage = .{ .address = addr, .slot = 100 } };
     try testing.expect(request == .storage);
     try testing.expectEqual(100, request.storage.slot);
@@ -116,7 +116,7 @@ test "Evm.async_data_request can write/read different request types" {
     var evm_instance = try Evm.init(testing.allocator, null, null, null, null);
     defer evm_instance.deinit();
 
-    const addr = primitives.Address.from_hex("0x1111111111111111111111111111111111111111") catch unreachable;
+    const addr = primitives.Address.fromHex("0x1111111111111111111111111111111111111111") catch unreachable;
 
     // Write storage request
     evm_instance.storage.async_data_request = .{ .storage = .{ .address = addr, .slot = 99 } };
@@ -139,7 +139,7 @@ test "Evm.async_data_request can write/read different request types" {
 test "CallOrContinueInput/Output - can construct each variant" {
     const testing = std.testing;
 
-    const addr = primitives.Address.from_hex("0x1111111111111111111111111111111111111111") catch unreachable;
+    const addr = primitives.Address.fromHex("0x1111111111111111111111111111111111111111") catch unreachable;
 
     // Test Input variants
     const call_input: Evm.CallOrContinueInput = .{ .call = .{
@@ -185,7 +185,7 @@ test "callOrContinue - returns .need_storage on cache miss" {
     var injector = try StorageInjector.init(evm_instance.arena.allocator());
     evm_instance.storage.storage_injector = &injector;
 
-    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+    const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
 
     // Bytecode: PUSH1 0x00, SLOAD - will trigger async request
     const bytecode = [_]u8{ 0x60, 0x00, 0x54 }; // PUSH1 0, SLOAD
@@ -215,7 +215,7 @@ test "callOrContinue - continue_with_storage resumes execution" {
     var injector = try StorageInjector.init(evm_instance.arena.allocator());
     evm_instance.storage.storage_injector = &injector;
 
-    const addr = primitives.Address.from_hex("0x1234567890123456789012345678901234567890") catch unreachable;
+    const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
 
     // Bytecode: PUSH1 0x00, SLOAD, STOP
     const bytecode = [_]u8{ 0x60, 0x00, 0x54, 0x00 };
