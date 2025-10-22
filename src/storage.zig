@@ -84,7 +84,7 @@ pub const Storage = struct {
 
     /// Set storage value
     pub fn set(self: *Storage, address: primitives.Address, slot: u256, value: u256) !void {
-        const key = StorageSlotKey{ .address = address, .slot = slot };
+        const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
 
         // Track original value on first write in transaction
         if (!self.original_storage.contains(key)) {
@@ -115,7 +115,7 @@ pub const Storage = struct {
 
     /// Get original storage value (before transaction modifications)
     pub fn getOriginal(self: *Storage, address: primitives.Address, slot: u256) u256 {
-        const key = StorageSlotKey{ .address = address, .slot = slot };
+        const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
         // If we have tracked the original, return it
         if (self.original_storage.get(key)) |original| {
             return original;
@@ -146,7 +146,7 @@ pub const Storage = struct {
 
     /// Put storage value directly in cache (for async continuation)
     pub fn putInCache(self: *Storage, address: primitives.Address, slot: u256, value: u256) !void {
-        const key = StorageSlotKey{ .address = address, .slot = slot };
+        const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
 
         // Store value in both cache and storage
         if (self.storage_injector) |injector| {

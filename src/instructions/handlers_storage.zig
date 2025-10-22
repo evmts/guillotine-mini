@@ -56,7 +56,7 @@ pub fn Handlers(FrameType: type) type {
                 // Use EIP-2200/EIP-3529 logic with hardfork-aware gas costs
                 const is_berlin_or_later = evm.hardfork.isAtLeast(.BERLIN);
                 const is_istanbul_or_later = evm.hardfork.isAtLeast(.ISTANBUL);
-                break :blk GasConstants.sstore_gas_cost_with_hardfork(
+                break :blk GasConstants.sstoreGasCostWithHardfork(
                     current_value,
                     original_value,
                     value,

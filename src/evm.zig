@@ -5,6 +5,7 @@ const std = @import("std");
 const log = @import("logger.zig");
 const primitives = @import("primitives");
 const GasConstants = primitives.GasConstants;
+const Address = primitives.Address;
 const Frame = @import("frame.zig").Frame;
 const Hardfork = primitives.Hardfork;
 const host = @import("host.zig");
@@ -21,8 +22,9 @@ const access_list_manager_mod = @import("access_list_manager.zig");
 const AccessListManager = access_list_manager_mod.AccessListManager;
 const AccessListSnapshot = access_list_manager_mod.AccessListSnapshot;
 
-// Re-export StorageKey from primitives (renamed from StorageKey)
-pub const StorageKey = primitives.State.StorageKey;
+// Re-export StorageKey from primitives
+pub const StorageKey = primitives.StorageKey;
+pub const StorageSlotKey = StorageKey; // Backwards compatibility alias
 
 // Re-export from storage module
 pub const Storage = storage_mod.Storage;
@@ -576,7 +578,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                             var storage_it = self.storage.storage.iterator();
                             while (storage_it.next()) |storage_entry| {
                                 const key = storage_entry.key_ptr.*;
-                                if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
+                                if (std.mem.eql(u8, &key.address, &addr.bytes)) {
                                     h.setStorage(addr, key.slot, 0);
                                 }
                             }
@@ -591,7 +593,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                             var storage_it = self.storage.storage.iterator();
                             while (storage_it.next()) |storage_entry| {
                                 const key = storage_entry.key_ptr.*;
-                                if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
+                                if (std.mem.eql(u8, &key.address, &addr.bytes)) {
                                     _ = self.storage.storage.remove(key);
                                 }
                             }
@@ -600,8 +602,8 @@ pub fn Evm(comptime config: EvmConfig) type {
                     self.selfdestructed_accounts.clearRetainingCapacity();
 
                     return CallResult{
-                        .success = result.success,
-                        .gas_left = if (result.success) @as(u64, @intCast(gas)) - result.gas_used else 0,
+                        .success = true,
+                        .gas_left = @as(u64, @intCast(gas)) - result.gas_used,
                         .output = result.output,
                         .refund_counter = self.gas_refund,
                     };
@@ -712,7 +714,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     var storage_it = self.storage.storage.iterator();
                     while (storage_it.next()) |storage_entry| {
                         const key = storage_entry.key_ptr.*;
-                        if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
+                        if (std.mem.eql(u8, &key.address, &addr.bytes)) {
                             h.setStorage(addr, key.slot, 0);
                         }
                     }
@@ -725,7 +727,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     var storage_it = self.storage.storage.iterator();
                     while (storage_it.next()) |storage_entry| {
                         const key = storage_entry.key_ptr.*;
-                        if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
+                        if (std.mem.eql(u8, &key.address, &addr.bytes)) {
                             _ = self.storage.storage.fetchRemove(key);
                         }
                     }
@@ -733,7 +735,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     var original_storage_it = self.storage.original_storage.iterator();
                     while (original_storage_it.next()) |storage_entry| {
                         const key = storage_entry.key_ptr.*;
-                        if (std.mem.eql(u8, &key.address.bytes, &addr.bytes)) {
+                        if (std.mem.eql(u8, &key.address, &addr.bytes)) {
                             _ = self.storage.original_storage.fetchRemove(key);
                         }
                     }
@@ -1079,16 +1081,16 @@ pub fn Evm(comptime config: EvmConfig) type {
                     };
 
                     return CallResult{
-                        .success = result.success,
-                        .gas_left = if (result.success) gas - result.gas_used else 0,
+                        .success = true,
+                        .gas_left = gas - result.gas_used,
                         .output = result.output,
                     };
                 }
 
                 // Check if this is a standard precompile address (hardfork-aware)
-                if (precompiles.is_precompile(address, self.hardfork)) {
+                if (precompiles.isPrecompile(address, self.hardfork)) {
                     // Use the precompiles module to handle all precompile execution
-                    const result = precompiles.execute_precompile(
+                    const result = precompiles.execute(
                         self.arena.allocator(),
                         address,
                         input,
@@ -1101,8 +1103,8 @@ pub fn Evm(comptime config: EvmConfig) type {
                     };
 
                     return CallResult{
-                        .success = result.success,
-                        .gas_left = if (result.success) gas - result.gas_used else 0,
+                        .success = true,
+                        .gas_left = gas - result.gas_used,
                         .output = result.output,
                     };
                 }
@@ -1186,7 +1188,8 @@ pub fn Evm(comptime config: EvmConfig) type {
                 var storage_restore_it = storage_snapshot.iterator();
                 while (storage_restore_it.next()) |entry| {
                     if (self.host) |h| {
-                        h.setStorage(entry.key_ptr.*.address, entry.key_ptr.*.slot, entry.value_ptr.*);
+                        const addr = primitives.Address{ .bytes = entry.key_ptr.*.address };
+                        h.setStorage(addr, entry.key_ptr.*.slot, entry.value_ptr.*);
                     } else {
                         self.storage.storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
                             return makeFailure(self.arena.allocator(), 0);
@@ -1197,7 +1200,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 // Fourth, delete slots that were added during the call
                 for (added_slots.items) |slot_key| {
                     if (self.host) |h| {
-                        h.setStorage(slot_key.address, slot_key.slot, 0);
+                        h.setStorage(Address{ .bytes = slot_key.address }, slot_key.slot, 0);
                     } else {
                         _ = self.storage.storage.remove(slot_key);
                     }
@@ -1293,7 +1296,8 @@ pub fn Evm(comptime config: EvmConfig) type {
                 var storage_restore_it = storage_snapshot.iterator();
                 while (storage_restore_it.next()) |entry| {
                     if (self.host) |h| {
-                        h.setStorage(entry.key_ptr.*.address, entry.key_ptr.*.slot, entry.value_ptr.*);
+                        const addr = primitives.Address{ .bytes = entry.key_ptr.*.address };
+                        h.setStorage(addr, entry.key_ptr.*.slot, entry.value_ptr.*);
                     } else {
                         self.storage.storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
                             return makeFailure(self.arena.allocator(), 0);
@@ -1304,7 +1308,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 // Fourth, delete slots that were added during the call
                 for (added_slots.items) |slot_key| {
                     if (self.host) |h| {
-                        h.setStorage(slot_key.address, slot_key.slot, 0);
+                        h.setStorage(Address{ .bytes = slot_key.address }, slot_key.slot, 0);
                     } else {
                         _ = self.storage.storage.remove(slot_key);
                     }
