@@ -209,7 +209,7 @@ pub const StorageInjector = struct {
 
     /// Mark storage slot as dirty (called by Evm.set_storage)
     pub fn markStorageDirty(self: *StorageInjector, address: Address, slot: u256) !void {
-        const key = StorageKey{ .address = address, .slot = slot };
+        const key = StorageKey{ .address = address.bytes, .slot = slot };
         try self.dirty_storage.put(key, {});
     }
 
@@ -274,7 +274,7 @@ test "StorageInjector - markStorageDirty adds to dirty set" {
     defer injector.deinit();
 
     const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
-    const key = StorageKey{ .address = addr, .slot = 42 };
+    const key = StorageKey{ .address = addr.bytes, .slot = 42 };
 
     try injector.markStorageDirty(addr, 42);
 
@@ -304,7 +304,7 @@ test "StorageInjector - clearCache clears all state" {
     defer injector.deinit();
 
     const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
-    const key = StorageKey{ .address = addr, .slot = 42 };
+    const key = StorageKey{ .address = addr.bytes, .slot = 42 };
 
     // Add some data
     try injector.storage_cache.put(key, 100);
@@ -466,7 +466,7 @@ test "StorageInjector - dumpChanges with storage change" {
 
     const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
     const slot: u256 = 42;
-    const key = StorageKey{ .address = addr, .slot = slot };
+    const key = StorageKey{ .address = addr.bytes, .slot = slot };
 
     // Mock EVM
     const MockEvm = struct {
