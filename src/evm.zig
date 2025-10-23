@@ -114,15 +114,19 @@ pub fn Evm(comptime config: EvmConfig) type {
                 log.setLogLevel(level);
             }
 
+            // Create arena and get allocator for state HashMaps
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            const arena_alloc = arena.allocator();
+
             return Self{
                 .frames = undefined,
                 .storage = undefined,
                 .created_accounts = undefined,
                 .selfdestructed_accounts = undefined,
                 .touched_accounts = undefined,
-                .balances = undefined,
-                .nonces = undefined,
-                .code = undefined,
+                .balances = std.AutoHashMap(primitives.Address, u256).init(arena_alloc),
+                .nonces = std.AutoHashMap(primitives.Address, u64).init(arena_alloc),
+                .code = std.AutoHashMap(primitives.Address, []const u8).init(arena_alloc),
                 .access_list_manager = undefined,
                 .gas_refund = 0,
                 .balance_snapshot_stack = undefined,
@@ -141,7 +145,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .origin = primitives.ZERO_ADDRESS,
                 .gas_price = 0,
                 .host = h,
-                .arena = std.heap.ArenaAllocator.init(allocator),
+                .arena = arena,
                 .allocator = allocator,
                 .tracer = null,
                 .opcode_overrides = config.opcode_overrides,
@@ -190,9 +194,10 @@ pub fn Evm(comptime config: EvmConfig) type {
         pub fn initTransactionState(self: *Self, blob_versioned_hashes: ?[]const [32]u8) !void {
             const arena_allocator = self.arena.allocator();
             self.storage = Storage.init(arena_allocator, self.host, null);
-            self.balances = std.AutoHashMap(primitives.Address, u256).init(arena_allocator);
-            self.nonces = std.AutoHashMap(primitives.Address, u64).init(arena_allocator);
-            self.code = std.AutoHashMap(primitives.Address, []const u8).init(arena_allocator);
+            // Clear existing HashMaps instead of creating new ones (allows pre-state setup)
+            self.balances.clearRetainingCapacity();
+            self.nonces.clearRetainingCapacity();
+            self.code.clearRetainingCapacity();
             self.access_list_manager = AccessListManager.init(arena_allocator);
             self.frames = std.ArrayList(FrameType){};
             try self.frames.ensureTotalCapacity(arena_allocator, 16);
