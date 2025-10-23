@@ -625,6 +625,24 @@ export fn evm_set_code(
     return false;
 }
 
+/// Set account nonce
+export fn evm_set_nonce(
+    handle: ?*EvmHandle,
+    address_bytes: [*]const u8,
+    nonce: u64,
+) bool {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+
+        var address: Address = undefined;
+        @memcpy(&address.bytes, address_bytes[0..20]);
+
+        ctx.evm.nonces.put(address, nonce) catch return false;
+        return true;
+    }
+    return false;
+}
+
 // ===== Async Protocol FFI Functions =====
 
 /// Output structure for async requests
