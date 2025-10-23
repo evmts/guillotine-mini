@@ -716,6 +716,43 @@ pub fn build(b: *std.Build) void {
     // Make WASM build part of default install step
     b.getInstallStep().dependOn(&wasm_install.step);
 
+    // Native C library build for Rust FFI integration
+    // Need to add keccak include path to crypto module
+    crypto_mod.addIncludePath(b.path("lib/primitives/lib/keccak"));
+
+    const native_mod = b.addModule("guillotine_mini_native", .{
+        .root_source_file = b.path("src/root_c.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "precompiles", .module = precompiles_mod },
+            .{ .name = "build_options", .module = build_options_mod },
+        },
+    });
+
+    const native_lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "guillotine_mini",
+        .root_module = native_mod,
+    });
+
+    // Link crypto libraries for native build
+    if (bn254_lib) |lib| {
+        native_lib.root_module.linkLibrary(lib);
+    }
+    native_lib.root_module.linkLibrary(blst_lib);
+    native_lib.root_module.linkLibrary(c_kzg_lib);
+
+    const native_install = b.addInstallArtifact(native_lib, .{});
+
+    // Make sure Rust libraries are built first
+    native_install.step.dependOn(rust_build_step);
+
+    const native_step = b.step("native", "Build native static library for FFI");
+    native_step.dependOn(&native_install.step);
+
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
     // The Zig build system is entirely implemented in userland, which means
