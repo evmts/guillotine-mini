@@ -54,4 +54,6 @@ pub const getOpName = opcode.getOpName;
 test {
     std.testing.refAllDecls(@This());
     _ = @import("evm_test.zig");
+    _ = @import("host/json_rpc.zig");
+    _ = @import("host/fork_host.zig");
 }

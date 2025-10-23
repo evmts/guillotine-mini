@@ -49,11 +49,35 @@ src/
 
 ## Testing & Debugging
 
+⚠️ **IMPORTANT**: `zig build test` runs the FULL test suite including all ethereum/tests which takes ~1 hour. **ALWAYS filter tests** when developing:
+
+### How to Run Tests (CRITICAL - Read This First!)
+
+**DO NOT run `zig build test` without filtering** - it takes over an hour!
+
+**For unit tests ONLY** (json_rpc, fork_host, etc.):
+- The unit tests are embedded in `src/root.zig` test block
+- They run as part of `zig build test` but get drowned out by spec tests
+- **There is currently NO way to run JUST unit tests separately**
+- Unit tests compile when you run `zig build` (compilation = test validation)
+
+**For spec tests** (ethereum/tests):
+- Use granular targets: `zig build specs-<specific-target>` (see Granular Spec Targets below)
+- Filter by name: `TEST_FILTER="pattern" zig build specs`
+- For debugging: Use `bun scripts/isolate-test.ts "test_name"`
+
+**Test filtering is done via environment variables:**
+```bash
+TEST_FILTER="berlin" zig build specs        # Filter by hardfork
+TEST_FILTER="transientStorage" zig build specs  # Filter by EIP
+TEST_FILTER="exact_test_name" zig build specs   # Exact test name
+```
+
 ### Test Types
 
 | Type | Purpose | Command |
 |------|---------|---------|
-| **Unit tests** | Inline `test` blocks | `zig build test` |
+| **Unit tests** | Inline `test` blocks | `zig build test` (⚠️ SLOW - 1hr+) |
 | **Spec tests** | ethereum/tests GeneralStateTests | `zig build specs` |
 | **Filtered tests** | By hardfork/EIP/opcode | `TEST_FILTER="Cancun" zig build specs` |
 | **Trace tests** | EIP-3155 trace capture/comparison | `zig build test-trace` |

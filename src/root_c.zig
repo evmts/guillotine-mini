@@ -35,6 +35,20 @@ const js_precompile_callback = if (builtin.target.cpu.arch == .wasm32 or builtin
 else
     undefined;
 
+const js_rpc_request = if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64)
+    struct {
+        extern "env" fn js_rpc_request(
+            method_ptr: [*]const u8,
+            method_len: usize,
+            params_ptr: [*]const u8,
+            params_len: usize,
+            response_buffer: [*]u8,
+            response_capacity: usize,
+        ) c_int;
+    }.js_rpc_request
+else
+    undefined;
+
 /// Public wrapper to check if JavaScript opcode callback exists and call it
 pub fn tryCallJsOpcodeHandler(opcode: u8, frame_ptr: usize) bool {
     if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64) {
@@ -80,6 +94,11 @@ const primitives = @import("primitives");
 const Address = primitives.Address.Address;
 const ZERO_ADDRESS = primitives.ZERO_ADDRESS;
 
+// Fork host support
+const ForkHost = @import("host/fork_host.zig").ForkHost;
+const BlockTag = @import("host/json_rpc.zig").BlockTag;
+const RpcRequestFn = @import("host/fork_host.zig").RpcRequestFn;
+
 // Global allocator for C interface
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 var allocator = gpa.allocator();
@@ -103,6 +122,7 @@ const ExecutionContext = struct {
     access_list_storage_keys: []AccessListStorageKey,
     blob_versioned_hashes: ?[]const [32]u8,
     result: ?CallResult,
+    fork_host: ?*ForkHost, // Optional fork host
 };
 
 /// Create a new Evm instance with optional hardfork name (null/empty = default from config)
@@ -140,15 +160,134 @@ export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize, log_level:
         .access_list_storage_keys = &[_]AccessListStorageKey{},
         .blob_versioned_hashes = null,
         .result = null,
+        .fork_host = null,
     };
 
     return @ptrCast(ctx);
+}
+
+/// RPC request wrapper that calls the JavaScript extern function
+fn wasmRpcRequest(
+    ctx: ?*anyopaque,
+    method: [*:0]const u8,
+    params: [*:0]const u8,
+    buffer: [*]u8,
+    capacity: usize,
+) isize {
+    _ = ctx;
+    const method_len = std.mem.len(method);
+    const params_len = std.mem.len(params);
+
+    if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64) {
+        const result = js_rpc_request(
+            method,
+            method_len,
+            params,
+            params_len,
+            buffer,
+            capacity,
+        );
+        return result;
+    }
+    return -1; // Not supported on non-WASM
+}
+
+/// Configure EVM to use fork mode
+/// fork_block_tag: "latest", "earliest", "pending", or hex block number "0x123abc"
+///
+/// Example JavaScript usage:
+/// ```js
+/// // User provides js_rpc_request as a WASM import:
+/// const imports = {
+///     env: {
+///         js_rpc_request: (methodPtr, methodLen, paramsPtr, paramsLen, buffer, capacity) => {
+///             const method = readString(methodPtr, methodLen);
+///             const params = readString(paramsPtr, paramsLen);
+///             const response = await fetch(rpcUrl, {
+///                 method: 'POST',
+///                 body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: JSON.parse(params) })
+///             });
+///             const json = await response.json();
+///             const resultStr = JSON.stringify(json.result);
+///             const bytes = new TextEncoder().encode(resultStr);
+///             if (bytes.length > capacity) return -1;
+///             writeBytes(buffer, bytes);
+///             return bytes.length;
+///         }
+///     }
+/// };
+/// evm_set_fork_config(handle, "latest", 6);
+/// ```
+export fn evm_set_fork_config(
+    handle: ?*EvmHandle,
+    fork_block_tag: [*]const u8,
+    fork_block_tag_len: usize,
+) bool {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+
+        // Parse block tag
+        const tag_str = fork_block_tag[0..fork_block_tag_len];
+        const block_tag: BlockTag = blk: {
+            if (std.mem.eql(u8, tag_str, "latest")) {
+                break :blk .latest;
+            } else if (std.mem.eql(u8, tag_str, "earliest")) {
+                break :blk .earliest;
+            } else if (std.mem.eql(u8, tag_str, "pending")) {
+                break :blk .pending;
+            } else if (tag_str.len >= 2 and tag_str[0] == '0' and (tag_str[1] == 'x' or tag_str[1] == 'X')) {
+                // Parse hex number
+                const hex = tag_str[2..];
+                var block_num: u64 = 0;
+                for (hex) |c| {
+                    const digit = switch (c) {
+                        '0'...'9' => c - '0',
+                        'a'...'f' => c - 'a' + 10,
+                        'A'...'F' => c - 'A' + 10,
+                        else => return false,
+                    };
+                    block_num = (block_num << 4) | digit;
+                }
+                break :blk .{ .number = block_num };
+            } else {
+                return false; // Invalid block tag
+            }
+        };
+
+        // Clean up existing fork host if any
+        if (ctx.fork_host) |old_fork_host| {
+            old_fork_host.deinit();
+            allocator.destroy(old_fork_host);
+        }
+
+        // Create new fork host with WASM RPC wrapper
+        const fork_host = allocator.create(ForkHost) catch return false;
+        fork_host.* = ForkHost.init(allocator, block_tag, &wasmRpcRequest, null) catch {
+            allocator.destroy(fork_host);
+            return false;
+        };
+
+        ctx.fork_host = fork_host;
+
+        // Update EVM to use fork host
+        ctx.evm.host = fork_host.hostInterface();
+
+        return true;
+    }
+    return false;
 }
 
 /// Destroy an EVM instance
 export fn evm_destroy(handle: ?*EvmHandle) void {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+
+        // Clean up fork host if present
+        if (ctx.fork_host) |fork_host| {
+            fork_host.deinit();
+            allocator.destroy(fork_host);
+        }
+
         ctx.evm.deinit();
         allocator.destroy(ctx.evm);
         allocator.destroy(ctx);
