@@ -885,3 +885,116 @@ export fn evm_enable_storage_injector(handle: ?*EvmHandle) bool {
     }
     return false;
 }
+
+// ===== Result Introspection FFI (logs, refunds, storage changes) =====
+
+/// Get number of log entries in the last execution result
+export fn evm_get_log_count(handle: ?*EvmHandle) usize {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+        if (ctx.result) |result| {
+            return result.logs.len;
+        }
+    }
+    return 0;
+}
+
+/// Get a log entry by index. Returns false if unavailable.
+/// topics_out must have capacity for up to 4 topics (4 * 32 bytes)
+export fn evm_get_log(
+    handle: ?*EvmHandle,
+    index: usize,
+    address_out: [*]u8,           // 20 bytes
+    topics_count_out: *usize,     // Number of topics
+    topics_out: [*]u8,            // Up to 4 topics * 32 bytes
+    data_len_out: *usize,         // Data length
+    data_out: [*]u8,              // Data buffer
+    data_max_len: usize,          // Max data buffer size
+) bool {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+        if (ctx.result) |result| {
+            if (index >= result.logs.len) return false;
+            const lg = result.logs[index];
+
+            // Address
+            @memcpy(address_out[0..20], &lg.address.bytes);
+
+            // Topics
+            const topics_len: usize = @min(lg.topics.len, 4);
+            topics_count_out.* = topics_len;
+            var i: usize = 0;
+            while (i < topics_len) : (i += 1) {
+                var buf: [32]u8 = undefined;
+                std.mem.writeInt(u256, &buf, lg.topics[i], .big);
+                @memcpy(topics_out[i * 32 .. (i + 1) * 32], &buf);
+            }
+
+            // Data
+            data_len_out.* = result.logs[index].data.len;
+            const copy_len = @min(result.logs[index].data.len, data_max_len);
+            if (copy_len > 0) {
+                @memcpy(data_out[0..copy_len], result.logs[index].data[0..copy_len]);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Get gas refund counter from last execution result
+export fn evm_get_gas_refund(handle: ?*EvmHandle) u64 {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+        // Return live EVM refund counter which is maintained during execution
+        return ctx.evm.gas_refund;
+    }
+    return 0;
+}
+
+/// Get number of modified storage slots (entries present in storage map)
+export fn evm_get_storage_change_count(handle: ?*EvmHandle) usize {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+        return ctx.evm.storage.storage.count();
+    }
+    return 0;
+}
+
+/// Get storage change by index. Returns false if index out of range.
+export fn evm_get_storage_change(
+    handle: ?*EvmHandle,
+    index: usize,
+    address_out: [*]u8,     // 20 bytes
+    slot_out: [*]u8,        // 32 bytes (big-endian u256)
+    value_out: [*]u8,       // 32 bytes (big-endian u256)
+) bool {
+    if (handle) |h| {
+        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+        var it = ctx.evm.storage.storage.iterator();
+        var i: usize = 0;
+        while (it.next()) |entry| {
+            if (i == index) {
+                const key = entry.key_ptr.*;
+                const value = entry.value_ptr.*;
+
+                // Address
+                @memcpy(address_out[0..20], &key.address);
+
+                // Slot (u256 -> [32]u8 big-endian)
+                var slot_buf: [32]u8 = undefined;
+                std.mem.writeInt(u256, &slot_buf, key.slot, .big);
+                @memcpy(slot_out[0..32], &slot_buf);
+
+                // Value (u256 -> [32]u8 big-endian)
+                var value_buf: [32]u8 = undefined;
+                std.mem.writeInt(u256, &value_buf, value, .big);
+                @memcpy(value_out[0..32], &value_buf);
+
+                return true;
+            }
+            i += 1;
+        }
+    }
+    return false;
+}
