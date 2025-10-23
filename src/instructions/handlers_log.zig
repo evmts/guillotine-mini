@@ -2,6 +2,7 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const GasConstants = primitives.GasConstants;
+const call_result = @import("../call_result.zig");
 
 /// Calculate LOG operation gas cost
 inline fn logGasCost(topic_count: u8, data_size: u32) u64 {
@@ -37,12 +38,6 @@ pub fn Handlers(FrameType: type) type {
             const offset = try frame.popStack();
             const length = try frame.popStack();
 
-            // Pop topics
-            var i: u8 = 0;
-            while (i < topic_count) : (i += 1) {
-                _ = try frame.popStack();
-            }
-
             // Gas cost + memory expansion for log data
             const off_u32 = std.math.cast(u32, offset) orelse return error.OutOfBounds;
             const length_u32 = std.math.cast(u32, length) orelse return error.OutOfBounds;
@@ -56,7 +51,48 @@ pub fn Handlers(FrameType: type) type {
                 if (aligned > frame.memory_size) frame.memory_size = aligned;
             }
 
-            // In minimal implementation, we don't actually emit logs
+            const evm = frame.getEvm();
+
+            // Read topics (store them so we can add to log)
+            const topics_len: usize = topic_count;
+            var topics_tmp: [4]u256 = undefined; // max 4 topics
+            var ti: usize = 0;
+            while (ti < topics_len) : (ti += 1) {
+                topics_tmp[ti] = try frame.popStack();
+            }
+
+            // Read data from memory
+            var data_slice: []u8 = &[_]u8{};
+            if (length_u32 > 0) {
+                const alloc = evm.arena.allocator();
+                const buf = try alloc.alloc(u8, length_u32);
+                var idx: u32 = 0;
+                while (idx < length_u32) : (idx += 1) {
+                    buf[idx] = frame.readMemory(off_u32 + idx);
+                }
+                data_slice = buf;
+            }
+
+            // Allocate topics in arena and copy (reverse order if needed)
+            var topics_slice: []u256 = &[_]u256{};
+            if (topics_len > 0) {
+                const alloc = evm.arena.allocator();
+                const topics_buf = try alloc.alloc(u256, topics_len);
+                var k: usize = 0;
+                while (k < topics_len) : (k += 1) {
+                    topics_buf[k] = topics_tmp[k];
+                }
+                topics_slice = topics_buf;
+            }
+
+            // Append log to EVM logs buffer
+            const log_entry = call_result.Log{
+                .address = frame.address,
+                .topics = topics_slice,
+                .data = data_slice,
+            };
+            try evm.logs.append(evm.arena.allocator(), log_entry);
+
             frame.pc += 1;
         }
     };

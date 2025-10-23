@@ -106,6 +106,9 @@ pub fn Evm(comptime config: EvmConfig) type {
         // Async executor (initialized after Self is fully constructed)
         async_executor: ?AsyncExecutorType = null,
 
+        // Accumulated logs for current transaction
+        logs: std.ArrayList(call_result.Log),
+
         /// Initialize a new EVM instance
         /// Config provides defaults, but hardfork can be overridden at runtime
         pub fn init(allocator: std.mem.Allocator, h: ?host.HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext, log_level: ?log.LogLevel) !Self {
@@ -151,6 +154,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .opcode_overrides = config.opcode_overrides,
                 .precompile_overrides = config.precompile_overrides,
                 .async_executor = null, // Initialized when needed
+                .logs = undefined,
             };
         }
 
@@ -201,6 +205,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.access_list_manager = AccessListManager.init(arena_allocator);
             self.frames = std.ArrayList(FrameType){};
             try self.frames.ensureTotalCapacity(arena_allocator, 16);
+            self.logs = std.ArrayList(call_result.Log){};
             self.created_accounts = std.AutoHashMap(primitives.Address, void).init(arena_allocator);
             self.selfdestructed_accounts = std.AutoHashMap(primitives.Address, void).init(arena_allocator);
             self.touched_accounts = std.AutoHashMap(primitives.Address, void).init(arena_allocator);
@@ -688,7 +693,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             var result = if (frame.reverted)
                 CallResult.revert_with_data(self.arena.allocator(), gas_left, output) catch unreachable
             else
-                CallResult.success_with_output(self.arena.allocator(), gas_left, output) catch unreachable;
+                CallResult.success_with_logs(self.arena.allocator(), gas_left, output, self.logs.items) catch unreachable;
 
             // Set created address for CREATE operations
             if (is_create and !frame.reverted) {
@@ -700,6 +705,9 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // Clear transient storage at end of transaction (EIP-1153)
             self.storage.clearTransient();
+
+            // Clear logs buffer for next transaction
+            self.logs.clearRetainingCapacity();
 
             // Delete selfdestructed accounts at end of transaction (EIP-6780)
             // This must happen AFTER transient storage is cleared since transient storage
