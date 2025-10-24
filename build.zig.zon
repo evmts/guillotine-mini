@@ -33,8 +33,8 @@
     // internet connectivity.
     .dependencies = .{
         .primitives = .{
-            .url = "https://github.com/evmts/primitives/archive/5e3238c5b5fb4800e1300a43cc33c0260ca2a160.tar.gz",
-            .hash = "Guillotine-0.0.0-VmyYdHMFYgA82i_WIvv2Ty7owtJIggEnzdn77n4XWFmL",
+            .url = "https://github.com/evmts/primitives/archive/refs/heads/main.tar.gz",
+            .hash = "guillotine_primitives-0.0.0-yOt5gSBWkgBbcfH9pdFWgRhAv9fcx8MpwTEAgWI7AGUC",
         },
     },
     // Specifies the set of files and directories that are included in this package.
