@@ -19,16 +19,23 @@
 
 ## Requirements
 
-[Zig 0.15.1+](https://ziglang.org/download/) — [Python 3.8+](https://www.python.org/) (for test generation)
+- [Zig 0.15.1+](https://ziglang.org/download/) — Core build system
+- [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html) — Required for Rust-based cryptographic dependencies (BN254)
+- [Python 3.8+](https://www.python.org/) — For test generation and spec fixtures
 
 ## Installation
 
-**Recommended:** Build from source
+**Option 1:** Use as a Zig dependency (recommended)
+
+```bash
+zig fetch --save https://github.com/evmts/guillotine-mini/archive/main.tar.gz
+```
+
+**Option 2:** Build from source
 
 ```bash
 git clone https://github.com/evmts/guillotine-mini.git
 cd guillotine-mini
-git submodule update --init --recursive
 zig build
 ```
 
@@ -165,7 +172,7 @@ Minimal, correct, and well-tested Ethereum Virtual Machine (EVM) implementation 
 
 ## More
 
-[**Primitives Library**](./lib/primitives) &mdash; Ethereum primitives and cryptography (Address, Uint, RLP, ABI, keccak256, secp256k1, BLS12-381)
+[**Primitives Library**](https://github.com/evmts/primitives) &mdash; Ethereum primitives and cryptography (Address, Uint, RLP, ABI, keccak256, secp256k1, BLS12-381) - now available via zig fetch
 
 [**Development Guide**](./CLAUDE.md) &mdash; Architecture deep-dive, debugging workflow, and coding standards
 
