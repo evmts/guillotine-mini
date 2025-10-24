@@ -16,7 +16,12 @@ bun scripts/isolate-test.ts "test_name"  # Max debug output + analysis
 bun scripts/test-subset.ts "pattern"     # Filter test categories
 ```
 
-**Prerequisites**: Zig 0.15.1+, Python 3.8+ (for test generation and reference implementation)
+**Prerequisites**:
+- **Zig 0.15.1+** (core build system)
+- **Cargo** (Rust package manager - **required** for building BN254/ARK cryptographic dependencies)
+- **Python 3.8+** (for test generation and reference implementation)
+- **uv** (Python package manager for spec fixture generation): `brew install uv`
+- **Bun** (for TS helpers/agents): `brew install bun`
 
 ---
 
@@ -30,8 +35,13 @@ src/
 ├── hardfork.zig          # Hardfork detection and feature flags
 ├── opcode.zig            # Opcode definitions and utilities
 ├── trace.zig             # EIP-3155 trace generation
-├── errors.zig            # Error types
-└── primitives/           # Ethereum types (Address, u256, gas constants, RLP, ABI, etc.)
+└── errors.zig            # Error types
+
+External Dependencies (fetched via zig build):
+├── primitives            # Ethereum types (Address, u256, gas constants, RLP, ABI, etc.)
+│                         # Source: https://github.com/evmts/primitives
+├── crypto                # Cryptographic primitives (keccak256, secp256k1, BLS12-381)
+└── precompiles           # Ethereum precompiled contracts
 ```
 
 ### Key Design Principles
@@ -324,8 +334,11 @@ pub const Hardfork = enum(u8) {
 </details>
 
 <details>
-<summary><b>Primitives Module</b></summary>
+<summary><b>Primitives Module (External Dependency)</b></summary>
 
+The primitives library is now an external dependency fetched via `zig fetch` from https://github.com/evmts/primitives. It is no longer included as a git submodule.
+
+**Modules provided:**
 - **Address** - 20-byte Ethereum address
 - **Uint(N)** - Arbitrary precision (u256, u512)
 - **GasConstants** - Per-opcode costs, hardfork-aware
@@ -335,6 +348,8 @@ pub const Hardfork = enum(u8) {
 - **AccessList** - EIP-2930 support
 - **Blob** - EIP-4844 blob transactions
 - **Hex** - Hex encoding/decoding
+- **Crypto** - Cryptographic primitives (keccak256, secp256k1, BLS12-381)
+- **Precompiles** - Ethereum precompiled contracts
 
 </details>
 
