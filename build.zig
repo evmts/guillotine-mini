@@ -1,8 +1,4 @@
 const std = @import("std");
-const BlstLib = @import("lib/blst.zig");
-const CKzgLib = @import("lib/c-kzg.zig");
-const Bn254Lib = @import("lib/bn254.zig");
-const FoundryLib = @import("lib/foundry.zig");
 
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
@@ -25,100 +21,16 @@ pub fn build(b: *std.Build) void {
     // target and optimize options) will be listed when running `zig build --help`
     // in this directory.
 
-    // Build options module for precompiles
-    const build_options = b.addOptions();
-    build_options.addOption(usize, "vector_length", 16); // Default vector length for crypto operations
-    const build_options_mod = build_options.createModule();
-
-    // Determine Rust target triple based on the build target
-    const rust_target = b: {
-        const os = target.result.os.tag;
-        const arch = target.result.cpu.arch;
-
-        break :b switch (os) {
-            .macos => switch (arch) {
-                .aarch64 => "aarch64-apple-darwin",
-                .x86_64 => "x86_64-apple-darwin",
-                else => "x86_64-apple-darwin",
-            },
-            .linux => switch (arch) {
-                .aarch64 => "aarch64-unknown-linux-gnu",
-                .x86_64 => "x86_64-unknown-linux-gnu",
-                else => "x86_64-unknown-linux-gnu",
-            },
-            .windows => "x86_64-pc-windows-msvc",
-            else => "x86_64-unknown-linux-gnu",
-        };
-    };
-
-    // Build C libraries for cryptographic operations
-    const blst_lib = BlstLib.createBlstLibrary(b, target, optimize);
-    const c_kzg_lib = CKzgLib.createCKzgLibrary(b, target, optimize, blst_lib);
-
-    // Build Rust workspace (ARK BN254 library)
-    const rust_build_step = FoundryLib.createRustBuildStep(b, rust_target, optimize);
-    const bn254_lib = Bn254Lib.createBn254Library(b, target, optimize, .{}, rust_build_step, rust_target);
-
-    // C-KZG module (required by crypto)
-    const c_kzg_mod = b.createModule(.{
-        .root_source_file = b.path("lib/c-kzg-4844/bindings/zig/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    c_kzg_mod.linkLibrary(c_kzg_lib);
-    c_kzg_mod.linkLibrary(blst_lib);
-    c_kzg_mod.addIncludePath(b.path("lib/c-kzg-4844/src"));
-    c_kzg_mod.addIncludePath(b.path("lib/c-kzg-4844/blst/bindings"));
-
-    // Get the primitives dependency
+    // Get the primitives dependency - it handles all crypto lib building internally
     const primitives_dep = b.dependency("primitives", .{
         .target = target,
         .optimize = optimize,
     });
 
-    // Create the primitives module first, as it's a dependency
-    // Using external evmts/primitives library (productionized version)
-    const primitives_mod = b.addModule("primitives", .{
-        .root_source_file = primitives_dep.path("src/primitives/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // Create crypto module with all required dependencies
-    // Using external evmts/primitives/crypto library
-    const crypto_mod = b.addModule("crypto", .{
-        .root_source_file = primitives_dep.path("src/crypto/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
-            .{ .name = "c_kzg", .module = c_kzg_mod },
-            .{ .name = "build_options", .module = build_options_mod },
-        },
-    });
-    // Add lib path for C imports in crypto module (keccak_wrapper.h, bn254_wrapper.h, etc.)
-    crypto_mod.addIncludePath(primitives_dep.path("lib"));
-    // Link BN254 library for BN254 and BLS12-381 precompiles
-    if (bn254_lib) |lib| {
-        crypto_mod.linkLibrary(lib);
-        crypto_mod.addIncludePath(b.path("lib/ark"));
-    }
-
-    // Add crypto import to primitives (circular dependency)
-    primitives_mod.addImport("crypto", crypto_mod);
-
-    // Create precompiles module
-    // Using external evmts/primitives/precompiles library
-    const precompiles_mod = b.addModule("precompiles", .{
-        .root_source_file = primitives_dep.path("src/precompiles/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-            .{ .name = "build_options", .module = build_options_mod },
-        },
-    });
+    // Use primitives package exported modules (pre-configured with all C libs, include paths, etc.)
+    const primitives_mod = primitives_dep.module("primitives");
+    const crypto_mod = primitives_dep.module("crypto");
+    const precompiles_mod = primitives_dep.module("precompiles");
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -142,8 +54,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "crypto", .module = crypto_mod },
-            // Ensure nested modules can access build options (e.g., precompiles)
-            .{ .name = "build_options", .module = build_options_mod },
         },
     });
 
@@ -186,7 +96,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "crypto", .module = crypto_mod },
-            .{ .name = "build_options", .module = build_options_mod },
         },
     });
 
@@ -275,21 +184,9 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Link BN254 library for precompile support
-    if (bn254_lib) |lib| {
-        spec_tests_state.root_module.linkLibrary(lib);
-        spec_tests_blockchain.root_module.linkLibrary(lib);
-    }
-
     // Make spec test compilation depend on test generation pipeline
     spec_tests_state.step.dependOn(&update_spec_root_state.step);
     spec_tests_blockchain.step.dependOn(&update_spec_root_blockchain.step);
-
-    // Set log level to error only (suppress debug output from tests)
-    const log_options = b.addOptions();
-    log_options.addOption(std.log.Level, "log_level", .err);
-    spec_tests_state.root_module.addOptions("build_options", log_options);
-    spec_tests_blockchain.root_module.addOptions("build_options", log_options);
 
     // Run artifacts for state tests
     const run_spec_tests_state = b.addRunArtifact(spec_tests_state);
@@ -483,12 +380,7 @@ pub fn build(b: *std.Build) void {
                 },
             });
 
-            if (bn254_lib) |lib| {
-                sub_tests.root_module.linkLibrary(lib);
-            }
-
             sub_tests.step.dependOn(&update_spec_root_state.step);
-            sub_tests.root_module.addOptions("build_options", log_options);
 
             const run_sub_tests = b.addRunArtifact(sub_tests);
             run_sub_tests.setCwd(b.path("."));
@@ -512,13 +404,7 @@ pub fn build(b: *std.Build) void {
             },
         });
 
-        // Link BN254 library for precompile support
-        if (bn254_lib) |lib| {
-            fork_tests.root_module.linkLibrary(lib);
-        }
-
         fork_tests.step.dependOn(&update_spec_root_state.step);
-        fork_tests.root_module.addOptions("build_options", log_options);
 
         const run_fork_tests = b.addRunArtifact(fork_tests);
         run_fork_tests.setCwd(b.path("."));
@@ -552,13 +438,7 @@ pub fn build(b: *std.Build) void {
             },
         });
 
-        // Link BN254 library for precompile support
-        if (bn254_lib) |lib| {
-            eip_tests.root_module.linkLibrary(lib);
-        }
-
         eip_tests.step.dependOn(&update_spec_root_state.step);
-        eip_tests.root_module.addOptions("build_options", log_options);
 
         const run_eip_tests = b.addRunArtifact(eip_tests);
         run_eip_tests.setCwd(b.path("."));
@@ -599,67 +479,27 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Set log level to error only (suppress debug output from tests)
-    interactive_spec_tests.root_module.addOptions("build_options", log_options);
-
     const run_interactive_tests = b.addRunArtifact(interactive_spec_tests);
     run_interactive_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
     const interactive_test_step = b.step("test-watch", "Run interactive test runner");
     interactive_test_step.dependOn(&run_interactive_tests.step);
 
     // WASM build target with ReleaseSmall optimization
-    // TODO: Change to wasm32-freestanding once we remove libc dependency.
-    // Currently using wasi because crypto_mod links C libraries (bn254_wrapper.a, c-kzg-4844.a, blst.a)
-    // which require libc. The dependency chain is: wasm_mod -> primitives_mod -> crypto_mod -> C libraries.
-    // To fix: Either rewrite crypto functions in pure Zig or conditionally exclude crypto from WASM builds.
+    // Using wasi because primitives package includes C libraries (BLST, C-KZG, BN254)
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
         .os_tag = .wasi,
     });
 
-    // Create WASM-specific build options (disable C library features)
-    const wasm_build_options = b.addOptions();
-    wasm_build_options.addOption(bool, "use_bn254", false); // Disable BN254 for WASM (requires C library)
-    wasm_build_options.addOption(bool, "use_c_kzg", false); // Disable C-KZG for WASM (requires C library)
-    const wasm_build_options_mod = wasm_build_options.createModule();
-
-    // Create WASM-specific primitives first (without crypto to avoid circular dependency)
-    // Using external evmts/primitives library
-    const wasm_primitives_mod = b.addModule("wasm_primitives", .{
-        .root_source_file = primitives_dep.path("src/primitives/root.zig"),
+    // Get WASM-specific primitives modules from dependency
+    const wasm_primitives_dep = b.dependency("primitives", .{
         .target = wasm_target,
         .optimize = .ReleaseSmall,
     });
 
-    // Create WASM-specific crypto module (needs primitives, NO C libraries)
-    // Using external evmts/primitives/crypto library
-    const wasm_crypto_mod = b.addModule("wasm_crypto", .{
-        .root_source_file = primitives_dep.path("src/crypto/root.zig"),
-        .target = wasm_target,
-        .optimize = .ReleaseSmall,
-        .imports = &.{
-            .{ .name = "primitives", .module = wasm_primitives_mod },
-            .{ .name = "build_options", .module = wasm_build_options_mod },
-        },
-    });
-    // NOTE: Intentionally NOT linking C libraries (bn254_lib, c_kzg_mod) for WASM
-    // These are native libraries and can't be linked into WASM builds
-
-    // Add crypto import to primitives (circular dependency)
-    wasm_primitives_mod.addImport("crypto", wasm_crypto_mod);
-
-    // Create WASM precompiles module
-    // Using external evmts/primitives/precompiles library
-    const wasm_precompiles_mod = b.addModule("wasm_precompiles", .{
-        .root_source_file = primitives_dep.path("src/precompiles/root.zig"),
-        .target = wasm_target,
-        .optimize = .ReleaseSmall,
-        .imports = &.{
-            .{ .name = "primitives", .module = wasm_primitives_mod },
-            .{ .name = "crypto", .module = wasm_crypto_mod },
-            .{ .name = "build_options", .module = wasm_build_options_mod },
-        },
-    });
+    const wasm_primitives_mod = wasm_primitives_dep.module("primitives");
+    const wasm_crypto_mod = wasm_primitives_dep.module("crypto");
+    const wasm_precompiles_mod = wasm_primitives_dep.module("precompiles");
 
     // Create WASM module with all necessary dependencies
     const wasm_mod = b.addModule("guillotine_mini_wasm", .{
@@ -670,7 +510,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "primitives", .module = wasm_primitives_mod },
             .{ .name = "crypto", .module = wasm_crypto_mod },
             .{ .name = "precompiles", .module = wasm_precompiles_mod },
-            .{ .name = "build_options", .module = wasm_build_options_mod },
         },
     });
 
@@ -725,8 +564,6 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&wasm_install.step);
 
     // Native C library build for Rust FFI integration
-    // Note: keccak include path is already added to crypto_mod during module creation above
-
     const native_mod = b.addModule("guillotine_mini_native", .{
         .root_source_file = b.path("src/root_c.zig"),
         .target = target,
@@ -735,7 +572,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
-            .{ .name = "build_options", .module = build_options_mod },
         },
     });
 
@@ -745,17 +581,7 @@ pub fn build(b: *std.Build) void {
         .root_module = native_mod,
     });
 
-    // Link crypto libraries for native build
-    if (bn254_lib) |lib| {
-        native_lib.root_module.linkLibrary(lib);
-    }
-    native_lib.root_module.linkLibrary(blst_lib);
-    native_lib.root_module.linkLibrary(c_kzg_lib);
-
     const native_install = b.addInstallArtifact(native_lib, .{});
-
-    // Make sure Rust libraries are built first
-    native_install.step.dependOn(rust_build_step);
 
     const native_step = b.step("native", "Build native static library for FFI");
     native_step.dependOn(&native_install.step);
