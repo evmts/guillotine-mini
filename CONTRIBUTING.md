@@ -5,6 +5,7 @@ Thanks for helping improve Guillotine Mini. This guide covers setup, workflows, 
 ## Prerequisites
 
 - Zig `0.15.1` or later
+- Cargo (Rust build tool) - required for cryptographic dependencies
 - Python `3.10+`
 - uv (Python package manager): `brew install uv`
 - Bun (TypeScript scripts/agents): `brew install bun`
@@ -13,7 +14,8 @@ Thanks for helping improve Guillotine Mini. This guide covers setup, workflows, 
 ## One‑Time Setup
 
 ```bash
-git submodule update --init --recursive
+# Fetch execution-specs submodule for test generation
+git submodule update --init execution-specs
 
 # Ensure Python deps and virtualenv for execution-specs are created on first fill
 uv --version  # should print a version
