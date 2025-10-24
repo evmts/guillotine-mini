@@ -70,10 +70,16 @@ pub fn build(b: *std.Build) void {
     c_kzg_mod.addIncludePath(b.path("lib/c-kzg-4844/src"));
     c_kzg_mod.addIncludePath(b.path("lib/c-kzg-4844/blst/bindings"));
 
+    // Get the primitives dependency
+    const primitives_dep = b.dependency("primitives", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Create the primitives module first, as it's a dependency
     // Using external evmts/primitives library (productionized version)
     const primitives_mod = b.addModule("primitives", .{
-        .root_source_file = b.path("lib/primitives/src/primitives/root.zig"),
+        .root_source_file = primitives_dep.path("src/primitives/root.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -81,7 +87,7 @@ pub fn build(b: *std.Build) void {
     // Create crypto module with all required dependencies
     // Using external evmts/primitives/crypto library
     const crypto_mod = b.addModule("crypto", .{
-        .root_source_file = b.path("lib/primitives/src/crypto/root.zig"),
+        .root_source_file = primitives_dep.path("src/crypto/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -102,7 +108,7 @@ pub fn build(b: *std.Build) void {
     // Create precompiles module
     // Using external evmts/primitives/precompiles library
     const precompiles_mod = b.addModule("precompiles", .{
-        .root_source_file = b.path("lib/primitives/src/precompiles/root.zig"),
+        .root_source_file = primitives_dep.path("src/precompiles/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -618,7 +624,7 @@ pub fn build(b: *std.Build) void {
     // Create WASM-specific primitives first (without crypto to avoid circular dependency)
     // Using external evmts/primitives library
     const wasm_primitives_mod = b.addModule("wasm_primitives", .{
-        .root_source_file = b.path("lib/primitives/src/primitives/root.zig"),
+        .root_source_file = primitives_dep.path("src/primitives/root.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
     });
@@ -626,7 +632,7 @@ pub fn build(b: *std.Build) void {
     // Create WASM-specific crypto module (needs primitives, NO C libraries)
     // Using external evmts/primitives/crypto library
     const wasm_crypto_mod = b.addModule("wasm_crypto", .{
-        .root_source_file = b.path("lib/primitives/src/crypto/root.zig"),
+        .root_source_file = primitives_dep.path("src/crypto/root.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
         .imports = &.{
@@ -643,7 +649,7 @@ pub fn build(b: *std.Build) void {
     // Create WASM precompiles module
     // Using external evmts/primitives/precompiles library
     const wasm_precompiles_mod = b.addModule("wasm_precompiles", .{
-        .root_source_file = b.path("lib/primitives/src/precompiles/root.zig"),
+        .root_source_file = primitives_dep.path("src/precompiles/root.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
         .imports = &.{
