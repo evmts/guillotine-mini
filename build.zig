@@ -96,6 +96,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options_mod },
         },
     });
+    // Add lib path for C imports in crypto module (keccak_wrapper.h, bn254_wrapper.h, etc.)
+    crypto_mod.addIncludePath(primitives_dep.path("lib"));
     // Link BN254 library for BN254 and BLS12-381 precompiles
     if (bn254_lib) |lib| {
         crypto_mod.linkLibrary(lib);
@@ -723,8 +725,7 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&wasm_install.step);
 
     // Native C library build for Rust FFI integration
-    // Need to add keccak include path to crypto module
-    crypto_mod.addIncludePath(b.path("lib/primitives/lib/keccak"));
+    // Note: keccak include path is already added to crypto_mod during module creation above
 
     const native_mod = b.addModule("guillotine_mini_native", .{
         .root_source_file = b.path("src/root_c.zig"),

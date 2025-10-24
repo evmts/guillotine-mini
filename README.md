@@ -19,9 +19,11 @@
 
 ## Requirements
 
-- [Zig 0.15.1+](https://ziglang.org/download/) — Core build system
-- [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html) — Required for Rust-based cryptographic dependencies (BN254)
-- [Python 3.8+](https://www.python.org/) — For test generation and spec fixtures
+**Both Zig and Cargo are required to build this project:**
+
+- [Zig 0.15.1+](https://ziglang.org/download/) — Core build system and language
+- [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html) — **Required** for building Rust-based cryptographic dependencies (BN254/ARK)
+- [Python 3.8+](https://www.python.org/) — For test generation and spec fixtures (optional for using as library)
 
 ## Installation
 
@@ -34,10 +36,12 @@ zig fetch --save https://github.com/evmts/guillotine-mini/archive/main.tar.gz
 **Option 2:** Build from source
 
 ```bash
-git clone https://github.com/evmts/guillotine-mini.git
+git clone https://github.com/evmts/guillotine-mini.git --recurse-submodules
 cd guillotine-mini
-zig build
+zig build  # Automatically fetches primitives dependency
 ```
+
+> **Note**: The primitives library is fetched automatically via `zig fetch` during build. It is no longer included as a git submodule.
 
 <br />
 
