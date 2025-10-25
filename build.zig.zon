@@ -34,7 +34,7 @@
     .dependencies = .{
         .primitives = .{
             .url = "https://github.com/evmts/primitives/archive/refs/heads/main.tar.gz",
-            .hash = "guillotine_primitives-0.0.0-yOt5gSBWkgBbcfH9pdFWgRhAv9fcx8MpwTEAgWI7AGUC",
+            .hash = "guillotine_primitives-0.1.0-yOt5gRjskgC0srib58KQ7GfflFYvH7vO4HWYkh2BXSX5",
         },
     },
     // Specifies the set of files and directories that are included in this package.
