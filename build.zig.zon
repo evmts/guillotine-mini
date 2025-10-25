@@ -49,8 +49,12 @@
         "build.zig",
         "build.zig.zon",
         "src",
-        // For example...
-        //"LICENSE",
-        //"README.md",
+        "lib",
+        "test",
+        "test_runner.zig",
+        "interactive_test_runner.zig",
+        "test_trace.zig",
+        "LICENSE",
+        "README.md",
     },
 }
