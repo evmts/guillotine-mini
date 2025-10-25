@@ -33,6 +33,29 @@
 zig fetch --save https://github.com/evmts/guillotine-mini/archive/main.tar.gz
 ```
 
+Then in your `build.zig`:
+
+```zig
+const guillotine_dep = b.dependency("guillotine_mini", .{
+    .target = target,
+    .optimize = optimize,
+});
+const guillotine_mod = guillotine_dep.module("guillotine_mini");
+
+// Add to your executable/library
+exe.root_module.addImport("guillotine_mini", guillotine_mod);
+
+// IMPORTANT: Link cryptographic library artifacts from primitives
+const primitives_dep = b.dependency("guillotine_primitives", .{
+    .target = target,
+    .optimize = optimize,
+});
+exe.linkLibrary(primitives_dep.artifact("blst"));
+exe.linkLibrary(primitives_dep.artifact("keccak-asm"));
+exe.linkLibrary(primitives_dep.artifact("sha3-asm"));
+exe.linkLibrary(primitives_dep.artifact("crypto_wrappers"));
+```
+
 **Option 2:** Build from source
 
 ```bash
@@ -42,6 +65,8 @@ zig build  # Automatically fetches primitives dependency
 ```
 
 > **Note**: The primitives library is fetched automatically via `zig fetch` during build. It is no longer included as a git submodule.
+>
+> **For downstream consumers**: When using guillotine-mini as a dependency, you must explicitly link the cryptographic library artifacts from the primitives package (blst, keccak-asm, sha3-asm, crypto_wrappers). See the build.zig example above.
 
 <br />
 
