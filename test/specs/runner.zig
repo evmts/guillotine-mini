@@ -138,23 +138,165 @@ fn runJsonTestImplForFork(allocator: std.mem.Allocator, test_case: std.json.Valu
 }
 
 fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.Value, opt_test_file_path: ?[]const u8, opt_test_name: ?[]const u8) !void {
-    // Temporarily disabled due to Zig 0.15 API changes
-    _ = allocator;
-    _ = test_case;
-    _ = opt_test_file_path;
-    _ = opt_test_name;
-    return;
+    _ = opt_test_name; // Currently unused parameter
 
-    // NOTE: The rest of this function has been temporarily disabled due to Zig 0.15 API changes.
-    // The trace generation code uses ArrayList and file writer APIs that have changed significantly
-    // in Zig 0.15. This functionality is only used for debugging test failures, so it's acceptable
-    // to disable it temporarily while focusing on fixing the actual EVM implementation.
-    //
-    // To re-enable, the following APIs need to be updated for Zig 0.15:
-    // - std.ArrayList initialization patterns
-    // - File writer API changes
-    // - JSON Value array handling
-    // - std.fmt.fmtSliceHexLower (removed in newer Zig versions)
+    // Re-run with trace capture
+    var tracer = trace.Tracer.init(allocator);
+    defer tracer.deinit();
+    tracer.enable();
+
+    // Capture our trace (ignore errors since we're already in error state)
+    runJsonTestImpl(allocator, test_case, &tracer) catch {};
+
+    if (tracer.entries.items.len == 0) {
+        std.debug.print("\n  No trace captured (test may have failed before execution)\n", .{});
+        return;
+    }
+
+    // Use provided test file path if available, otherwise try to derive from _info.source
+    var test_file_path_buf: [1024]u8 = undefined;
+    const test_file_path = blk: {
+        // First, check if we have a direct path from the caller
+        if (opt_test_file_path) |path| {
+            break :blk path;
+        }
+
+        // Fallback: try to derive from _info.source (for ethereum-tests format)
+        if (test_case.object.get("_info")) |info| {
+            if (info.object.get("source")) |source| {
+                const source_path = source.string;
+
+                // Find the part after "GeneralStateTestsFiller/"
+                if (std.mem.indexOf(u8, source_path, "GeneralStateTestsFiller/")) |idx| {
+                    const after_filler = source_path[idx + "GeneralStateTestsFiller/".len ..];
+
+                    // Remove "Filler.yml" suffix and add ".json"
+                    if (std.mem.endsWith(u8, after_filler, "Filler.yml")) {
+                        const without_suffix = after_filler[0 .. after_filler.len - "Filler.yml".len];
+                        break :blk try std.fmt.bufPrint(&test_file_path_buf, "test/fixtures/general_state_tests/{s}.json", .{without_suffix});
+                    }
+                }
+            }
+        }
+        // Silently return null if metadata not available (common for generated tests)
+        break :blk null;
+    };
+
+    if (test_file_path == null) {
+        // Silently skip trace generation when _info.source is not available
+        return;
+    }
+
+    // Generate reference trace using Python ethereum-spec-evm
+    const ref_trace_path = "trace_ref.jsonl";
+    defer std.fs.cwd().deleteFile(ref_trace_path) catch {};
+
+    const python_cmd = try std.fmt.allocPrint(
+        allocator,
+        "execution-specs/.venv/bin/ethereum-spec-evm statetest --json {s} 1>{s} 2>/dev/null",
+        .{ test_file_path.?, ref_trace_path },
+    );
+    defer allocator.free(python_cmd);
+
+    var child = std.process.Child.init(&.{ "sh", "-c", python_cmd }, allocator);
+    _ = child.spawnAndWait() catch {
+        std.debug.print("\n  Failed to generate reference trace (Python execution-specs error)\n", .{});
+        return;
+    };
+
+    // Parse reference trace
+    const ref_trace_file = std.fs.cwd().openFile(ref_trace_path, .{}) catch {
+        std.debug.print("\n  Reference trace file not found\n", .{});
+        return;
+    };
+    defer ref_trace_file.close();
+
+    const ref_trace_content = try ref_trace_file.readToEndAlloc(allocator, 100 * 1024 * 1024);
+    defer allocator.free(ref_trace_content);
+
+    // Parse JSONL format (one JSON object per line)
+    var ref_tracer = trace.Tracer.init(allocator);
+    defer ref_tracer.deinit();
+
+    var line_it = std.mem.splitScalar(u8, ref_trace_content, '\n');
+    while (line_it.next()) |line| {
+        if (line.len == 0) continue;
+
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
+        defer parsed.deinit();
+
+        // Extract trace entry fields from JSON
+        const obj = parsed.value.object;
+        const entry = trace.TraceEntry{
+            .pc = @intCast(obj.get("pc").?.integer),
+            .op = @intCast(obj.get("op").?.integer),
+            .gas = blk: {
+                const gas_val = obj.get("gas").?;
+                if (gas_val == .string) {
+                    break :blk try std.fmt.parseInt(u64, gas_val.string, 0);
+                } else {
+                    break :blk @intCast(gas_val.integer);
+                }
+            },
+            .gasCost = blk: {
+                const cost_val = obj.get("gasCost").?;
+                if (cost_val == .string) {
+                    break :blk try std.fmt.parseInt(u64, cost_val.string, 0);
+                } else {
+                    break :blk @intCast(cost_val.integer);
+                }
+            },
+            .memory = null,
+            .memSize = @intCast(obj.get("memSize").?.integer),
+            .stack = &.{},
+            .returnData = null,
+            .depth = @intCast(obj.get("depth").?.integer),
+            .refund = @intCast(obj.get("refund").?.integer),
+            .opName = try allocator.dupe(u8, obj.get("opName").?.string),
+        };
+
+        try ref_tracer.entries.append(entry);
+    }
+
+    // Compare traces and print diff
+    const diff = try trace.TraceDiff.compare(allocator, &tracer, &ref_tracer);
+
+    std.debug.print("\n", .{});
+
+    // Print diff using debug output
+    if (diff.divergence_index) |idx| {
+        std.debug.print("Trace Divergence at step {d}\n", .{idx});
+
+        if (diff.diff_field) |field| {
+            std.debug.print("Difference in: {s}\n\n", .{field});
+        }
+
+        if (diff.our_entry) |our| {
+            std.debug.print("Our EVM:\n", .{});
+            std.debug.print("  PC: 0x{x}  Op: 0x{x:0>2} ({s})  Gas: {d}\n", .{
+                our.pc,
+                our.op,
+                our.opName,
+                our.gas,
+            });
+            std.debug.print("  Stack depth: {d}\n", .{our.stack.len});
+        }
+
+        if (diff.ref_entry) |ref| {
+            std.debug.print("\nReference:\n", .{});
+            std.debug.print("  PC: 0x{x}  Op: 0x{x:0>2} ({s})  Gas: {d}\n", .{
+                ref.pc,
+                ref.op,
+                ref.opName,
+                ref.gas,
+            });
+            std.debug.print("  Stack depth: {d}\n", .{ref.stack.len});
+        }
+    } else {
+        std.debug.print("Traces match perfectly!\n", .{});
+    }
+
+    std.debug.print("\n", .{});
 }
 
 // Helper function to check if opcode is memory-related
@@ -896,7 +1038,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
 
     // Create EVM with test host and detected hardfork
     const host_interface = test_host.hostInterface();
-    const Evm = evm_mod.Evm(.{});  // Use default config
+    const Evm = evm_mod.Evm(.{}); // Use default config
     var evm_instance = try Evm.init(allocator, host_interface, hardfork, block_ctx, null);
     defer evm_instance.deinit();
 
@@ -1035,13 +1177,15 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 // Execute system call to beacon roots contract
                 // This call uses system address as caller and has 30M gas
                 _ = beacon_code; // Bytecode is fetched via host interface
-                const call_result = evm_instance.call(.{ .call = .{
-                    .caller = system_address,
-                    .to = beacon_roots_address,
-                    .value = 0,
-                    .input = parent_beacon_root,
-                    .gas = 30_000_000, // SYSTEM_TRANSACTION_GAS
-                } });
+                const call_result = evm_instance.call(.{
+                    .call = .{
+                        .caller = system_address,
+                        .to = beacon_roots_address,
+                        .value = 0,
+                        .input = parent_beacon_root,
+                        .gas = 30_000_000, // SYSTEM_TRANSACTION_GAS
+                    },
+                });
                 _ = call_result; // System call failures are ignored per spec
             }
         }
@@ -1079,13 +1223,15 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 // Execute system call to history storage contract
                 // This call uses system address as caller and has 30M gas
                 _ = history_code; // Bytecode is fetched via host interface
-                const call_result = evm_instance.call(.{ .call = .{
-                    .caller = system_address,
-                    .to = history_storage_address,
-                    .value = 0,
-                    .input = parent_hash,
-                    .gas = 30_000_000, // SYSTEM_TRANSACTION_GAS
-                } });
+                const call_result = evm_instance.call(.{
+                    .call = .{
+                        .caller = system_address,
+                        .to = history_storage_address,
+                        .value = 0,
+                        .input = parent_hash,
+                        .gas = 30_000_000, // SYSTEM_TRANSACTION_GAS
+                    },
+                });
                 _ = call_result; // System call failures are ignored per spec
             }
         }
@@ -1425,7 +1571,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 const init_code_words = (tx_data.len + 31) / 32;
                 const init_code_cost = @as(u64, @intCast(init_code_words)) * primitives.GasConstants.InitcodeWordGas;
                 intrinsic_gas += init_code_cost;
-
             }
 
             // Add authorization list cost if present (EIP-7702, Prague+)
@@ -1607,7 +1752,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // When execution_gas=0, the EVM call will fail validation, so we must
             // transfer value here in the test runner before attempting the call
             const target_addr = to orelse primitives.ZERO_ADDRESS;
-            var value_for_evm_call = value;  // Value to pass to EVM (0 if we transfer here)
+            var value_for_evm_call = value; // Value to pass to EVM (0 if we transfer here)
 
             if (value > 0 and to != null and execution_gas == 0) {
                 // Execution gas is 0, so EVM call will fail validation.
@@ -1622,7 +1767,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 try test_host.setBalance(sender, sender_balance_after_gas - value);
                 const recipient_balance = test_host.balances.get(target_addr) orelse 0;
                 try test_host.setBalance(target_addr, recipient_balance + value);
-                value_for_evm_call = 0;  // Don't let EVM transfer value again
+                value_for_evm_call = 0; // Don't let EVM transfer value again
             }
 
             // Get contract code
@@ -1716,8 +1861,17 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 if (auth_list_json == .array) {
                     for (auth_list_json.array.items) |auth_json| {
                         // Parse authorization: {chainId, address, nonce, v, r, s}
-                        const chain_id = try parseIntFromJson(auth_json.object.get("chainId").?);
-                        _ = chain_id; // TODO: validate chain_id matches transaction
+                        const auth_chain_id = try parseIntFromJson(auth_json.object.get("chainId").?);
+
+                        // EIP-7702: Validate chain ID
+                        // If chain_id != 0 (0 means "any chain") and chain_id != transaction_chain_id, skip this authorization
+                        if (auth_chain_id != 0) {
+                            const tx_chain_id = if (block_ctx) |ctx| ctx.chain_id else 1;
+                            if (auth_chain_id != tx_chain_id) {
+                                continue; // Skip this authorization due to chain ID mismatch
+                            }
+                        }
+
                         const auth_addr_str = auth_json.object.get("address").?.string;
                         const auth_addr = try parseAddress(auth_addr_str);
                         const auth_nonce = try parseIntFromJson(auth_json.object.get("nonce").?);
@@ -1782,9 +1936,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
 
                 const create_result = try evm_instance.inner_create(
                     value,
-                    tx_data,  // initcode
+                    tx_data, // initcode
                     execution_gas,
-                    null,  // no salt for regular CREATE (only CREATE2 uses salt)
+                    null, // no salt for regular CREATE (only CREATE2 uses salt)
                 );
                 result_success = create_result.success;
                 result_gas_left = create_result.gas_left;
@@ -1846,7 +2000,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // HOWEVER: For very early forks (Frontier/Homestead), it appears NO unused gas is refunded.
             // The coinbase keeps ALL the gas up to gas_limit.
             const gas_to_refund = if (evm_instance.hardfork.isBefore(.TANGERINE_WHISTLE))
-                0  // No unused gas refund in early forks
+                0 // No unused gas refund in early forks
             else
                 gas_limit - gas_used;
             const gas_refund_amount = gas_to_refund * evm_instance.gas_price;
@@ -1860,7 +2014,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // IMPORTANT: In early forks (Frontier/Homestead), the coinbase gets paid for the FULL gas_limit,
             // not just gas consumed. Later forks (Tangerine Whistle+) only pay for gas actually consumed.
             const gas_for_coinbase = if (evm_instance.hardfork.isBefore(.TANGERINE_WHISTLE))
-                gas_limit  // Early forks: coinbase gets paid for full gas_limit
+                gas_limit // Early forks: coinbase gets paid for full gas_limit
             else
                 gas_used;
             const coinbase_reward = gas_for_coinbase * priority_fee_per_gas;
@@ -1989,7 +2143,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
                     const actual = test_host.balances.get(address) orelse 0;
                     if (exp != actual) {
-                        std.debug.print("BALANCE MISMATCH: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
+                        std.debug.print("BALANCE MISMATCH: addr={any} expected {}, found {}\n", .{ address.bytes, exp, actual });
                     }
                     try testing.expectEqual(exp, actual);
                 }
@@ -2002,8 +2156,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                         if ((exp == 100 and actual == 99) or
                             (exp == 37 and actual == 48) or
                             (exp == 0 and actual == 23) or
-                            (exp == 0 and actual == 2)) {
-                            std.debug.print("INVESTIGATE NONCE: addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
+                            (exp == 0 and actual == 2))
+                        {
+                            std.debug.print("INVESTIGATE NONCE: addr={any} expected {}, found {}\n", .{ address.bytes, exp, actual });
                         }
                     }
                     try testing.expectEqual(exp, actual);
@@ -2030,7 +2185,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                             const slot_key = StorageSlotKey{ .address = address, .slot = key };
                             const actual_value = test_host.storage.get(slot_key) orelse 0;
                             if (exp_value != actual_value) {
-                                std.debug.print("STORAGE MISMATCH: addr={any} slot={} expected {}, found {}\n", .{address.bytes, key, exp_value, actual_value});
+                                std.debug.print("STORAGE MISMATCH: addr={any} slot={} expected {}, found {}\n", .{ address.bytes, key, exp_value, actual_value });
                             }
                             try testing.expectEqual(exp_value, actual_value);
                         }
@@ -2087,8 +2242,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                     if ((exp == 100 and actual == 99) or
                                         (exp == 37 and actual == 48) or
                                         (exp == 0 and actual == 23) or
-                                        (exp == 0 and actual == 2)) {
-                                        std.debug.print("INVESTIGATE NONCE(expect): addr={any} expected {}, found {}\n", .{address.bytes, exp, actual});
+                                        (exp == 0 and actual == 2))
+                                    {
+                                        std.debug.print("INVESTIGATE NONCE(expect): addr={any} expected {}, found {}\n", .{ address.bytes, exp, actual });
                                     }
                                 }
                                 try testing.expectEqual(exp, actual);
