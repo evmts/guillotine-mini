@@ -68,7 +68,27 @@ pub fn Frame(comptime config: EvmConfig) type {
         hardfork: Hardfork,
         is_static: bool,
 
-        /// Initialize a new frame
+        /// Initialize a new frame for bytecode execution
+        ///
+        /// Creates a new execution frame with the given parameters. Performs bytecode analysis
+        /// to identify valid jump destinations (JUMPDEST opcodes).
+        ///
+        /// Parameters:
+        ///   - allocator: Memory allocator for frame resources
+        ///   - bytecode_raw: Raw bytecode to execute
+        ///   - gas: Initial gas available for execution (signed for gas refunds)
+        ///   - caller: Address that initiated this call
+        ///   - address: Address being executed (contract address)
+        ///   - value: Wei value transferred with this call
+        ///   - calldata: Input data for the call
+        ///   - evm_ptr: Opaque pointer to parent Evm instance
+        ///   - hardfork: Active hardfork for gas metering and feature flags
+        ///   - is_static: Whether this is a static call (no state modifications allowed)
+        ///
+        /// Returns: Initialized Frame instance
+        ///
+        /// Errors:
+        ///   - OutOfMemory: If allocation fails for stack, memory, or bytecode analysis
         pub fn init(
             allocator: std.mem.Allocator,
             bytecode_raw: []const u8,
@@ -127,7 +147,12 @@ pub fn Frame(comptime config: EvmConfig) type {
         }
 
         /// Get the Evm instance matching this Frame's config
-        /// This is a helper for handlers that need to access the EVM
+        ///
+        /// Retrieves a typed pointer to the parent EVM instance from the opaque pointer.
+        /// This is a helper for instruction handlers that need to access EVM state
+        /// (storage, balances, nested calls, etc.).
+        ///
+        /// Returns: Typed pointer to parent Evm instance with matching config
         pub fn getEvm(self: *Self) *evm_mod.Evm(config) {
             return @ptrCast(@alignCast(self.evm_ptr));
         }
@@ -333,6 +358,28 @@ pub fn Frame(comptime config: EvmConfig) type {
 
         /// ----------------------------------- OPCODES ---------------------------------- ///
         /// Execute a single opcode - delegates to Evm for external ops
+        ///
+        /// Executes one EVM opcode instruction. Handles all standard EVM opcodes as well as
+        /// custom opcode overrides (JavaScript handlers or native Zig handlers configured via EvmConfig).
+        ///
+        /// Handler priority:
+        ///   1. JavaScript custom handlers (if registered via root_c.zig)
+        ///   2. Native Zig custom handlers (configured via EvmConfig.opcode_overrides)
+        ///   3. Default EVM opcode implementations
+        ///
+        /// Parameters:
+        ///   - opcode: The opcode byte to execute (0x00-0xFF)
+        ///
+        /// Returns: void
+        ///
+        /// Errors:
+        ///   - OutOfGas: If insufficient gas for operation
+        ///   - StackUnderflow: If stack has insufficient items
+        ///   - StackOverflow: If stack exceeds 1024 items
+        ///   - InvalidJumpDestination: If JUMP/JUMPI targets invalid location
+        ///   - StaticCallViolation: If state-modifying op in static context
+        ///   - InvalidOpcode: If opcode is not recognized
+        ///   - Other errors: Depending on specific opcode requirements
         pub fn executeOpcode(self: *Self, opcode: u8) EvmError!void {
             // Check for JavaScript custom opcode handler first
             const root_c = @import("root_c.zig");
