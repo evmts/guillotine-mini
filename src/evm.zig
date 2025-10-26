@@ -43,6 +43,11 @@ pub const BlockContext = struct {
     block_gas_limit: u64,
     block_base_fee: u256,
     blob_base_fee: u256,
+    /// Array of recent block hashes (last 256 blocks)
+    /// Per Python reference (cancun/vm/__init__.py:42): block_hashes: List[Hash32]
+    /// Python access pattern: block_hashes[-(current_block - target_block)]
+    /// Empty slice if no block hashes available
+    block_hashes: []const [32]u8 = &[_][32]u8{},
 };
 
 /// Creates a configured EVM instance type.
@@ -259,10 +264,22 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Set balance with copy-on-write snapshot for revert handling
-        /// This should be called instead of direct host.setBalance() when inside a frame
+        ///
+        /// This should be called instead of direct host.setBalance() when inside a frame.
+        /// Uses copy-on-write semantics to track balance changes for proper revert handling.
+        ///
         /// IMPORTANT: Snapshots the balance in ALL active snapshots on the stack, not just the current one.
         /// This ensures that parent frames can restore state when they revert, even if the balance
         /// was modified in a nested call.
+        ///
+        /// Parameters:
+        ///   - addr: The address whose balance to modify
+        ///   - new_balance: The new balance value to set
+        ///
+        /// Returns: void
+        ///
+        /// Errors:
+        ///   - OutOfMemory: If snapshot allocation fails
         pub fn setBalanceWithSnapshot(self: *Self, addr: primitives.Address, new_balance: u256) !void {
             // Snapshot in ALL active snapshots (from outermost to innermost)
             // This ensures parent frames can restore state even if modified in nested calls
@@ -301,6 +318,19 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Compute CREATE address: keccak256(rlp([sender, nonce]))[12:]
+        ///
+        /// Calculates the address for a new contract created via CREATE opcode or
+        /// contract creation transaction. Uses RLP encoding of [sender_address, nonce]
+        /// and takes the last 20 bytes of the keccak256 hash.
+        ///
+        /// Parameters:
+        ///   - sender: Address of the account creating the contract
+        ///   - nonce: Nonce value of the sender at creation time
+        ///
+        /// Returns: The computed contract address
+        ///
+        /// Errors:
+        ///   - OutOfMemory: If RLP buffer allocation fails
         pub fn computeCreateAddress(self: *Self, sender: primitives.Address, nonce: u64) !primitives.Address {
             _ = self;
             // RLP encoding of [sender (20 bytes), nonce]
@@ -384,6 +414,26 @@ pub fn Evm(comptime config: EvmConfig) type {
             return addr;
         }
 
+        /// Pre-warm addresses at transaction start (EIP-2929, EIP-3651)
+        ///
+        /// Marks specific addresses as "warm" before transaction execution begins.
+        /// This affects gas costs for subsequent accesses to these addresses.
+        ///
+        /// Pre-warmed addresses (Berlin+):
+        ///   - Transaction origin (sender)
+        ///   - Transaction target (if not zero address)
+        ///   - Coinbase address (Shanghai+, EIP-3651)
+        ///   - All precompile addresses (0x01-0x09 Berlin-Istanbul, 0x01-0x0A Cancun+, 0x01-0x12 Prague+)
+        ///
+        /// Pre-Berlin: No-op (no warm/cold distinction)
+        ///
+        /// Parameters:
+        ///   - target: The transaction target address
+        ///
+        /// Returns: void
+        ///
+        /// Errors:
+        ///   - StorageError: If warming addresses fails
         pub fn preWarmTransaction(self: *Self, target: primitives.Address) errors.CallError!void {
             // EIP-2929 (Berlin+): Pre-warm addresses at transaction start
             // Pre-Berlin: no warm/cold distinction, so skip this entirely
@@ -594,10 +644,19 @@ pub fn Evm(comptime config: EvmConfig) type {
                             }
                         } else {
                             // Clear all account state in EVM storage
-                            // If allocation fails during cleanup, skip clearing (transaction is ending anyway)
-                            self.balances.put(addr, 0) catch continue;
-                            self.code.put(addr, &[_]u8{}) catch continue;
-                            self.nonces.put(addr, 0) catch continue;
+                            // These put operations should never fail in normal circumstances since we're
+                            // using an arena allocator for transaction-scoped data. If OOM occurs during
+                            // cleanup, it indicates a critical system issue that should be handled explicitly.
+                            self.balances.put(addr, 0) catch |err| {
+                                std.debug.print("CRITICAL: Failed to clear balance for selfdestructed account {any}: {any}\n", .{ addr, err });
+                                // Continue cleanup of other accounts even if this one fails
+                            };
+                            self.code.put(addr, &[_]u8{}) catch |err| {
+                                std.debug.print("CRITICAL: Failed to clear code for selfdestructed account {any}: {any}\n", .{ addr, err });
+                            };
+                            self.nonces.put(addr, 0) catch |err| {
+                                std.debug.print("CRITICAL: Failed to clear nonce for selfdestructed account {any}: {any}\n", .{ addr, err });
+                            };
 
                             // Clear storage
                             var storage_it = self.storage.storage.iterator();
@@ -1039,7 +1098,6 @@ pub fn Evm(comptime config: EvmConfig) type {
                 const caller_balance = if (self.host) |h| h.getBalance(frame_caller) else self.balances.get(frame_caller) orelse 0;
                 if (caller_balance < value) {
                     // Insufficient balance - call fails
-                    // std.debug.print("CALL FAILED: insufficient balance (caller={any} needs {} has {})\n", .{frame_caller.bytes, value, caller_balance});
                     return makeFailure(self.arena.allocator(), gas);
                 }
 
@@ -1055,7 +1113,6 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // Get code for the target address
             const code = self.get_code(address);
-            // std.debug.print("DEBUG inner_call: address={any} code.len={} frames={}\n", .{address.bytes, code.len, self.frames.items.len});
             if (code.len == 0) {
                 // Check for JavaScript custom precompile handler first
                 const root_c = @import("root_c.zig");
@@ -1160,7 +1217,6 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // Execute frame (don't cache pointer - it may become invalid during nested calls)
             self.frames.items[self.frames.items.len - 1].execute() catch {
-                // std.debug.print("CALL FAILED: execution error {} (addr={any})\n", .{err, address.bytes});
                 _ = self.frames.pop();
 
                 // Restore gas refunds on failure
@@ -1365,14 +1421,9 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
             }
 
-            // if (frame.reverted) {
-            //     std.debug.print("CALL FAILED: reverted (addr={any})\n", .{address.bytes});
-            // }
-
             // Pop frame from stack
             _ = self.frames.pop();
 
-            // std.debug.print("RETURN: addr={any} success={} gas_left={}\n", .{address.bytes, result.success, result.gas_left});
             // No cleanup needed - arena handles it
             return result;
         }

@@ -171,10 +171,10 @@ pub const StorageInjector = struct {
     allocator: std.mem.Allocator,
 
     // LRU cache (check before sending message)
-    storage_cache: std.AutoHashMap(StorageKey, u256),
-    balance_cache: std.AutoHashMap(Address, u256),
-    code_cache: std.AutoHashMap(Address, []const u8),
-    nonce_cache: std.AutoHashMap(Address, u64),
+    storage_cache: LruCache(StorageKey, u256, 1024),
+    balance_cache: LruCache(Address, u256, 256),
+    code_cache: LruCache(Address, []const u8, 128),
+    nonce_cache: LruCache(Address, u64, 256),
 
     // Dirty tracking (for change dump)
     dirty_storage: std.AutoHashMap(StorageKey, void),
@@ -185,10 +185,10 @@ pub const StorageInjector = struct {
     pub fn init(allocator: std.mem.Allocator) !StorageInjector {
         return StorageInjector{
             .allocator = allocator,
-            .storage_cache = std.AutoHashMap(StorageKey, u256).init(allocator),
-            .balance_cache = std.AutoHashMap(Address, u256).init(allocator),
-            .code_cache = std.AutoHashMap(Address, []const u8).init(allocator),
-            .nonce_cache = std.AutoHashMap(Address, u64).init(allocator),
+            .storage_cache = try LruCache(StorageKey, u256, 1024).init(allocator),
+            .balance_cache = try LruCache(Address, u256, 256).init(allocator),
+            .code_cache = try LruCache(Address, []const u8, 128).init(allocator),
+            .nonce_cache = try LruCache(Address, u64, 256).init(allocator),
             .dirty_storage = std.AutoHashMap(StorageKey, void).init(allocator),
             .dirty_balances = std.AutoHashMap(Address, void).init(allocator),
             .dirty_nonces = std.AutoHashMap(Address, void).init(allocator),
@@ -197,6 +197,13 @@ pub const StorageInjector = struct {
     }
 
     pub fn deinit(self: *StorageInjector) void {
+        // Clean up code cache memory - need to free each slice
+        var code_iter = self.code_cache.map.valueIterator();
+        while (code_iter.next()) |node_ptr| {
+            const node = node_ptr.*;
+            self.allocator.free(node.value);
+        }
+
         self.storage_cache.deinit();
         self.balance_cache.deinit();
         self.code_cache.deinit();
@@ -230,25 +237,193 @@ pub const StorageInjector = struct {
 
     /// Clear cache and dirty sets (called at start of new transaction)
     pub fn clearCache(self: *StorageInjector) void {
-        self.storage_cache.clearRetainingCapacity();
-        self.balance_cache.clearRetainingCapacity();
-        self.code_cache.clearRetainingCapacity();
-        self.nonce_cache.clearRetainingCapacity();
+        self.storage_cache.clear();
+        self.balance_cache.clear();
+        self.code_cache.clear();
+        self.nonce_cache.clear();
         self.dirty_storage.clearRetainingCapacity();
         self.dirty_balances.clearRetainingCapacity();
         self.dirty_nonces.clearRetainingCapacity();
         self.dirty_codes.clearRetainingCapacity();
     }
 
+    // Cache read methods
+    pub fn getStorageFromCache(self: *StorageInjector, address: Address, slot: u256) ?u256 {
+        const key = StorageKey{ .address = address.bytes, .slot = slot };
+        return self.storage_cache.get(key);
+    }
+
+    pub fn getBalanceFromCache(self: *StorageInjector, address: Address) ?u256 {
+        return self.balance_cache.get(address);
+    }
+
+    pub fn getCodeFromCache(self: *StorageInjector, address: Address) ?[]const u8 {
+        return self.code_cache.get(address);
+    }
+
+    pub fn getNonceFromCache(self: *StorageInjector, address: Address) ?u64 {
+        return self.nonce_cache.get(address);
+    }
+
+    // Cache write methods
+    pub fn cacheStorage(self: *StorageInjector, address: Address, slot: u256, value: u256) !void {
+        const key = StorageKey{ .address = address.bytes, .slot = slot };
+        try self.storage_cache.put(key, value);
+    }
+
+    pub fn cacheBalance(self: *StorageInjector, address: Address, balance: u256) !void {
+        try self.balance_cache.put(address, balance);
+    }
+
+    pub fn cacheCode(self: *StorageInjector, address: Address, code: []const u8) !void {
+        // Duplicate the code slice since cache will own it
+        const code_copy = try self.allocator.dupe(u8, code);
+        try self.code_cache.put(address, code_copy);
+    }
+
+    pub fn cacheNonce(self: *StorageInjector, address: Address, nonce: u64) !void {
+        try self.nonce_cache.put(address, nonce);
+    }
+
     /// Dump all state changes as JSON for commit
     /// Returns JSON string allocated with arena allocator
     pub fn dumpChanges(self: *StorageInjector, evm: anytype) ![]const u8 {
-        _ = evm; // Unused for now - simplified
+        // Determine EVM type (mock vs real) once at the beginning
+        const EvmTypeInfo = @typeInfo(@TypeOf(evm));
+        const EvmType = if (EvmTypeInfo == .pointer) @TypeOf(evm.*) else @TypeOf(evm);
 
-        // Return compile-time known string as a slice
-        const json_literal = "{\"storage\":[],\"balances\":[],\"nonces\":[],\"codes\":[],\"selfDestructs\":[]}";
-        const result = try self.allocator.dupe(u8, json_literal);
-        return result;
+        var buffer: std.ArrayList(u8) = .{};
+        defer buffer.deinit(self.allocator);
+        const writer = buffer.writer(self.allocator);
+
+        // Start JSON object
+        try writer.writeAll("{\"storage\":[");
+
+        // Dump storage changes
+        var storage_iter = self.dirty_storage.keyIterator();
+        var first_storage = true;
+        while (storage_iter.next()) |key| {
+            if (!first_storage) try writer.writeAll(",");
+            first_storage = false;
+
+            // Get original and current values
+            // Support both mock EVM (with HashMap) and real EVM (with Storage struct)
+            const is_mock = @hasField(EvmType, "original_storage");
+
+            const original = if (is_mock)
+                evm.original_storage.get(key.*) orelse 0
+            else
+                evm.storage.getOriginal(primitives.Address{ .bytes = key.address }, key.slot);
+
+            const current = if (is_mock)
+                evm.storage.get(key.*) orelse 0
+            else
+                evm.storage.get(primitives.Address{ .bytes = key.address }, key.slot) catch 0;
+
+            // Format: {"address":"0x...","slot":"0x...","originalValue":"0x...","newValue":"0x..."}
+            try writer.writeAll("{\"address\":\"0x");
+            // Format address as hex
+            for (key.address) |byte| {
+                try std.fmt.format(writer, "{x:0>2}", .{byte});
+            }
+            try writer.writeAll("\",\"slot\":\"0x");
+            try std.fmt.format(writer, "{x}", .{key.slot});
+            try writer.writeAll("\",\"originalValue\":\"0x");
+            try std.fmt.format(writer, "{x}", .{original});
+            try writer.writeAll("\",\"newValue\":\"0x");
+            try std.fmt.format(writer, "{x}", .{current});
+            try writer.writeAll("\"}");
+        }
+
+        try writer.writeAll("],\"balances\":[");
+
+        // Dump balance changes
+        var balance_iter = self.dirty_balances.keyIterator();
+        var first_balance = true;
+        while (balance_iter.next()) |address| {
+            if (!first_balance) try writer.writeAll(",");
+            first_balance = false;
+
+            const balance = if (evm.balances.get(address.*)) |b| b else 0;
+
+            // Format: {"address":"0x...","balance":"0x..."}
+            try writer.writeAll("{\"address\":\"0x");
+            for (address.bytes) |byte| {
+                try std.fmt.format(writer, "{x:0>2}", .{byte});
+            }
+            try writer.writeAll("\",\"balance\":\"0x");
+            try std.fmt.format(writer, "{x}", .{balance});
+            try writer.writeAll("\"}");
+        }
+
+        try writer.writeAll("],\"nonces\":[");
+
+        // Dump nonce changes
+        var nonce_iter = self.dirty_nonces.keyIterator();
+        var first_nonce = true;
+        while (nonce_iter.next()) |address| {
+            if (!first_nonce) try writer.writeAll(",");
+            first_nonce = false;
+
+            const nonce = if (@hasField(EvmType, "nonces"))
+                evm.nonces.get(address.*) orelse 0
+            else
+                evm.getNonce(address.*);
+
+            // Format: {"address":"0x...","nonce":"0x..."}
+            try writer.writeAll("{\"address\":\"0x");
+            for (address.bytes) |byte| {
+                try std.fmt.format(writer, "{x:0>2}", .{byte});
+            }
+            try writer.writeAll("\",\"nonce\":\"0x");
+            try std.fmt.format(writer, "{x}", .{nonce});
+            try writer.writeAll("\"}");
+        }
+
+        try writer.writeAll("],\"codes\":[");
+
+        // Dump code changes
+        var code_iter = self.dirty_codes.keyIterator();
+        var first_code = true;
+        while (code_iter.next()) |address| {
+            if (!first_code) try writer.writeAll(",");
+            first_code = false;
+
+            const code = if (evm.code.get(address.*)) |c| c else &[_]u8{};
+
+            // Format: {"address":"0x...","code":"0x..."}
+            try writer.writeAll("{\"address\":\"0x");
+            for (address.bytes) |byte| {
+                try std.fmt.format(writer, "{x:0>2}", .{byte});
+            }
+            try writer.writeAll("\",\"code\":\"0x");
+            for (code) |byte| {
+                try std.fmt.format(writer, "{x:0>2}", .{byte});
+            }
+            try writer.writeAll("\"}");
+        }
+
+        try writer.writeAll("],\"selfDestructs\":[");
+
+        // Dump self-destructs if tracked
+        if (@hasField(EvmType, "selfdestructed_accounts")) {
+            var selfdestruct_iter = evm.selfdestructed_accounts.keyIterator();
+            var first_sd = true;
+            while (selfdestruct_iter.next()) |address| {
+                if (!first_sd) try writer.writeAll(",");
+                first_sd = false;
+
+                try writer.writeAll("\"0x");
+                for (address.bytes) |byte| {
+                    try std.fmt.format(writer, "{x:0>2}", .{byte});
+                }
+                try writer.writeAll("\"");
+            }
+        }
+
+        try writer.writeAll("]}");
+
+        return buffer.toOwnedSlice(self.allocator);
     }
 };
 
@@ -263,7 +438,7 @@ test "StorageInjector - init and deinit" {
     defer injector.deinit();
 
     // Verify empty state
-    try testing.expectEqual(@as(usize, 0), injector.storage_cache.count());
+    try testing.expectEqual(@as(usize, 0), injector.storage_cache.size);
     try testing.expectEqual(@as(usize, 0), injector.dirty_storage.count());
 }
 
@@ -314,7 +489,7 @@ test "StorageInjector - clearCache clears all state" {
     injector.clearCache();
 
     // Verify everything is cleared
-    try testing.expectEqual(@as(usize, 0), injector.storage_cache.count());
+    try testing.expectEqual(@as(usize, 0), injector.storage_cache.size);
     try testing.expectEqual(@as(usize, 0), injector.dirty_storage.count());
 }
 
