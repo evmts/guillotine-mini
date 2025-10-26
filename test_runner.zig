@@ -141,11 +141,11 @@ pub fn main() !void {
             try utils.outputJSON(stdout, results.items, total_duration);
         },
         .junit => {
-            try utils.outputJUnit(stdout, results.items, total_duration);
+            try utils.outputJUnit(stdout, allocator, results.items, total_duration);
         },
         .pretty => {
             try utils.displayResults(stdout, allocator, results.items);
-            try utils.printSlowestTests(stdout, results.items, 10);
+            try utils.printSlowestTests(stdout, allocator, results.items, 10);
             try printPrettySummary(stdout, results.items, total_duration, total_tests);
         },
     }

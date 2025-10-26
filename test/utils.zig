@@ -598,7 +598,7 @@ pub fn outputJSON(writer: anytype, results: []TestResult, duration_ns: u64) !voi
     try std.fmt.format(writer, "]}}\n", .{});
 }
 
-pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !void {
+pub fn outputJUnit(writer: anytype, allocator: std.mem.Allocator, results: []TestResult, duration_ns: u64) !void {
     var passed: usize = 0;
     var failed: usize = 0;
     var skipped: usize = 0;
@@ -624,11 +624,11 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
     });
 
     // Group by suite
-    var suite_map = std.StringHashMap(std.ArrayList(TestResult)).init(std.heap.page_allocator);
+    var suite_map = std.StringHashMap(std.ArrayList(TestResult)).init(allocator);
     defer {
         var it = suite_map.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.deinit(std.heap.page_allocator);
+            entry.value_ptr.deinit(allocator);
         }
         suite_map.deinit();
     }
@@ -638,7 +638,7 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
         if (!entry.found_existing) {
             entry.value_ptr.* = .{};
         }
-        try entry.value_ptr.append(std.heap.page_allocator, result);
+        try entry.value_ptr.append(allocator, result);
     }
 
     var suite_iter = suite_map.iterator();
@@ -695,13 +695,72 @@ pub fn outputJUnit(writer: anytype, results: []TestResult, duration_ns: u64) !vo
 }
 
 fn escapeJSON(s: []const u8) []const u8 {
-    // For simplicity, return as-is. In production, should escape quotes, backslashes, etc.
-    return s;
+    // Check if string needs escaping
+    var needs_escape = false;
+    for (s) |c| {
+        if (c == '"' or c == '\\' or c == '\n' or c == '\r' or c == '\t' or c < 0x20) {
+            needs_escape = true;
+            break;
+        }
+    }
+
+    if (!needs_escape) return s;
+
+    // Allocate and escape
+    // Note: This uses page_allocator for JSON output lifetime
+    // The escaped strings need to live for the duration of the output
+    const allocator = std.heap.page_allocator;
+    var result: std.ArrayList(u8) = .{};
+    result.ensureTotalCapacity(allocator, s.len) catch return s;
+    for (s) |c| {
+        switch (c) {
+            '"' => result.appendSlice(allocator, "\\\"") catch return s,
+            '\\' => result.appendSlice(allocator, "\\\\") catch return s,
+            '\n' => result.appendSlice(allocator, "\\n") catch return s,
+            '\r' => result.appendSlice(allocator, "\\r") catch return s,
+            '\t' => result.appendSlice(allocator, "\\t") catch return s,
+            else => {
+                if (c < 0x20) {
+                    // Control characters: use \uXXXX format
+                    std.fmt.format(result.writer(allocator), "\\u{x:0>4}", .{c}) catch return s;
+                } else {
+                    result.append(allocator, c) catch return s;
+                }
+            },
+        }
+    }
+    return result.toOwnedSlice(allocator) catch return s;
 }
 
 fn escapeXML(s: []const u8) []const u8 {
-    // For simplicity, return as-is. In production, should escape <, >, &, quotes, etc.
-    return s;
+    // Check if string needs escaping
+    var needs_escape = false;
+    for (s) |c| {
+        if (c == '<' or c == '>' or c == '&' or c == '"' or c == '\'') {
+            needs_escape = true;
+            break;
+        }
+    }
+
+    if (!needs_escape) return s;
+
+    // Allocate and escape
+    // Note: This uses page_allocator for XML output lifetime
+    // The escaped strings need to live for the duration of the output
+    const allocator = std.heap.page_allocator;
+    var result: std.ArrayList(u8) = .{};
+    result.ensureTotalCapacity(allocator, s.len) catch return s;
+    for (s) |c| {
+        switch (c) {
+            '<' => result.appendSlice(allocator, "&lt;") catch return s,
+            '>' => result.appendSlice(allocator, "&gt;") catch return s,
+            '&' => result.appendSlice(allocator, "&amp;") catch return s,
+            '"' => result.appendSlice(allocator, "&quot;") catch return s,
+            '\'' => result.appendSlice(allocator, "&apos;") catch return s,
+            else => result.append(allocator, c) catch return s,
+        }
+    }
+    return result.toOwnedSlice(allocator) catch return s;
 }
 
 pub const TestTask = struct {
@@ -871,15 +930,15 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
     return try results.toOwnedSlice(allocator);
 }
 
-pub fn printSlowestTests(writer: anytype, results: []TestResult, count: usize) !void {
+pub fn printSlowestTests(writer: anytype, allocator: std.mem.Allocator, results: []TestResult, count: usize) !void {
     if (results.len == 0) return;
 
     // Create a copy for sorting
     var sorted: std.ArrayList(TestResult) = .{};
-    defer sorted.deinit(std.heap.page_allocator);
+    defer sorted.deinit(allocator);
 
     for (results) |r| {
-        try sorted.append(std.heap.page_allocator, r);
+        try sorted.append(allocator, r);
     }
 
     // Sort by duration (descending)
