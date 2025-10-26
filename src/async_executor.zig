@@ -125,8 +125,39 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
 
                 .continue_with_balance => |data| {
                     if (self.evm.storage.storage_injector) |injector| {
-                        try injector.balance_cache.put(data.address, data.balance);
+                        _ = try injector.balance_cache.put(data.address, data.balance);
                     }
+
+                    // Clear the request
+                    self.async_data_request = .none;
+
+                    return try self.executeUntilYieldOrComplete();
+                },
+
+                .continue_with_code => |data| {
+                    if (self.evm.storage.storage_injector) |injector| {
+                        // Duplicate code slice so cache owns it
+                        const code_copy = try self.evm.arena.allocator().dupe(u8, data.code);
+                        _ = try injector.code_cache.put(data.address, code_copy);
+                    }
+
+                    // Also store in EVM's code map
+                    const code_copy2 = try self.evm.arena.allocator().dupe(u8, data.code);
+                    try self.evm.code.put(data.address, code_copy2);
+
+                    // Clear the request
+                    self.async_data_request = .none;
+
+                    return try self.executeUntilYieldOrComplete();
+                },
+
+                .continue_with_nonce => |data| {
+                    if (self.evm.storage.storage_injector) |injector| {
+                        _ = try injector.nonce_cache.put(data.address, data.nonce);
+                    }
+
+                    // Also store in EVM's nonce map
+                    try self.evm.nonces.put(data.address, data.nonce);
 
                     // Clear the request
                     self.async_data_request = .none;
@@ -138,8 +169,6 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
                     // Commit done - finalize and return result
                     return try self.finalizeAndReturnResult();
                 },
-
-                else => return error.UnsupportedContinueType,
             }
         }
 
