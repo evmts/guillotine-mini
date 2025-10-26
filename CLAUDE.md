@@ -307,11 +307,19 @@ pub const HostInterface = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
     pub const VTable = struct {
-        getBalance, setBalance, getStorage, setStorage,
-        getCode, getNonce, setNonce, emitLog, selfDestruct
+        getBalance: *const fn (ptr: *anyopaque, address: Address) u256,
+        setBalance: *const fn (ptr: *anyopaque, address: Address, balance: u256) void,
+        getCode: *const fn (ptr: *anyopaque, address: Address) []const u8,
+        setCode: *const fn (ptr: *anyopaque, address: Address, code: []const u8) void,
+        getStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256) u256,
+        setStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256, value: u256) void,
+        getNonce: *const fn (ptr: *anyopaque, address: Address) u64,
+        setNonce: *const fn (ptr: *anyopaque, address: Address, nonce: u64) void,
     };
 };
 ```
+
+**Note:** The host interface is used only for external state backends. Nested calls (CALL, DELEGATECALL, etc.) are handled internally by `Evm.inner_call()` and do not use this interface.
 
 Test implementation: `test/specs/test_host.zig`
 
