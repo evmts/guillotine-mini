@@ -43,12 +43,7 @@ pub fn Handlers(FrameType: type) type {
         pub fn balance(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
             const addr_int = try frame.popStack();
-            var addr_bytes: [20]u8 = undefined;
-            var i: usize = 0;
-            while (i < 20) : (i += 1) {
-                addr_bytes[19 - i] = @as(u8, @truncate(addr_int >> @intCast(i * 8)));
-            }
-            const addr = Address{ .bytes = addr_bytes };
+            const addr = Address.fromU256(addr_int);
 
             // Gas cost: hardfork-aware
             // Berlin+: cold/warm access (2600/100)
@@ -199,7 +194,8 @@ pub fn Handlers(FrameType: type) type {
 
             // Gas cost: hardfork-aware
             // Berlin+: cold/warm access (2600/100)
-            // Tangerine Whistle-Berlin: 700 gas (EIP-150)
+            // Istanbul-Berlin: 700 gas (EIP-1884)
+            // Tangerine Whistle-Istanbul: 700 gas (EIP-150)
             // Pre-Tangerine Whistle: 20 gas
             const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
                 try evm.accessAddress(ext_addr)
@@ -209,9 +205,9 @@ pub fn Handlers(FrameType: type) type {
                 @as(u64, 20);
             try frame.consumeGas(access_cost);
 
-            // For Frame, we don't have access to external code
-            // Just return 0 for now
-            try frame.pushStack(0);
+            // Get the code from the external address
+            const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
+            try frame.pushStack(code.len);
             frame.pc += 1;
         }
 
@@ -225,51 +221,40 @@ pub fn Handlers(FrameType: type) type {
             const size = try frame.popStack();
 
             const ext_addr = primitives.Address.fromU256(addr_int);
+            const dest = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
+            const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
+            const len = std.math.cast(u32, size) orelse return error.OutOfBounds;
 
-            // Gas cost calculation
-            if (size > 0) {
-                const size_u32 = std.math.cast(u32, size) orelse return error.OutOfBounds;
-                const copy_cost = copyGasCost(size_u32);
+            // Calculate ALL gas costs at once: access + copy + memory expansion
+            // Gas cost: hardfork-aware
+            // Berlin+: cold/warm access (2600/100)
+            // Tangerine Whistle-Berlin: 700 gas (EIP-150)
+            // Pre-Tangerine Whistle: 20 gas
+            const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
+                try evm.accessAddress(ext_addr)
+            else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                @as(u64, 700)
+            else
+                @as(u64, 20);
 
-                // Gas cost: hardfork-aware
-                // Berlin+: cold/warm access (2600/100) + copy cost
-                // Tangerine Whistle-Berlin: 700 + copy cost (EIP-150)
-                // Pre-Tangerine Whistle: 20 + copy cost
-                const base_access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
-                    try evm.accessAddress(ext_addr)
-                else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                    @as(u64, 700)
-                else
-                    @as(u64, 20);
-                try frame.consumeGas(base_access_cost + copy_cost);
+            const copy_cost = copyGasCost(len);
+            const end_bytes: u64 = @as(u64, dest) + @as(u64, len);
+            const mem_cost = frame.memoryExpansionCost(end_bytes);
 
-                const dest = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-                const len = size_u32;
-                const end = @as(u64, dest) + @as(u64, len);
-                const mem_cost = frame.memoryExpansionCost(end);
-                try frame.consumeGas(mem_cost);
+            // Charge all costs at once
+            try frame.consumeGas(access_cost + copy_cost + mem_cost);
 
-                // Update memory size after charging for expansion
-                const aligned_ext = wordAlignedSize(end);
-                if (aligned_ext > frame.memory_size) frame.memory_size = aligned_ext;
+            // Get the code from the external address
+            const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
 
-                // Get the code from the external address
-                const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
-
-                // Copy code to memory
-                const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-                var i: u32 = 0;
-                while (i < len) : (i += 1) {
-                    const addr = try add_u32(dest, i);
-                    const src_idx = off + i;
-                    // If src_idx is beyond the code length, write 0 (per EVM spec)
-                    const byte = if (src_idx < code.len) code[src_idx] else 0;
-                    try frame.writeMemory(addr, byte);
-                }
-            } else {
-                // EIP-150/EIP-2929: charge account access cost even if size is zero
-                const access_cost = try frame.externalAccountGasCost(ext_addr);
-                try frame.consumeGas(access_cost);
+            // Copy code to memory
+            var i: u32 = 0;
+            while (i < len) : (i += 1) {
+                const dst_idx = try add_u32(dest, i);
+                const src_idx = off + i;
+                // If src_idx is beyond the code length, write 0 (per EVM spec)
+                const byte = if (src_idx < code.len) code[src_idx] else 0;
+                try frame.writeMemory(dst_idx, byte);
             }
             frame.pc += 1;
         }
@@ -349,10 +334,24 @@ pub fn Handlers(FrameType: type) type {
                 @as(u64, 400);
             try frame.consumeGas(access_cost);
 
-            // For Frame, return empty code hash
-            // Empty code hash = keccak256("")
-            const empty_hash: u256 = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
-            try frame.pushStack(empty_hash);
+            // Get the code from the external address
+            const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
+
+            if (code.len == 0) {
+                // Return 0 for empty accounts (no code)
+                try frame.pushStack(0);
+            } else {
+                // Compute keccak256 hash of the code
+                var hash: [32]u8 = undefined;
+                std.crypto.hash.sha3.Keccak256.hash(code, &hash, .{});
+
+                // Convert hash bytes to u256 (big-endian)
+                var hash_u256: u256 = 0;
+                for (hash) |byte| {
+                    hash_u256 = (hash_u256 << 8) | byte;
+                }
+                try frame.pushStack(hash_u256);
+            }
             frame.pc += 1;
         }
 
