@@ -83,9 +83,13 @@ pub fn build(b: *std.Build) void {
     // A run step that will run the test executable.
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
-    // A top level step for running all tests
+    // A top level step for running all tests (includes unit tests + spec tests)
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
+
+    // Unit tests only (fast, no spec tests)
+    const unit_test_step = b.step("unit", "Run unit tests only (fast)");
+    unit_test_step.dependOn(&run_mod_tests.step);
 
     // Create EVM module for spec tests
     const evm_mod = b.addModule("evm", .{
