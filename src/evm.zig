@@ -99,6 +99,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         // Stored state for call() - set via setter methods
         pending_bytecode: []const u8 = &[_]u8{},
         pending_access_list: ?primitives.AccessList.AccessList = null,
+        pending_storage_injector: ?*storage_injector.StorageInjector = null,
 
         // Config-provided overrides (comptime known)
         opcode_overrides: []const evm_config.OpcodeOverride,
@@ -202,7 +203,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Must be called before any transaction execution (call or inner_create)
         pub fn initTransactionState(self: *Self, blob_versioned_hashes: ?[]const [32]u8) !void {
             const arena_allocator = self.arena.allocator();
-            self.storage = Storage.init(arena_allocator, self.host, null);
+            self.storage = Storage.init(arena_allocator, self.host, self.pending_storage_injector);
             // Clear existing HashMaps instead of creating new ones (allows pre-state setup)
             self.balances.clearRetainingCapacity();
             self.nonces.clearRetainingCapacity();
