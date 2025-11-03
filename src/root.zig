@@ -54,4 +54,15 @@ pub const getOpName = opcode.getOpName;
 test {
     std.testing.refAllDecls(@This());
     _ = @import("evm_test.zig");
+    _ = @import("instructions/handlers_stack_test.zig");
+    _ = @import("instructions/handlers_arithmetic_test.zig");
+    _ = @import("instructions/handlers_comparison_test.zig");
+    _ = @import("instructions/handlers_keccak_test.zig");
+    _ = @import("instructions/handlers_memory_test.zig");
+    _ = @import("instructions/handlers_log_test.zig");
+    _ = @import("instructions/handlers_control_flow_test.zig");
+    _ = @import("instructions/handlers_storage_test.zig");
+    _ = @import("instructions/handlers_system_test.zig");
+    _ = @import("instructions/handlers_context_test.zig");
+    _ = @import("instructions/handlers_block_test.zig");
 }
