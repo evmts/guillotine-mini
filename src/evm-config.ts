@@ -11,7 +11,7 @@
  * Ported from: src/evm_config.zig
  */
 
-import type { Address } from './host.js';
+import type { Address } from './host';
 
 /**
  * Hardfork enum defining Ethereum protocol versions

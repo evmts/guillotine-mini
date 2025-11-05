@@ -44,7 +44,8 @@ export class Bytecode {
     if (pc >= this.code.length) {
       return null;
     }
-    return this.code[pc];
+    const opcode = this.code[pc];
+    return opcode !== undefined ? opcode : null;
   }
 
   /**
@@ -59,7 +60,11 @@ export class Bytecode {
 
     let result = 0n;
     for (let i = 0; i < size; i++) {
-      result = (result << 8n) | BigInt(this.code[pc + 1 + i]);
+      const byte = this.code[pc + 1 + i];
+      if (byte === undefined) {
+        return null;
+      }
+      result = (result << 8n) | BigInt(byte);
     }
     return result;
   }
@@ -74,6 +79,11 @@ export class Bytecode {
 
     while (pc < this.code.length) {
       const opcode = this.code[pc];
+
+      // Handle undefined case (should not happen with bounds check, but satisfy TypeScript)
+      if (opcode === undefined) {
+        break;
+      }
 
       // Check if this is a JUMPDEST (0x5b)
       if (opcode === 0x5b) {

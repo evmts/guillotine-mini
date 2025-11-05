@@ -4,7 +4,7 @@
  * Discriminated union for all call types: CALL, CALLCODE, DELEGATECALL, STATICCALL, CREATE, CREATE2
  */
 
-export type Address = `0x${string}`;
+export type Address = Uint8Array;
 
 /**
  * Validation errors for call parameters
