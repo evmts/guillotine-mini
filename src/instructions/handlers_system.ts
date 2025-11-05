@@ -960,9 +960,34 @@ export function selfdestruct(frame: FrameInterface): void {
     throw new Error(CallError.StaticCallViolation);
   }
 
-  // NOTE: Balance transfer and account deletion are handled in evm.inner_call
-  // The frame only needs to signal that SELFDESTRUCT was executed
-  // The EVM will handle the actual balance transfer and account marking
+  // Balance transfer (EIP-6780 changed semantics in Cancun+)
+  if (evm.hardfork >= Hardfork.CANCUN) {
+    // EIP-6780 (Cancun+): Always transfer balance (move_ether semantics)
+    // Set originator balance to 0 first
+    evm.setBalanceWithSnapshot(frame.address, 0n);
+    // Transfer to beneficiary
+    const beneficiary_balance = evm.getBalance(beneficiary);
+    evm.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
+  } else {
+    // Pre-Cancun: Transfer to beneficiary first, then zero originator
+    const beneficiary_balance = evm.getBalance(beneficiary);
+    evm.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
+    evm.setBalanceWithSnapshot(frame.address, 0n);
+  }
+
+  // Mark account for deletion (EIP-6780 logic)
+  if (evm.hardfork >= Hardfork.CANCUN) {
+    // EIP-6780 (Cancun+): Only mark for deletion if created in same transaction
+    const was_created_this_tx = evm.wasCreatedThisTransaction(frame.address);
+    if (was_created_this_tx) {
+      evm.selfdestructedAccounts.add(evm.addressKey(frame.address));
+      // Unconditionally zero balance (already done above, but explicit per spec)
+      evm.setBalanceWithSnapshot(frame.address, 0n);
+    }
+  } else {
+    // Pre-Cancun: Always mark for deletion
+    evm.selfdestructedAccounts.add(evm.addressKey(frame.address));
+  }
 
   // Apply refund to EVM's gas_refund counter
   const refund = frame.selfdestructRefund();

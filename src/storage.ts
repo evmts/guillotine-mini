@@ -12,8 +12,8 @@
  * @module storage
  */
 
-import { Address, HostInterface } from './host.js';
-import { CallError, EvmError } from './errors.js';
+import { Address, HostInterface } from './host';
+import { CallError, EvmError } from './errors';
 
 /**
  * Storage key combining address and slot
@@ -296,6 +296,44 @@ export class Storage {
    */
   getAsyncRequest(): AsyncDataRequest {
     return this.asyncDataRequest;
+  }
+
+  /**
+   * Clear all storage for a specific address
+   *
+   * Removes all storage slots and original storage entries for a given address.
+   * Used when selfdestructing an account (EIP-6780).
+   *
+   * @param address - Contract address to clear storage for
+   */
+  clearStorageForAddress(address: Address): void {
+    // Convert address to hex prefix for matching keys
+    const addrHex = Array.from(address)
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+    const prefix = `${addrHex}:`;
+
+    // Remove from storage map
+    const storageKeysToRemove: string[] = [];
+    for (const key of this.storage.keys()) {
+      if (key.startsWith(prefix)) {
+        storageKeysToRemove.push(key);
+      }
+    }
+    for (const key of storageKeysToRemove) {
+      this.storage.delete(key);
+    }
+
+    // Remove from original storage map
+    const originalKeysToRemove: string[] = [];
+    for (const key of this.originalStorage.keys()) {
+      if (key.startsWith(prefix)) {
+        originalKeysToRemove.push(key);
+      }
+    }
+    for (const key of originalKeysToRemove) {
+      this.originalStorage.delete(key);
+    }
   }
 
   /**
