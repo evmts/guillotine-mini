@@ -12,10 +12,10 @@
  */
 
 import { describe, it, expect, beforeEach } from 'bun:test';
-import type { HostInterface, Address } from './host.js';
-import { addressFromHex, addressToHex } from './host.js';
-import type { CallResult } from './call-result.js';
-import { Hardfork } from './evm-config.js';
+import type { HostInterface, Address } from './host';
+import { addressFromHex, addressToHex } from './host';
+import type { CallResult } from './call-result';
+import { Hardfork } from './evm-config';
 import {
   STOP, ADD, MUL, SUB, DIV, PUSH1, PUSH2, PUSH32, POP,
   DUP1, DUP2, SWAP1, SWAP2, MLOAD, MSTORE, MSTORE8,
@@ -23,7 +23,7 @@ import {
   CALL, DELEGATECALL, STATICCALL, CREATE, CREATE2,
   TLOAD, TSTORE, MCOPY, PUSH0, SELFDESTRUCT,
   LOG0, LOG1, LOG2, LOG3, LOG4,
-} from './opcode.js';
+} from './opcode';
 
 /**
  * Mock host implementation for testing
