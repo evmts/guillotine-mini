@@ -13,8 +13,8 @@ import {
   type EvmConfig,
   type OpcodeOverride,
   type PrecompileOverride,
-} from './evm-config.js';
-import { addressFromHex } from './host.js';
+} from './evm-config';
+import { addressFromHex } from './host';
 
 // =============================================================================
 // Example 1: Basic Configuration
