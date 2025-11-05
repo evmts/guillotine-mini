@@ -7,6 +7,12 @@
     "moduleResolution": "bundler",
     "moduleDetection": "force",
 
+    // Output configuration
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+
     // Allow TypeScript extensions for Bun compatibility
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
@@ -15,8 +21,8 @@
     // Path mappings for voltaire imports
     "baseUrl": ".",
     "paths": {
-      "@voltaire/*": ["./utils/voltaire-imports"],
-      "@/*": ["./*"]
+      "@voltaire/*": ["./src/utils/voltaire-imports"],
+      "@/*": ["./src/*"]
     },
 
     // Strict type checking (recommended for EVM code)
@@ -41,11 +47,14 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": [
-    "**/*.ts",
-    "**/*.tsx"
+    "src/**/*.ts",
+    "src/**/*.tsx"
   ],
   "exclude": [
     "node_modules",
-    "**/*.zig"
+    "dist",
+    "**/*.zig",
+    "**/*.test.ts",
+    "**/*.example.ts"
   ]
 }
