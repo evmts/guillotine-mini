@@ -51,6 +51,10 @@ pub const TraceEntry = trace.TraceEntry;
 pub const opcode = @import("opcode.zig");
 pub const getOpName = opcode.getOpName;
 
+// Export instruction dispatcher
+pub const dispatcher = @import("instructions/dispatcher.zig");
+pub const Dispatcher = dispatcher.Dispatcher;
+
 test {
     std.testing.refAllDecls(@This());
     _ = @import("evm_test.zig");
@@ -65,4 +69,7 @@ test {
     _ = @import("instructions/handlers_system_test.zig");
     _ = @import("instructions/handlers_context_test.zig");
     _ = @import("instructions/handlers_block_test.zig");
+    _ = @import("instructions/dispatcher.zig");
+    _ = @import("instructions/test_helpers.zig");
+    _ = @import("instructions/test_helpers_examples.test.zig");
 }
