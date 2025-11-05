@@ -9,7 +9,7 @@
  * EIP-3155 specification: https://eips.ethereum.org/EIPS/eip-3155
  */
 
-import { getOpName } from './opcode.js';
+import { getOpName } from './opcode';
 
 /**
  * EIP-3155 compatible trace entry representing a single execution step

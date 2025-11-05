@@ -247,3 +247,9 @@ export function sar(frame: Frame): void {
   frame.pushStack(result);
   frame.pc += 1;
 }
+
+// Export aliases for compatibility with frame.ts imports
+export { op_and as and };
+export { op_or as or };
+export { op_xor as xor };
+export { op_not as not };
