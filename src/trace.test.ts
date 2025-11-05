@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { Tracer, compareTraces, formatTraceDiff, type TraceEntry } from './trace.js';
+import { Tracer, compareTraces, formatTraceDiff, type TraceEntry } from './trace';
 
 describe('Tracer', () => {
   let tracer: Tracer;

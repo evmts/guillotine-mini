@@ -6,9 +6,9 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { Storage, StorageInjector } from './storage.js';
-import { Address, HostInterface, addressFromHex } from './host.js';
-import { CallError, EvmError } from './errors.js';
+import { Storage, StorageInjector } from './storage';
+import { Address, HostInterface, addressFromHex } from './host';
+import { CallError, EvmError } from './errors';
 
 describe('Storage', () => {
   let storage: Storage;
