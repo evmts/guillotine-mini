@@ -316,22 +316,23 @@ export class Frame {
    * Calculate memory expansion cost
    * The total memory cost for n words is: 3n + n²/512, where a word is 32 bytes.
    */
-  memoryExpansionCost(endBytes: number): bigint {
+  memoryExpansionCost(endBytes: bigint | number): bigint {
+    const endBytesNum = typeof endBytes === 'bigint' ? Number(endBytes) : endBytes;
     const currentSize = this.memorySize;
 
-    if (endBytes <= currentSize) {
+    if (endBytesNum <= currentSize) {
       return 0n;
     }
 
     // Cap memory size to prevent gas calculation overflow
     // Max reasonable memory is 16MB (0x1000000 bytes)
     const maxMemory = 0x1000000;
-    if (endBytes > maxMemory) {
+    if (endBytesNum > maxMemory) {
       return BigInt(Number.MAX_SAFE_INTEGER); // Return large value to trigger OutOfGas
     }
 
     const currentWords = Math.ceil(currentSize / 32);
-    const newWords = Math.ceil(endBytes / 32);
+    const newWords = Math.ceil(endBytesNum / 32);
 
     // Check for overflow in word * word calculation
     if (newWords > Number.MAX_SAFE_INTEGER / newWords) {
