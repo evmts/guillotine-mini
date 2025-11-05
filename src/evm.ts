@@ -16,12 +16,15 @@
  * - src/evm.zig (Zig implementation)
  */
 
-import { Storage, type StorageKey } from './storage.js';
-import { AccessListManager, type AccessListSnapshot } from './access-list-manager.js';
-import { CallError, EvmError } from './errors.js';
-import type { HostInterface, Address } from './host.js';
-import type { CallResult, Log } from './call-result.js';
-import { Hardfork } from './instructions/handlers_storage.js'; // Import Hardfork enum
+import { Storage, type StorageKey } from './storage';
+import { AccessListManager, type AccessListSnapshot } from './access-list-manager';
+import { CallError, EvmError } from './errors';
+import type { HostInterface, Address } from './host';
+import type { CallResult, Log } from './call-result';
+import { CallResultHelpers } from './call-result';
+import { Hardfork } from './instructions/handlers_storage'; // Import Hardfork enum
+import type { CallParamsUnion } from './call-params';
+import { Frame, type FrameParams } from './frame';
 
 /**
  * Block context information
@@ -103,7 +106,7 @@ export class Evm {
   /** Accounts created in this transaction (EIP-6780 tracking) */
   private createdAccounts: Set<string> = new Set();
   /** Accounts marked for deletion (SELFDESTRUCT) */
-  private selfdestructedAccounts: Set<string> = new Set();
+  selfdestructedAccounts: Set<string> = new Set();
   /** Accounts touched (pre-Paris, for empty account deletion) */
   private touchedAccounts: Set<string> = new Set();
 
@@ -348,6 +351,38 @@ export class Evm {
    */
   private preWarmAddresses(addresses: Address[]): void {
     this.accessListManager.preWarmAddresses(addresses);
+  }
+
+  /**
+   * Check if an address is warm (already accessed in this transaction)
+   *
+   * @param address - Address to check
+   * @returns true if address is warm, false if cold
+   */
+  isAddressWarm(address: Address): boolean {
+    return this.accessListManager.isAddressWarm(address);
+  }
+
+  /**
+   * Mark an address as warm (accessed)
+   *
+   * @param address - Address to mark as warm
+   */
+  warmAddress(address: Address): void {
+    this.accessListManager.accessAddress(address);
+  }
+
+  /**
+   * Check if an address was created in this transaction
+   *
+   * Used for EIP-6780 SELFDESTRUCT logic (Cancun+)
+   *
+   * @param address - Address to check
+   * @returns true if created in this transaction, false otherwise
+   */
+  wasCreatedThisTransaction(address: Address): boolean {
+    const key = this.addressKey(address);
+    return this.createdAccounts.has(key);
   }
 
   /**
@@ -637,6 +672,17 @@ export class Evm {
   }
 
   /**
+   * Convert address key string back to Address (inverse of addressKey)
+   */
+  private addressFromKey(key: string): Address {
+    const bytes = new Uint8Array(20);
+    for (let i = 0; i < 20; i++) {
+      bytes[i] = parseInt(key.slice(i * 2, i * 2 + 2), 16);
+    }
+    return bytes;
+  }
+
+  /**
    * Create address from u256 value
    */
   private addressFromU256(value: bigint): Address {
@@ -650,13 +696,23 @@ export class Evm {
   }
 
   /**
-   * Compute keccak256 hash
-   * TODO: Use proper keccak256 implementation (from @noble/hashes or similar)
+   * Compute keccak256 hash using @noble/hashes
    */
   private keccak256(data: Uint8Array): Uint8Array {
-    // Placeholder - must be replaced with actual keccak256 implementation
-    // For now, return a dummy hash
-    throw new Error('keccak256 not implemented - must use @noble/hashes or similar');
+    // Try Bun's native crypto first (faster)
+    try {
+      if (typeof Bun !== 'undefined' && Bun.CryptoHasher) {
+        const hasher = new Bun.CryptoHasher('keccak256');
+        hasher.update(data);
+        return new Uint8Array(hasher.digest());
+      }
+    } catch {
+      // Fall through to @noble/hashes
+    }
+
+    // Fallback to @noble/hashes
+    const { keccak_256 } = require('@noble/hashes/sha3');
+    return keccak_256(data);
   }
 
   /**
@@ -700,82 +756,268 @@ export class Evm {
 
   /**
    * Main entry point: Execute bytecode (top-level transaction)
-   *
-   * This is the primary execution method for EVM transactions. It handles:
-   * - Parameter validation
-   * - Transaction state initialization
-   * - Address pre-warming (EIP-2929)
-   * - Value transfers
-   * - Precompile execution
-   * - Frame creation and execution
-   * - Transaction cleanup (access lists, transient storage, selfdestructed accounts)
-   *
-   * NOTE: This method signature is a placeholder. The actual call() method will accept
-   * CallParams union and return CallResult. For now, this shows the structure.
-   *
-   * @param params - Call parameters (from call-params.ts)
-   * @returns CallResult with execution outcome (from call-result.ts)
    */
-  call(params: any): any {
-    throw new Error('call() method not yet implemented - Part 2 continuation needed');
+  call(params: CallParamsUnion): CallResult {
+    // Handle CREATE/CREATE2
+    if (params.type === 'create' || params.type === 'create2') {
+      const salt = params.type === 'create2' ? params.salt : undefined;
+      const result = this.inner_create(params.value, params.initCode, params.gas, salt);
+      return {
+        success: result.success,
+        gas_left: result.gas_left,
+        output: result.output,
+        refund_counter: this.gasRefund,
+        logs: [...this.logs],
+        selfdestructs: [],
+        accessed_addresses: [],
+        accessed_storage: [],
+        created_address: result.address,
+      };
+    }
+
+    // Extract parameters
+    const caller = params.caller;
+    const address = params.to;
+    const value = (params.type === 'call' || params.type === 'callcode') ? params.value : 0n;
+    const calldata = params.input;
+    const gas = params.gas;
+
+    this.origin = caller;
+    this.gasPrice = 0n;
+
+    // Init transaction
+    this.initTransactionState();
+    this.preWarmTransaction(address);
+
+    // Transfer value
+    if (value > 0n) {
+      const senderBalance = this.getBalance(caller);
+      if (senderBalance < value) {
+        return CallResultHelpers.failure(gas);
+      }
+      this.setBalanceWithSnapshot(caller, senderBalance - value);
+      const recipientBalance = this.getBalance(address);
+      this.setBalanceWithSnapshot(address, recipientBalance + value);
+    }
+
+    // Get code
+    const code = this.getCode(address);
+    if (code.length === 0) {
+      return CallResultHelpers.successEmpty(gas);
+    }
+
+    // Create frame
+    const frame = new Frame({
+      bytecode: code,
+      gas,
+      caller,
+      address,
+      value,
+      calldata,
+      evmPtr: this,
+      hardfork: this.hardfork,
+      isStatic: params.type === 'staticcall',
+      callDepth: 0,
+    });
+
+    this.frames.push(frame);
+    try {
+      frame.execute();
+    } catch (error) {
+      return CallResultHelpers.failureWithError(frame.gasRemaining, String(error));
+    } finally {
+      this.frames.pop();
+    }
+
+    if (frame.reverted) {
+      return CallResultHelpers.revertWithData(frame.gasRemaining, frame.output);
+    }
+
+    // Prepare result before cleanup (capture logs and selfdestructs)
+    const result = {
+      success: !frame.reverted,
+      gas_left: frame.gasRemaining,
+      output: frame.output,
+      refund_counter: this.gasRefund,
+      logs: [...this.logs],
+      selfdestructs: Array.from(this.selfdestructedAccounts).map(key => this.addressFromKey(key)),
+      accessed_addresses: [],
+      accessed_storage: [],
+    };
+
+    // Transaction cleanup (must happen after result construction)
+
+    // 1. Clear access list manager (EIP-2929)
+    this.accessListManager.clear();
+
+    // 2. Clear transient storage at end of transaction (EIP-1153)
+    this.storage.clearTransient();
+
+    // 3. Clear logs buffer for next transaction
+    this.logs = [];
+
+    // 4. Delete selfdestructed accounts at end of transaction (EIP-6780)
+    // This must happen AFTER transient storage is cleared since transient storage
+    // should be accessible during the transaction even after SELFDESTRUCT
+    for (const addrKey of this.selfdestructedAccounts) {
+      const addr = this.addressFromKey(addrKey);
+
+      if (this.host) {
+        // Host mode: Clear all account state via host interface
+        this.host.setBalance(addr, 0n);
+        this.host.setCode(addr, new Uint8Array(0));
+        this.host.setNonce(addr, 0n);
+
+        // Clear all storage slots for this address via host
+        // Note: We can't iterate host storage, so we rely on the host
+        // implementation to handle storage cleanup properly
+        // For now, we clear what we know about in our local storage tracker
+        this.storage.clearStorageForAddress(addr);
+      } else {
+        // Non-host mode: Clear all account state from EVM maps
+        this.balances.delete(addrKey);
+        this.code.delete(addrKey);
+        this.nonces.delete(addrKey);
+
+        // Clear all storage slots for this address
+        this.storage.clearStorageForAddress(addr);
+      }
+    }
+
+    // 5. Clear transaction-scoped sets at end of transaction
+    // These must be cleared to avoid incorrectly treating accounts as created/selfdestructed
+    // in subsequent transactions within the same block
+    this.createdAccounts.clear();
+    this.selfdestructedAccounts.clear();
+
+    return result;
   }
 
   /**
    * Handle inner call from frame (nested CALL/CALLCODE/DELEGATECALL/STATICCALL)
-   *
-   * This implements nested EVM calls within a transaction. It handles:
-   * - Call depth checking (max 1024)
-   * - State snapshots before execution
-   * - Value transfers (for CALL)
-   * - Precompile execution
-   * - Frame creation with proper context (caller, address, static mode)
-   * - State restoration on revert
-   *
-   * CRITICAL: Must snapshot ALL mutable state:
-   * - Gas refunds
-   * - Transient storage (EIP-1153)
-   * - Selfdestructed accounts (EIP-6780)
-   * - Access lists (EIP-2929)
-   * - Original storage
-   * - Persistent storage
-   * - Balances
-   *
-   * @param params - Call parameters
-   * @returns CallResult with execution outcome
    */
-  inner_call(params: any): any {
-    throw new Error('inner_call() method not yet implemented - Part 2 continuation needed');
+  inner_call(params: CallParamsUnion): CallResult {
+    if (params.type === 'create' || params.type === 'create2') {
+      throw new Error('CREATE operations should use inner_create()');
+    }
+
+    const address = params.to;
+    const value = (params.type === 'call' || params.type === 'callcode') ? params.value : 0n;
+    const input = params.input;
+    const gas = params.gas;
+
+    if (this.frames.length >= 1024) {
+      return CallResultHelpers.failure(gas);
+    }
+
+    const currentFrame = this.getCurrentFrame();
+    const frameCaller = currentFrame ? currentFrame.address : this.origin;
+    const frameCallerCaller = currentFrame ? currentFrame.caller : this.origin;
+    const currentValue = currentFrame ? currentFrame.value : 0n;
+
+    let executionCaller: Address;
+    let executionAddress: Address;
+    let executionValue: bigint;
+
+    switch (params.type) {
+      case 'call':
+      case 'staticcall':
+        executionCaller = frameCaller;
+        executionAddress = address;
+        executionValue = value;
+        break;
+      case 'delegatecall':
+        executionCaller = frameCallerCaller;
+        executionAddress = frameCaller;
+        executionValue = currentValue;
+        break;
+      case 'callcode':
+        executionCaller = frameCaller;
+        executionAddress = frameCaller;
+        executionValue = value;
+        break;
+      default:
+        throw new Error(`Unknown call type: ${params.type}`);
+    }
+
+    const refundSnapshot = this.gasRefund;
+    const storageSnapshot = this.storage.snapshot();
+    const accessListSnapshot = this.accessListManager.snapshot();
+    const balanceSnapshot = new Map<string, bigint>();
+    this.balanceSnapshotStack.push(balanceSnapshot);
+
+    try {
+      if (value > 0n && params.type === 'call') {
+        const callerBalance = this.getBalance(frameCaller);
+        if (callerBalance < value) {
+          return CallResultHelpers.failure(gas);
+        }
+        this.setBalanceWithSnapshot(frameCaller, callerBalance - value);
+        const calleeBalance = this.getBalance(address);
+        this.setBalanceWithSnapshot(address, calleeBalance + value);
+      }
+
+      const code = this.getCode(address);
+      if (code.length === 0) {
+        return CallResultHelpers.successEmpty(gas);
+      }
+
+      const frame = new Frame({
+        bytecode: code,
+        gas,
+        caller: executionCaller,
+        address: executionAddress,
+        value: executionValue,
+        calldata: input,
+        evmPtr: this,
+        hardfork: this.hardfork,
+        isStatic: params.type === 'staticcall' || (currentFrame?.isStatic ?? false),
+        callDepth: this.frames.length,
+      });
+
+      this.frames.push(frame);
+      try {
+        frame.execute();
+      } finally {
+        this.frames.pop();
+      }
+
+      if (frame.reverted) {
+        this.gasRefund = refundSnapshot;
+        this.storage.restore(storageSnapshot);
+        this.accessListManager.restore(accessListSnapshot);
+        for (const [addrKey, balance] of balanceSnapshot.entries()) {
+          const addr = this.addressFromKey(addrKey);
+          if (this.host) {
+            this.host.setBalance(addr, balance);
+          } else {
+            this.balances.set(addrKey, balance);
+          }
+        }
+        return CallResultHelpers.revertWithData(frame.gasRemaining, frame.output);
+      }
+
+      if (currentFrame) {
+        currentFrame.returnData = frame.output;
+      }
+
+      return {
+        success: true,
+        gas_left: frame.gasRemaining,
+        output: frame.output,
+        refund_counter: this.gasRefund,
+        logs: [...this.logs],
+        selfdestructs: [],
+        accessed_addresses: [],
+        accessed_storage: [],
+      };
+    } finally {
+      this.balanceSnapshotStack.pop();
+    }
   }
 
   /**
    * Handle CREATE operation (contract creation)
-   *
-   * This implements contract creation via CREATE or CREATE2 opcodes. It handles:
-   * - Call depth checking (max 1024)
-   * - Address computation (CREATE vs CREATE2)
-   * - Init code size validation (EIP-3860, Shanghai+)
-   * - Address collision detection (EIP-684)
-   * - Nonce management
-   * - State snapshots before execution
-   * - Init code execution
-   * - Code deployment validation (size, deposit cost)
-   * - State restoration on failure
-   *
-   * CRITICAL DETAILS:
-   * - Created account is marked as warm (EIP-2929)
-   * - Account collision check happens BEFORE nonce increment
-   * - Nonce set to 1 for new contract (EVM spec)
-   * - EIP-6780: Account marked as created BEFORE execution
-   * - Deposit cost: 200 gas per byte of deployed code
-   * - Max code size: 24576 bytes (EIP-170)
-   * - Top-level creates: nonce already incremented by transaction processor
-   * - Opcode creates: nonce incremented here
-   *
-   * @param value - Value to transfer to new contract
-   * @param initCode - Initialization code
-   * @param gas - Gas available for execution
-   * @param salt - Salt for CREATE2 (optional)
-   * @returns Object with address, success, gas_left, output
    */
   inner_create(
     value: bigint,
@@ -783,7 +1025,168 @@ export class Evm {
     gas: bigint,
     salt?: bigint
   ): { address: Address; success: boolean; gas_left: bigint; output: Uint8Array } {
-    throw new Error('inner_create() method not yet implemented - Part 2 continuation needed');
+    const isTopLevel = this.frames.length === 0;
+
+    if (this.frames.length >= 1024) {
+      return { address: ZERO_ADDRESS, success: false, gas_left: gas, output: new Uint8Array(0) };
+    }
+
+    const caller = this.getCurrentFrame()?.address ?? this.origin;
+    const senderNonce = this.getNonce(caller);
+
+    if (senderNonce >= 2n ** 64n - 1n) {
+      return { address: ZERO_ADDRESS, success: false, gas_left: gas, output: new Uint8Array(0) };
+    }
+
+    if (value > 0n && this.getBalance(caller) < value) {
+      return { address: ZERO_ADDRESS, success: false, gas_left: gas, output: new Uint8Array(0) };
+    }
+
+    let newAddress: Address;
+    if (salt !== undefined) {
+      newAddress = this.computeCreate2Address(caller, salt, initCode);
+    } else {
+      let nonce = this.getNonce(caller);
+      if (isTopLevel) nonce -= 1n;
+      newAddress = this.computeCreateAddress(caller, nonce);
+    }
+
+    const MAX_INITCODE_SIZE = 49152;
+    if (this.hardfork >= Hardfork.SHANGHAI && initCode.length > MAX_INITCODE_SIZE) {
+      throw new EvmError(CallError.OutOfGas, 'Init code size exceeds maximum');
+    }
+
+    if (this.hardfork >= Hardfork.BERLIN) {
+      this.accessAddress(newAddress);
+    }
+
+    const hasCode = this.getCode(newAddress).length > 0;
+    const hasNonce = this.getNonce(newAddress) > 0n;
+    if (hasCode || hasNonce) {
+      if (!isTopLevel) {
+        const currentNonce = this.getNonce(caller);
+        if (this.host) {
+          this.host.setNonce(caller, Number(currentNonce + 1n));
+        } else {
+          this.nonces.set(this.addressKey(caller), currentNonce + 1n);
+        }
+      }
+      return { address: ZERO_ADDRESS, success: false, gas_left: gas, output: new Uint8Array(0) };
+    }
+
+    if (!isTopLevel) {
+      const currentNonce = this.getNonce(caller);
+      if (this.host) {
+        this.host.setNonce(caller, Number(currentNonce + 1n));
+      } else {
+        this.nonces.set(this.addressKey(caller), currentNonce + 1n);
+      }
+    }
+
+    if (this.host) {
+      this.host.setNonce(newAddress, 1);
+    } else {
+      this.nonces.set(this.addressKey(newAddress), 1n);
+    }
+
+    this.createdAccounts.add(this.addressKey(newAddress));
+
+    const refundSnapshot = this.gasRefund;
+    const storageSnapshot = this.storage.snapshot();
+    const accessListSnapshot = this.accessListManager.snapshot();
+    const balanceSnapshot = new Map<string, bigint>();
+    this.balanceSnapshotStack.push(balanceSnapshot);
+
+    try {
+      if (value > 0n) {
+        const callerBalance = this.getBalance(caller);
+        this.setBalanceWithSnapshot(caller, callerBalance - value);
+        const contractBalance = this.getBalance(newAddress);
+        this.setBalanceWithSnapshot(newAddress, contractBalance + value);
+      }
+
+      const frame = new Frame({
+        bytecode: initCode,
+        gas,
+        caller,
+        address: newAddress,
+        value,
+        calldata: new Uint8Array(0),
+        evmPtr: this,
+        hardfork: this.hardfork,
+        isStatic: false,
+        callDepth: this.frames.length,
+      });
+
+      this.frames.push(frame);
+      try {
+        frame.execute();
+      } finally {
+        this.frames.pop();
+      }
+
+      if (frame.reverted || !frame.stopped) {
+        this.gasRefund = refundSnapshot;
+        this.storage.restore(storageSnapshot);
+        this.accessListManager.restore(accessListSnapshot);
+        for (const [addrKey, balance] of balanceSnapshot.entries()) {
+          const addr = this.addressFromKey(addrKey);
+          if (this.host) {
+            this.host.setBalance(addr, balance);
+          } else {
+            this.balances.set(addrKey, balance);
+          }
+        }
+        this.createdAccounts.delete(this.addressKey(newAddress));
+        return { address: ZERO_ADDRESS, success: false, gas_left: frame.gasRemaining, output: frame.output };
+      }
+
+      const deployedCode = frame.output;
+      const MAX_CODE_SIZE = 24576;
+
+      if (deployedCode.length > MAX_CODE_SIZE) {
+        this.gasRefund = refundSnapshot;
+        this.storage.restore(storageSnapshot);
+        this.accessListManager.restore(accessListSnapshot);
+        for (const [addrKey, balance] of balanceSnapshot.entries()) {
+          const addr = this.addressFromKey(addrKey);
+          if (this.host) {
+            this.host.setBalance(addr, balance);
+          } else {
+            this.balances.set(addrKey, balance);
+          }
+        }
+        this.createdAccounts.delete(this.addressKey(newAddress));
+        return { address: ZERO_ADDRESS, success: false, gas_left: frame.gasRemaining, output: new Uint8Array(0) };
+      }
+
+      const depositCost = BigInt(deployedCode.length) * 200n;
+      if (frame.gasRemaining < depositCost) {
+        this.gasRefund = refundSnapshot;
+        this.storage.restore(storageSnapshot);
+        this.accessListManager.restore(accessListSnapshot);
+        for (const [addrKey, balance] of balanceSnapshot.entries()) {
+          const addr = this.addressFromKey(addrKey);
+          if (this.host) {
+            this.host.setBalance(addr, balance);
+          } else {
+            this.balances.set(addrKey, balance);
+          }
+        }
+        this.createdAccounts.delete(this.addressKey(newAddress));
+        return { address: ZERO_ADDRESS, success: false, gas_left: 0n, output: new Uint8Array(0) };
+      }
+
+      if (this.host) {
+        this.host.setCode(newAddress, deployedCode);
+      } else {
+        this.code.set(this.addressKey(newAddress), deployedCode);
+      }
+
+      return { address: newAddress, success: true, gas_left: frame.gasRemaining - depositCost, output: deployedCode };
+    } finally {
+      this.balanceSnapshotStack.pop();
+    }
   }
 
   /**
