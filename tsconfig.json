@@ -1,45 +1,27 @@
 {
   "compilerOptions": {
-    // Target modern JavaScript with BigInt support (required for u256)
+    // Target modern JavaScript with BigInt support
     "target": "ES2022",
     "lib": ["ES2022"],
     "module": "ES2022",
     "moduleResolution": "bundler",
     "moduleDetection": "force",
 
-    // Output configuration
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "outDir": "./dist",
-
     // Allow TypeScript extensions for Bun compatibility
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
 
-    // Path mappings for voltaire imports
-    "baseUrl": ".",
-    "paths": {
-      "@voltaire/*": ["./src/utils/voltaire-imports"],
-      "@/*": ["./src/*"]
-    },
-
-    // Strict type checking (recommended for EVM code)
+    // Strict type checking
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
 
-    // Allow JavaScript files for gradual migration
+    // Allow JavaScript files
     "allowJs": true,
     "checkJs": false,
-
-    // Additional strictness flags (can be enabled as needed)
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noPropertyAccessFromIndexSignature": false,
 
     // Resolution
     "resolveJsonModule": true,
@@ -47,14 +29,10 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx"
+    "scripts/**/*.ts"
   ],
   "exclude": [
     "node_modules",
-    "dist",
-    "**/*.zig",
-    "**/*.test.ts",
-    "**/*.example.ts"
+    "**/*.zig"
   ]
 }
