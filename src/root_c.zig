@@ -12,6 +12,19 @@ const PrecompileOutput = evm_config_mod.PrecompileOutput;
 
 const builtin = @import("builtin");
 
+/// WASI's libc always expects a `main(int, char**)` symbol even with `_start`
+/// disabled. Provide a no-op stub so linking succeeds while keeping native
+/// builds untouched.
+fn wasiNoopMain(_: c_int, _: [*][*]u8) callconv(.c) c_int {
+    return 0;
+}
+
+comptime {
+    if (builtin.target.os.tag == .wasi) {
+        @export(&wasiNoopMain, .{ .name = "main" });
+    }
+}
+
 // Only declare extern functions when building for WASM
 const js_opcode_callback = if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64)
     struct {
