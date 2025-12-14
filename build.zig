@@ -564,8 +564,8 @@ pub fn build(b: *std.Build) void {
     const wasm_step = b.step("wasm", "Build WASM library and show bundle size");
     wasm_step.dependOn(&wasm_size_step.step);
 
-    // Make WASM build part of default install step
-    b.getInstallStep().dependOn(&wasm_install.step);
+    // NOTE: WASM build is NOT part of default install step because WASI libc
+    // requires a main symbol when C libraries are linked. Use `zig build wasm` explicitly.
 
     // Native C library build for Rust FFI integration
     const native_mod = b.addModule("guillotine_mini_native", .{
