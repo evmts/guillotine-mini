@@ -4,6 +4,16 @@ This directory contains helper scripts for running and debugging execution-spec 
 
 ## Available Scripts
 
+### 🧬 `genesis.ts` - Copy Base Genesis to Clipboard
+
+Fetches Base genesis from a Cloudflare backend (no frontend bundling) and copies it to the clipboard.
+
+```bash
+GENESIS_API_URL=https://<worker-host> bun scripts/genesis.ts
+GENESIS_API_URL=https://<worker-host> bun scripts/genesis.ts base-sepolia
+bun scripts/genesis.ts --chain base --endpoint https://<worker-host>
+```
+
 ### 🎯 `test-subset.sh` - Main Test Runner
 
 Run filtered subsets of execution-spec tests with nice formatting.
