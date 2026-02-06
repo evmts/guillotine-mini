@@ -1,0 +1,24 @@
+CODE REVIEW: {props.phase}
+
+Review ALL Zig files created or modified in this phase.
+Files created: {JSON.stringify(props.filesCreated)}
+Files modified: {JSON.stringify(props.filesModified)}
+
+Test results:
+- Unit tests: {props.unitTests}
+- Spec tests: {props.specTests}
+- Integration: {props.integrationTests}
+- Nethermind diff: {props.nethermindDiff}
+{props.failingSummary ? `Failures: ${props.failingSummary}` : ""}
+
+Read every file. Check:
+1. Does the architecture match Nethermind's equivalent module?
+2. Are we using Voltaire primitives correctly (not reinventing types)?
+3. Is comptime dependency injection used properly?
+4. Are ALL errors handled? (no catch {"{}"}, no silent failures)
+5. Is every public function tested?
+6. Are edge cases covered?
+7. Is the code performant? (no unnecessary allocations, proper use of arena allocator)
+8. Does it match the Ethereum spec exactly? Read the relevant execution-specs/ Python code to verify.
+
+Flag ALL issues. Classify severity as: "critical", "major", "minor", or "none".

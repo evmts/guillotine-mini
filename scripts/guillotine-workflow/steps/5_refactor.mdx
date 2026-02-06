@@ -1,0 +1,15 @@
+REFACTORING PHASE: {props.phase}
+
+Review all code written in this phase for:
+1. Code duplication — extract shared logic
+2. Naming consistency — match Zig conventions (snake_case functions, PascalCase types)
+3. Public API surface — minimize what's public, keep internals private
+4. Documentation — add /// doc comments to all public APIs
+5. Import organization — clean up unused imports
+6. Dead code — remove any unused functions or types
+7. Consistent error handling patterns
+
+Make improvements. Run zig fmt && zig build && zig build test after each change.
+git commit each meaningful refactor separately.
+
+If nothing needs refactoring, say so and move on.

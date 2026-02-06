@@ -1,0 +1,21 @@
+IMPLEMENTATION PHASE: {props.phase}
+
+Context file: {props.contextFilePath}
+Read that context file first for full reference.
+
+RULES:
+- Implement the SMALLEST ATOMIC UNIT of work possible — one struct, one function, one interface
+- Use comptime dependency injection patterns (like the EVM's HostInterface vtable pattern in src/host.zig)
+- Import from Voltaire: @import("primitives"), @import("crypto") — NEVER create custom Address/Hash/u256 types
+- Read the Nethermind equivalent code first, then implement in idiomatic Zig
+- After implementing, run: zig fmt client/ && zig build
+- Write inline tests (test "..." blocks) for every public function
+- git add, git commit with a descriptive message
+
+{props.previousWork ? `\nPrevious implementation did: ${props.previousWork.whatWasDone}\nNext smallest unit to implement: ${props.previousWork.nextSmallestUnit}` : "Start with the first item from the plan."}
+
+{props.failingTests ? `\nFIX THESE FAILING TESTS FIRST:\n${props.failingTests}` : ""}
+
+{props.reviewFixes ? `\nReview fixes just applied: ${props.reviewFixes}` : ""}
+
+After implementing, describe what the NEXT smallest atomic unit of work should be.
