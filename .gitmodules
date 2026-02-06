@@ -1,3 +1,33 @@
 [submodule "execution-specs"]
 	path = execution-specs
 	url = https://github.com/ethereum/execution-specs
+[submodule "nethermind"]
+	path = nethermind
+	url = https://github.com/NethermindEth/nethermind.git
+[submodule "EIPs"]
+	path = EIPs
+	url = https://github.com/ethereum/EIPs.git
+[submodule "devp2p"]
+	path = devp2p
+	url = https://github.com/ethereum/devp2p.git
+[submodule "execution-apis"]
+	path = execution-apis
+	url = https://github.com/ethereum/execution-apis.git
+[submodule "ethereum-tests"]
+	path = ethereum-tests
+	url = https://github.com/ethereum/tests.git
+[submodule "hive"]
+	path = hive
+	url = https://github.com/ethereum/hive.git
+[submodule "yellowpaper"]
+	path = yellowpaper
+	url = https://github.com/ethereum/yellowpaper.git
+[submodule "consensus-specs"]
+	path = consensus-specs
+	url = https://github.com/ethereum/consensus-specs.git
+[submodule "execution-spec-tests"]
+	path = execution-spec-tests
+	url = https://github.com/ethereum/execution-spec-tests.git
+[submodule "smithers"]
+	path = smithers
+	url = https://github.com/evmts/smithers.git
