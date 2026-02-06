@@ -852,3 +852,50 @@ When making changes:
 **For questions:** Refer to test output and trace divergence analysis.
 
 **License:** See LICENSE file.
+
+---
+
+## Full Client (Guillotine) — Specs & Submodules
+
+This repo is evolving from an EVM-only library into a full Ethereum execution client ("Guillotine"), mirroring Nethermind's architecture in Zig.
+
+**Plan:** See `prd/GUILLOTINE_CLIENT_PLAN.md` for the phased implementation plan.
+**Spec reference:** See `prd/ETHEREUM_SPECS_REFERENCE.md` for the full source map.
+
+### Cloned Submodules (canonical specs & tests)
+
+| Submodule | Purpose |
+|---|---|
+| `execution-specs/` | EELS — authoritative Python EL spec (state transitions, fork rules) |
+| `EIPs/` | Ethereum Improvement Proposals (normative change log) |
+| `yellowpaper/` | Yellow Paper (background only, outdated past Shanghai) |
+| `devp2p/` | Networking specs: RLPx, eth/68, snap/1, discv4/v5, ENR |
+| `execution-apis/` | JSON-RPC + Engine API (OpenRPC spec) |
+| `ethereum-tests/` | Classic JSON test fixtures (TrieTests, GeneralStateTests, BlockchainTests) |
+| `execution-spec-tests/` | Python-generated EVM + state transition test fixtures |
+| `hive/` | End-to-end integration test harness (RPC, Engine API, devp2p, sync) |
+| `consensus-specs/` | Consensus-layer specs (beacon chain, SSZ — future reference) |
+| `nethermind/` | C# reference implementation (architecture reference only) |
+
+### Existing Zig Libraries
+
+| Library | Location | Provides |
+|---|---|---|
+| **Voltaire** | `/Users/williamcory/voltaire/packages/voltaire-zig/` | All primitives, RLP, SSZ, Crypto, Precompiles, JSON-RPC types, JournaledState, Blockchain, StateManager |
+| **Guillotine-Mini** | `src/` (this repo) | EVM engine (frame, opcodes, gas, hardforks Berlin→Prague) |
+
+### Source Priority (when in doubt)
+
+1. `execution-specs/` + `EIPs/` — for EVM + state transition behavior
+2. `devp2p/` — for networking wire formats
+3. `execution-apis/` — for JSON-RPC and Engine API
+4. `ethereum-tests/` + `execution-spec-tests/` — for correctness validation
+5. `nethermind/` — architecture reference only (not behavioral truth)
+
+### Key Rules for Full Client Work
+
+- **NEVER modify files in submodules** (execution-specs, EIPs, devp2p, etc.)
+- Use **Voltaire primitives** for all types (Address, Block, Tx, Hash, RLP, Crypto, etc.)
+- Use **guillotine-mini EVM** for execution — do not build a new EVM
+- Validate every phase against official test suites (see plan for mapping)
+- Mirror Nethermind's module boundaries for architecture consistency
