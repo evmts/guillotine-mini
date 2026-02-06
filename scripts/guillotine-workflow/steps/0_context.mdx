@@ -1,0 +1,46 @@
+CONTEXT GATHERING PHASE: {props.phase}
+
+You must be EXTREMELY thorough. Search EVERYWHERE for useful context. Your job is to produce a comprehensive context file that will guide implementation.
+
+DO THE FOLLOWING:
+
+1. READ the plan: prd/GUILLOTINE_CLIENT_PLAN.md — find the current phase ({props.phase}) and understand exactly what needs to be built.
+
+2. READ the specs reference: prd/ETHEREUM_SPECS_REFERENCE.md — find which specs and test suites map to this phase.
+
+3. SEARCH Nethermind reference code thoroughly:
+   - Read the relevant Nethermind module directory listing (nethermind/src/Nethermind/Nethermind.*)
+   - Read ALL key source files in that module — interfaces, main classes, helpers
+   - Read the corresponding test files (Nethermind.*.Test/)
+   - Note every public API, every data structure, every algorithm
+
+4. SEARCH Voltaire for APIs we need:
+   - Read /Users/williamcory/voltaire/packages/voltaire-zig/src/ directory structure
+   - For each type we need (Address, Hash, Block, RLP, etc.), read the actual Zig source to understand the API
+   - Read /Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/ — check if JournaledState/StateManager are reusable
+   - Read /Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/ — check if Blockchain.zig is reusable
+   - Read /Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/trie.zig — check if MPT is implemented
+   - List every Voltaire API we will import
+
+5. SEARCH existing guillotine-mini code:
+   - Read src/evm.zig, src/frame.zig, src/host.zig — understand the HostInterface we need to adapt
+   - Read build.zig and build.zig.zon — understand how dependencies are wired
+   - Check what already exists in client/ (if anything)
+
+6. SEARCH official test fixtures:
+   - For this phase, find the exact test fixture paths in ethereum-tests/ and execution-spec-tests/
+   - List specific test files/directories to run
+
+7. SEARCH execution-specs/ Python reference:
+   - Find the Python files that implement the logic for this phase
+   - Read them and note the exact algorithms
+
+8. Write a comprehensive context markdown file to: docs/context/{props.phase}.md
+   Include ALL file paths, ALL API signatures, ALL algorithms, ALL test fixture paths.
+   Then git add and git commit it.
+
+{props.previousFeedback ? `\nPREVIOUS ITERATION FEEDBACK (address these):\n${props.previousFeedback.reasoning}\nRemaining issues: ${JSON.stringify(props.previousFeedback.remainingIssues)}` : ""}
+
+{props.reviewFeedback ? `\nLATEST CODE REVIEW FEEDBACK:\n${props.reviewFeedback.feedback}\nIssues: ${JSON.stringify(props.reviewFeedback.issues)}` : ""}
+
+{props.failingTests ? `\nFAILING TESTS:\n${props.failingTests}` : ""}

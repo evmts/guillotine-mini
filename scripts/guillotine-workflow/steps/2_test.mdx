@@ -1,0 +1,26 @@
+TESTING PHASE: {props.phase}
+
+Run ALL of the following test categories and report results:
+
+1. UNIT TESTS:
+   Run: zig build test
+   Check that all inline tests pass for the files we just created/modified.
+
+2. SPEC TESTS (official Ethereum test vectors):
+   Based on the phase:
+   - Phase 1 (trie): Run tests against ethereum-tests/TrieTests/
+   - Phase 3 (evm-state): Run against ethereum-tests/GeneralStateTests/ and execution-spec-tests fixtures
+   - Phase 4 (blockchain): Run against ethereum-tests/BlockchainTests/
+   If no spec tests apply to this phase yet, note "N/A" but still run unit tests.
+
+3. INTEGRATION TESTS:
+   If there are integration tests that test this module with previous modules, run them.
+
+4. NETHERMIND DIFFERENTIAL TESTS:
+   If applicable, verify our output matches Nethermind's for the same inputs.
+   For trie: same inserts → same root hash
+   For state: same tx → same post-state root
+   For block processing: same block → same receipts root
+
+Report each category: passed or failed with details.
+If any tests fail, provide a clear summary of what's failing and why.

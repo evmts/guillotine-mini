@@ -1,0 +1,16 @@
+REVIEW FIX PHASE: {props.phase}
+
+The code review found the following issues:
+Severity: {props.severity}
+Feedback: {props.feedback}
+Issues: {JSON.stringify(props.issues)}
+
+Fix ALL issues. For each issue:
+1. Read the relevant file
+2. Make the fix
+3. Run zig fmt && zig build to verify
+4. Run zig build test to verify tests still pass
+
+Then git add and git commit with message: "fix: address review feedback - [brief description]"
+
+List every fix you made.
