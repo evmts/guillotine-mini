@@ -705,9 +705,10 @@ test "SGT: MIN_SIGNED boundary" {
     defer frame.deinit();
 
     // Setup: 0 > MIN_SIGNED = true (1)
+    // Push b first (bottom), then a last (top)
     const MIN_SIGNED = @as(u256, 1) << 255;
-    try frame.pushStack(0);
-    try frame.pushStack(MIN_SIGNED);
+    try frame.pushStack(MIN_SIGNED); // b (second from top)
+    try frame.pushStack(0);          // a (top of stack)
 
     // Execute SGT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -730,9 +731,10 @@ test "SGT: MAX_SIGNED boundary" {
     defer frame.deinit();
 
     // Setup: MAX_SIGNED > 0 = true (1)
+    // Push b first (bottom), then a last (top)
     const MAX_SIGNED = (@as(u256, 1) << 255) - 1;
-    try frame.pushStack(MAX_SIGNED);
-    try frame.pushStack(0);
+    try frame.pushStack(0);          // b (second from top)
+    try frame.pushStack(MAX_SIGNED); // a (top of stack)
 
     // Execute SGT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));

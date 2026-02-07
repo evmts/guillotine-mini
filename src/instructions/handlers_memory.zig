@@ -162,7 +162,7 @@ pub fn Handlers(FrameType: type) type {
 
             // Copy via temporary buffer to handle overlapping regions
             const tmp = try frame.allocator.alloc(u8, len_u32);
-            // No defer free needed with arena allocator
+            defer frame.allocator.free(tmp);
 
             var i: u32 = 0;
             while (i < len_u32) : (i += 1) {

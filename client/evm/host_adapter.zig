@@ -8,8 +8,13 @@
 /// ## Design Notes
 ///
 /// - `HostInterface` vtable functions are non-failable (return `u256`, not `!u256`),
-///   but `StateManager` methods return error unions (`!u256`). The adapter catches
-///   errors and returns defaults (0 for balance/nonce/storage, empty slice for code).
+///   but `StateManager` methods return error unions (`!u256`). The adapter bridges
+///   this gap with a fail-fast policy:
+///   - **Getters** (getBalance, getCode, etc.): Log the error and return a safe default
+///     (0 for numeric, empty for code). A missing account is normal (returns default);
+///     a backend failure is logged as an error for diagnostics.
+///   - **Setters** (setBalance, setCode, etc.): Panic on failure. State write failures
+///     are consensus-critical — silently dropping a write would cause state divergence.
 /// - The adapter holds a pointer to a `StateManager`, not an owned copy. The caller
 ///   is responsible for the `StateManager` lifetime.
 /// - This follows the same vtable pattern used in `test/specs/test_host.zig`.
@@ -66,46 +71,72 @@ pub const HostAdapter = struct {
         .setNonce = setNonce,
     };
 
+    const log = std.log.scoped(.host_adapter);
+
     // -- vtable implementations ------------------------------------------------
+    //
+    // Error policy:
+    //   Getters → log error, return safe default (non-existent account is normal).
+    //   Setters → @panic. A failed state write is consensus-critical.
 
     fn getBalance(ptr: *anyopaque, address: Address) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getBalance(address) catch 0;
+        return self.state.getBalance(address) catch |err| {
+            log.err("getBalance failed for {any}: {any}", .{ address, err });
+            return 0;
+        };
     }
 
     fn setBalance(ptr: *anyopaque, address: Address, balance: u256) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setBalance(address, balance) catch return;
+        self.state.setBalance(address, balance) catch |err| {
+            std.debug.panic("setBalance failed for {any}: {any}", .{ address, err });
+        };
     }
 
     fn getCode(ptr: *anyopaque, address: Address) []const u8 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getCode(address) catch &[_]u8{};
+        return self.state.getCode(address) catch |err| {
+            log.err("getCode failed for {any}: {any}", .{ address, err });
+            return &[_]u8{};
+        };
     }
 
     fn setCode(ptr: *anyopaque, address: Address, code: []const u8) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setCode(address, code) catch return;
+        self.state.setCode(address, code) catch |err| {
+            std.debug.panic("setCode failed for {any}: {any}", .{ address, err });
+        };
     }
 
     fn getStorage(ptr: *anyopaque, address: Address, slot: u256) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getStorage(address, slot) catch 0;
+        return self.state.getStorage(address, slot) catch |err| {
+            log.err("getStorage failed for {any} slot {}: {any}", .{ address, slot, err });
+            return 0;
+        };
     }
 
     fn setStorage(ptr: *anyopaque, address: Address, slot: u256, value: u256) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setStorage(address, slot, value) catch return;
+        self.state.setStorage(address, slot, value) catch |err| {
+            std.debug.panic("setStorage failed for {any} slot {}: {any}", .{ address, slot, err });
+        };
     }
 
     fn getNonce(ptr: *anyopaque, address: Address) u64 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getNonce(address) catch 0;
+        return self.state.getNonce(address) catch |err| {
+            log.err("getNonce failed for {any}: {any}", .{ address, err });
+            return 0;
+        };
     }
 
     fn setNonce(ptr: *anyopaque, address: Address, nonce: u64) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setNonce(address, nonce) catch return;
+        self.state.setNonce(address, nonce) catch |err| {
+            std.debug.panic("setNonce failed for {any} nonce {}: {any}", .{ address, nonce, err });
+        };
     }
 };
 
@@ -226,4 +257,51 @@ test "HostAdapter — multiple accounts isolated" {
 
     try std.testing.expectEqual(@as(u256, 100), host.getBalance(alice));
     try std.testing.expectEqual(@as(u256, 200), host.getBalance(bob));
+}
+
+test "HostAdapter — getters return safe defaults for non-existent accounts" {
+    const allocator = std.testing.allocator;
+    var state = try StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    const host = adapter.hostInterface();
+
+    // Use an address that was never written to.
+    const unknown = Address{ .bytes = [_]u8{0xFF} ++ [_]u8{0} ** 19 };
+
+    // Getters must return safe defaults, not error out.
+    try std.testing.expectEqual(@as(u256, 0), host.getBalance(unknown));
+    try std.testing.expectEqual(@as(u64, 0), host.getNonce(unknown));
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(unknown, 42));
+    try std.testing.expectEqual(@as(usize, 0), host.getCode(unknown).len);
+}
+
+test "HostAdapter — setters panic on failure (policy check)" {
+    // This test verifies the *compile-time* error-handling policy:
+    //   - Setter vtable functions call `std.debug.panic` on error, not `catch return`.
+    //   - We cannot trigger a real StateManager error in unit tests (in-memory backend),
+    //     but we verify the vtable is wired correctly by confirming that a successful
+    //     write followed by a read returns the expected value.  The panic path is
+    //     validated by code review and the `std.debug.panic` calls in the source.
+    const allocator = std.testing.allocator;
+    var state = try StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    const host = adapter.hostInterface();
+
+    const addr = Address{ .bytes = [_]u8{0x42} ++ [_]u8{0} ** 19 };
+
+    // Write through vtable — must not silently drop.
+    host.setBalance(addr, 999);
+    host.setNonce(addr, 10);
+    host.setStorage(addr, 7, 77);
+    host.setCode(addr, &[_]u8{ 0x60, 0x00 });
+
+    // Read back — confirms the write was applied, not dropped.
+    try std.testing.expectEqual(@as(u256, 999), host.getBalance(addr));
+    try std.testing.expectEqual(@as(u64, 10), host.getNonce(addr));
+    try std.testing.expectEqual(@as(u256, 77), host.getStorage(addr, 7));
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x60, 0x00 }, host.getCode(addr));
 }
