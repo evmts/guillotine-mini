@@ -39,6 +39,7 @@ const adapter = @import("adapter.zig");
 const memory = @import("memory.zig");
 const null_db = @import("null.zig");
 const rocksdb = @import("rocksdb.zig");
+const read_only = @import("read_only.zig");
 
 // -- Public API: flat re-exports of all user-facing types -----------------
 
@@ -50,6 +51,7 @@ pub const Error = adapter.Error;
 pub const MemoryDatabase = memory.MemoryDatabase;
 pub const NullDb = null_db.NullDb;
 pub const RocksDatabase = rocksdb.RocksDatabase;
+pub const ReadOnlyDb = read_only.ReadOnlyDb;
 
 test {
     // Ensure all sub-modules compile and their tests run.
