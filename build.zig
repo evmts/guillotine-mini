@@ -91,6 +91,24 @@ pub fn build(b: *std.Build) void {
     const unit_test_step = b.step("unit", "Run unit tests only (fast)");
     unit_test_step.dependOn(&run_mod_tests.step);
 
+    // Client DB module (database abstraction layer)
+    const client_db_mod = b.addModule("client_db", .{
+        .root_source_file = b.path("client/db/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const client_db_tests = b.addTest(.{
+        .root_module = client_db_mod,
+    });
+
+    const run_client_db_tests = b.addRunArtifact(client_db_tests);
+    test_step.dependOn(&run_client_db_tests.step);
+    unit_test_step.dependOn(&run_client_db_tests.step);
+
+    const client_db_test_step = b.step("test-db", "Run database abstraction layer tests");
+    client_db_test_step.dependOn(&run_client_db_tests.step);
+
     // Create EVM module for spec tests
     const evm_mod = b.addModule("evm", .{
         .root_source_file = b.path("src/root.zig"),

@@ -22,8 +22,9 @@ const adapter = @import("adapter.zig");
 const Database = adapter.Database;
 const Error = adapter.Error;
 
-/// A byte-slice equality context for HashMap, comparing slice contents.
-pub const ByteSliceContext = struct {
+/// Byte-slice hash/equality context for HashMap, comparing slice contents.
+/// Private to this module — only used as the HashMap context type.
+const ByteSliceContext = struct {
     pub fn hash(_: ByteSliceContext, key: []const u8) u64 {
         return std.hash.Wyhash.hash(0, key);
     }

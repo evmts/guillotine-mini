@@ -272,9 +272,9 @@ pub const WriteBatch = struct {
     pub fn commit(self: *WriteBatch) Error!void {
         if (self.ops.items.len == 0) return;
 
-        if (self.target.vtable.writeBatch) |batchFn| {
+        if (self.target.vtable.writeBatch) |batch_fn| {
             // Atomic path: backend handles all-or-nothing semantics.
-            try batchFn(self.target.ptr, self.ops.items);
+            try batch_fn(self.target.ptr, self.ops.items);
         } else {
             // Sequential fallback: apply one-by-one.
             // On error, ops are NOT cleared so caller can inspect/retry.
