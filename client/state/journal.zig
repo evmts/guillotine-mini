@@ -141,6 +141,12 @@ pub fn Journal(comptime K: type, comptime V: type) type {
         /// Mirrors Nethermind's `Resettable.EmptyPosition` (= -1 as int).
         pub const empty_snapshot: usize = std.math.maxInt(usize);
 
+        /// Convert a snapshot value to the corresponding entry count
+        /// (target length after restore/commit).
+        fn snapshot_to_len(snapshot: usize) usize {
+            return if (snapshot == empty_snapshot) 0 else snapshot + 1;
+        }
+
         /// Capture the current journal position.
         ///
         /// Returns `empty_snapshot` if the journal is empty, otherwise the
@@ -172,11 +178,7 @@ pub fn Journal(comptime K: type, comptime V: type) type {
             on_revert: ?*const fn (entry: *const E) void,
         ) JournalError!void {
             const current_len = self.entries.items.len;
-
-            const target_len: usize = if (snapshot == empty_snapshot)
-                0
-            else
-                snapshot + 1;
+            const target_len = snapshot_to_len(snapshot);
 
             // Nethermind: if snapshot > currentPosition → throw.
             if (snapshot != empty_snapshot and target_len > current_len) {
@@ -273,11 +275,7 @@ pub fn Journal(comptime K: type, comptime V: type) type {
             snapshot: usize,
             on_commit: ?*const fn (entry: *const E) void,
         ) void {
-            const target_len: usize = if (snapshot == empty_snapshot)
-                0
-            else
-                snapshot + 1;
-
+            const target_len = snapshot_to_len(snapshot);
             if (target_len >= self.entries.items.len) return;
 
             // Walk forward through committed entries.
