@@ -33,10 +33,14 @@
 /// const iface = mem.database();
 /// try iface.put("key", "value");
 /// ```
-pub const adapter = @import("adapter.zig");
-pub const memory = @import("memory.zig");
-pub const null_db = @import("null.zig");
-pub const rocksdb = @import("rocksdb.zig");
+// Internal module imports — not part of the public API.
+// Kept for `refAllDecls` in tests to ensure all sub-modules compile.
+const adapter = @import("adapter.zig");
+const memory = @import("memory.zig");
+const null_db = @import("null.zig");
+const rocksdb = @import("rocksdb.zig");
+
+// -- Public API: flat re-exports of all user-facing types -----------------
 
 pub const Database = adapter.Database;
 pub const WriteBatch = adapter.WriteBatch;
@@ -48,5 +52,6 @@ pub const NullDb = null_db.NullDb;
 pub const RocksDatabase = rocksdb.RocksDatabase;
 
 test {
+    // Ensure all sub-modules compile and their tests run.
     @import("std").testing.refAllDecls(@This());
 }

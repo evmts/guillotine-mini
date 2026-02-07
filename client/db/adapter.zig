@@ -189,11 +189,23 @@ pub const Database = struct {
 };
 
 /// A single write operation for use with `Database.VTable.writeBatch`.
+///
+/// Each operation represents either a key-value insertion or a key deletion.
+/// Operations are accumulated in a `WriteBatch` and applied together via
+/// `WriteBatch.commit()`.
 pub const WriteBatchOp = union(enum) {
-    /// Store a key-value pair.
-    put: struct { key: []const u8, value: []const u8 },
-    /// Remove a key.
-    del: struct { key: []const u8 },
+    /// Store a key-value pair. Overwrites any existing value for the key.
+    put: struct {
+        /// The key to store. Owned by the `WriteBatch` arena.
+        key: []const u8,
+        /// The value to associate with the key. Owned by the `WriteBatch` arena.
+        value: []const u8,
+    },
+    /// Remove the entry for a key. No-op if the key does not exist.
+    del: struct {
+        /// The key to remove. Owned by the `WriteBatch` arena.
+        key: []const u8,
+    },
 };
 
 /// Batch context for accumulating multiple write operations and applying
