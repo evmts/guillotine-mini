@@ -39,7 +39,7 @@ const Address = primitives.Address;
 /// defer state.deinit();
 ///
 /// var adapter = HostAdapter.init(&state);
-/// const host = adapter.hostInterface();
+/// const host = adapter.host_interface();
 /// // Pass `host` to EVM configuration
 /// ```
 pub const HostAdapter = struct {
@@ -53,7 +53,7 @@ pub const HostAdapter = struct {
     }
 
     /// Return a `HostInterface` vtable that delegates to the wrapped StateManager.
-    pub fn hostInterface(self: *Self) HostInterface {
+    pub fn host_interface(self: *Self) HostInterface {
         return .{
             .ptr = @ptrCast(self),
             .vtable = &vtable,
@@ -150,7 +150,7 @@ test "HostAdapter — getBalance/setBalance round-trip" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
-    const host = adapter.hostInterface();
+    const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0xAA} ++ [_]u8{0} ** 19 };
 
@@ -172,7 +172,7 @@ test "HostAdapter — getNonce/setNonce round-trip" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
-    const host = adapter.hostInterface();
+    const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0xBB} ++ [_]u8{0} ** 19 };
 
@@ -188,7 +188,7 @@ test "HostAdapter — getStorage/setStorage round-trip" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
-    const host = adapter.hostInterface();
+    const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0xCC} ++ [_]u8{0} ** 19 };
     const slot: u256 = 5;
@@ -205,7 +205,7 @@ test "HostAdapter — getCode/setCode round-trip" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
-    const host = adapter.hostInterface();
+    const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0xDD} ++ [_]u8{0} ** 19 };
 
@@ -224,7 +224,7 @@ test "HostAdapter — StateManager checkpoint/revert propagates through adapter"
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
-    const host = adapter.hostInterface();
+    const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0xEE} ++ [_]u8{0} ** 19 };
 
@@ -247,7 +247,7 @@ test "HostAdapter — multiple accounts isolated" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
-    const host = adapter.hostInterface();
+    const host = adapter.host_interface();
 
     const alice = Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
     const bob = Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
@@ -265,7 +265,7 @@ test "HostAdapter — getters return safe defaults for non-existent accounts" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
-    const host = adapter.hostInterface();
+    const host = adapter.host_interface();
 
     // Use an address that was never written to.
     const unknown = Address{ .bytes = [_]u8{0xFF} ++ [_]u8{0} ** 19 };
@@ -289,7 +289,7 @@ test "HostAdapter — setters panic on failure (policy check)" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
-    const host = adapter.hostInterface();
+    const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0x42} ++ [_]u8{0} ** 19 };
 
