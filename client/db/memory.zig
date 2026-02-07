@@ -73,6 +73,26 @@ pub const MemoryDatabase = struct {
         return self.map.count();
     }
 
+    /// Remove all entries and free accumulated memory.
+    ///
+    /// After `clear()`, the database is empty and reusable. The arena is
+    /// reset (freeing all stored keys/values and map buckets), and the map
+    /// is re-initialized to an empty state.
+    ///
+    /// Mirrors Nethermind's `MemDb.Clear()` which wipes the underlying
+    /// ConcurrentDictionary. Used by `ReadOnlyDb.clearTempChanges()` to
+    /// discard temporary write-overlay data.
+    pub fn clear(self: *MemoryDatabase) void {
+        // Reset arena — frees all key/value copies and map internal tables.
+        _ = self.arena.reset(.retain_capacity);
+        // Re-initialize map to empty (its internal buffer was in the arena).
+        self.map = .{};
+        // Reset diagnostic counters (Nethermind does not reset these, but
+        // for a clear/reuse cycle it makes sense to start fresh).
+        self.reads_count = 0;
+        self.writes_count = 0;
+    }
+
     /// Return a `Database` vtable interface backed by this MemoryDatabase.
     pub fn database(self: *MemoryDatabase) Database {
         return .{
@@ -368,4 +388,45 @@ test "MemoryDatabase: many entries" {
     try std.testing.expectEqualStrings("0", db.get("0").?);
     try std.testing.expectEqualStrings("50", db.get("50").?);
     try std.testing.expectEqualStrings("99", db.get("99").?);
+}
+
+test "MemoryDatabase: clear removes all entries and resets counters" {
+    var db = MemoryDatabase.init(std.testing.allocator);
+    defer db.deinit();
+
+    try db.put("a", "1");
+    try db.put("b", "2");
+    try db.put("c", "3");
+    _ = db.get("a");
+    _ = db.get("b");
+
+    try std.testing.expectEqual(@as(usize, 3), db.count());
+    try std.testing.expectEqual(@as(u64, 2), db.reads_count);
+    try std.testing.expectEqual(@as(u64, 3), db.writes_count);
+
+    db.clear();
+
+    try std.testing.expectEqual(@as(usize, 0), db.count());
+    try std.testing.expectEqual(@as(u64, 0), db.reads_count);
+    try std.testing.expectEqual(@as(u64, 0), db.writes_count);
+    try std.testing.expectEqual(null, db.get("a"));
+    try std.testing.expectEqual(null, db.get("b"));
+    try std.testing.expectEqual(null, db.get("c"));
+}
+
+test "MemoryDatabase: clear then reuse" {
+    var db = MemoryDatabase.init(std.testing.allocator);
+    defer db.deinit();
+
+    try db.put("old_key", "old_value");
+    try std.testing.expectEqual(@as(usize, 1), db.count());
+
+    db.clear();
+    try std.testing.expectEqual(@as(usize, 0), db.count());
+
+    // Database should be fully reusable after clear
+    try db.put("new_key", "new_value");
+    try std.testing.expectEqual(@as(usize, 1), db.count());
+    try std.testing.expectEqualStrings("new_value", db.get("new_key").?);
+    try std.testing.expectEqual(null, db.get("old_key"));
 }
