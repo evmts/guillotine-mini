@@ -5,6 +5,7 @@ import { implementTable } from "./implement";
 import { testTable } from "./test-results";
 import { reviewTable } from "./review";
 import { reviewFixTable } from "./review-fix";
+import { reviewResponseTable } from "./review-response";
 import { refactorTable } from "./refactor";
 import { benchmarkTable } from "./benchmark";
 import { finalReviewTable } from "./final-review";
@@ -17,6 +18,7 @@ export {
   testTable,
   reviewTable,
   reviewFixTable,
+  reviewResponseTable,
   refactorTable,
   benchmarkTable,
   finalReviewTable,
@@ -31,6 +33,7 @@ export const schema = {
   test_results: testTable,
   review: reviewTable,
   review_fix: reviewFixTable,
+  review_response: reviewResponseTable,
   refactor: refactorTable,
   benchmark: benchmarkTable,
   final_review: finalReviewTable,
@@ -95,6 +98,15 @@ export const db = drizzle("./guillotine.db", { schema });
     fixes_made TEXT,
     commit_message TEXT NOT NULL,
     summary TEXT NOT NULL,
+    PRIMARY KEY (run_id, node_id, iteration)
+  );
+  CREATE TABLE IF NOT EXISTS review_response (
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    iteration INTEGER NOT NULL DEFAULT 0,
+    fixes_accepted INTEGER NOT NULL,
+    remaining_issues TEXT,
+    feedback TEXT NOT NULL,
     PRIMARY KEY (run_id, node_id, iteration)
   );
   CREATE TABLE IF NOT EXISTS refactor (
