@@ -6,6 +6,7 @@
 //! ## Modules
 //!
 //! - `hash` — Root hash computation via `patricialize()` algorithm
+//! - `node` — Trie node types (Leaf, Extension, Branch, Node union)
 //!
 //! ## Architecture
 //!
@@ -28,10 +29,19 @@
 //! ```
 
 pub const hash = @import("hash.zig");
+pub const node = @import("node.zig");
 
 // Re-export primary API
 pub const trieRoot = hash.trieRoot;
 pub const EMPTY_TRIE_ROOT = hash.EMPTY_TRIE_ROOT;
+
+// Re-export node types
+pub const Node = node.Node;
+pub const NodeType = node.NodeType;
+pub const LeafNode = node.LeafNode;
+pub const ExtensionNode = node.ExtensionNode;
+pub const BranchNode = node.BranchNode;
+pub const ChildRef = node.ChildRef;
 
 test {
     // Ensure all sub-modules compile and their tests run.
