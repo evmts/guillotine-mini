@@ -131,6 +131,24 @@ pub fn build(b: *std.Build) void {
     const client_trie_test_step = b.step("test-trie", "Run Merkle Patricia Trie tests");
     client_trie_test_step.dependOn(&run_client_trie_tests.step);
 
+    // Client State module (world state journal + snapshot/restore)
+    const client_state_mod = b.addModule("client_state", .{
+        .root_source_file = b.path("client/state/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const client_state_tests = b.addTest(.{
+        .root_module = client_state_mod,
+    });
+
+    const run_client_state_tests = b.addRunArtifact(client_state_tests);
+    test_step.dependOn(&run_client_state_tests.step);
+    unit_test_step.dependOn(&run_client_state_tests.step);
+
+    const client_state_test_step = b.step("test-state", "Run world state journal tests");
+    client_state_test_step.dependOn(&run_client_state_tests.step);
+
     // Client DB benchmark executable
     const client_db_bench_mod = b.addModule("client_db_bench", .{
         .root_source_file = b.path("client/db/bench.zig"),
@@ -146,6 +164,26 @@ pub fn build(b: *std.Build) void {
     const run_client_db_bench = b.addRunArtifact(client_db_bench);
     const bench_db_step = b.step("bench-db", "Run database abstraction layer benchmarks");
     bench_db_step.dependOn(&run_client_db_bench.step);
+
+    // Client Trie benchmark executable
+    const client_trie_bench_mod = b.addModule("client_trie_bench", .{
+        .root_source_file = b.path("client/trie/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+        },
+    });
+
+    const client_trie_bench = b.addExecutable(.{
+        .name = "bench_trie",
+        .root_module = client_trie_bench_mod,
+    });
+
+    const run_client_trie_bench = b.addRunArtifact(client_trie_bench);
+    const bench_trie_step = b.step("bench-trie", "Run Merkle Patricia Trie benchmarks");
+    bench_trie_step.dependOn(&run_client_trie_bench.step);
 
     // Create EVM module for spec tests
     const evm_mod = b.addModule("evm", .{
