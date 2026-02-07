@@ -129,7 +129,10 @@ pub fn trieRoot(
     }
 }
 
-/// Free memory owned by an EncodedNode.
+/// Free memory owned by an `EncodedNode`.
+///
+/// Only the `.raw` variant owns allocated memory (the RLP-encoded bytes).
+/// `.hash` is a value type (32-byte array) and `.empty` holds no data.
 fn freeEncodedNode(allocator: Allocator, node: EncodedNode) void {
     switch (node) {
         .raw => |r| allocator.free(r),
@@ -137,8 +140,11 @@ fn freeEncodedNode(allocator: Allocator, node: EncodedNode) void {
     }
 }
 
-/// Convert bytes to nibble-list (each byte -> two 4-bit nibbles).
-/// Matches Python's `bytes_to_nibble_list()`.
+/// Convert a byte sequence to nibble-list form (each byte → two 4-bit nibbles).
+///
+/// Matches Python's `bytes_to_nibble_list()` from `execution-specs`.
+/// For example, `[0x12, 0xAB]` becomes `[0x1, 0x2, 0xA, 0xB]`.
+/// The caller owns the returned slice and must free it with `allocator`.
 fn keyToNibbles(allocator: Allocator, key: []const u8) ![]u8 {
     const nibbles = try allocator.alloc(u8, key.len * 2);
     for (key, 0..) |byte, i| {
@@ -148,8 +154,17 @@ fn keyToNibbles(allocator: Allocator, key: []const u8) ![]u8 {
     return nibbles;
 }
 
-/// Hex prefix encoding (compact encoding) for nibble paths.
-/// Matches Python's `nibble_list_to_compact()`.
+/// Hex-prefix (compact) encoding for nibble paths.
+///
+/// Matches Python's `nibble_list_to_compact()` from `execution-specs`.
+/// Encodes a nibble path with a flag byte indicating leaf vs extension and
+/// even vs odd length. The caller owns the returned slice.
+///
+/// Encoding rules:
+/// - Even extension: `[0x00, packed_nibbles...]`
+/// - Odd extension:  `[0x1N, packed_nibbles...]` where N is the first nibble
+/// - Even leaf:      `[0x20, packed_nibbles...]`
+/// - Odd leaf:       `[0x3N, packed_nibbles...]` where N is the first nibble
 fn nibbleListToCompact(allocator: Allocator, nibbles: []const u8, is_leaf: bool) ![]u8 {
     if (nibbles.len % 2 == 0) {
         // Even length
@@ -172,7 +187,10 @@ fn nibbleListToCompact(allocator: Allocator, nibbles: []const u8, is_leaf: bool)
     }
 }
 
-/// Find the length of the longest common prefix between two nibble slices.
+/// Find the length of the longest common prefix between two byte slices.
+///
+/// Returns the number of leading bytes that are identical in both slices.
+/// Used to find shared prefixes among nibble-encoded trie keys.
 fn commonPrefixLength(a: []const u8, b: []const u8) usize {
     const min_len = @min(a.len, b.len);
     for (0..min_len) |i| {
@@ -415,7 +433,9 @@ fn rlpEncodeTaggedList(allocator: Allocator, items: []const RlpItem) ![]u8 {
         }
         total_len += encoded_buf[i].len;
     }
-    // Ensure we free owned encoded items on all paths
+    // Ensure we free owned encoded items on all paths.
+    // @constCast is needed because Rlp.encodeBytes returns []const u8 but
+    // allocator.free requires []u8. The cast is safe since we own the memory.
     defer {
         for (0..items.len) |i| {
             if (owned_mask[i]) allocator.free(@constCast(encoded_buf[i]));
@@ -423,18 +443,18 @@ fn rlpEncodeTaggedList(allocator: Allocator, items: []const RlpItem) ![]u8 {
     }
 
     // Second pass: compute header size and allocate result in one shot.
-    var header_len: usize = undefined;
-    var header_buf: [9]u8 = undefined; // max RLP list header: 1 + 8 bytes
-    if (total_len < 56) {
+    // Max RLP list header: 1 prefix byte + up to 8 length bytes.
+    var header_buf: [9]u8 = undefined;
+    const header_len: usize = if (total_len < 56) blk: {
         header_buf[0] = 0xc0 + @as(u8, @intCast(total_len));
-        header_len = 1;
-    } else {
+        break :blk 1;
+    } else blk: {
         const len_bytes = try Rlp.encodeLength(allocator, total_len);
         defer allocator.free(len_bytes);
         header_buf[0] = 0xf7 + @as(u8, @intCast(len_bytes.len));
         @memcpy(header_buf[1 .. 1 + len_bytes.len], len_bytes);
-        header_len = 1 + len_bytes.len;
-    }
+        break :blk 1 + len_bytes.len;
+    };
 
     // Single allocation for the complete result
     const result = try allocator.alloc(u8, header_len + total_len);
