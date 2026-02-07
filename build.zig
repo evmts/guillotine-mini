@@ -109,6 +109,44 @@ pub fn build(b: *std.Build) void {
     const client_db_test_step = b.step("test-db", "Run database abstraction layer tests");
     client_db_test_step.dependOn(&run_client_db_tests.step);
 
+    // Client Trie module (Merkle Patricia Trie)
+    const client_trie_mod = b.addModule("client_trie", .{
+        .root_source_file = b.path("client/trie/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+        },
+    });
+
+    const client_trie_tests = b.addTest(.{
+        .root_module = client_trie_mod,
+    });
+
+    const run_client_trie_tests = b.addRunArtifact(client_trie_tests);
+    test_step.dependOn(&run_client_trie_tests.step);
+    unit_test_step.dependOn(&run_client_trie_tests.step);
+
+    const client_trie_test_step = b.step("test-trie", "Run Merkle Patricia Trie tests");
+    client_trie_test_step.dependOn(&run_client_trie_tests.step);
+
+    // Client DB benchmark executable
+    const client_db_bench_mod = b.addModule("client_db_bench", .{
+        .root_source_file = b.path("client/db/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const client_db_bench = b.addExecutable(.{
+        .name = "bench_db",
+        .root_module = client_db_bench_mod,
+    });
+
+    const run_client_db_bench = b.addRunArtifact(client_db_bench);
+    const bench_db_step = b.step("bench-db", "Run database abstraction layer benchmarks");
+    bench_db_step.dependOn(&run_client_db_bench.step);
+
     // Create EVM module for spec tests
     const evm_mod = b.addModule("evm", .{
         .root_source_file = b.path("src/root.zig"),
@@ -132,19 +170,14 @@ pub fn build(b: *std.Build) void {
             "sh",
             "-c",
             // Force refresh: always run fill (with --clean) for all deployed forks
-            "cd execution-specs && "
-            ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean",
+            "cd execution-specs && " ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean",
         })
     else
         b.addSystemCommand(&.{
             "sh",
             "-c",
             // No-op only if all fork fixtures are present; otherwise fill all
-            "OUT_DIR=execution-specs/tests/eest/static/state_tests; "
-            ++ "if [ -d \"$OUT_DIR\" ] && find \"$OUT_DIR\" -type f -name '*.json' | grep -q .; then "
-            ++ "echo 'Specs already built, skipping fill'; "
-            ++ "else cd execution-specs && "
-            ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean; fi",
+            "OUT_DIR=execution-specs/tests/eest/static/state_tests; " ++ "if [ -d \"$OUT_DIR\" ] && find \"$OUT_DIR\" -type f -name '*.json' | grep -q .; then " ++ "echo 'Specs already built, skipping fill'; " ++ "else cd execution-specs && " ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean; fi",
         });
 
     // Generate Zig test wrappers from JSON fixtures for STATE TESTS
