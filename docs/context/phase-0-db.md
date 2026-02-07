@@ -1,4 +1,4 @@
-# Phase 0: DB Abstraction Layer — Context (Pass 1/5)
+# Phase 0: DB Abstraction Layer — Context (Pass 1/5, updated)
 
 ## Goal
 
@@ -246,8 +246,16 @@ All DB operations return error unions (`Error!?[]const u8` for get, `Error!void`
 - `nethermind/src/Nethermind/Nethermind.Db/MemDbFactory.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/RocksDbSettings.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/MetadataDbKeys.cs`
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/DbOnTheRocks.cs`
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbFactory.cs`
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/DbOnTheRocks.cs` — 74KB main RocksDB wrapper: `IDb, ITunableDb, IReadOnlyNativeKeyValueStore, ISortedKeyValueStore, IMergeableKeyValueStore, IKeyValueStoreWithSnapshot`. Uses `ConcurrentDictionary<string, RocksDb>` for path-based caching. Manages WriteOptions (normal, noWal, lowPriority), ReadOptions (default, hintCacheMiss, readAhead), DbOptions, row cache, iterator management, and file warming.
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbFactory.cs` — Creates `DbOnTheRocks` with shared `HyperClockCacheWrapper`, `IDbConfig`, `IRocksDbConfigFactory`, `ILogManager`
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnsDb.cs` — Multi-column-family wrapper: enum-keyed columns, per-column compaction/metrics
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnDb.cs` — Single column wrapper delegating I/O to parent `DbOnTheRocks`
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbReader.cs` — `ISortedKeyValueStore` impl: iterator management, read-ahead, boundary support (FirstKey, LastKey, GetViewBetween)
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/Config/DbConfig.cs` — 14KB config: write buffer size/number, read-ahead size, max open files, WAL sync, flush-on-exit, stats, checksum verification, row cache size, block cache, file warming, compressibility hints
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/Config/PerTableDbConfig.cs` — Per-table config overrides
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/Statistics/DbMetricsUpdater.cs` — Periodic stats polling: SST files, memory usage, write rate, per-column-family metrics
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/HyperClockCacheWrapper.cs` — Shared block cache singleton across all DB instances
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/MergeOperatorAdapter.cs` — Pluggable merge operations for atomic read-modify-write
 
 ### Voltaire Modules
 - `voltaire/packages/voltaire-zig/src/primitives/` — Address, Hash, u256, RLP, AccountState, Block, Tx, Storage, State, Trie

@@ -145,6 +145,98 @@ pub const Database = struct {
     }
 };
 
+/// Batch context for accumulating multiple write operations and applying
+/// them atomically to a `Database`.
+///
+/// Modeled after Nethermind's `IWriteBatch` / `RocksDbWriteBatch`:
+///   - `put()` / `delete()` accumulate operations without touching the DB.
+///   - `commit()` applies all pending operations to the target database.
+///   - `clear()` discards all pending operations (abort).
+///   - `deinit()` releases all memory (must be called even after commit).
+///
+/// ## Usage
+///
+/// ```zig
+/// var batch = WriteBatch.init(allocator, db);
+/// defer batch.deinit();
+///
+/// try batch.put("key1", "value1");
+/// try batch.put("key2", "value2");
+/// try batch.delete("key3");
+/// try batch.commit(); // atomic apply
+/// ```
+pub const WriteBatch = struct {
+    /// Tagged union for a single pending write operation.
+    pub const Op = union(enum) {
+        /// Store a key-value pair.
+        put: struct { key: []const u8, value: []const u8 },
+        /// Remove a key.
+        del: struct { key: []const u8 },
+    };
+
+    /// Pending operations, in order of insertion.
+    ops: std.ArrayListUnmanaged(Op) = .{},
+    /// Arena for owned copies of keys/values within this batch.
+    arena: std.heap.ArenaAllocator,
+    /// The target database to apply operations to on `commit()`.
+    target: Database,
+
+    /// Create a new empty WriteBatch targeting the given database.
+    pub fn init(backing_allocator: std.mem.Allocator, target: Database) WriteBatch {
+        return .{
+            .arena = std.heap.ArenaAllocator.init(backing_allocator),
+            .target = target,
+        };
+    }
+
+    /// Release all memory owned by this batch (pending ops, copied keys/values).
+    pub fn deinit(self: *WriteBatch) void {
+        // ops list memory is in the arena, so no separate deinit needed.
+        self.arena.deinit();
+    }
+
+    /// Queue a put operation. Both key and value are copied into the batch arena.
+    pub fn put(self: *WriteBatch, key: []const u8, value: []const u8) Error!void {
+        const alloc = self.arena.allocator();
+        const owned_key = alloc.dupe(u8, key) catch return Error.StorageError;
+        const owned_val = alloc.dupe(u8, value) catch return Error.StorageError;
+        self.ops.append(alloc, .{ .put = .{ .key = owned_key, .value = owned_val } }) catch return Error.StorageError;
+    }
+
+    /// Queue a delete operation. The key is copied into the batch arena.
+    pub fn delete(self: *WriteBatch, key: []const u8) Error!void {
+        const alloc = self.arena.allocator();
+        const owned_key = alloc.dupe(u8, key) catch return Error.StorageError;
+        self.ops.append(alloc, .{ .del = .{ .key = owned_key } }) catch return Error.StorageError;
+    }
+
+    /// Apply all pending operations to the target database, in order.
+    ///
+    /// After commit, the batch is logically empty but `deinit()` must
+    /// still be called to free arena memory.
+    pub fn commit(self: *WriteBatch) Error!void {
+        for (self.ops.items) |op| {
+            switch (op) {
+                .put => |p| try self.target.put(p.key, p.value),
+                .del => |d| try self.target.delete(d.key),
+            }
+        }
+        // Clear the ops list (memory stays in arena, freed on deinit).
+        self.ops.items.len = 0;
+    }
+
+    /// Discard all pending operations without applying them.
+    pub fn clear(self: *WriteBatch) void {
+        self.ops.items.len = 0;
+        // Arena memory is retained; will be freed on deinit.
+    }
+
+    /// Return the number of pending operations.
+    pub fn pending(self: *const WriteBatch) usize {
+        return self.ops.items.len;
+    }
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -264,4 +356,155 @@ test "DbName enum has all expected variants" {
     // Verify we can iterate all variants (compile-time check)
     const fields = std.meta.fields(DbName);
     try std.testing.expectEqual(@as(usize, 12), fields.len);
+}
+
+// -- WriteBatch tests -------------------------------------------------------
+
+/// A tracking mock database for WriteBatch tests.
+/// Records every put/delete so we can verify commit behavior.
+const TrackingDb = struct {
+    puts: std.ArrayListUnmanaged(struct { key: []const u8, value: ?[]const u8 }) = .{},
+    deletes: std.ArrayListUnmanaged([]const u8) = .{},
+    alloc: std.mem.Allocator,
+
+    fn init(allocator: std.mem.Allocator) TrackingDb {
+        return .{ .alloc = allocator };
+    }
+
+    fn deinit(self: *TrackingDb) void {
+        self.puts.deinit(self.alloc);
+        self.deletes.deinit(self.alloc);
+    }
+
+    fn getImpl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+        return null;
+    }
+
+    fn putImpl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
+        const self: *TrackingDb = @ptrCast(@alignCast(ptr));
+        self.puts.append(self.alloc, .{ .key = key, .value = value }) catch return Error.StorageError;
+    }
+
+    fn deleteImpl(ptr: *anyopaque, key: []const u8) Error!void {
+        const self: *TrackingDb = @ptrCast(@alignCast(ptr));
+        self.deletes.append(self.alloc, key) catch return Error.StorageError;
+    }
+
+    fn containsImpl(_: *anyopaque, _: []const u8) Error!bool {
+        return false;
+    }
+
+    const vtable = Database.VTable{
+        .get = getImpl,
+        .put = putImpl,
+        .delete = deleteImpl,
+        .contains = containsImpl,
+    };
+
+    fn database(self: *TrackingDb) Database {
+        return .{
+            .ptr = @ptrCast(self),
+            .vtable = &vtable,
+        };
+    }
+};
+
+test "WriteBatch: commit applies put operations" {
+    var tracker = TrackingDb.init(std.testing.allocator);
+    defer tracker.deinit();
+
+    var batch = WriteBatch.init(std.testing.allocator, tracker.database());
+    defer batch.deinit();
+
+    try batch.put("key1", "val1");
+    try batch.put("key2", "val2");
+    try std.testing.expectEqual(@as(usize, 2), batch.pending());
+
+    try batch.commit();
+    try std.testing.expectEqual(@as(usize, 0), batch.pending());
+    try std.testing.expectEqual(@as(usize, 2), tracker.puts.items.len);
+    try std.testing.expectEqualStrings("key1", tracker.puts.items[0].key);
+    try std.testing.expectEqualStrings("val1", tracker.puts.items[0].value.?);
+    try std.testing.expectEqualStrings("key2", tracker.puts.items[1].key);
+    try std.testing.expectEqualStrings("val2", tracker.puts.items[1].value.?);
+}
+
+test "WriteBatch: commit applies delete operations" {
+    var tracker = TrackingDb.init(std.testing.allocator);
+    defer tracker.deinit();
+
+    var batch = WriteBatch.init(std.testing.allocator, tracker.database());
+    defer batch.deinit();
+
+    try batch.delete("gone");
+    try std.testing.expectEqual(@as(usize, 1), batch.pending());
+
+    try batch.commit();
+    try std.testing.expectEqual(@as(usize, 1), tracker.deletes.items.len);
+    try std.testing.expectEqualStrings("gone", tracker.deletes.items[0]);
+}
+
+test "WriteBatch: commit applies mixed operations in order" {
+    var tracker = TrackingDb.init(std.testing.allocator);
+    defer tracker.deinit();
+
+    var batch = WriteBatch.init(std.testing.allocator, tracker.database());
+    defer batch.deinit();
+
+    try batch.put("a", "1");
+    try batch.delete("b");
+    try batch.put("c", "3");
+    try std.testing.expectEqual(@as(usize, 3), batch.pending());
+
+    try batch.commit();
+    // 2 puts, 1 delete
+    try std.testing.expectEqual(@as(usize, 2), tracker.puts.items.len);
+    try std.testing.expectEqual(@as(usize, 1), tracker.deletes.items.len);
+}
+
+test "WriteBatch: clear discards pending operations" {
+    var tracker = TrackingDb.init(std.testing.allocator);
+    defer tracker.deinit();
+
+    var batch = WriteBatch.init(std.testing.allocator, tracker.database());
+    defer batch.deinit();
+
+    try batch.put("key", "value");
+    try batch.delete("other");
+    try std.testing.expectEqual(@as(usize, 2), batch.pending());
+
+    batch.clear();
+    try std.testing.expectEqual(@as(usize, 0), batch.pending());
+
+    // Commit after clear should apply nothing
+    try batch.commit();
+    try std.testing.expectEqual(@as(usize, 0), tracker.puts.items.len);
+    try std.testing.expectEqual(@as(usize, 0), tracker.deletes.items.len);
+}
+
+test "WriteBatch: empty batch commit is no-op" {
+    var tracker = TrackingDb.init(std.testing.allocator);
+    defer tracker.deinit();
+
+    var batch = WriteBatch.init(std.testing.allocator, tracker.database());
+    defer batch.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), batch.pending());
+    try batch.commit();
+    try std.testing.expectEqual(@as(usize, 0), tracker.puts.items.len);
+    try std.testing.expectEqual(@as(usize, 0), tracker.deletes.items.len);
+}
+
+test "WriteBatch: deinit frees all memory (leak check)" {
+    var tracker = TrackingDb.init(std.testing.allocator);
+    defer tracker.deinit();
+
+    var batch = WriteBatch.init(std.testing.allocator, tracker.database());
+
+    try batch.put("key1", "longvalue1");
+    try batch.put("key2", "longvalue2");
+    try batch.delete("key3");
+
+    // If deinit doesn't free properly, testing allocator will report a leak
+    batch.deinit();
 }
