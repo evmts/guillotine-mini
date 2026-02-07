@@ -1,0 +1,36 @@
+REVIEW RESPONSE: {props.phase}
+
+You are reviewing the fixes made in response to your previous code review.
+
+ORIGINAL REVIEW FEEDBACK:
+Severity: {props.originalSeverity}
+Issues flagged: {JSON.stringify(props.originalIssues)}
+Feedback: {props.originalFeedback}
+
+FIXES APPLIED:
+{JSON.stringify(props.fixesMade)}
+Summary: {props.fixSummary}
+Commit: {props.fixCommitMessage}
+
+YOUR TASK:
+1. Re-read the files that were modified
+2. Verify each issue from your original review was properly addressed
+3. Check that no new issues were introduced by the fixes
+
+DECISION:
+- Set fixesAccepted = true ONLY if ALL original issues were properly addressed
+- Set fixesAccepted = false if ANY issue was not properly fixed or if new issues were introduced
+- List any remaining or new issues in remainingIssues
+- Provide specific feedback on what was done well and what still needs work
+
+Be thorough but fair. If the fixes are correct, acknowledge it.
+
+IMPORTANT: After reviewing the fixes, you MUST output a JSON object:
+```json
+{"{"}
+  "fixesAccepted": true,
+  "remainingIssues": [],
+  "feedback": "Detailed feedback on whether the fixes addressed all original issues"
+{"}"}
+```
+Set fixesAccepted to false and list any remaining issues if problems persist.

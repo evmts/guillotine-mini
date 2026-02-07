@@ -13,4 +13,11 @@ Fix ALL issues. For each issue:
 
 Then git add and git commit with message: "fix: address review feedback - [brief description]"
 
-List every fix you made.
+IMPORTANT: After fixing all issues and committing, you MUST output a JSON object:
+```json
+{"{"}
+  "fixesMade": ["Fix 1 description", "Fix 2 description"],
+  "commitMessage": "fix: address review feedback - brief description",
+  "summary": "Summary of all fixes applied"
+{"}"}
+```

@@ -23,3 +23,12 @@ For the code built in this phase:
 
 Report results and whether we meet performance targets.
 If there are performance issues, list specific suggestions.
+
+IMPORTANT: After benchmarking, you MUST output a JSON object:
+```json
+{"{"}
+  "results": "Detailed benchmark results and timings",
+  "meetsTargets": true,
+  "suggestions": "Performance improvement suggestions (or null if meets targets)"
+{"}"}
+```
