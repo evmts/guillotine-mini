@@ -23,14 +23,11 @@ const Allocator = std.mem.Allocator;
 
 /// RLP encoding from Voltaire primitives
 const Rlp = @import("primitives").Rlp;
-/// Voltaire Hash type for 32-byte cryptographic hashes
-const VHash = @import("primitives").Hash;
 /// Keccak256 hash function from Voltaire crypto
 const Hash = @import("crypto").Hash;
 
-/// Voltaire Hash type alias for 32-byte Ethereum hashes.
-/// Used throughout the MPT for root hashes and node references.
-pub const Hash32 = VHash.Hash;
+/// 32-byte hash type, imported from node.zig to avoid duplication.
+pub const Hash32 = @import("node.zig").Hash32;
 
 /// EMPTY_TRIE_ROOT = keccak256(RLP(b"")) = keccak256(0x80)
 /// = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
@@ -53,7 +50,7 @@ pub const EMPTY_TRIE_ROOT: Hash32 = .{
 /// - `.hash`: 32-byte keccak hash (for large nodes)
 /// - `.raw`: the complete RLP encoding of the unencoded form (small nodes)
 /// - `.empty`: represents `b""` (None/empty node)
-pub const EncodedNode = union(enum) {
+const EncodedNode = union(enum) {
     /// Complete RLP encoding of an inline node (< 32 bytes)
     raw: []const u8,
     /// Keccak256 hash of the RLP encoding (>= 32 bytes)
