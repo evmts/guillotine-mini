@@ -1,110 +1,115 @@
-# Phase 0: DB Abstraction Layer — Context Document
+# Phase 0: DB Abstraction Layer — Context
 
 ## Goal
 
-Create a database abstraction layer for persistent storage. This is the foundational layer that all upper layers (trie, state, blockchain) will build upon.
+Create a database abstraction layer for persistent key-value storage that will underpin the trie, state, blockchain, and all other storage needs of the Guillotine execution client.
 
-**Target files to create:**
-- `client/db/adapter.zig` — Generic database interface (vtable-based, like HostInterface)
+**Deliverables:**
+- `client/db/adapter.zig` — Generic database interface (vtable-based, comptime DI)
 - `client/db/memory.zig` — In-memory backend for testing
-- `client/db/rocksdb.zig` — RocksDB backend (future, stubbed initially)
+- `client/db/rocksdb.zig` — RocksDB backend (future; interface only for now)
 
-## Specs
+**Specs**: N/A (internal abstraction — no Ethereum spec governs DB layout)
+**Tests**: Unit tests only (inline `test` blocks)
 
-Phase 0 is an **internal abstraction** — no Ethereum specification governs the DB layer directly. However, the design must support the access patterns required by the Merkle Patricia Trie (Phase 1) and World State (Phase 2).
+---
 
 ## Nethermind Architecture Reference
 
-### Core Interface Hierarchy (most important)
+### Interface Hierarchy (Nethermind.Core + Nethermind.Db)
 
-| File | Purpose | Notes |
-|------|---------|-------|
-| `nethermind/src/Nethermind/Nethermind.Core/IKeyValueStore.cs` | Base KV interface: `IReadOnlyKeyValueStore` (Get/KeyExists), `IWriteOnlyKeyValueStore` (Set/Remove), `IKeyValueStore` (both) | **Primary reference** — our `DbAdapter` maps to this |
-| `nethermind/src/Nethermind/Nethermind.Core/IKeyValueStoreWithBatching.cs` | Adds `StartWriteBatch()` to IKeyValueStore | Write batching for atomic commits |
-| `nethermind/src/Nethermind/Nethermind.Db/IDb.cs` | Full DB interface = IKeyValueStoreWithBatching + IDbMeta + Name + GetAll/GetAllKeys | Extended DB with iteration, metrics, flush |
-| `nethermind/src/Nethermind/Nethermind.Db/IDbProvider.cs` | Registry of named DBs (StateDb, CodeDb, HeadersDb, etc.) | Manages multiple DBs by name |
-| `nethermind/src/Nethermind/Nethermind.Db/IDbFactory.cs` | Factory to create IDb instances from settings | Construction pattern |
+```
+IReadOnlyKeyValueStore          ← Get, GetSpan, KeyExists
+IWriteOnlyKeyValueStore         ← Set, Remove, PutSpan
+    └── IKeyValueStore          ← Combines read + write
+        └── IKeyValueStoreWithBatching  ← StartWriteBatch()
+            └── IDb             ← Name, multi-get, GetAll, CreateReadOnly
+                └── IFullDb     ← Keys, Values, Count (for in-memory)
+```
 
-### Implementations
+### Key Files
 
-| File | Purpose | Notes |
-|------|---------|-------|
-| `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs` | In-memory ConcurrentDictionary-backed DB | **Primary reference for memory.zig** |
-| `nethermind/src/Nethermind/Nethermind.Db/NullDb.cs` | No-op DB (singleton, returns null for all reads) | Useful for testing |
-| `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDb.cs` | Read-only wrapper with in-memory overlay | Reads from overlay first, then underlying |
-| `nethermind/src/Nethermind/Nethermind.Db/InMemoryWriteBatch.cs` | Batch that buffers writes, flushes on Dispose | Simple batch pattern |
-| `nethermind/src/Nethermind/Nethermind.Db/InMemoryColumnBatch.cs` | Column-aware batch | For column family support |
-| `nethermind/src/Nethermind/Nethermind.Db/DbNames.cs` | Constants for DB names (state, code, blocks, headers, etc.) | Our `DbName` enum |
-| `nethermind/src/Nethermind/Nethermind.Db/DbProvider.cs` | DI-based DbProvider using Autofac | We'll use simpler pattern |
-| `nethermind/src/Nethermind/Nethermind.Db/RocksDbSettings.cs` | DB configuration (name, path, deleteOnStart, etc.) | Settings struct |
+| File | Purpose |
+|------|---------|
+| `nethermind/src/Nethermind/Nethermind.Core/IKeyValueStore.cs` | Core read/write interface: `Get(key, ReadFlags)`, `Set(key, value, WriteFlags)`, `KeyExists`, `Remove` |
+| `nethermind/src/Nethermind/Nethermind.Core/IKeyValueStoreWithBatching.cs` | Adds `StartWriteBatch() -> IWriteBatch` for atomic writes |
+| `nethermind/src/Nethermind/Nethermind.Core/IWriteBatch.cs` | Batch context: `IDisposable + IWriteOnlyKeyValueStore + Clear()` |
+| `nethermind/src/Nethermind/Nethermind.Db/IDb.cs` | Main DB interface: `Name`, multi-get `this[byte[][] keys]`, `GetAll(ordered)`, `CreateReadOnly` |
+| `nethermind/src/Nethermind/Nethermind.Db/IDbMeta.cs` | Metrics: `GatherMetric() -> DbMetric { Size, CacheSize, TotalReads, TotalWrites }`, `Flush`, `Clear`, `Compact` |
+| `nethermind/src/Nethermind/Nethermind.Db/IDbFactory.cs` | Factory: `CreateDb(DbSettings)`, `CreateColumnsDb<T>(DbSettings)` |
+| `nethermind/src/Nethermind/Nethermind.Db/IDbProvider.cs` | Registry: named DB access (`StateDb`, `CodeDb`, `BlocksDb`, `HeadersDb`, etc.) |
+| `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs` | In-memory impl using `ConcurrentDictionary<byte[], byte[]?>` with `Bytes.EqualityComparer` |
+| `nethermind/src/Nethermind/Nethermind.Db/NullDb.cs` | Null object pattern (reads return null, writes throw) |
+| `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDb.cs` | Decorator: base DB + optional MemDb write overlay |
+| `nethermind/src/Nethermind/Nethermind.Db/DbNames.cs` | Constants: `State`, `Code`, `Blocks`, `Headers`, `BlockNumbers`, `Receipts`, `BlockInfos`, `BadBlocks`, `Bloom`, `Metadata`, `BlobTransactions` |
+| `nethermind/src/Nethermind/Nethermind.Db/IColumnsDb.cs` | Multi-column DB: enum-keyed column families (`ReceiptsColumns`, `BlobTxsColumns`) |
+| `nethermind/src/Nethermind/Nethermind.Db/ITunableDb.cs` | Performance hints: `Tune(TuneType)` for `WriteBias`, `HeavyWrite`, etc. |
+| `nethermind/src/Nethermind/Nethermind.Db/IFullDb.cs` | Extended in-memory: `Keys`, `Values`, `Count` |
+| `nethermind/src/Nethermind/Nethermind.Db/IReadOnlyDb.cs` | Read-only view with `ClearTempChanges()` |
+| `nethermind/src/Nethermind/Nethermind.Db/DbExtensions.cs` | Helpers and extension methods |
+| `nethermind/src/Nethermind/Nethermind.Db/DbProvider.cs` | IoC-based provider (Autofac) |
+| `nethermind/src/Nethermind/Nethermind.Db.Rocks/DbOnTheRocks.cs` | RocksDB concrete implementation |
+| `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbFactory.cs` | RocksDB factory |
 
-### RocksDB Backend
+### Key Design Patterns
 
-| File | Purpose | Notes |
-|------|---------|-------|
-| `nethermind/src/Nethermind/Nethermind.Db.Rocks/DbOnTheRocks.cs` | Full RocksDB implementation (~700 lines) | **Reference for rocksdb.zig** — complex, defer to later |
-| `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbFactory.cs` | Factory creating RocksDB instances | |
-| `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnDb.cs` | Column family support | |
-| `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnsDb.cs` | Multi-column DB | |
+1. **Span-based API** — `Get(ReadOnlySpan<byte>)` / `Set(ReadOnlySpan<byte>, byte[]?)` for zero-alloc reads
+2. **Null = delete** — `Set(key, null)` removes entry (no separate delete in write path)
+3. **Batch = transaction** — `StartWriteBatch() -> IWriteBatch`; dispose to commit, `Clear()` to abort
+4. **ReadFlags / WriteFlags** — Optimization hints (`HintCacheMiss`, `LowPriority`, `DisableWAL`)
+5. **Column families** — Enum-keyed columns for typed sub-databases
+6. **Decorator pattern** — `ReadOnlyDb` wraps base + optional MemDb overlay
+7. **Null object** — `NullDb` for safe defaults
+8. **Factory + Provider** — `IDbFactory` creates, `IDbProvider` resolves by name
 
-### Column Support
-
-| File | Purpose | Notes |
-|------|---------|-------|
-| `nethermind/src/Nethermind/Nethermind.Db/IColumnsDb.cs` | Column family interface | Not needed in Phase 0 |
-| `nethermind/src/Nethermind/Nethermind.Db/ReceiptsColumns.cs` | Column enum for receipts | Later phase |
-| `nethermind/src/Nethermind/Nethermind.Db/BlobTxsColumns.cs` | Column enum for blob txs | Later phase |
-
-### Other
-
-| File | Purpose | Notes |
-|------|---------|-------|
-| `nethermind/src/Nethermind/Nethermind.Db/CompressingDb.cs` | Compression wrapper | Optimization, later |
-| `nethermind/src/Nethermind/Nethermind.Db/FullPruning/` | Full pruning support | Much later |
-| `nethermind/src/Nethermind/Nethermind.Db/Metrics.cs` | DB metrics tracking | Nice to have |
-| `nethermind/src/Nethermind/Nethermind.Db/ITunableDb.cs` | Tunable performance settings | RocksDB-specific |
+---
 
 ## Voltaire APIs Available
 
-### Primitives (from `voltaire/packages/voltaire-zig/src/primitives/`)
+### Relevant Primitives (from `voltaire/packages/voltaire-zig/src/primitives/`)
 
-Relevant types that the DB layer might interact with (via keys/values):
-- `Address/` — Ethereum address (20 bytes)
-- `Hash/` — Keccak256 hash (32 bytes) — used as trie node keys
-- `Bytes/` — Generic byte handling
-- `Bytes32/` — 32-byte fixed arrays
-- `Rlp/` — RLP encoding (used for serializing trie values)
-- `State/` — Account state definitions (StorageKey with address+slot)
-- `AccountState/` — Account state structure
-- `BlockHash/` — Block hash type
-- `BlockNumber/` — Block number type
+| Type | Usage for DB |
+|------|-------------|
+| `Address` | 20-byte key for account lookups |
+| `Hash` | 32-byte key for trie nodes, block hashes, tx hashes |
+| `u256` | Storage slot keys/values |
+| `Rlp` | Encoding values for DB storage |
+| `AccountState` | `{ nonce, balance, code_hash, storage_root }` — what gets stored |
+| `Block`, `BlockHeader` | Block storage values |
+| `Transaction`, `Receipt` | Transaction/receipt storage |
+| `Trie` | Merkle Patricia Trie (Phase 1, but DB must support its storage patterns) |
 
-### State Manager (from `voltaire/packages/voltaire-zig/src/state-manager/`)
+### Relevant State Manager (from `voltaire/packages/voltaire-zig/src/state-manager/`)
 
-The state-manager already exists in Voltaire with:
-- `StateCache.zig` — Per-type caching with journaling
-- `JournaledState.zig` — Dual-cache orchestrator
-- `StateManager.zig` — Main public API
-- `ForkBackend.zig` — Remote state fetcher
+| Module | Relevance |
+|--------|-----------|
+| `StateCache.zig` | In-memory cache with checkpoint/revert/commit — **model for MemDb journaling** |
+| `JournaledState.zig` | Dual-cache orchestrator (normal cache + fork backend) — **Phase 2 will use** |
+| `ForkBackend.zig` | Async RPC bridge with vtable pattern — **architectural model for DB vtable** |
+| `StateManager.zig` | Public API combining all above — **Phase 2+ consumer of DB layer** |
 
-**Important**: The state-manager uses its own in-memory structures. Our DB layer needs to be compatible but independent — it provides the persistent storage that the state-manager (Phase 2) will eventually back onto.
+### Relevant Blockchain (from `voltaire/packages/voltaire-zig/src/blockchain/`)
 
-### Crypto (from `voltaire/packages/voltaire-zig/src/crypto/`)
+| Module | Relevance |
+|--------|-----------|
+| `BlockStore.zig` | In-memory block storage with canonical chain tracking — **model for block DB** |
+| `Blockchain.zig` | Orchestrator with local + fork cache — **Phase 4 consumer** |
 
-- `hash.zig` / `keccak256_accel.zig` — For key hashing if needed
+### Key Insight
 
-## Existing Zig Files (guillotine-mini)
+Voltaire does **NOT** provide a generic persistent DB abstraction. All storage is in-memory (HashMap-based). The DB abstraction layer is the missing piece that connects Voltaire's in-memory types to persistent storage.
 
-| File | Relevance | Notes |
-|------|-----------|-------|
-| `src/host.zig` | **Key pattern reference** — vtable-based interface with `*anyopaque` pointer | Our `Db` interface should follow this exact pattern |
-| `src/storage.zig` | Current EVM storage using HashMap | Will eventually be backed by our DB layer |
-| `src/root.zig` | Module exports | We'll add client modules here or in a separate root |
-| `src/evm.zig` | EVM implementation | Consumer of host/storage |
-| `build.zig` | Build configuration | Will need updating to include client/ modules |
-| `build.zig.zon` | Dependencies | Already has `primitives` dependency |
+---
 
-### HostInterface Pattern (from `src/host.zig`)
+## Existing Zig Files
+
+| File | Relevance |
+|------|-----------|
+| `src/host.zig` | Existing vtable pattern for EVM ↔ state communication. DB adapter should follow this same `ptr + vtable` pattern. |
+| `src/evm.zig` | Consumer of HostInterface — shows how vtable-based DI works |
+| `build.zig` | Build system — new `client/` module will need build integration |
+
+### HostInterface Pattern (to follow)
 
 ```zig
 pub const HostInterface = struct {
@@ -113,41 +118,40 @@ pub const HostInterface = struct {
 
     pub const VTable = struct {
         getBalance: *const fn (ptr: *anyopaque, address: Address) u256,
-        // ... more functions
+        setBalance: *const fn (ptr: *anyopaque, address: Address, balance: u256) void,
+        // ...
     };
 
     pub fn getBalance(self: HostInterface, address: Address) u256 {
         return self.vtable.getBalance(self.ptr, address);
     }
-    // ... convenience methods
+    // ...
 };
 ```
 
-**This is the pattern we MUST follow for the DB interface.**
+---
 
 ## Test Fixtures
 
-Phase 0 has **no Ethereum test fixtures** — it's an internal abstraction. Testing is entirely via inline unit tests:
+No external test fixtures for this phase. Phase 0 is an internal abstraction tested with inline unit tests.
 
-- `test "MemoryDb: get returns null for missing key"`
-- `test "MemoryDb: put and get round-trip"`
-- `test "MemoryDb: delete removes key"`
-- `test "MemoryDb: contains checks existence"`
-- `test "WriteBatch: atomic commit"`
-- `test "WriteBatch: delete in batch"`
-- `test "DbAdapter: vtable dispatch works"`
+**Downstream test fixtures** (consumers of DB layer in later phases):
+- `ethereum-tests/TrieTests/trietest.json` — Phase 1 (trie needs DB backend)
+- `ethereum-tests/TrieTests/trieanyorder.json` — Phase 1
+- `ethereum-tests/TrieTests/hex_encoded_securetrie_test.json` — Phase 1
+- `ethereum-tests/GeneralStateTests/` — Phase 3+
+- `ethereum-tests/BlockchainTests/` — Phase 4+
 
-### Relevant test fixture directories (for later phases that depend on DB):
-- `ethereum-tests/TrieTests/` — Phase 1 will use DB for trie storage
-- `ethereum-tests/BlockchainTests/` — Phase 4 will use DB for chain storage
-- `ethereum-tests/GeneralStateTests/` — Phase 3 will use DB for state
+---
 
-## Design Decisions
+## Design Decisions for Zig Implementation
 
-### 1. Interface Design (vtable pattern, matching host.zig)
+### 1. Interface Shape
+
+Follow the `ptr + vtable` pattern from `host.zig` and Voltaire's `ForkBackend.RpcClient`:
 
 ```zig
-pub const Db = struct {
+pub const Database = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
@@ -160,44 +164,93 @@ pub const Db = struct {
 };
 ```
 
-### 2. Key Design Simplification
+### 2. Simplifications vs Nethermind
 
-Nethermind uses `ReadOnlySpan<byte>` for keys — arbitrary byte slices. We should do the same: `[]const u8`. The trie layer (Phase 1) will handle key hashing/encoding.
+| Nethermind | Zig Equivalent | Notes |
+|-----------|----------------|-------|
+| `ReadFlags` / `WriteFlags` | Omit for now | Add when RocksDB backend needs them |
+| `IColumnsDb<T>` | Separate `Database` instances per column | Simpler; column families are a RocksDB optimization |
+| `IDbProvider` | `DbProvider` struct with named fields | No IoC container in Zig |
+| `IWriteBatch` | `WriteBatch` struct with arraylist of ops | Explicit commit/abort |
+| `IDbMeta` | Omit for now | Add metrics when needed |
+| `ITunableDb` | Omit for now | RocksDB-specific |
+| `ReadOnlyDb` | `ReadOnlyDatabase` wrapper | Decorator pattern works in Zig |
+| `ConcurrentDictionary` | `std.HashMap` | No concurrency needed initially (single-threaded Zig) |
 
-### 3. Memory Management
+### 3. Allocation Strategy
 
-- MemoryDb: Arena allocator owns all stored data
-- RocksDB: Caller-owned keys, DB-owned values (returned as slices with lifetime tied to DB)
-- WriteBatch: Buffers operations, applies atomically
+- **MemDb**: Arena allocator for all stored keys/values (freed at DB destruction)
+- **RocksDB**: Backend manages its own memory; Zig copies into arena on read
+- **WriteBatch**: Arena allocator for pending operations, freed on commit/abort
 
-### 4. DbName Constants (from Nethermind DbNames.cs)
+### 4. Error Handling
 
-```zig
-pub const DbName = enum {
-    state,
-    code,
-    blocks,
-    headers,
-    block_numbers,
-    receipts,
-    block_infos,
-    bad_blocks,
-    bloom,
-    metadata,
-    blob_transactions,
-};
-```
+All DB operations return error unions (`!?[]const u8` for get, `!void` for put/delete). Never use `catch {}`.
 
-### 5. Implementation Order
+---
 
-1. `client/db/adapter.zig` — The Db interface (vtable struct)
-2. `client/db/memory.zig` — MemoryDb (HashMap-backed, for testing)
-3. `client/db/rocksdb.zig` — RocksDb (stub initially, real impl later)
+## Implementation Order
 
-## Key Architectural Notes
+1. **`client/db/adapter.zig`** — `Database` vtable interface + `WriteBatch` interface + `DbName` enum
+2. **`client/db/memory.zig`** — `MemoryDatabase` implementing `Database` (HashMap-backed)
+3. **`client/db/rocksdb.zig`** — `RocksDatabase` stub (interface only, no FFI yet)
+4. **Integration**: Wire into `build.zig` as a new module
 
-1. **No allocation in the interface** — get() returns optional slice pointing to DB-owned memory
-2. **Errors as error unions** — `!void` for puts, `error{OutOfMemory}` etc.
-3. **Thread safety** — MemoryDb doesn't need it (single-threaded Zig), RocksDB handles it internally
-4. **No column families initially** — simplify to plain KV store first, add columns when needed (Phase 4+)
-5. **WriteBatch** — Buffer writes and commit atomically; critical for trie commits
+---
+
+## File Paths Summary
+
+### Nethermind Reference Files
+- `nethermind/src/Nethermind/Nethermind.Core/IKeyValueStore.cs`
+- `nethermind/src/Nethermind/Nethermind.Core/IKeyValueStoreWithBatching.cs`
+- `nethermind/src/Nethermind/Nethermind.Core/IWriteBatch.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/IDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/NullDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/DbNames.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/IDbFactory.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/IDbProvider.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/IColumnsDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/IFullDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/IReadOnlyDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/ITunableDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/DbExtensions.cs`
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/DbOnTheRocks.cs`
+
+### Voltaire Modules
+- `voltaire/packages/voltaire-zig/src/primitives/` — Address, Hash, u256, RLP, AccountState, Block, Tx
+- `voltaire/packages/voltaire-zig/src/state-manager/StateCache.zig` — Checkpoint/revert pattern model
+- `voltaire/packages/voltaire-zig/src/state-manager/JournaledState.zig` — Dual-cache orchestrator model
+- `voltaire/packages/voltaire-zig/src/state-manager/ForkBackend.zig` — vtable pattern model (RpcClient)
+- `voltaire/packages/voltaire-zig/src/blockchain/BlockStore.zig` — In-memory block storage model
+
+### Existing Zig Files
+- `src/host.zig` — vtable pattern to follow
+- `src/evm.zig` — consumer of vtable-based DI
+- `build.zig` — build system (needs new client/ module)
+
+### Test Fixtures (downstream phases)
+- `ethereum-tests/TrieTests/trietest.json` — Phase 1
+- `ethereum-tests/TrieTests/trieanyorder.json` — Phase 1
+- `ethereum-tests/TrieTests/trieanyorder_secureTrie.json` — Phase 1
+- `ethereum-tests/TrieTests/hex_encoded_securetrie_test.json` — Phase 1
+- `ethereum-tests/TrieTests/trietest_secureTrie.json` — Phase 1
+- `ethereum-tests/TrieTests/trietestnextprev.json` — Phase 1
+- `ethereum-tests/GeneralStateTests/` — Phase 3
+- `ethereum-tests/BlockchainTests/ValidBlocks/` — Phase 4
+- `ethereum-tests/BlockchainTests/InvalidBlocks/` — Phase 4
+
+### MemDb Unit Test Patterns (from Nethermind MemDb.cs)
+
+The following test patterns should be implemented for the in-memory backend:
+- Basic `put(key, value)` then `get(key)` round-trip
+- `get()` missing key returns `null`
+- `delete()` existing key, then `get()` returns `null`
+- `delete()` non-existing key is a no-op
+- `contains(key)` returns true/false correctly
+- `put(key, null_or_empty)` behaves as delete (Nethermind pattern: `Set(key, null)` calls `Remove`)
+- Read/write count tracking
+- `getAll()` returns all stored pairs
+- Batch operations: accumulate, commit atomically
+- `deinit()` frees all memory cleanly (no leaks under test allocator)
