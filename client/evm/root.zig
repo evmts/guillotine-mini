@@ -24,7 +24,7 @@
 /// defer state.deinit();
 ///
 /// var adapter = client_evm.HostAdapter.init(&state);
-/// const host = adapter.hostInterface();
+/// const host = adapter.host_interface();
 /// ```
 const host_adapter = @import("host_adapter.zig");
 
