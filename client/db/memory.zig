@@ -95,10 +95,10 @@ pub const MemoryDatabase = struct {
         if (value) |val| {
             const alloc = self.arena.allocator();
             // Copy key and value into arena
-            const owned_key = alloc.dupe(u8, key) catch return Error.StorageError;
-            const owned_val = alloc.dupe(u8, val) catch return Error.StorageError;
+            const owned_key = alloc.dupe(u8, key) catch return error.OutOfMemory;
+            const owned_val = alloc.dupe(u8, val) catch return error.OutOfMemory;
             // Insert (overwrites any existing entry; old key/value stay in arena)
-            self.map.put(alloc, owned_key, owned_val) catch return Error.StorageError;
+            self.map.put(alloc, owned_key, owned_val) catch return error.OutOfMemory;
         } else {
             // put(key, null) behaves as delete (Nethermind pattern)
             _ = self.map.remove(key);

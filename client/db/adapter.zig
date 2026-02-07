@@ -10,9 +10,27 @@
 /// A `put` with a `null` value is equivalent to `delete` (Nethermind pattern).
 ///
 /// Error handling: all operations return error unions — never use `catch {}`.
+///
+/// ## Relationship to Voltaire
+///
+/// This module provides a *low-level persistence abstraction* (raw key-value
+/// storage for trie nodes, block data, receipts, etc.) that sits below
+/// Voltaire's state management layer. Voltaire's `StateManager`,
+/// `JournaledState`, and cache types (AccountCache, StorageCache,
+/// ContractCache) operate on typed, in-memory state and delegate to this
+/// persistence layer for durable storage. The two are complementary:
+///
+///   Voltaire StateManager → (typed state ops) → DB adapter → (raw KV) → backend
+///
+/// The `Database` / `WriteBatch` / `DbName` types defined here are
+/// intentionally backend-agnostic — Voltaire does not provide a raw KV
+/// persistence interface, so this abstraction fills that gap.
 const std = @import("std");
 
 /// Errors that database operations can produce.
+///
+/// `OutOfMemory` is kept separate (via Zig's error union mechanism) so that
+/// callers can distinguish allocation failures from backend I/O errors.
 pub const Error = error{
     /// The underlying storage backend encountered an I/O or corruption error.
     StorageError,
@@ -22,6 +40,8 @@ pub const Error = error{
     ValueTooLarge,
     /// The database has been closed or is in an invalid state.
     DatabaseClosed,
+    /// Allocation failure — propagated directly, never masked as StorageError.
+    OutOfMemory,
 };
 
 /// Standard database column/partition names, mirroring Nethermind's `DbNames`.
@@ -29,6 +49,9 @@ pub const Error = error{
 /// Each name identifies a logical partition of the database. Backends may
 /// implement these as separate column families (RocksDB) or separate
 /// HashMap instances (MemoryDatabase).
+///
+/// Matches Nethermind's `DbNames` constants from
+/// `Nethermind.Db/DbNames.cs` — all 15 database names are included.
 pub const DbName = enum {
     /// World state (account trie nodes)
     state,
@@ -54,6 +77,12 @@ pub const DbName = enum {
     metadata,
     /// EIP-4844 blob transactions
     blob_transactions,
+    /// Discovery Protocol v4 node cache (devp2p)
+    discovery_nodes,
+    /// Discovery Protocol v5 node cache (devp2p, UDP-based)
+    discovery_v5_nodes,
+    /// RLPx peer database (P2P networking)
+    peers,
 
     /// Returns the string representation matching Nethermind's DbNames constants.
     pub fn toString(self: DbName) []const u8 {
@@ -70,6 +99,9 @@ pub const DbName = enum {
             .bloom => "bloom",
             .metadata => "metadata",
             .blob_transactions => "blobTransactions",
+            .discovery_nodes => "discoveryNodes",
+            .discovery_v5_nodes => "discoveryV5Nodes",
+            .peers => "peers",
         };
     }
 };
@@ -120,6 +152,17 @@ pub const Database = struct {
 
         /// Check whether `key` exists in the database.
         contains: *const fn (ptr: *anyopaque, key: []const u8) Error!bool,
+
+        /// Apply a batch of write operations atomically.
+        ///
+        /// Backends that support native batch writes (e.g. RocksDB WriteBatch)
+        /// should implement this to provide true all-or-nothing semantics.
+        /// If `null`, WriteBatch.commit will fall back to sequential application
+        /// with best-effort error reporting (partial writes possible on error).
+        ///
+        /// On success, all operations in `ops` are applied. On error, the
+        /// backend must guarantee that NO operations were applied (rollback).
+        writeBatch: ?*const fn (ptr: *anyopaque, ops: []const WriteBatchOp) Error!void = null,
     };
 
     /// Retrieve the value associated with `key`.
@@ -145,14 +188,29 @@ pub const Database = struct {
     }
 };
 
+/// A single write operation for use with `Database.VTable.writeBatch`.
+pub const WriteBatchOp = union(enum) {
+    /// Store a key-value pair.
+    put: struct { key: []const u8, value: []const u8 },
+    /// Remove a key.
+    del: struct { key: []const u8 },
+};
+
 /// Batch context for accumulating multiple write operations and applying
 /// them atomically to a `Database`.
 ///
 /// Modeled after Nethermind's `IWriteBatch` / `RocksDbWriteBatch`:
 ///   - `put()` / `delete()` accumulate operations without touching the DB.
 ///   - `commit()` applies all pending operations to the target database.
-///   - `clear()` discards all pending operations (abort).
+///   - `clear()` discards all pending operations and frees arena memory.
 ///   - `deinit()` releases all memory (must be called even after commit).
+///
+/// ## Atomicity
+///
+/// If the target database implements `VTable.writeBatch`, commit uses it
+/// for true all-or-nothing semantics. Otherwise, operations are applied
+/// sequentially; on error, already-applied operations are NOT rolled back
+/// and the batch is NOT cleared (caller can inspect/retry).
 ///
 /// ## Usage
 ///
@@ -163,19 +221,11 @@ pub const Database = struct {
 /// try batch.put("key1", "value1");
 /// try batch.put("key2", "value2");
 /// try batch.delete("key3");
-/// try batch.commit(); // atomic apply
+/// try batch.commit(); // atomic apply (if backend supports it)
 /// ```
 pub const WriteBatch = struct {
-    /// Tagged union for a single pending write operation.
-    pub const Op = union(enum) {
-        /// Store a key-value pair.
-        put: struct { key: []const u8, value: []const u8 },
-        /// Remove a key.
-        del: struct { key: []const u8 },
-    };
-
     /// Pending operations, in order of insertion.
-    ops: std.ArrayListUnmanaged(Op) = .{},
+    ops: std.ArrayListUnmanaged(WriteBatchOp) = .{},
     /// Arena for owned copies of keys/values within this batch.
     arena: std.heap.ArenaAllocator,
     /// The target database to apply operations to on `commit()`.
@@ -198,37 +248,59 @@ pub const WriteBatch = struct {
     /// Queue a put operation. Both key and value are copied into the batch arena.
     pub fn put(self: *WriteBatch, key: []const u8, value: []const u8) Error!void {
         const alloc = self.arena.allocator();
-        const owned_key = alloc.dupe(u8, key) catch return Error.StorageError;
-        const owned_val = alloc.dupe(u8, value) catch return Error.StorageError;
-        self.ops.append(alloc, .{ .put = .{ .key = owned_key, .value = owned_val } }) catch return Error.StorageError;
+        const owned_key = alloc.dupe(u8, key) catch return error.OutOfMemory;
+        const owned_val = alloc.dupe(u8, value) catch return error.OutOfMemory;
+        self.ops.append(alloc, .{ .put = .{ .key = owned_key, .value = owned_val } }) catch return error.OutOfMemory;
     }
 
     /// Queue a delete operation. The key is copied into the batch arena.
     pub fn delete(self: *WriteBatch, key: []const u8) Error!void {
         const alloc = self.arena.allocator();
-        const owned_key = alloc.dupe(u8, key) catch return Error.StorageError;
-        self.ops.append(alloc, .{ .del = .{ .key = owned_key } }) catch return Error.StorageError;
+        const owned_key = alloc.dupe(u8, key) catch return error.OutOfMemory;
+        self.ops.append(alloc, .{ .del = .{ .key = owned_key } }) catch return error.OutOfMemory;
     }
 
-    /// Apply all pending operations to the target database, in order.
+    /// Apply all pending operations to the target database.
     ///
-    /// After commit, the batch is logically empty but `deinit()` must
-    /// still be called to free arena memory.
+    /// If the backend provides `writeBatch`, all operations are applied
+    /// atomically (all-or-nothing). Otherwise, operations are applied
+    /// sequentially; on error, already-applied operations remain and the
+    /// batch retains its pending ops for inspection or retry.
+    ///
+    /// On success, pending ops are cleared. `deinit()` must still be
+    /// called to free arena memory.
     pub fn commit(self: *WriteBatch) Error!void {
-        for (self.ops.items) |op| {
-            switch (op) {
-                .put => |p| try self.target.put(p.key, p.value),
-                .del => |d| try self.target.delete(d.key),
+        if (self.ops.items.len == 0) return;
+
+        if (self.target.vtable.writeBatch) |batchFn| {
+            // Atomic path: backend handles all-or-nothing semantics.
+            try batchFn(self.target.ptr, self.ops.items);
+        } else {
+            // Sequential fallback: apply one-by-one.
+            // On error, ops are NOT cleared so caller can inspect/retry.
+            for (self.ops.items) |op| {
+                switch (op) {
+                    .put => |p| try self.target.put(p.key, p.value),
+                    .del => |d| try self.target.delete(d.key),
+                }
             }
         }
-        // Clear the ops list (memory stays in arena, freed on deinit).
+        // Only clear on success.
         self.ops.items.len = 0;
     }
 
     /// Discard all pending operations without applying them.
+    /// Resets the arena to free accumulated key/value memory, preventing
+    /// unbounded memory retention for long-lived batches.
     pub fn clear(self: *WriteBatch) void {
         self.ops.items.len = 0;
-        // Arena memory is retained; will be freed on deinit.
+        // Reset arena to free all accumulated key/value copies.
+        // This prevents unbounded memory growth for long-lived batches
+        // that repeatedly accumulate and clear operations.
+        _ = self.arena.reset(.retain_capacity);
+        // After reset, the ops ArrayList's buffer is invalidated,
+        // so reset it to empty state.
+        self.ops = .{};
     }
 
     /// Return the number of pending operations.
@@ -350,12 +422,16 @@ test "DbName toString matches Nethermind constants" {
     try std.testing.expectEqualStrings("bloom", DbName.bloom.toString());
     try std.testing.expectEqualStrings("metadata", DbName.metadata.toString());
     try std.testing.expectEqualStrings("blobTransactions", DbName.blob_transactions.toString());
+    try std.testing.expectEqualStrings("discoveryNodes", DbName.discovery_nodes.toString());
+    try std.testing.expectEqualStrings("discoveryV5Nodes", DbName.discovery_v5_nodes.toString());
+    try std.testing.expectEqualStrings("peers", DbName.peers.toString());
 }
 
 test "DbName enum has all expected variants" {
-    // Verify we can iterate all variants (compile-time check)
+    // Verify we can iterate all variants (compile-time check).
+    // 15 = 12 original + 3 networking (discovery_nodes, discovery_v5_nodes, peers)
     const fields = std.meta.fields(DbName);
-    try std.testing.expectEqual(@as(usize, 12), fields.len);
+    try std.testing.expectEqual(@as(usize, 15), fields.len);
 }
 
 // -- WriteBatch tests -------------------------------------------------------
@@ -382,12 +458,12 @@ const TrackingDb = struct {
 
     fn putImpl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
         const self: *TrackingDb = @ptrCast(@alignCast(ptr));
-        self.puts.append(self.alloc, .{ .key = key, .value = value }) catch return Error.StorageError;
+        self.puts.append(self.alloc, .{ .key = key, .value = value }) catch return error.OutOfMemory;
     }
 
     fn deleteImpl(ptr: *anyopaque, key: []const u8) Error!void {
         const self: *TrackingDb = @ptrCast(@alignCast(ptr));
-        self.deletes.append(self.alloc, key) catch return Error.StorageError;
+        self.deletes.append(self.alloc, key) catch return error.OutOfMemory;
     }
 
     fn containsImpl(_: *anyopaque, _: []const u8) Error!bool {
@@ -507,4 +583,203 @@ test "WriteBatch: deinit frees all memory (leak check)" {
 
     // If deinit doesn't free properly, testing allocator will report a leak
     batch.deinit();
+}
+
+// -- Atomicity and error behavior tests ------------------------------------
+
+/// A mock database that fails after N successful writes (for atomicity testing).
+const FailingDb = struct {
+    /// Number of writes to succeed before failing.
+    succeed_count: usize,
+    /// Tracks how many writes have been applied.
+    applied: usize = 0,
+
+    fn getImpl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+        return null;
+    }
+
+    fn putImpl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+        const self: *FailingDb = @ptrCast(@alignCast(ptr));
+        if (self.applied >= self.succeed_count) {
+            return Error.StorageError;
+        }
+        self.applied += 1;
+    }
+
+    fn deleteImpl(ptr: *anyopaque, _: []const u8) Error!void {
+        const self: *FailingDb = @ptrCast(@alignCast(ptr));
+        if (self.applied >= self.succeed_count) {
+            return Error.StorageError;
+        }
+        self.applied += 1;
+    }
+
+    fn containsImpl(_: *anyopaque, _: []const u8) Error!bool {
+        return false;
+    }
+
+    const vtable = Database.VTable{
+        .get = getImpl,
+        .put = putImpl,
+        .delete = deleteImpl,
+        .contains = containsImpl,
+    };
+
+    fn database(self: *FailingDb) Database {
+        return .{
+            .ptr = @ptrCast(self),
+            .vtable = &vtable,
+        };
+    }
+};
+
+test "WriteBatch: sequential fallback retains ops on error for retry" {
+    // FailingDb will succeed for 1 write, then fail on the 2nd.
+    var failing = FailingDb{ .succeed_count = 1 };
+
+    var batch = WriteBatch.init(std.testing.allocator, failing.database());
+    defer batch.deinit();
+
+    try batch.put("key1", "val1");
+    try batch.put("key2", "val2");
+    try batch.put("key3", "val3");
+
+    // Commit should fail (2nd op fails after 1st succeeds)
+    try std.testing.expectError(Error.StorageError, batch.commit());
+
+    // Ops should be RETAINED on failure (not cleared)
+    try std.testing.expectEqual(@as(usize, 3), batch.pending());
+    // The failing db applied 1 write before failing
+    try std.testing.expectEqual(@as(usize, 1), failing.applied);
+}
+
+/// A mock database that supports atomic writeBatch (all-or-nothing).
+const AtomicDb = struct {
+    /// Tracks how many ops were committed atomically.
+    committed_count: usize = 0,
+    /// When true, writeBatch will fail (to test rollback).
+    should_fail: bool = false,
+
+    fn getImpl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+        return null;
+    }
+
+    fn putImpl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+        const self: *AtomicDb = @ptrCast(@alignCast(ptr));
+        self.committed_count += 1;
+    }
+
+    fn deleteImpl(ptr: *anyopaque, _: []const u8) Error!void {
+        const self: *AtomicDb = @ptrCast(@alignCast(ptr));
+        self.committed_count += 1;
+    }
+
+    fn containsImpl(_: *anyopaque, _: []const u8) Error!bool {
+        return false;
+    }
+
+    fn writeBatchImpl(ptr: *anyopaque, ops: []const WriteBatchOp) Error!void {
+        const self: *AtomicDb = @ptrCast(@alignCast(ptr));
+        if (self.should_fail) {
+            return Error.StorageError;
+        }
+        // Atomic: apply all or none.
+        self.committed_count += ops.len;
+    }
+
+    const vtable = Database.VTable{
+        .get = getImpl,
+        .put = putImpl,
+        .delete = deleteImpl,
+        .contains = containsImpl,
+        .writeBatch = writeBatchImpl,
+    };
+
+    fn database(self: *AtomicDb) Database {
+        return .{
+            .ptr = @ptrCast(self),
+            .vtable = &vtable,
+        };
+    }
+};
+
+test "WriteBatch: uses writeBatch vtable for atomic commit" {
+    var atomic = AtomicDb{};
+
+    var batch = WriteBatch.init(std.testing.allocator, atomic.database());
+    defer batch.deinit();
+
+    try batch.put("key1", "val1");
+    try batch.put("key2", "val2");
+    try batch.delete("key3");
+
+    try batch.commit();
+
+    // All 3 ops committed atomically via writeBatch
+    try std.testing.expectEqual(@as(usize, 3), atomic.committed_count);
+    try std.testing.expectEqual(@as(usize, 0), batch.pending());
+}
+
+test "WriteBatch: atomic commit retains ops on failure (no partial apply)" {
+    var atomic = AtomicDb{ .should_fail = true };
+
+    var batch = WriteBatch.init(std.testing.allocator, atomic.database());
+    defer batch.deinit();
+
+    try batch.put("key1", "val1");
+    try batch.put("key2", "val2");
+
+    try std.testing.expectError(Error.StorageError, batch.commit());
+
+    // No ops committed (atomic rollback)
+    try std.testing.expectEqual(@as(usize, 0), atomic.committed_count);
+    // Ops retained for retry
+    try std.testing.expectEqual(@as(usize, 2), batch.pending());
+}
+
+test "WriteBatch: clear resets arena memory (reusable after clear)" {
+    var tracker = TrackingDb.init(std.testing.allocator);
+    defer tracker.deinit();
+
+    var batch = WriteBatch.init(std.testing.allocator, tracker.database());
+    defer batch.deinit();
+
+    // Add many ops, clear, then add more — should not leak
+    var i: usize = 0;
+    while (i < 50) : (i += 1) {
+        try batch.put("key", "value_with_some_length_to_force_alloc");
+    }
+    try std.testing.expectEqual(@as(usize, 50), batch.pending());
+
+    batch.clear();
+    try std.testing.expectEqual(@as(usize, 0), batch.pending());
+
+    // Batch is reusable after clear
+    try batch.put("new_key", "new_value");
+    try std.testing.expectEqual(@as(usize, 1), batch.pending());
+
+    try batch.commit();
+    try std.testing.expectEqual(@as(usize, 1), tracker.puts.items.len);
+}
+
+test "WriteBatch: put propagates OutOfMemory not StorageError" {
+    // Use a failing allocator to trigger OOM in put/delete
+    var batch = WriteBatch.init(std.testing.failing_allocator, Database{
+        .ptr = undefined,
+        .vtable = &MockDb.vtable,
+    });
+    defer batch.deinit();
+
+    // First put should fail with OutOfMemory from the failing allocator
+    try std.testing.expectError(error.OutOfMemory, batch.put("key", "value"));
+}
+
+test "WriteBatch: delete propagates OutOfMemory not StorageError" {
+    var batch = WriteBatch.init(std.testing.failing_allocator, Database{
+        .ptr = undefined,
+        .vtable = &MockDb.vtable,
+    });
+    defer batch.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, batch.delete("key"));
 }
