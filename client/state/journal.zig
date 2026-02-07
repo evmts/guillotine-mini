@@ -14,7 +14,7 @@
 /// - **Change list** — An `ArrayListUnmanaged` of `Entry` structs, append-only
 ///   during normal operation.  Entries are never modified in place.
 /// - **Snapshot** — An index into the change list (`usize`).
-///   `takeSnapshot()` returns the current tail position.
+///   `take_snapshot()` returns the current tail position.
 /// - **Restore** — Truncates the list back to a snapshot position, preserving
 ///   `just_cache` entries (Nethermind `_keptInCache` pattern).  Returns an error
 ///   if the snapshot is invalid (ahead of current position).
@@ -145,7 +145,7 @@ pub fn Journal(comptime K: type, comptime V: type) type {
         ///
         /// Returns `empty_snapshot` if the journal is empty, otherwise the
         /// index of the last entry.
-        pub fn takeSnapshot(self: *const Self) usize {
+        pub fn take_snapshot(self: *const Self) usize {
             if (self.entries.items.len == 0) return empty_snapshot;
             return self.entries.items.len - 1;
         }
@@ -369,21 +369,21 @@ test "Journal: get returns correct entry" {
     try std.testing.expectEqual(ChangeTag.update, entry.tag);
 }
 
-test "Journal: takeSnapshot on empty returns sentinel" {
+test "Journal: take_snapshot on empty returns sentinel" {
     const j = Journal(u32, u64).init(std.testing.allocator);
     // no deinit needed — nothing allocated
 
-    try std.testing.expectEqual(Journal(u32, u64).empty_snapshot, j.takeSnapshot());
+    try std.testing.expectEqual(Journal(u32, u64).empty_snapshot, j.take_snapshot());
 }
 
-test "Journal: takeSnapshot returns last index" {
+test "Journal: take_snapshot returns last index" {
     var j = Journal(u32, u64).init(std.testing.allocator);
     defer j.deinit();
 
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
     _ = try j.append(.{ .key = 2, .value = 20, .tag = .update });
 
-    try std.testing.expectEqual(@as(usize, 1), j.takeSnapshot());
+    try std.testing.expectEqual(@as(usize, 1), j.take_snapshot());
 }
 
 test "Journal: restore truncates entries" {
@@ -391,7 +391,7 @@ test "Journal: restore truncates entries" {
     defer j.deinit();
 
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
-    const snap = j.takeSnapshot(); // position 0
+    const snap = j.take_snapshot(); // position 0
     _ = try j.append(.{ .key = 2, .value = 20, .tag = .update });
     _ = try j.append(.{ .key = 3, .value = 30, .tag = .update });
 
@@ -421,7 +421,7 @@ test "Journal: restore invokes callback for each reverted entry" {
     defer j.deinit();
 
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
-    const snap = j.takeSnapshot();
+    const snap = j.take_snapshot();
     _ = try j.append(.{ .key = 2, .value = 20, .tag = .update });
     _ = try j.append(.{ .key = 3, .value = 30, .tag = .delete });
 
@@ -445,7 +445,7 @@ test "Journal: restore is no-op when snapshot is at current position" {
     defer j.deinit();
 
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
-    const snap = j.takeSnapshot();
+    const snap = j.take_snapshot();
 
     try j.restore(snap, null); // should be a no-op
 
@@ -476,7 +476,7 @@ test "Journal: clear removes all entries" {
     j.clear();
 
     try std.testing.expectEqual(@as(usize, 0), j.len());
-    try std.testing.expectEqual(Journal(u32, u64).empty_snapshot, j.takeSnapshot());
+    try std.testing.expectEqual(Journal(u32, u64).empty_snapshot, j.take_snapshot());
 }
 
 test "Journal: items returns full slice" {
@@ -519,10 +519,10 @@ test "Journal: multiple snapshot/restore cycles" {
 
     // Build up some state.
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
-    const snap1 = j.takeSnapshot(); // 0
+    const snap1 = j.take_snapshot(); // 0
 
     _ = try j.append(.{ .key = 2, .value = 20, .tag = .update });
-    const snap2 = j.takeSnapshot(); // 1
+    const snap2 = j.take_snapshot(); // 1
 
     _ = try j.append(.{ .key = 3, .value = 30, .tag = .update });
     try std.testing.expectEqual(@as(usize, 3), j.len());
@@ -562,7 +562,7 @@ test "Journal: just_cache entries survive restore" {
     defer j.deinit();
 
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
-    const snap = j.takeSnapshot(); // position 0
+    const snap = j.take_snapshot(); // position 0
 
     // Add a just_cache entry and some mutations after the snapshot.
     _ = try j.append(.{ .key = 2, .value = 20, .tag = .just_cache });
@@ -594,7 +594,7 @@ test "Journal: just_cache entries do not trigger on_revert callback" {
     defer j.deinit();
 
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
-    const snap = j.takeSnapshot();
+    const snap = j.take_snapshot();
 
     _ = try j.append(.{ .key = 2, .value = 20, .tag = .just_cache });
     _ = try j.append(.{ .key = 3, .value = 30, .tag = .update });
@@ -670,7 +670,7 @@ test "Journal: commit removes entries and calls callback" {
     defer j.deinit();
 
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
-    const snap = j.takeSnapshot(); // 0
+    const snap = j.take_snapshot(); // 0
     _ = try j.append(.{ .key = 2, .value = 20, .tag = .update });
     _ = try j.append(.{ .key = 3, .value = 30, .tag = .update });
 
@@ -708,7 +708,7 @@ test "Journal: commit with no entries past snapshot is no-op" {
     defer j.deinit();
 
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
-    const snap = j.takeSnapshot(); // 0
+    const snap = j.take_snapshot(); // 0
 
     j.commit(snap, null);
 

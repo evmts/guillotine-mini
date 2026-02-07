@@ -27,7 +27,7 @@
 /// defer journal.deinit();
 ///
 /// const idx = try journal.append(.{ .key = addr, .value = acct, .tag = .create });
-/// const snap = journal.takeSnapshot();
+/// const snap = journal.take_snapshot();
 /// // ... more mutations ...
 /// try journal.restore(snap, null); // undo mutations after snapshot
 /// journal.commit(snap, null);      // finalise changes since snapshot
