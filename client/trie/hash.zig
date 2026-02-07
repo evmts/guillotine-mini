@@ -776,6 +776,21 @@ test "rlpEncodeTaggedList - level 5 branch (dogs test)" {
     try testing.expectEqualSlices(u8, &expected_hash, &actual_hash);
 }
 
+/// Assert that an `EncodedNode` is a `.hash` variant matching `expected`.
+/// On mismatch, prints debug info for `.raw` nodes to aid diagnosis.
+fn expectNodeHash(node: EncodedNode, expected: []const u8) !void {
+    switch (node) {
+        .hash => |h| try testing.expectEqualSlices(u8, expected, &h),
+        .raw => |raw| {
+            std.debug.print("Got raw node (len {d}): ", .{raw.len});
+            for (raw) |b| std.debug.print("{x:0>2}", .{b});
+            std.debug.print("\n", .{});
+            return error.TestExpectedEqual;
+        },
+        .empty => return error.TestExpectedEqual,
+    }
+}
+
 test "patricialize - dogs subtree at level 6 (dog + dogglesworth)" {
     const allocator = testing.allocator;
 
@@ -789,17 +804,7 @@ test "patricialize - dogs subtree at level 6 (dog + dogglesworth)" {
     defer freeEncodedNode(allocator, node);
 
     const expected_hash = hexToBytes("37efd11993cb04a54048c25320e9f29c50a432d28afdf01598b2978ce1ca3068");
-
-    switch (node) {
-        .hash => |h| try testing.expectEqualSlices(u8, &expected_hash, &h),
-        .raw => |raw| {
-            std.debug.print("Got raw node (len {d}): ", .{raw.len});
-            for (raw) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print("\n", .{});
-            return error.TestExpectedEqual;
-        },
-        .empty => return error.TestExpectedEqual,
-    }
+    try expectNodeHash(node, &expected_hash);
 }
 
 test "patricialize - dogs at level 5 (full branch)" {
@@ -816,15 +821,5 @@ test "patricialize - dogs at level 5 (full branch)" {
     defer freeEncodedNode(allocator, node);
 
     const expected_hash = hexToBytes("db6ae1fda66890f6693f36560d36b4dca68b4d838f17016b151efe1d4c95c453");
-
-    switch (node) {
-        .hash => |h| try testing.expectEqualSlices(u8, &expected_hash, &h),
-        .raw => |raw| {
-            std.debug.print("Got raw node (len {d}): ", .{raw.len});
-            for (raw) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print("\n", .{});
-            return error.TestExpectedEqual;
-        },
-        .empty => return error.TestExpectedEqual,
-    }
+    try expectNodeHash(node, &expected_hash);
 }
