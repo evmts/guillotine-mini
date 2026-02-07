@@ -244,7 +244,10 @@ fn patricialize(
     // Uses a two-pass approach with preallocated contiguous arrays to
     // minimize per-bucket allocation overhead.
     var bucket_counts: [16]usize = [_]usize{0} ** 16;
-    var branch_value: ?[]const u8 = null;
+    // Python spec uses b"" (empty bytes) as the "no value" sentinel for
+    // branch nodes, not None/null. This matches the spec's BranchNode
+    // constructor default: `value: Extended = b""`.
+    var branch_value: []const u8 = &[_]u8{};
 
     // Count entries per bucket and find branch value.
     // NOTE: If multiple keys have the same nibble path (duplicate keys),
@@ -347,16 +350,18 @@ fn encodeInternalExtension(allocator: Allocator, prefix: []const u8, child: Enco
 
 /// Encode a branch node: `encode_internal_node(BranchNode(subnodes, value))`
 ///
-/// The unencoded form is: `list(subnodes) + [value]` (17 elements)
-fn encodeInternalBranch(allocator: Allocator, subnodes: *const [16]EncodedNode, value: ?[]const u8) !EncodedNode {
+/// The unencoded form is: `list(subnodes) + [value]` (17 elements).
+/// `value` is `b""` (empty bytes) when no value terminates at this branch,
+/// matching the Python spec's sentinel convention.
+fn encodeInternalBranch(allocator: Allocator, subnodes: *const [16]EncodedNode, value: []const u8) !EncodedNode {
     var items: [17]RlpItem = undefined;
 
     for (0..16) |i| {
         items[i] = encodedNodeToRlpItem(&subnodes[i]);
     }
 
-    // Branch value: empty bytes if no value
-    items[16] = .{ .string = value orelse &[_]u8{} };
+    // Branch value: empty bytes means "no value" per spec
+    items[16] = .{ .string = value };
 
     return encodeInternalFromItems(allocator, &items);
 }

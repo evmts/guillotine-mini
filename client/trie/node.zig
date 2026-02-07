@@ -63,20 +63,58 @@ pub const BRANCH_NODE_LENGTH: usize = 16;
 /// We represent this as:
 /// - `.empty` — absent child (corresponds to `b""` / `None`)
 /// - `.hash` — 32-byte keccak256 reference to a persisted node
-/// - `.inline_node` — raw RLP bytes of a small inline node (< 32 bytes)
+/// - `.inline_node` — **verbatim** RLP bytes of a small inline node (< 32 bytes)
 ///
 /// This mirrors the `EncodedNode` type in `hash.zig` but is designed for
 /// use as a stored child reference within trie node structures, whereas
 /// `EncodedNode` is used during root hash computation.
+///
+/// ## Verbatim Embedding Invariant
+///
+/// The `.inline_node` variant stores **already-RLP-encoded** bytes that MUST
+/// be embedded verbatim (without further encoding) when this child reference
+/// is serialized into a parent node's RLP list. The bytes must be a valid
+/// RLP list (starting with 0xc0..0xf7 for short lists, or 0xf8..0xff for
+/// long lists). This matches the Python spec's behavior where
+/// `encode_internal_node` returns the *unencoded* form (a tuple/list), and
+/// the parent's `rlp.encode()` embeds it as a nested structure — NOT as a
+/// byte string. In our Zig representation, we pre-encode to RLP and tag as
+/// `.verbatim` / `.inline_node` so encoders embed without re-wrapping.
+///
+/// Use `createInlineNode()` to construct inline nodes with validation.
+/// Direct construction is allowed but callers MUST ensure the bytes are
+/// valid verbatim RLP (a complete RLP list encoding, not a bare byte string).
 pub const ChildRef = union(enum) {
     /// Absent child — no node at this position.
     empty: void,
     /// Hash reference to a child node (keccak256 of its RLP encoding).
     /// Used when the child's RLP encoding is >= 32 bytes.
     hash: Hash32,
-    /// Inline RLP encoding of a small child node (< 32 bytes).
+    /// Verbatim RLP encoding of a small child node (< 32 bytes).
     /// The child is embedded directly rather than referenced by hash.
+    ///
+    /// INVARIANT: These bytes are already a complete RLP encoding and
+    /// MUST be embedded verbatim (not re-encoded as a string) when
+    /// serialized into a parent node. The first byte must indicate an
+    /// RLP list (>= 0xc0) since trie nodes are always RLP lists.
     inline_node: []const u8,
+
+    /// Create an inline node reference with validation.
+    ///
+    /// Verifies the verbatim embedding invariant: the bytes must be a
+    /// valid RLP list (first byte >= 0xc0) and less than 32 bytes.
+    /// Returns `error.InvalidInlineNode` if the bytes don't look like
+    /// a valid RLP list encoding for a trie node.
+    pub fn createInlineNode(rlp_bytes: []const u8) error{InvalidInlineNode}!ChildRef {
+        if (rlp_bytes.len == 0 or rlp_bytes.len >= 32) {
+            return error.InvalidInlineNode;
+        }
+        // Trie nodes are always RLP lists; first byte must be >= 0xc0
+        if (rlp_bytes[0] < 0xc0) {
+            return error.InvalidInlineNode;
+        }
+        return .{ .inline_node = rlp_bytes };
+    }
 
     /// Returns `true` if this reference points to a child (not empty).
     pub fn isPresent(self: ChildRef) bool {
@@ -98,17 +136,24 @@ pub const ChildRef = union(enum) {
 ///
 /// And the Python spec's `InternalNode = LeafNode | ExtensionNode | BranchNode`.
 ///
-/// `unknown` is included for Nethermind compatibility: persisted nodes whose
-/// type hasn't been determined yet (lazy RLP decoding pattern).
+/// `unknown` is reserved for Nethermind compatibility: persisted nodes whose
+/// type hasn't been determined yet (lazy RLP decoding pattern). It is NOT
+/// used for empty/absent nodes — those are represented by `Node.empty` and
+/// report `NodeType.empty`.
 pub const NodeType = enum(u8) {
     /// Persisted node, not yet decoded (Nethermind lazy resolution pattern).
+    /// This value is ONLY for lazy-decoded DB nodes. For absent/empty nodes
+    /// use `.empty` instead.
     unknown = 0,
-    /// Branch node: 16 children (one per nibble) + optional value.
+    /// Branch node: 16 children (one per nibble) + value.
     branch = 1,
     /// Extension node: shared key prefix + single child reference.
     extension = 2,
     /// Leaf node: remaining key path + value.
     leaf = 3,
+    /// Empty/absent node — no node at this position (Python spec's `None`).
+    /// Distinct from `unknown` which represents a persisted but not-yet-decoded node.
+    empty = 4,
 };
 
 /// Leaf node in the Merkle Patricia Trie.
@@ -120,8 +165,14 @@ pub const NodeType = enum(u8) {
 /// Python spec: `LeafNode(rest_of_key: Bytes, value: Extended)`
 /// Nethermind: `LeafData` with `Key` and `Value` properties.
 pub const LeafNode = struct {
-    /// Remaining nibbles of the key (hex-prefix encoded for RLP).
-    /// Each byte is a nibble value 0x0-0xF.
+    /// Remaining nibbles of the key path, stored as a **nibble list** (NOT
+    /// hex-prefix encoded). Each byte is a single nibble value in 0x0-0xF.
+    ///
+    /// Hex-prefix (compact) encoding is applied only at RLP serialization
+    /// time by `nibbleListToCompact()` in `hash.zig`, matching the Python
+    /// spec's `nibble_list_to_compact(node.rest_of_key, True)` call inside
+    /// `encode_internal_node()`. Storing nibbles here (not compact form)
+    /// avoids double-encoding when the node is serialized.
     rest_of_key: []const u8,
     /// The stored value (RLP-encoded account, storage value, etc.).
     value: []const u8,
@@ -141,7 +192,13 @@ pub const LeafNode = struct {
 /// Python spec: `ExtensionNode(key_segment: Bytes, subnode: Extended)`
 /// Nethermind: `ExtensionData` with `Key` and `Value` (child) properties.
 pub const ExtensionNode = struct {
-    /// Shared key segment (nibble values 0x0-0xF).
+    /// Shared key segment stored as a **nibble list** (NOT hex-prefix
+    /// encoded). Each byte is a single nibble value in 0x0-0xF.
+    ///
+    /// Hex-prefix (compact) encoding is applied only at RLP serialization
+    /// time by `nibbleListToCompact()` in `hash.zig`, matching the Python
+    /// spec's `nibble_list_to_compact(node.key_segment, False)` call inside
+    /// `encode_internal_node()`.
     key_segment: []const u8,
     /// Reference to the single child node.
     child: ChildRef,
@@ -155,25 +212,33 @@ pub const ExtensionNode = struct {
 /// Branch node in the Merkle Patricia Trie.
 ///
 /// Represents a 16-way fork in the trie, with one child slot per hex nibble
-/// (0x0 through 0xF) plus an optional value for keys that terminate at this
-/// branch point.
+/// (0x0 through 0xF) plus a value for keys that terminate at this branch
+/// point.
 ///
 /// Python spec: `BranchNode(subnodes: Tuple[Extended, ...], value: Extended)`
-///   where `subnodes` has exactly 16 elements.
+///   where `subnodes` has exactly 16 elements and `value` defaults to `b""`.
 /// Nethermind: `BranchData` with `[InlineArray(16)]` children + value.
 pub const BranchNode = struct {
     /// 16 child references, indexed by nibble value (0x0-0xF).
     children: [BRANCH_NODE_LENGTH]ChildRef,
-    /// Optional value stored at this branch point.
-    /// `null` means no value terminates here (only pass-through).
-    value: ?[]const u8,
+    /// Value stored at this branch point.
+    /// Empty slice (`""`) means no value terminates here (only pass-through),
+    /// matching the Python spec's `value = b""` sentinel. The spec uses
+    /// empty bytes — not None/null — as the "no value" indicator, ensuring
+    /// consistent RLP encoding (empty string encodes as 0x80).
+    value: []const u8,
 
     /// Create a new empty branch node with no children and no value.
     pub fn empty() BranchNode {
         return .{
             .children = [_]ChildRef{.empty} ** BRANCH_NODE_LENGTH,
-            .value = null,
+            .value = &[_]u8{},
         };
+    }
+
+    /// Returns `true` if this branch has a value (non-empty).
+    pub fn hasValue(self: *const BranchNode) bool {
+        return self.value.len > 0;
     }
 
     /// Returns the node type discriminator.
@@ -219,9 +284,13 @@ pub const Node = union(enum) {
     branch: BranchNode,
 
     /// Returns the `NodeType` discriminator for this node.
+    ///
+    /// Empty nodes return `.empty`, NOT `.unknown`. The `.unknown` variant
+    /// is reserved for lazily-decoded persisted nodes (Nethermind pattern),
+    /// which are a different concept from absent/empty subtrees.
     pub fn nodeType(self: Node) NodeType {
         return switch (self) {
-            .empty => .unknown,
+            .empty => .empty,
             .leaf => .leaf,
             .extension => .extension,
             .branch => .branch,
@@ -260,6 +329,8 @@ test "NodeType enum values match Nethermind ordering" {
     try testing.expectEqual(@as(u8, 1), @intFromEnum(NodeType.branch));
     try testing.expectEqual(@as(u8, 2), @intFromEnum(NodeType.extension));
     try testing.expectEqual(@as(u8, 3), @intFromEnum(NodeType.leaf));
+    // .empty is distinct from .unknown (absent vs lazy-decoded)
+    try testing.expectEqual(@as(u8, 4), @intFromEnum(NodeType.empty));
 }
 
 test "LeafNode stores key and value" {
@@ -283,18 +354,22 @@ test "ExtensionNode stores key segment and child ref" {
 }
 
 test "ExtensionNode with inline child" {
+    // Use createInlineNode to enforce verbatim embedding invariant
+    const inline_rlp = &[_]u8{ 0xc2, 0x80, 0x80 }; // valid RLP list
     const ext = ExtensionNode{
         .key_segment = &[_]u8{0x5},
-        .child = .{ .inline_node = &[_]u8{ 0xc0, 0x80 } },
+        .child = try ChildRef.createInlineNode(inline_rlp),
     };
     try testing.expect(ext.child == .inline_node);
-    try testing.expectEqualSlices(u8, &[_]u8{ 0xc0, 0x80 }, ext.child.inline_node);
+    try testing.expectEqualSlices(u8, inline_rlp, ext.child.inline_node);
 }
 
 test "BranchNode.empty creates node with 16 empty children" {
     const branch = BranchNode.empty();
     try testing.expectEqual(NodeType.branch, branch.nodeType());
-    try testing.expectEqual(@as(?[]const u8, null), branch.value);
+    // Spec uses empty bytes b"" as the "no value" sentinel, not null
+    try testing.expectEqual(@as(usize, 0), branch.value.len);
+    try testing.expect(!branch.hasValue());
     try testing.expectEqual(@as(usize, 0), branch.childCount());
 
     for (branch.children) |child| {
@@ -307,7 +382,8 @@ test "BranchNode.setChild and getChild" {
 
     const hash_ref = ChildRef{ .hash = [_]u8{0xFF} ** 32 };
     branch.setChild(0x3, hash_ref);
-    branch.setChild(0xA, .{ .inline_node = "test" });
+    // Use createInlineNode with valid RLP list bytes
+    branch.setChild(0xA, try ChildRef.createInlineNode(&[_]u8{ 0xc4, 0x83, 0x01, 0x02, 0x03 }));
 
     try testing.expect(branch.getChild(0x3) == .hash);
     try testing.expect(branch.getChild(0xA) == .inline_node);
@@ -319,7 +395,8 @@ test "BranchNode with value" {
     var branch = BranchNode.empty();
     branch.value = "leaf_value";
 
-    try testing.expectEqualStrings("leaf_value", branch.value.?);
+    try testing.expectEqualStrings("leaf_value", branch.value);
+    try testing.expect(branch.hasValue());
 }
 
 test "Node tagged union - empty" {
@@ -328,7 +405,8 @@ test "Node tagged union - empty" {
     try testing.expect(!node.isLeaf());
     try testing.expect(!node.isExtension());
     try testing.expect(!node.isBranch());
-    try testing.expectEqual(NodeType.unknown, node.nodeType());
+    // Empty nodes return .empty, NOT .unknown (which is for lazy-decoded DB nodes)
+    try testing.expectEqual(NodeType.empty, node.nodeType());
 }
 
 test "Node tagged union - leaf" {
@@ -365,7 +443,8 @@ test "ChildRef.isPresent and isEmpty" {
     try testing.expect(hash_ref.isPresent());
     try testing.expect(!hash_ref.isEmpty());
 
-    const inline_ref = ChildRef{ .inline_node = "data" };
+    // Use createInlineNode with valid RLP list bytes
+    const inline_ref = try ChildRef.createInlineNode(&[_]u8{ 0xc1, 0x80 });
     try testing.expect(inline_ref.isPresent());
     try testing.expect(!inline_ref.isEmpty());
 }
@@ -387,4 +466,23 @@ test "LeafNode with empty key (branch-value leaf)" {
     };
     try testing.expectEqual(@as(usize, 0), leaf.rest_of_key.len);
     try testing.expectEqualStrings("branch_value", leaf.value);
+}
+
+test "ChildRef.createInlineNode rejects non-RLP-list bytes" {
+    // String-encoded bytes (first byte < 0xc0) must be rejected
+    try testing.expectError(error.InvalidInlineNode, ChildRef.createInlineNode(&[_]u8{ 0x80, 0x01 }));
+    // Empty bytes must be rejected
+    try testing.expectError(error.InvalidInlineNode, ChildRef.createInlineNode(&[_]u8{}));
+    // Bytes >= 32 must be rejected (too large to inline)
+    const large = &[_]u8{0xc0} ++ &[_]u8{0x80} ** 31;
+    try testing.expectError(error.InvalidInlineNode, ChildRef.createInlineNode(large));
+}
+
+test "ChildRef.createInlineNode accepts valid RLP list" {
+    // Minimal valid RLP list: 0xc0 = empty list
+    const ref1 = try ChildRef.createInlineNode(&[_]u8{0xc0});
+    try testing.expect(ref1 == .inline_node);
+    // Short list with payload
+    const ref2 = try ChildRef.createInlineNode(&[_]u8{ 0xc2, 0x80, 0x80 });
+    try testing.expect(ref2 == .inline_node);
 }
