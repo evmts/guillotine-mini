@@ -5,24 +5,33 @@
 /// to a flat list, snapshots record a position, and restore truncates back.
 ///
 /// This is a generic building block — concrete journals for accounts, storage,
-/// and transient storage will be built on top of this.
+/// and transient storage will be built on top of this.  The key/value type
+/// parameters are comptime-generic so callers can instantiate with Voltaire
+/// primitives (e.g. `Address`, `u256`, `AccountState`) or any other type.
 ///
 /// ## Design
 ///
-/// - **Change list** — An `ArrayList` of `Entry` structs, append-only during
-///   normal operation.  Entries are never modified in place.
+/// - **Change list** — An `ArrayListUnmanaged` of `Entry` structs, append-only
+///   during normal operation.  Entries are never modified in place.
 /// - **Snapshot** — An index into the change list (`usize`).
 ///   `takeSnapshot()` returns the current tail position.
-/// - **Restore** — Truncates the list back to a snapshot position and invokes
-///   an optional callback so the caller can undo side-effects (cache cleanup).
-/// - **Commit** — Discards all entries up to the snapshot (logical; the caller
-///   decides what "commit" means for its caches).
+/// - **Restore** — Truncates the list back to a snapshot position, preserving
+///   `just_cache` entries (Nethermind `_keptInCache` pattern).  Returns an error
+///   if the snapshot is invalid (ahead of current position).
+/// - **Commit** — Logically finalises changes up to the current position.
+///   Invokes an optional callback for each committed entry so the caller can
+///   flush side-effects (e.g. persist to trie).
 ///
 /// ## Relationship to Nethermind
 ///
 /// Nethermind's `PartialStorageProviderBase` uses `List<Change>` with
 /// `CollectionsMarshal.SetCount()` for O(1) truncation.  This Zig
-/// implementation mirrors that with `ArrayList` + `shrinkRetainingCapacity`.
+/// implementation mirrors that with `ArrayListUnmanaged` +
+/// `shrinkRetainingCapacity`.
+///
+/// Nethermind's `_keptInCache` list is replicated here: during `restore()`,
+/// entries tagged `just_cache` are collected, the list is truncated, and then
+/// the kept entries are re-appended so caches stay warm.
 ///
 /// Nethermind's `_intraBlockCache` (a `Dict<Key, StackList<int>>`) that maps
 /// each key to a stack of change indices is *not* part of this generic journal;
@@ -68,6 +77,16 @@ pub const ChangeTag = enum(u8) {
     delete = 3,
     /// An empty account was "touched" (EIP-158).
     touch = 4,
+};
+
+/// Errors that can occur during journal operations.
+pub const JournalError = error{
+    /// Returned by `restore()` when the snapshot position is ahead of (greater
+    /// than) the current journal length.  Mirrors Nethermind's
+    /// `InvalidOperationException("Cannot restore snapshot …")`.
+    InvalidSnapshot,
+    /// Allocation failure.
+    OutOfMemory,
 };
 
 /// Generic change-list journal.
@@ -133,34 +152,143 @@ pub fn Journal(comptime K: type, comptime V: type) type {
 
         /// Restore the journal to a previous snapshot.
         ///
-        /// All entries *after* `snapshot` are removed.  For each removed
-        /// entry, `on_revert` is called (if non-null) so the caller can
-        /// update its caches.
+        /// All entries *after* `snapshot` are removed, **except** entries
+        /// tagged `just_cache` which are re-appended to keep caches warm
+        /// (mirrors Nethermind's `_keptInCache` pattern).
+        ///
+        /// For each removed non-`just_cache` entry, `on_revert` is called
+        /// (if non-null) so the caller can undo side-effects.
         ///
         /// If `snapshot` is `empty_snapshot`, the journal is cleared
-        /// entirely.
+        /// entirely (just_cache entries from the cleared range are still
+        /// re-appended).
+        ///
+        /// Returns `JournalError.InvalidSnapshot` if `snapshot` is ahead
+        /// of the current position (mirrors Nethermind's
+        /// `InvalidOperationException`).
         pub fn restore(
             self: *Self,
             snapshot: usize,
             on_revert: ?*const fn (entry: *const E) void,
-        ) void {
-            const target_len = if (snapshot == empty_snapshot)
+        ) JournalError!void {
+            const current_len = self.entries.items.len;
+
+            const target_len: usize = if (snapshot == empty_snapshot)
                 0
             else
                 snapshot + 1;
 
-            if (target_len >= self.entries.items.len) return; // nothing to do
+            // Nethermind: if snapshot > currentPosition → throw.
+            if (snapshot != empty_snapshot and target_len > current_len) {
+                return JournalError.InvalidSnapshot;
+            }
 
-            // Walk backwards and notify caller of each reverted entry.
-            if (on_revert) |cb| {
-                var i = self.entries.items.len;
+            // No-op if already at target.
+            if (target_len == current_len) return;
+
+            // Collect just_cache entries that should survive the restore.
+            // We walk backwards and collect them in reverse order, then
+            // re-append in original order after truncation.
+            var kept_count: usize = 0;
+
+            // First pass: count kept entries so we can avoid extra allocs
+            // when there are none (common case).
+            {
+                var i = current_len;
                 while (i > target_len) {
                     i -= 1;
+                    if (self.entries.items[i].tag == .just_cache) {
+                        kept_count += 1;
+                    }
+                }
+            }
+
+            if (kept_count == 0) {
+                // Fast path: no just_cache entries to preserve.
+                if (on_revert) |cb| {
+                    var i = current_len;
+                    while (i > target_len) {
+                        i -= 1;
+                        cb(&self.entries.items[i]);
+                    }
+                }
+                self.entries.shrinkRetainingCapacity(target_len);
+            } else {
+                // Slow path: collect just_cache entries, truncate, re-append.
+                // We reuse the existing capacity in the entry list to
+                // temporarily buffer the kept entries.  Since we're about
+                // to truncate anyway, we copy them to a stack-allocated
+                // or heap-allocated scratch buffer.
+
+                // Allocate scratch for kept entries.
+                const kept = self.allocator.alloc(E, kept_count) catch
+                    return JournalError.OutOfMemory;
+                defer self.allocator.free(kept);
+
+                var ki: usize = 0;
+                var i = current_len;
+                while (i > target_len) {
+                    i -= 1;
+                    const entry = &self.entries.items[i];
+                    if (entry.tag == .just_cache) {
+                        // Preserve — do NOT call on_revert.
+                        kept[ki] = entry.*;
+                        ki += 1;
+                    } else {
+                        if (on_revert) |cb| {
+                            cb(entry);
+                        }
+                    }
+                }
+
+                // Truncate.
+                self.entries.shrinkRetainingCapacity(target_len);
+
+                // Re-append kept entries in their original order
+                // (they were collected in reverse).
+                var j: usize = kept_count;
+                while (j > 0) {
+                    j -= 1;
+                    self.entries.append(self.allocator, kept[j]) catch
+                        return JournalError.OutOfMemory;
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // Commit
+        // -----------------------------------------------------------------
+
+        /// Commit all entries from `snapshot` to the current position.
+        ///
+        /// For each committed entry, `on_commit` is called (if non-null)
+        /// so the caller can flush side-effects (e.g. write to trie).
+        ///
+        /// After the callback sweep, the committed entries are removed
+        /// (the journal is truncated to `snapshot`).
+        ///
+        /// If `snapshot` is `empty_snapshot`, all entries are committed.
+        pub fn commit(
+            self: *Self,
+            snapshot: usize,
+            on_commit: ?*const fn (entry: *const E) void,
+        ) void {
+            const target_len: usize = if (snapshot == empty_snapshot)
+                0
+            else
+                snapshot + 1;
+
+            if (target_len >= self.entries.items.len) return;
+
+            // Walk forward through committed entries.
+            if (on_commit) |cb| {
+                var i: usize = target_len;
+                while (i < self.entries.items.len) : (i += 1) {
                     cb(&self.entries.items[i]);
                 }
             }
 
-            // Truncate — O(1), retains capacity.
+            // Truncate committed entries.
             self.entries.shrinkRetainingCapacity(target_len);
         }
 
@@ -269,7 +397,7 @@ test "Journal: restore truncates entries" {
 
     try std.testing.expectEqual(@as(usize, 3), j.len());
 
-    j.restore(snap, null);
+    try j.restore(snap, null);
 
     try std.testing.expectEqual(@as(usize, 1), j.len());
     // Entry 0 is preserved.
@@ -283,7 +411,7 @@ test "Journal: restore to empty_snapshot clears all" {
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
     _ = try j.append(.{ .key = 2, .value = 20, .tag = .update });
 
-    j.restore(Journal(u32, u64).empty_snapshot, null);
+    try j.restore(Journal(u32, u64).empty_snapshot, null);
 
     try std.testing.expectEqual(@as(usize, 0), j.len());
 }
@@ -306,7 +434,7 @@ test "Journal: restore invokes callback for each reverted entry" {
     };
     Counter.count = 0;
 
-    j.restore(snap, &Counter.cb);
+    try j.restore(snap, &Counter.cb);
 
     // Two entries reverted (indices 2 and 1).
     try std.testing.expectEqual(@as(usize, 2), Counter.count);
@@ -319,20 +447,22 @@ test "Journal: restore is no-op when snapshot is at current position" {
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
     const snap = j.takeSnapshot();
 
-    j.restore(snap, null); // should be a no-op
+    try j.restore(snap, null); // should be a no-op
 
     try std.testing.expectEqual(@as(usize, 1), j.len());
 }
 
-test "Journal: restore beyond current position is no-op" {
+test "Journal: restore beyond current position returns InvalidSnapshot" {
     var j = Journal(u32, u64).init(std.testing.allocator);
     defer j.deinit();
 
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
 
-    // Snapshot index 5 is way past the single entry — should not crash.
-    j.restore(5, null);
+    // Snapshot index 5 is way past the single entry — must error.
+    const result = j.restore(5, null);
+    try std.testing.expectError(JournalError.InvalidSnapshot, result);
 
+    // Journal is unchanged.
     try std.testing.expectEqual(@as(usize, 1), j.len());
 }
 
@@ -398,7 +528,7 @@ test "Journal: multiple snapshot/restore cycles" {
     try std.testing.expectEqual(@as(usize, 3), j.len());
 
     // Restore to snap2 — removes entry 2.
-    j.restore(snap2, null);
+    try j.restore(snap2, null);
     try std.testing.expectEqual(@as(usize, 2), j.len());
 
     // Add new entry after restore.
@@ -406,7 +536,7 @@ test "Journal: multiple snapshot/restore cycles" {
     try std.testing.expectEqual(@as(usize, 3), j.len());
 
     // Restore to snap1 — removes entries 1 and 2.
-    j.restore(snap1, null);
+    try j.restore(snap1, null);
     try std.testing.expectEqual(@as(usize, 1), j.len());
     try std.testing.expectEqual(@as(u32, 1), j.get(0).key);
 }
@@ -421,4 +551,167 @@ test "ChangeTag: all variants accessible" {
         .touch,
     };
     try std.testing.expectEqual(@as(usize, 5), tags.len);
+}
+
+// =========================================================================
+// New tests: just_cache preservation across restore
+// =========================================================================
+
+test "Journal: just_cache entries survive restore" {
+    var j = Journal(u32, u64).init(std.testing.allocator);
+    defer j.deinit();
+
+    _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
+    const snap = j.takeSnapshot(); // position 0
+
+    // Add a just_cache entry and some mutations after the snapshot.
+    _ = try j.append(.{ .key = 2, .value = 20, .tag = .just_cache });
+    _ = try j.append(.{ .key = 3, .value = 30, .tag = .update });
+    _ = try j.append(.{ .key = 4, .value = 40, .tag = .just_cache });
+
+    try std.testing.expectEqual(@as(usize, 4), j.len());
+
+    // Restore — just_cache entries should be re-appended.
+    try j.restore(snap, null);
+
+    // snap kept entry 0 (create), plus 2 re-appended just_cache entries.
+    try std.testing.expectEqual(@as(usize, 3), j.len());
+
+    // Original entry preserved.
+    try std.testing.expectEqual(@as(u32, 1), j.get(0).key);
+    try std.testing.expectEqual(ChangeTag.create, j.get(0).tag);
+
+    // Re-appended just_cache entries (in original order).
+    try std.testing.expectEqual(@as(u32, 2), j.get(1).key);
+    try std.testing.expectEqual(ChangeTag.just_cache, j.get(1).tag);
+
+    try std.testing.expectEqual(@as(u32, 4), j.get(2).key);
+    try std.testing.expectEqual(ChangeTag.just_cache, j.get(2).tag);
+}
+
+test "Journal: just_cache entries do not trigger on_revert callback" {
+    var j = Journal(u32, u64).init(std.testing.allocator);
+    defer j.deinit();
+
+    _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
+    const snap = j.takeSnapshot();
+
+    _ = try j.append(.{ .key = 2, .value = 20, .tag = .just_cache });
+    _ = try j.append(.{ .key = 3, .value = 30, .tag = .update });
+
+    const Counter = struct {
+        var count: usize = 0;
+        fn cb(_: *const Entry(u32, u64)) void {
+            count += 1;
+        }
+    };
+    Counter.count = 0;
+
+    try j.restore(snap, &Counter.cb);
+
+    // Only the update entry triggers the callback, not the just_cache.
+    try std.testing.expectEqual(@as(usize, 1), Counter.count);
+}
+
+test "Journal: just_cache preserved on restore to empty_snapshot" {
+    var j = Journal(u32, u64).init(std.testing.allocator);
+    defer j.deinit();
+
+    _ = try j.append(.{ .key = 1, .value = 10, .tag = .just_cache });
+    _ = try j.append(.{ .key = 2, .value = 20, .tag = .update });
+    _ = try j.append(.{ .key = 3, .value = 30, .tag = .just_cache });
+
+    try j.restore(Journal(u32, u64).empty_snapshot, null);
+
+    // Only just_cache entries survive.
+    try std.testing.expectEqual(@as(usize, 2), j.len());
+    try std.testing.expectEqual(@as(u32, 1), j.get(0).key);
+    try std.testing.expectEqual(@as(u32, 3), j.get(1).key);
+}
+
+// =========================================================================
+// New tests: invalid snapshot handling
+// =========================================================================
+
+test "Journal: restore with snapshot far beyond length returns error" {
+    var j = Journal(u32, u64).init(std.testing.allocator);
+    defer j.deinit();
+
+    // Empty journal, any non-sentinel snapshot is invalid.
+    try std.testing.expectError(
+        JournalError.InvalidSnapshot,
+        j.restore(0, null),
+    );
+    try std.testing.expectEqual(@as(usize, 0), j.len());
+}
+
+test "Journal: restore with snapshot just past end returns error" {
+    var j = Journal(u32, u64).init(std.testing.allocator);
+    defer j.deinit();
+
+    _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
+    _ = try j.append(.{ .key = 2, .value = 20, .tag = .update });
+
+    // Current last index is 1, so snapshot 2 is just past the end.
+    try std.testing.expectError(
+        JournalError.InvalidSnapshot,
+        j.restore(2, null),
+    );
+    // Journal untouched.
+    try std.testing.expectEqual(@as(usize, 2), j.len());
+}
+
+// =========================================================================
+// New tests: commit API
+// =========================================================================
+
+test "Journal: commit removes entries and calls callback" {
+    var j = Journal(u32, u64).init(std.testing.allocator);
+    defer j.deinit();
+
+    _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
+    const snap = j.takeSnapshot(); // 0
+    _ = try j.append(.{ .key = 2, .value = 20, .tag = .update });
+    _ = try j.append(.{ .key = 3, .value = 30, .tag = .update });
+
+    const Counter = struct {
+        var count: usize = 0;
+        fn cb(_: *const Entry(u32, u64)) void {
+            count += 1;
+        }
+    };
+    Counter.count = 0;
+
+    j.commit(snap, &Counter.cb);
+
+    // Two entries committed (indices 1 and 2).
+    try std.testing.expectEqual(@as(usize, 2), Counter.count);
+    // Only entry 0 remains.
+    try std.testing.expectEqual(@as(usize, 1), j.len());
+    try std.testing.expectEqual(@as(u32, 1), j.get(0).key);
+}
+
+test "Journal: commit with empty_snapshot commits all" {
+    var j = Journal(u32, u64).init(std.testing.allocator);
+    defer j.deinit();
+
+    _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
+    _ = try j.append(.{ .key = 2, .value = 20, .tag = .update });
+
+    j.commit(Journal(u32, u64).empty_snapshot, null);
+
+    try std.testing.expectEqual(@as(usize, 0), j.len());
+}
+
+test "Journal: commit with no entries past snapshot is no-op" {
+    var j = Journal(u32, u64).init(std.testing.allocator);
+    defer j.deinit();
+
+    _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
+    const snap = j.takeSnapshot(); // 0
+
+    j.commit(snap, null);
+
+    // Nothing to commit — snap points at last entry.
+    try std.testing.expectEqual(@as(usize, 1), j.len());
 }
