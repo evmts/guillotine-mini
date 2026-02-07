@@ -1,7 +1,9 @@
 /// EVM integration layer for the Guillotine execution client.
 ///
-/// Bridges the guillotine-mini EVM engine with Voltaire's state management,
-/// providing transaction and block processing capabilities.
+/// Bridges Voltaire's `StateManager` to the guillotine-mini EVM engine via
+/// a `HostInterface` adapter. Currently provides the state read/write bridge
+/// needed for EVM execution; transaction and block processing will be added
+/// in later phases.
 ///
 /// ## Modules
 ///

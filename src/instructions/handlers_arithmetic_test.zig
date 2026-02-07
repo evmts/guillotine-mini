@@ -334,8 +334,10 @@ test "SUB: basic subtraction" {
     defer frame.deinit();
 
     // Setup: 10 - 3 = 7
-    try frame.pushStack(10);
-    try frame.pushStack(3);
+    // Handler pops top=10 (a), second=3 (b), computes top - second
+    // Push b first (bottom), then a last (top of stack)
+    try frame.pushStack(3); // b (subtrahend) - pushed first = bottom
+    try frame.pushStack(10); // a (minuend) - pushed last = top
 
     const initial_gas = frame.gas_remaining;
 
@@ -367,8 +369,10 @@ test "SUB: underflow wrapping" {
     defer frame.deinit();
 
     // Setup: 0 - 1 should wrap to max
-    try frame.pushStack(0);
-    try frame.pushStack(1);
+    // Handler pops top=0 (a), second=1 (b), computes top - second = 0 - 1
+    // Push b first (bottom), then a last (top of stack)
+    try frame.pushStack(1); // b (subtrahend) - pushed first = bottom
+    try frame.pushStack(0); // a (minuend) - pushed last = top
 
     // Execute SUB
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -391,8 +395,10 @@ test "SUB: zero result" {
     defer frame.deinit();
 
     // Setup: 5 - 5 = 0
-    try frame.pushStack(5);
-    try frame.pushStack(5);
+    // Handler pops top=5 (a), second=5 (b), computes top - second = 5 - 5
+    // Push b first (bottom), then a last (top of stack)
+    try frame.pushStack(5); // b (subtrahend) - pushed first = bottom
+    try frame.pushStack(5); // a (minuend) - pushed last = top
 
     // Execute SUB
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -442,8 +448,10 @@ test "DIV: basic division" {
     defer frame.deinit();
 
     // Setup: 20 / 4 = 5
-    try frame.pushStack(20);
-    try frame.pushStack(4);
+    // Handler pops top=20 (dividend), second=4 (divisor), computes top / second
+    // Push divisor first (bottom), then dividend last (top of stack)
+    try frame.pushStack(4); // divisor - pushed first = bottom
+    try frame.pushStack(20); // dividend - pushed last = top
 
     const initial_gas = frame.gas_remaining;
 
@@ -475,8 +483,10 @@ test "DIV: division by zero returns zero" {
     defer frame.deinit();
 
     // Setup: 100 / 0 = 0
-    try frame.pushStack(100);
-    try frame.pushStack(0);
+    // Handler pops top=100 (dividend), second=0 (divisor), returns 0 when divisor is 0
+    // Push divisor first (bottom), then dividend last (top of stack)
+    try frame.pushStack(0); // divisor - pushed first = bottom
+    try frame.pushStack(100); // dividend - pushed last = top
 
     // Execute DIV
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -499,8 +509,10 @@ test "DIV: integer division truncates" {
     defer frame.deinit();
 
     // Setup: 7 / 3 = 2 (truncated)
-    try frame.pushStack(7);
-    try frame.pushStack(3);
+    // Handler pops top=7 (dividend), second=3 (divisor), computes top / second
+    // Push divisor first (bottom), then dividend last (top of stack)
+    try frame.pushStack(3); // divisor - pushed first = bottom
+    try frame.pushStack(7); // dividend - pushed last = top
 
     // Execute DIV
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -523,8 +535,10 @@ test "DIV: max divided by 1" {
     defer frame.deinit();
 
     // Setup: max / 1 = max
-    try frame.pushStack(std.math.maxInt(u256));
-    try frame.pushStack(1);
+    // Handler pops top=max (dividend), second=1 (divisor), computes top / second
+    // Push divisor first (bottom), then dividend last (top of stack)
+    try frame.pushStack(1); // divisor - pushed first = bottom
+    try frame.pushStack(std.math.maxInt(u256)); // dividend - pushed last = top
 
     // Execute DIV
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -574,8 +588,10 @@ test "SDIV: basic signed division" {
     defer frame.deinit();
 
     // Setup: 20 / 4 = 5 (both positive)
-    try frame.pushStack(20);
-    try frame.pushStack(4);
+    // Handler pops top=20 (dividend), second=4 (divisor), computes top / second
+    // Push divisor first (bottom), then dividend last (top of stack)
+    try frame.pushStack(4); // divisor - pushed first = bottom
+    try frame.pushStack(20); // dividend - pushed last = top
 
     const initial_gas = frame.gas_remaining;
 
@@ -607,9 +623,11 @@ test "SDIV: negative dividend" {
     defer frame.deinit();
 
     // Setup: -20 / 4 = -5
+    // Handler pops top=-20 (dividend), second=4 (divisor), computes top / second
+    // Push divisor first (bottom), then dividend last (top of stack)
     const neg_20 = @as(u256, @bitCast(@as(i256, -20)));
-    try frame.pushStack(neg_20);
-    try frame.pushStack(4);
+    try frame.pushStack(4); // divisor - pushed first = bottom
+    try frame.pushStack(neg_20); // dividend - pushed last = top
 
     // Execute SDIV
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -633,9 +651,11 @@ test "SDIV: negative divisor" {
     defer frame.deinit();
 
     // Setup: 20 / -4 = -5
+    // Handler pops top=20 (dividend), second=-4 (divisor), computes top / second
+    // Push divisor first (bottom), then dividend last (top of stack)
     const neg_4 = @as(u256, @bitCast(@as(i256, -4)));
-    try frame.pushStack(20);
-    try frame.pushStack(neg_4);
+    try frame.pushStack(neg_4); // divisor - pushed first = bottom
+    try frame.pushStack(20); // dividend - pushed last = top
 
     // Execute SDIV
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -659,10 +679,12 @@ test "SDIV: both negative" {
     defer frame.deinit();
 
     // Setup: -20 / -4 = 5
+    // Handler pops top=-20 (dividend), second=-4 (divisor), computes top / second
+    // Push divisor first (bottom), then dividend last (top of stack)
     const neg_20 = @as(u256, @bitCast(@as(i256, -20)));
     const neg_4 = @as(u256, @bitCast(@as(i256, -4)));
-    try frame.pushStack(neg_20);
-    try frame.pushStack(neg_4);
+    try frame.pushStack(neg_4); // divisor - pushed first = bottom
+    try frame.pushStack(neg_20); // dividend - pushed last = top
 
     // Execute SDIV
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -685,8 +707,10 @@ test "SDIV: division by zero returns zero" {
     defer frame.deinit();
 
     // Setup: 100 / 0 = 0
-    try frame.pushStack(100);
-    try frame.pushStack(0);
+    // Handler pops top=100 (dividend), second=0 (divisor), returns 0 when divisor is 0
+    // Push divisor first (bottom), then dividend last (top of stack)
+    try frame.pushStack(0); // divisor - pushed first = bottom
+    try frame.pushStack(100); // dividend - pushed last = top
 
     // Execute SDIV
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -709,9 +733,11 @@ test "SDIV: MIN_SIGNED / -1 edge case" {
     defer frame.deinit();
 
     // Setup: MIN_SIGNED / -1 = MIN_SIGNED (overflow case)
+    // Handler pops top=MIN_SIGNED (dividend), second=-1 (divisor)
+    // Push divisor first (bottom), then dividend last (top of stack)
     const MIN_SIGNED = @as(u256, 1) << 255;
-    try frame.pushStack(MIN_SIGNED);
-    try frame.pushStack(std.math.maxInt(u256)); // -1 in two's complement
+    try frame.pushStack(std.math.maxInt(u256)); // -1 in two's complement (divisor) - pushed first = bottom
+    try frame.pushStack(MIN_SIGNED); // dividend - pushed last = top
 
     // Execute SDIV
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -761,8 +787,10 @@ test "MOD: basic modulo" {
     defer frame.deinit();
 
     // Setup: 10 % 3 = 1
-    try frame.pushStack(10);
-    try frame.pushStack(3);
+    // Handler pops top=10 (dividend), second=3 (modulus), computes top % second
+    // Push modulus first (bottom), then dividend last (top of stack)
+    try frame.pushStack(3); // modulus - pushed first = bottom
+    try frame.pushStack(10); // dividend - pushed last = top
 
     const initial_gas = frame.gas_remaining;
 
@@ -794,8 +822,10 @@ test "MOD: modulo by zero returns zero" {
     defer frame.deinit();
 
     // Setup: 100 % 0 = 0
-    try frame.pushStack(100);
-    try frame.pushStack(0);
+    // Handler pops top=100 (dividend), second=0 (modulus), returns 0 when modulus is 0
+    // Push modulus first (bottom), then dividend last (top of stack)
+    try frame.pushStack(0); // modulus - pushed first = bottom
+    try frame.pushStack(100); // dividend - pushed last = top
 
     // Execute MOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -818,8 +848,10 @@ test "MOD: zero modulo" {
     defer frame.deinit();
 
     // Setup: 0 % 5 = 0
-    try frame.pushStack(0);
-    try frame.pushStack(5);
+    // Handler pops top=0 (dividend), second=5 (modulus), computes top % second
+    // Push modulus first (bottom), then dividend last (top of stack)
+    try frame.pushStack(5); // modulus - pushed first = bottom
+    try frame.pushStack(0); // dividend - pushed last = top
 
     // Execute MOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -842,8 +874,10 @@ test "MOD: max modulo 1" {
     defer frame.deinit();
 
     // Setup: max % 1 = 0
-    try frame.pushStack(std.math.maxInt(u256));
-    try frame.pushStack(1);
+    // Handler pops top=max (dividend), second=1 (modulus), computes top % second
+    // Push modulus first (bottom), then dividend last (top of stack)
+    try frame.pushStack(1); // modulus - pushed first = bottom
+    try frame.pushStack(std.math.maxInt(u256)); // dividend - pushed last = top
 
     // Execute MOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -893,8 +927,10 @@ test "SMOD: basic signed modulo" {
     defer frame.deinit();
 
     // Setup: 10 % 3 = 1 (both positive)
-    try frame.pushStack(10);
-    try frame.pushStack(3);
+    // Handler pops top=10 (dividend), second=3 (modulus), computes top % second
+    // Push modulus first (bottom), then dividend last (top of stack)
+    try frame.pushStack(3); // modulus - pushed first = bottom
+    try frame.pushStack(10); // dividend - pushed last = top
 
     const initial_gas = frame.gas_remaining;
 
@@ -926,9 +962,11 @@ test "SMOD: negative dividend" {
     defer frame.deinit();
 
     // Setup: -10 % 3 = -1 (sign follows dividend)
+    // Handler pops top=-10 (dividend), second=3 (modulus), computes top % second
+    // Push modulus first (bottom), then dividend last (top of stack)
     const neg_10 = @as(u256, @bitCast(@as(i256, -10)));
-    try frame.pushStack(neg_10);
-    try frame.pushStack(3);
+    try frame.pushStack(3); // modulus - pushed first = bottom
+    try frame.pushStack(neg_10); // dividend - pushed last = top
 
     // Execute SMOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -952,9 +990,11 @@ test "SMOD: negative divisor" {
     defer frame.deinit();
 
     // Setup: 10 % -3 = 1 (sign follows dividend)
+    // Handler pops top=10 (dividend), second=-3 (modulus), computes top % second
+    // Push modulus first (bottom), then dividend last (top of stack)
     const neg_3 = @as(u256, @bitCast(@as(i256, -3)));
-    try frame.pushStack(10);
-    try frame.pushStack(neg_3);
+    try frame.pushStack(neg_3); // modulus - pushed first = bottom
+    try frame.pushStack(10); // dividend - pushed last = top
 
     // Execute SMOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -977,10 +1017,12 @@ test "SMOD: both negative" {
     defer frame.deinit();
 
     // Setup: -10 % -3 = -1 (sign follows dividend)
+    // Handler pops top=-10 (dividend), second=-3 (modulus), computes top % second
+    // Push modulus first (bottom), then dividend last (top of stack)
     const neg_10 = @as(u256, @bitCast(@as(i256, -10)));
     const neg_3 = @as(u256, @bitCast(@as(i256, -3)));
-    try frame.pushStack(neg_10);
-    try frame.pushStack(neg_3);
+    try frame.pushStack(neg_3); // modulus - pushed first = bottom
+    try frame.pushStack(neg_10); // dividend - pushed last = top
 
     // Execute SMOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1004,8 +1046,10 @@ test "SMOD: modulo by zero returns zero" {
     defer frame.deinit();
 
     // Setup: 100 % 0 = 0
-    try frame.pushStack(100);
-    try frame.pushStack(0);
+    // Handler pops top=100 (dividend), second=0 (modulus), returns 0 when modulus is 0
+    // Push modulus first (bottom), then dividend last (top of stack)
+    try frame.pushStack(0); // modulus - pushed first = bottom
+    try frame.pushStack(100); // dividend - pushed last = top
 
     // Execute SMOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1028,9 +1072,11 @@ test "SMOD: MIN_SIGNED % -1 edge case" {
     defer frame.deinit();
 
     // Setup: MIN_SIGNED % -1 = 0 (special case)
+    // Handler pops top=MIN_SIGNED (dividend), second=-1 (modulus)
+    // Push modulus first (bottom), then dividend last (top of stack)
     const MIN_SIGNED = @as(u256, 1) << 255;
-    try frame.pushStack(MIN_SIGNED);
-    try frame.pushStack(std.math.maxInt(u256)); // -1 in two's complement
+    try frame.pushStack(std.math.maxInt(u256)); // -1 in two's complement (modulus) - pushed first = bottom
+    try frame.pushStack(MIN_SIGNED); // dividend - pushed last = top
 
     // Execute SMOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1080,9 +1126,11 @@ test "ADDMOD: basic addmod" {
     defer frame.deinit();
 
     // Setup: (5 + 3) % 4 = 8 % 4 = 0
-    try frame.pushStack(5);
-    try frame.pushStack(3);
-    try frame.pushStack(4);
+    // Handler pops a=5, b=3, N=4, computes (a + b) % N
+    // Push N first (bottom), then b, then a last (top of stack)
+    try frame.pushStack(4); // N (modulus) - pushed first = bottom
+    try frame.pushStack(3); // b - pushed second
+    try frame.pushStack(5); // a - pushed last = top
 
     const initial_gas = frame.gas_remaining;
 
@@ -1115,18 +1163,22 @@ test "ADDMOD: prevents overflow via u512" {
 
     // Setup: (max + max) % 10
     // This would overflow u256, but should work with u512 intermediate
+    // Handler pops a=max, b=max, N=10, computes (a + b) % N
+    // Push N first (bottom), then b, then a last (top of stack)
     const max = std.math.maxInt(u256);
-    try frame.pushStack(max);
-    try frame.pushStack(max);
-    try frame.pushStack(10);
+    try frame.pushStack(10); // N (modulus) - pushed first = bottom
+    try frame.pushStack(max); // b - pushed second
+    try frame.pushStack(max); // a - pushed last = top
 
     // Execute ADDMOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
     try ArithHandlers.addmod(&frame);
 
     // Verify result: (max + max) % 10 = (2*max) % 10
-    // 2*max = 2^256 - 2, so (2^256 - 2) % 10 = 8
-    try testing.expectEqual(@as(u256, 8), frame.stack.items[0]);
+    // max = 2^256 - 1, so 2*max = 2^257 - 2.
+    // 2^257 mod 10 = 2 (since 257 mod 4 = 1, and 2^1 mod 10 = 2).
+    // (2^257 - 2) mod 10 = (2 - 2) mod 10 = 0.
+    try testing.expectEqual(@as(u256, 0), frame.stack.items[0]);
 }
 
 test "ADDMOD: modulo by zero returns zero" {
@@ -1142,9 +1194,11 @@ test "ADDMOD: modulo by zero returns zero" {
     defer frame.deinit();
 
     // Setup: (5 + 3) % 0 = 0
-    try frame.pushStack(5);
-    try frame.pushStack(3);
-    try frame.pushStack(0);
+    // Handler pops a=5, b=3, N=0, returns 0 when N is 0
+    // Push N first (bottom), then b, then a last (top of stack)
+    try frame.pushStack(0); // N (modulus) - pushed first = bottom
+    try frame.pushStack(3); // b - pushed second
+    try frame.pushStack(5); // a - pushed last = top
 
     // Execute ADDMOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1195,9 +1249,11 @@ test "MULMOD: basic mulmod" {
     defer frame.deinit();
 
     // Setup: (5 * 3) % 7 = 15 % 7 = 1
-    try frame.pushStack(5);
-    try frame.pushStack(3);
-    try frame.pushStack(7);
+    // Handler pops a=5, b=3, N=7, computes (a * b) % N
+    // Push N first (bottom), then b, then a last (top of stack)
+    try frame.pushStack(7); // N (modulus) - pushed first = bottom
+    try frame.pushStack(3); // b - pushed second
+    try frame.pushStack(5); // a - pushed last = top
 
     const initial_gas = frame.gas_remaining;
 
@@ -1230,17 +1286,21 @@ test "MULMOD: prevents overflow via u512" {
 
     // Setup: (max * 2) % 10
     // This would overflow u256, but should work with u512 intermediate
+    // Handler pops a=max, b=2, N=10, computes (a * b) % N
+    // Push N first (bottom), then b, then a last (top of stack)
     const max = std.math.maxInt(u256);
-    try frame.pushStack(max);
-    try frame.pushStack(2);
-    try frame.pushStack(10);
+    try frame.pushStack(10); // N (modulus) - pushed first = bottom
+    try frame.pushStack(2); // b - pushed second
+    try frame.pushStack(max); // a - pushed last = top
 
     // Execute MULMOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
     try ArithHandlers.mulmod(&frame);
 
-    // Verify result: (max * 2) % 10 = (2^256 - 2) % 10 = 8
-    try testing.expectEqual(@as(u256, 8), frame.stack.items[0]);
+    // Verify result: (max * 2) % 10
+    // max = 2^256 - 1, so max * 2 = 2^257 - 2 (computed in u512).
+    // 2^257 mod 10 = 2, so (2^257 - 2) mod 10 = 0.
+    try testing.expectEqual(@as(u256, 0), frame.stack.items[0]);
 }
 
 test "MULMOD: modulo by zero returns zero" {
@@ -1256,9 +1316,11 @@ test "MULMOD: modulo by zero returns zero" {
     defer frame.deinit();
 
     // Setup: (5 * 3) % 0 = 0
-    try frame.pushStack(5);
-    try frame.pushStack(3);
-    try frame.pushStack(0);
+    // Handler pops a=5, b=3, N=0, returns 0 when N is 0
+    // Push N first (bottom), then b, then a last (top of stack)
+    try frame.pushStack(0); // N (modulus) - pushed first = bottom
+    try frame.pushStack(3); // b - pushed second
+    try frame.pushStack(5); // a - pushed last = top
 
     // Execute MULMOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1281,9 +1343,11 @@ test "MULMOD: zero multiplication" {
     defer frame.deinit();
 
     // Setup: (0 * 3) % 7 = 0
-    try frame.pushStack(0);
-    try frame.pushStack(3);
-    try frame.pushStack(7);
+    // Handler pops a=0, b=3, N=7, computes (a * b) % N
+    // Push N first (bottom), then b, then a last (top of stack)
+    try frame.pushStack(7); // N (modulus) - pushed first = bottom
+    try frame.pushStack(3); // b - pushed second
+    try frame.pushStack(0); // a - pushed last = top
 
     // Execute MULMOD
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1334,8 +1398,10 @@ test "EXP: basic exponentiation" {
     defer frame.deinit();
 
     // Setup: 2^3 = 8
-    try frame.pushStack(2);
-    try frame.pushStack(3);
+    // Handler pops base=2, exponent=3, computes base ** exponent
+    // Push exponent first (bottom), then base last (top of stack)
+    try frame.pushStack(3); // exponent - pushed first = bottom
+    try frame.pushStack(2); // base - pushed last = top
 
     const initial_gas = frame.gas_remaining;
 
@@ -1369,8 +1435,10 @@ test "EXP: exponent zero returns one" {
     defer frame.deinit();
 
     // Setup: 5^0 = 1
-    try frame.pushStack(5);
-    try frame.pushStack(0);
+    // Handler pops base=5, exponent=0, computes base ** exponent
+    // Push exponent first (bottom), then base last (top of stack)
+    try frame.pushStack(0); // exponent - pushed first = bottom
+    try frame.pushStack(5); // base - pushed last = top
 
     const initial_gas = frame.gas_remaining;
 
@@ -1398,8 +1466,10 @@ test "EXP: base zero" {
     defer frame.deinit();
 
     // Setup: 0^3 = 0
-    try frame.pushStack(0);
-    try frame.pushStack(3);
+    // Handler pops base=0, exponent=3, computes base ** exponent
+    // Push exponent first (bottom), then base last (top of stack)
+    try frame.pushStack(3); // exponent - pushed first = bottom
+    try frame.pushStack(0); // base - pushed last = top
 
     // Execute EXP
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1422,8 +1492,10 @@ test "EXP: both zero (0^0 = 1 by convention)" {
     defer frame.deinit();
 
     // Setup: 0^0 = 1 (mathematical convention)
-    try frame.pushStack(0);
-    try frame.pushStack(0);
+    // Handler pops base=0, exponent=0, computes base ** exponent
+    // Push exponent first (bottom), then base last (top of stack)
+    try frame.pushStack(0); // exponent - pushed first = bottom
+    try frame.pushStack(0); // base - pushed last = top
 
     // Execute EXP
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1446,8 +1518,10 @@ test "EXP: overflow wrapping" {
     defer frame.deinit();
 
     // Setup: 2^256 should wrap
-    try frame.pushStack(2);
-    try frame.pushStack(256);
+    // Handler pops base=2, exponent=256, computes base ** exponent
+    // Push exponent first (bottom), then base last (top of stack)
+    try frame.pushStack(256); // exponent - pushed first = bottom
+    try frame.pushStack(2); // base - pushed last = top
 
     // Execute EXP
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1470,8 +1544,10 @@ test "EXP: gas cost scales with exponent byte length" {
     defer frame.deinit();
 
     // Setup: 2^0x100 (exponent = 256, byte_length = 2)
-    try frame.pushStack(2);
-    try frame.pushStack(0x100);
+    // Handler pops base=2, exponent=0x100, computes base ** exponent
+    // Push exponent first (bottom), then base last (top of stack)
+    try frame.pushStack(0x100); // exponent - pushed first = bottom
+    try frame.pushStack(2); // base - pushed last = top
 
     const initial_gas = frame.gas_remaining;
 
@@ -1525,8 +1601,10 @@ test "SIGNEXTEND: basic sign extension" {
     defer frame.deinit();
 
     // Setup: Sign extend byte 0 of 0xFF (negative byte)
-    try frame.pushStack(0); // byte index
-    try frame.pushStack(0xFF); // value with negative sign bit in byte 0
+    // Handler pops byte_index=0, value=0xFF
+    // Push value first (bottom), then byte_index last (top of stack)
+    try frame.pushStack(0xFF); // value - pushed first = bottom
+    try frame.pushStack(0); // byte_index - pushed last = top
 
     const initial_gas = frame.gas_remaining;
 
@@ -1558,8 +1636,10 @@ test "SIGNEXTEND: positive sign extension" {
     defer frame.deinit();
 
     // Setup: Sign extend byte 0 of 0x7F (positive byte)
-    try frame.pushStack(0); // byte index
-    try frame.pushStack(0x7F); // value with positive sign bit in byte 0
+    // Handler pops byte_index=0, value=0x7F
+    // Push value first (bottom), then byte_index last (top of stack)
+    try frame.pushStack(0x7F); // value - pushed first = bottom
+    try frame.pushStack(0); // byte_index - pushed last = top
 
     // Execute SIGNEXTEND
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1582,8 +1662,10 @@ test "SIGNEXTEND: byte index 1" {
     defer frame.deinit();
 
     // Setup: Sign extend from byte 1 of 0x80FF (negative)
-    try frame.pushStack(1); // byte index
-    try frame.pushStack(0x80FF); // bit 15 is set (negative for 2-byte value)
+    // Handler pops byte_index=1, value=0x80FF
+    // Push value first (bottom), then byte_index last (top of stack)
+    try frame.pushStack(0x80FF); // value (bit 15 set = negative for 2-byte value) - pushed first = bottom
+    try frame.pushStack(1); // byte_index - pushed last = top
 
     // Execute SIGNEXTEND
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1608,8 +1690,10 @@ test "SIGNEXTEND: byte index 31 no change" {
     defer frame.deinit();
 
     // Setup: Sign extend from byte 31 (full u256, no change)
-    try frame.pushStack(31); // byte index
-    try frame.pushStack(0x12345678);
+    // Handler pops byte_index=31, value=0x12345678
+    // Push value first (bottom), then byte_index last (top of stack)
+    try frame.pushStack(0x12345678); // value - pushed first = bottom
+    try frame.pushStack(31); // byte_index - pushed last = top
 
     // Execute SIGNEXTEND
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1632,8 +1716,10 @@ test "SIGNEXTEND: byte index > 31 no change" {
     defer frame.deinit();
 
     // Setup: Sign extend from byte 100 (out of range, no change)
-    try frame.pushStack(100); // byte index
-    try frame.pushStack(0x12345678);
+    // Handler pops byte_index=100, value=0x12345678
+    // Push value first (bottom), then byte_index last (top of stack)
+    try frame.pushStack(0x12345678); // value - pushed first = bottom
+    try frame.pushStack(100); // byte_index - pushed last = top
 
     // Execute SIGNEXTEND
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1656,8 +1742,10 @@ test "SIGNEXTEND: zero value" {
     defer frame.deinit();
 
     // Setup: Sign extend 0
-    try frame.pushStack(0); // byte index
-    try frame.pushStack(0); // value
+    // Handler pops byte_index=0, value=0
+    // Push value first (bottom), then byte_index last (top of stack)
+    try frame.pushStack(0); // value - pushed first = bottom
+    try frame.pushStack(0); // byte_index - pushed last = top
 
     // Execute SIGNEXTEND
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));
@@ -1680,8 +1768,10 @@ test "SIGNEXTEND: clear upper bits on positive" {
     defer frame.deinit();
 
     // Setup: Value with upper bits set, but sign bit clear
-    try frame.pushStack(0); // byte index
-    try frame.pushStack(0xFFFFFF7F); // upper bits set, but bit 7 is 0 (positive)
+    // Handler pops byte_index=0, value=0xFFFFFF7F
+    // Push value first (bottom), then byte_index last (top of stack)
+    try frame.pushStack(0xFFFFFF7F); // value (upper bits set, but bit 7 is 0 = positive) - pushed first = bottom
+    try frame.pushStack(0); // byte_index - pushed last = top
 
     // Execute SIGNEXTEND
     const ArithHandlers = @import("handlers_arithmetic.zig").Handlers(@TypeOf(frame));

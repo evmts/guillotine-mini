@@ -84,9 +84,9 @@ test "MLOAD: basic load from offset 0" {
     const expected = @as(u256, 0xFF) << 248; // First byte in big-endian
     try testing.expectEqual(expected, frame.stack.items[0]);
 
-    // Verify gas consumed (GasFastestStep + memory expansion cost)
-    // GasFastestStep = 3, memory expansion for 32 bytes = 3 gas
-    try testing.expectEqual(@as(i64, 6), initial_gas - frame.gas_remaining);
+    // Verify gas consumed (GasFastestStep only; memory was pre-expanded by writeMemory)
+    // GasFastestStep = 3, no additional memory expansion (already ≥ 32 bytes)
+    try testing.expectEqual(@as(i64, 3), initial_gas - frame.gas_remaining);
 
     // Verify PC incremented
     try testing.expectEqual(@as(u32, 1), frame.pc);
@@ -166,13 +166,13 @@ test "MLOAD: word-aligned size tracking" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Load from offset 1 (should expand to 32 bytes)
+    // Load from offset 1: reads bytes 1-32 (33 bytes needed, word-aligned to 64)
     try frame.pushStack(1);
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     try MemHandlers.mload(&frame);
 
-    // Verify memory size is word-aligned to 32 (covers bytes 0-32)
-    try testing.expectEqual(@as(u32, 32), frame.memory_size);
+    // Verify memory size: offset=1 + 32 bytes = 33 bytes needed, aligned to 64
+    try testing.expectEqual(@as(u32, 64), frame.memory_size);
 }
 
 test "MLOAD: stack underflow error" {
@@ -254,9 +254,10 @@ test "MSTORE: basic store at offset 0" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Setup: Store 0x123456 at offset 0
-    try frame.pushStack(0); // offset
+    // Push value first (bottom), offset last (top)
+    // Handler pops: offset=0, value=0x123456
     try frame.pushStack(0x123456); // value
+    try frame.pushStack(0); // offset
 
     const initial_gas = frame.gas_remaining;
 
@@ -291,9 +292,10 @@ test "MSTORE: store at non-zero offset" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Setup: Store 0xFF at offset 64
-    try frame.pushStack(64); // offset
+    // Push value first (bottom), offset last (top)
+    // Handler pops: offset=64, value=0xFF
     try frame.pushStack(0xFF); // value
+    try frame.pushStack(64); // offset
 
     // Execute MSTORE
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
@@ -319,10 +321,11 @@ test "MSTORE: full u256 value" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Setup: Store max u256
+    // Push value first (bottom), offset last (top)
+    // Handler pops: offset=0, value=max
     const max_value = std.math.maxInt(u256);
-    try frame.pushStack(0); // offset
     try frame.pushStack(max_value); // value
+    try frame.pushStack(0); // offset
 
     // Execute MSTORE
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
@@ -348,15 +351,18 @@ test "MSTORE: word-aligned size tracking" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Store at offset 1 (should expand to 32 bytes to cover 1-32)
-    try frame.pushStack(1); // offset
+    // Push value first (bottom), offset last (top)
+    // Handler pops: offset=1, value=0x42
+    // Store at offset 1 covers bytes 1-32, so memory expands to 32 bytes (aligned)
     try frame.pushStack(0x42); // value
+    try frame.pushStack(1); // offset
 
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     try MemHandlers.mstore(&frame);
 
-    // Verify memory size is word-aligned to 32
-    try testing.expectEqual(@as(u32, 32), frame.memory_size);
+    // Verify memory size: offset=1, writing 32 bytes means bytes 1-32
+    // Word-aligned: ceil(33/32)*32 = 64
+    try testing.expectEqual(@as(u32, 64), frame.memory_size);
 }
 
 test "MSTORE: stack underflow error" {
@@ -393,8 +399,9 @@ test "MSTORE: out of gas error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 5); // Not enough gas
     defer frame.deinit();
 
-    try frame.pushStack(0); // offset
+    // Push value first (bottom), offset last (top)
     try frame.pushStack(0x42); // value
+    try frame.pushStack(0); // offset
 
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mstore(&frame);
@@ -415,9 +422,10 @@ test "MSTORE: offset out of bounds error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push offset that doesn't fit in u32
-    try frame.pushStack(std.math.maxInt(u256)); // offset
+    // Push value first (bottom), offset last (top)
+    // Handler pops: offset=maxu256, value=0x42
     try frame.pushStack(0x42); // value
+    try frame.pushStack(std.math.maxInt(u256)); // offset
 
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mstore(&frame);
@@ -442,9 +450,10 @@ test "MSTORE8: basic single byte store" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Setup: Store 0xFF at offset 0
-    try frame.pushStack(0); // offset
+    // Push value first (bottom), offset last (top)
+    // Handler pops: offset=0, value=0xFF
     try frame.pushStack(0xFF); // value
+    try frame.pushStack(0); // offset
 
     const initial_gas = frame.gas_remaining;
 
@@ -475,9 +484,10 @@ test "MSTORE8: truncates to single byte" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Setup: Store 0x123456 (should truncate to 0x56)
-    try frame.pushStack(0); // offset
+    // Push value first (bottom), offset last (top)
+    // Handler pops: offset=0, value=0x123456 (truncates to 0x56)
     try frame.pushStack(0x123456); // value
+    try frame.pushStack(0); // offset
 
     // Execute MSTORE8
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
@@ -500,9 +510,10 @@ test "MSTORE8: store at non-zero offset" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Setup: Store 0xAB at offset 100
-    try frame.pushStack(100); // offset
+    // Push value first (bottom), offset last (top)
+    // Handler pops: offset=100, value=0xAB
     try frame.pushStack(0xAB); // value
+    try frame.pushStack(100); // offset
 
     // Execute MSTORE8
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
@@ -512,7 +523,7 @@ test "MSTORE8: store at non-zero offset" {
     const byte100 = frame.readMemory(100);
     try testing.expectEqual(@as(u8, 0xAB), byte100);
 
-    // Verify memory size expanded (aligned to 128)
+    // Verify memory size expanded: offset=100, 1 byte, end=101, aligned to 128
     try testing.expectEqual(@as(u32, 128), frame.memory_size);
 }
 
@@ -528,9 +539,10 @@ test "MSTORE8: word-aligned size tracking" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Store at offset 31 (should expand to 32 bytes)
-    try frame.pushStack(31); // offset
+    // Push value first (bottom), offset last (top)
+    // Handler pops: offset=31, value=0x42
     try frame.pushStack(0x42); // value
+    try frame.pushStack(31); // offset
 
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     try MemHandlers.mstore8(&frame);
@@ -573,8 +585,9 @@ test "MSTORE8: out of gas error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 5); // Not enough gas
     defer frame.deinit();
 
-    try frame.pushStack(0); // offset
+    // Push value first (bottom), offset last (top)
     try frame.pushStack(0x42); // value
+    try frame.pushStack(0); // offset
 
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mstore8(&frame);
@@ -595,9 +608,10 @@ test "MSTORE8: offset out of bounds error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push offset that doesn't fit in u32
-    try frame.pushStack(std.math.maxInt(u256)); // offset
+    // Push value first (bottom), offset last (top)
+    // Handler pops: offset=maxu256, value=0x42
     try frame.pushStack(0x42); // value
+    try frame.pushStack(std.math.maxInt(u256)); // offset
 
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mstore8(&frame);
@@ -754,10 +768,11 @@ test "MCOPY: basic copy operation" {
     try frame.writeMemory(1, 0xBB);
     try frame.writeMemory(2, 0xCC);
 
-    // Setup: Copy 3 bytes from offset 0 to offset 64
+    // Push len first (bottom), src second, dest last (top)
+    // Handler pops: dest=64, src=0, len=3
+    try frame.pushStack(3); // len
+    try frame.pushStack(0); // src
     try frame.pushStack(64); // dest
-    try frame.pushStack(0);  // src
-    try frame.pushStack(3);  // len
 
     const initial_gas = frame.gas_remaining;
 
@@ -800,10 +815,11 @@ test "MCOPY: overlapping regions forward" {
     try frame.writeMemory(2, 0x03);
     try frame.writeMemory(3, 0x04);
 
-    // Setup: Copy overlapping (src=0, dest=2, len=2)
-    try frame.pushStack(2);  // dest
-    try frame.pushStack(0);  // src
-    try frame.pushStack(2);  // len
+    // Push len first (bottom), src second, dest last (top)
+    // Handler pops: dest=2, src=0, len=2
+    try frame.pushStack(2); // len
+    try frame.pushStack(0); // src
+    try frame.pushStack(2); // dest
 
     // Execute MCOPY
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
@@ -833,10 +849,11 @@ test "MCOPY: overlapping regions backward" {
     try frame.writeMemory(3, 0xBB);
     try frame.writeMemory(4, 0xCC);
 
-    // Setup: Copy overlapping backward (src=2, dest=0, len=3)
-    try frame.pushStack(0);  // dest
-    try frame.pushStack(2);  // src
-    try frame.pushStack(3);  // len
+    // Push len first (bottom), src second, dest last (top)
+    // Handler pops: dest=0, src=2, len=3
+    try frame.pushStack(3); // len
+    try frame.pushStack(2); // src
+    try frame.pushStack(0); // dest
 
     // Execute MCOPY
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
@@ -863,10 +880,11 @@ test "MCOPY: zero length operation" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Setup: Zero-length copy (should charge gas but not expand memory)
-    try frame.pushStack(1000); // dest
+    // Push len first (bottom), src second, dest last (top)
+    // Handler pops: dest=1000, src=2000, len=0
+    try frame.pushStack(0); // len
     try frame.pushStack(2000); // src
-    try frame.pushStack(0);    // len
+    try frame.pushStack(1000); // dest
 
     const initial_gas = frame.gas_remaining;
     const initial_memory_size = frame.memory_size;
@@ -897,16 +915,17 @@ test "MCOPY: memory expansion for both source and destination" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Setup: Copy from offset 100 to 200 (both need expansion)
-    try frame.pushStack(200); // dest
+    // Push len first (bottom), src second, dest last (top)
+    // Handler pops: dest=200, src=100, len=10
+    try frame.pushStack(10); // len
     try frame.pushStack(100); // src
-    try frame.pushStack(10);  // len
+    try frame.pushStack(200); // dest
 
     // Execute MCOPY
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     try MemHandlers.mcopy(&frame);
 
-    // Verify memory expanded to cover both ranges (210 bytes, aligned to 224)
+    // Verify memory expanded to cover both ranges (dest+len=210, aligned to 224)
     try testing.expectEqual(@as(u32, 224), frame.memory_size);
 }
 
@@ -922,10 +941,11 @@ test "MCOPY: copy cost scales with length" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
+    // Push len first (bottom), src second, dest last (top)
     // First copy: 32 bytes (1 word)
-    try frame.pushStack(64); // dest
-    try frame.pushStack(0);  // src
     try frame.pushStack(32); // len
+    try frame.pushStack(0); // src
+    try frame.pushStack(64); // dest
 
     const initial_gas1 = frame.gas_remaining;
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
@@ -935,10 +955,11 @@ test "MCOPY: copy cost scales with length" {
     // Reset PC
     frame.pc = 0;
 
+    // Push len first (bottom), src second, dest last (top)
     // Second copy: 64 bytes (2 words, should cost more)
+    try frame.pushStack(64); // len
+    try frame.pushStack(0); // src
     try frame.pushStack(128); // dest
-    try frame.pushStack(0);   // src
-    try frame.pushStack(64);  // len
 
     const initial_gas2 = frame.gas_remaining;
     try MemHandlers.mcopy(&frame);
@@ -960,10 +981,11 @@ test "MCOPY: word-aligned size tracking" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Copy to offset 1, length 1 (should align to 32)
-    try frame.pushStack(1);  // dest
-    try frame.pushStack(0);  // src
-    try frame.pushStack(1);  // len
+    // Push len first (bottom), src second, dest last (top)
+    // Handler pops: dest=1, src=0, len=1
+    try frame.pushStack(1); // len
+    try frame.pushStack(0); // src
+    try frame.pushStack(1); // dest
 
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     try MemHandlers.mcopy(&frame);
@@ -984,10 +1006,10 @@ test "MCOPY: hardfork check - pre-Cancun" {
     var frame = try createTestFrame(allocator, evm, bytecode, .SHANGHAI, 1_000_000);
     defer frame.deinit();
 
-    // Setup stack
+    // Push len first (bottom), src second, dest last (top)
+    try frame.pushStack(3); // len
+    try frame.pushStack(0); // src
     try frame.pushStack(64); // dest
-    try frame.pushStack(0);  // src
-    try frame.pushStack(3);  // len
 
     // Execute MCOPY
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
@@ -1012,10 +1034,10 @@ test "MCOPY: hardfork check - Cancun and after" {
     // Write source data
     try frame.writeMemory(0, 0xFF);
 
-    // Setup stack
+    // Push len first (bottom), src second, dest last (top)
+    try frame.pushStack(1); // len
+    try frame.pushStack(0); // src
     try frame.pushStack(32); // dest
-    try frame.pushStack(0);  // src
-    try frame.pushStack(1);  // len
 
     // Execute MCOPY
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
@@ -1061,9 +1083,10 @@ test "MCOPY: out of gas error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 5); // Not enough gas
     defer frame.deinit();
 
-    try frame.pushStack(64); // dest
-    try frame.pushStack(0);  // src
+    // Push len first (bottom), src second, dest last (top)
     try frame.pushStack(32); // len
+    try frame.pushStack(0); // src
+    try frame.pushStack(64); // dest
 
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mcopy(&frame);
@@ -1084,16 +1107,18 @@ test "MCOPY: offset out of bounds error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push dest offset that doesn't fit in u32
-    try frame.pushStack(std.math.maxInt(u256)); // dest
-    try frame.pushStack(0);  // src
+    // Push len first (bottom), src second, dest last (top)
+    // Handler pops: dest=maxu256, src=0, len=10
     try frame.pushStack(10); // len
+    try frame.pushStack(0); // src
+    try frame.pushStack(std.math.maxInt(u256)); // dest
 
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mcopy(&frame);
 
-    // Verify error (after gas is charged, bounds checking fails)
-    try testing.expectError(error.OutOfBounds, result);
+    // With dest=maxu256, gas cost uses saturating arithmetic (maxInt(u64)),
+    // so OutOfGas is triggered before bounds checking.
+    try testing.expectError(error.OutOfGas, result);
 }
 
 test "MCOPY: large length triggers out of gas" {
@@ -1108,11 +1133,12 @@ test "MCOPY: large length triggers out of gas" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push massive length (copy cost will be astronomical)
+    // Push len first (bottom), src second, dest last (top)
+    // Handler pops: dest=0, src=0, len=huge
     const huge_len: u256 = @as(u256, std.math.maxInt(u64)) + 1;
-    try frame.pushStack(0);       // dest
-    try frame.pushStack(0);       // src
     try frame.pushStack(huge_len); // len
+    try frame.pushStack(0); // src
+    try frame.pushStack(0); // dest
 
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mcopy(&frame);

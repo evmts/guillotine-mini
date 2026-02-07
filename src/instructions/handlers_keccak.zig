@@ -58,7 +58,7 @@ pub fn Handlers(FrameType: type) type {
 
                 // Read data from memory
                 var data = try frame.allocator.alloc(u8, size_u32);
-                // No defer free needed with arena allocator
+                defer frame.allocator.free(data);
 
                 var i: u32 = 0;
                 while (i < size_u32) : (i += 1) {

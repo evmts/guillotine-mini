@@ -267,7 +267,7 @@ test "JUMP: out of gas error" {
         allocator.destroy(evm);
     }
 
-    const bytecode = &[_]u8{0x56, 0x5b}; // JUMP, JUMPDEST
+    const bytecode = &[_]u8{ 0x56, 0x5b }; // JUMP, JUMPDEST
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 7); // Only 7 gas (need 8)
     defer frame.deinit();
 
@@ -302,9 +302,10 @@ test "JUMPI: conditional jump when condition is non-zero" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push destination and non-zero condition
-    try frame.pushStack(3); // destination
+    // Push condition first (bottom), destination last (top)
+    // Handler pops: dest=3, condition=1
     try frame.pushStack(1); // condition (non-zero = true)
+    try frame.pushStack(3); // destination
 
     const initial_gas = frame.gas_remaining;
 
@@ -336,9 +337,10 @@ test "JUMPI: no jump when condition is zero" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push destination and zero condition
-    try frame.pushStack(3); // destination
+    // Push condition first (bottom), destination last (top)
+    // Handler pops: dest=3, condition=0
     try frame.pushStack(0); // condition (zero = false)
+    try frame.pushStack(3); // destination
 
     const initial_gas = frame.gas_remaining;
 
@@ -361,13 +363,13 @@ test "JUMPI: jumps with max u256 condition" {
         allocator.destroy(evm);
     }
 
-    const bytecode = &[_]u8{0x57, 0x5b}; // JUMPI, JUMPDEST
+    const bytecode = &[_]u8{ 0x57, 0x5b }; // JUMPI, JUMPDEST
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push destination and max condition
-    try frame.pushStack(1); // destination
+    // Push condition first (bottom), destination last (top)
     try frame.pushStack(std.math.maxInt(u256)); // condition (non-zero)
+    try frame.pushStack(1); // destination
 
     // Execute JUMPI
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -392,9 +394,9 @@ test "JUMPI: invalid jump destination error when condition is true" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push invalid destination and non-zero condition
-    try frame.pushStack(1); // invalid destination
+    // Push condition first (bottom), destination last (top)
     try frame.pushStack(1); // condition (true)
+    try frame.pushStack(1); // invalid destination
 
     // Execute JUMPI
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -419,9 +421,9 @@ test "JUMPI: no error when condition is false even if destination invalid" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push invalid destination but zero condition
-    try frame.pushStack(1); // invalid destination (not checked when condition is false)
+    // Push condition first (bottom), destination last (top)
     try frame.pushStack(0); // condition (false)
+    try frame.pushStack(1); // invalid destination (not checked when condition is false)
 
     // Execute JUMPI
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -462,12 +464,12 @@ test "JUMPI: out of gas error" {
         allocator.destroy(evm);
     }
 
-    const bytecode = &[_]u8{0x57, 0x5b}; // JUMPI, JUMPDEST
+    const bytecode = &[_]u8{ 0x57, 0x5b }; // JUMPI, JUMPDEST
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 9); // Only 9 gas (need 10)
     defer frame.deinit();
 
-    try frame.pushStack(1); // destination
     try frame.pushStack(1); // condition
+    try frame.pushStack(1); // destination
 
     // Execute JUMPI with insufficient gas
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -655,9 +657,10 @@ test "RETURN: basic return with data" {
     try frame.writeMemory(2, 0x56);
     try frame.writeMemory(3, 0x78);
 
-    // Push offset and length
-    try frame.pushStack(0); // offset
+    // Push length first (bottom), offset last (top)
+    // Handler pops: offset=0, length=4
     try frame.pushStack(4); // length
+    try frame.pushStack(0); // offset
 
     // Execute RETURN
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -686,9 +689,10 @@ test "RETURN: empty return (length zero)" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push offset and zero length
-    try frame.pushStack(0); // offset
+    // Push length first (bottom), offset last (top)
+    // Handler pops: offset=0, length=0
     try frame.pushStack(0); // length (zero)
+    try frame.pushStack(0); // offset
 
     // Execute RETURN
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -715,9 +719,10 @@ test "RETURN: memory expansion cost" {
 
     const initial_gas = frame.gas_remaining;
 
-    // Return data from high memory address (requires expansion)
-    try frame.pushStack(1000); // offset
+    // Push length first (bottom), offset last (top)
+    // Handler pops: offset=1000, length=32
     try frame.pushStack(32); // length
+    try frame.pushStack(1000); // offset
 
     // Execute RETURN
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -746,10 +751,11 @@ test "RETURN: out of bounds offset error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push offset beyond u32 max
+    // Push length first (bottom), offset last (top)
+    // Handler pops: offset=huge, length=1
     const huge_offset: u256 = @as(u256, std.math.maxInt(u32)) + 1;
-    try frame.pushStack(huge_offset); // offset
     try frame.pushStack(1); // length
+    try frame.pushStack(huge_offset); // offset
 
     // Execute RETURN
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -771,10 +777,11 @@ test "RETURN: out of bounds length error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push length beyond u32 max
+    // Push length first (bottom), offset last (top)
+    // Handler pops: offset=0, length=huge
     const huge_length: u256 = @as(u256, std.math.maxInt(u32)) + 1;
-    try frame.pushStack(0); // offset
     try frame.pushStack(huge_length); // length
+    try frame.pushStack(0); // offset
 
     // Execute RETURN
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -796,9 +803,10 @@ test "RETURN: offset + length overflow error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push values that would overflow when added
+    // Push length first (bottom), offset last (top)
+    // Handler pops: offset=maxu32, length=1 (offset + length overflows)
+    try frame.pushStack(1); // length
     try frame.pushStack(std.math.maxInt(u32)); // offset
-    try frame.pushStack(1); // length (offset + length overflows)
 
     // Execute RETURN
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -853,9 +861,10 @@ test "REVERT: basic revert with data" {
     try frame.writeMemory(2, 0xcc);
     try frame.writeMemory(3, 0xdd);
 
-    // Push offset and length
-    try frame.pushStack(0); // offset
+    // Push length first (bottom), offset last (top)
+    // Handler pops: offset=0, length=4
     try frame.pushStack(4); // length
+    try frame.pushStack(0); // offset
 
     // Execute REVERT
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -887,9 +896,10 @@ test "REVERT: empty revert (length zero)" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push offset and zero length
-    try frame.pushStack(0); // offset
+    // Push length first (bottom), offset last (top)
+    // Handler pops: offset=0, length=0
     try frame.pushStack(0); // length (zero)
+    try frame.pushStack(0); // offset
 
     // Execute REVERT
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -914,8 +924,9 @@ test "REVERT: available in Byzantium and later" {
     var frame = try createTestFrame(allocator, evm, bytecode, .BYZANTIUM, 1_000_000);
     defer frame.deinit();
 
-    try frame.pushStack(0); // offset
+    // Push length first (bottom), offset last (top)
     try frame.pushStack(0); // length
+    try frame.pushStack(0); // offset
 
     // Execute REVERT (should work in Byzantium)
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -937,8 +948,9 @@ test "REVERT: invalid opcode before Byzantium" {
     var frame = try createTestFrame(allocator, evm, bytecode, .TANGERINE_WHISTLE, 1_000_000);
     defer frame.deinit();
 
-    try frame.pushStack(0); // offset
+    // Push length first (bottom), offset last (top)
     try frame.pushStack(0); // length
+    try frame.pushStack(0); // offset
 
     // Execute REVERT (should fail before Byzantium)
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -962,9 +974,10 @@ test "REVERT: memory expansion cost" {
 
     const initial_gas = frame.gas_remaining;
 
-    // Revert with data from high memory address (requires expansion)
-    try frame.pushStack(2000); // offset
+    // Push length first (bottom), offset last (top)
+    // Handler pops: offset=2000, length=32
     try frame.pushStack(32); // length
+    try frame.pushStack(2000); // offset
 
     // Execute REVERT
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -993,10 +1006,11 @@ test "REVERT: out of bounds offset error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
-    // Push offset beyond u32 max
+    // Push length first (bottom), offset last (top)
+    // Handler pops: offset=huge, length=1
     const huge_offset: u256 = @as(u256, std.math.maxInt(u32)) + 1;
-    try frame.pushStack(huge_offset); // offset
     try frame.pushStack(1); // length
+    try frame.pushStack(huge_offset); // offset
 
     // Execute REVERT
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
@@ -1048,8 +1062,10 @@ test "REVERT: returns output data for error message" {
     try frame.writeMemory(2, 0x79);
     try frame.writeMemory(3, 0xa0);
 
-    try frame.pushStack(0); // offset
+    // Push length first (bottom), offset last (top)
+    // Handler pops: offset=0, length=4
     try frame.pushStack(4); // length
+    try frame.pushStack(0); // offset
 
     // Execute REVERT
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));

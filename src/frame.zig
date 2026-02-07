@@ -138,12 +138,14 @@ pub fn Frame(comptime config: EvmConfig) type {
 
         /// Clean up resources
         pub fn deinit(self: *Self) void {
-            // Note: When using arena allocator from Evm, this becomes a no-op
-            // The arena will clean up all memory at once when Evm is destroyed
+            // Free output if it was heap-allocated (e.g. by RETURN/REVERT handlers).
+            // When using an arena allocator this is harmless (arena frees everything at once).
+            if (self.output.len > 0) {
+                self.allocator.free(self.output);
+            }
             self.stack.deinit(self.allocator);
             self.memory.deinit();
             self.bytecode.deinit();
-            // No need to free output or return_data when using arena
         }
 
         /// Get the Evm instance matching this Frame's config
