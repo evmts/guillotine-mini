@@ -148,6 +148,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("client/state/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+        },
     });
 
     const client_state_tests = b.addTest(.{
@@ -185,6 +188,27 @@ pub fn build(b: *std.Build) void {
 
     const client_evm_test_step = b.step("test-evm-adapter", "Run EVM ↔ WorldState integration tests");
     client_evm_test_step.dependOn(&run_client_evm_tests.step);
+
+    // Client EVM benchmark executable
+    const client_evm_bench_mod = b.addModule("client_evm_bench", .{
+        .root_source_file = b.path("client/evm/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "state-manager", .module = state_manager_mod },
+        },
+    });
+
+    const client_evm_bench = b.addExecutable(.{
+        .name = "bench_evm",
+        .root_module = client_evm_bench_mod,
+    });
+
+    const run_client_evm_bench = b.addRunArtifact(client_evm_bench);
+    const bench_evm_step = b.step("bench-evm", "Run EVM ↔ WorldState integration benchmarks");
+    bench_evm_step.dependOn(&run_client_evm_bench.step);
 
     // Client State benchmark executable
     const client_state_bench_mod = b.addModule("client_state_bench", .{

@@ -10,6 +10,7 @@
 /// | Module          | Nethermind equivalent            | Purpose                                    |
 /// |-----------------|----------------------------------|--------------------------------------------|
 /// | `journal`       | `PartialStorageProviderBase`     | Change-list journal with snapshot/restore   |
+/// | `account`       | `Account.cs`                     | Account helpers (isEmpty, hasCodeOrNonce)   |
 ///
 /// ## Modules
 ///
@@ -17,6 +18,10 @@
 /// - `ChangeTag`     — Change classification enum (just_cache, update, create, delete, touch)
 /// - `Entry`         — Single change record (key + value + tag)
 /// - `JournalError`  — Error set for journal operations (InvalidSnapshot, OutOfMemory)
+/// - `AccountState`  — Voltaire account state type (re-exported)
+/// - `isEmpty`       — EIP-161 empty account predicate
+/// - `isTotallyEmpty` — Empty account with empty storage predicate
+/// - `hasCodeOrNonce` — Code-or-nonce predicate (for CREATE collision check)
 ///
 /// ## Usage
 ///
@@ -33,9 +38,11 @@
 /// journal.commit(snap, null);      // finalise changes since snapshot
 /// ```
 const journal = @import("journal.zig");
+const account = @import("account.zig");
 
 // -- Public API: flat re-exports -------------------------------------------
 
+// Journal types
 /// Generic change-list journal with index-based snapshot/restore.
 pub const Journal = journal.Journal;
 
@@ -47,6 +54,28 @@ pub const ChangeTag = journal.ChangeTag;
 
 /// Error set for journal operations.
 pub const JournalError = journal.JournalError;
+
+// Account types and helpers
+/// Voltaire account state type — the canonical Ethereum account representation.
+pub const AccountState = account.AccountState;
+
+/// The empty account constant (nonce=0, balance=0, empty code/storage).
+pub const EMPTY_ACCOUNT = account.EMPTY_ACCOUNT;
+
+/// Canonical hash of empty EVM bytecode (keccak256 of empty bytes).
+pub const EMPTY_CODE_HASH = account.EMPTY_CODE_HASH;
+
+/// Root hash of an empty Merkle Patricia Trie.
+pub const EMPTY_TRIE_ROOT = account.EMPTY_TRIE_ROOT;
+
+/// Check whether an account is "empty" per EIP-161.
+pub const isEmpty = account.isEmpty;
+
+/// Check whether an account is "totally empty" (empty AND no storage).
+pub const isTotallyEmpty = account.isTotallyEmpty;
+
+/// Check whether an account has code or a non-zero nonce.
+pub const hasCodeOrNonce = account.hasCodeOrNonce;
 
 test {
     // Ensure all sub-modules compile and their tests run.
