@@ -91,6 +91,18 @@ pub fn build(b: *std.Build) void {
     const unit_test_step = b.step("unit", "Run unit tests only (fast)");
     unit_test_step.dependOn(&run_mod_tests.step);
 
+    // Create EVM module (used by spec tests and client EVM adapter)
+    const evm_mod = b.addModule("evm", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "precompiles", .module = precompiles_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+        },
+    });
+
     // Client DB module (database abstraction layer)
     const client_db_mod = b.addModule("client_db", .{
         .root_source_file = b.path("client/db/root.zig"),
@@ -149,6 +161,47 @@ pub fn build(b: *std.Build) void {
     const client_state_test_step = b.step("test-state", "Run world state journal tests");
     client_state_test_step.dependOn(&run_client_state_tests.step);
 
+    // Client EVM module (EVM ↔ WorldState integration)
+    const state_manager_mod = primitives_dep.module("state-manager");
+
+    const client_evm_mod = b.addModule("client_evm", .{
+        .root_source_file = b.path("client/evm/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "state-manager", .module = state_manager_mod },
+        },
+    });
+
+    const client_evm_tests = b.addTest(.{
+        .root_module = client_evm_mod,
+    });
+
+    const run_client_evm_tests = b.addRunArtifact(client_evm_tests);
+    test_step.dependOn(&run_client_evm_tests.step);
+    unit_test_step.dependOn(&run_client_evm_tests.step);
+
+    const client_evm_test_step = b.step("test-evm-adapter", "Run EVM ↔ WorldState integration tests");
+    client_evm_test_step.dependOn(&run_client_evm_tests.step);
+
+    // Client State benchmark executable
+    const client_state_bench_mod = b.addModule("client_state_bench", .{
+        .root_source_file = b.path("client/state/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const client_state_bench = b.addExecutable(.{
+        .name = "bench_state",
+        .root_module = client_state_bench_mod,
+    });
+
+    const run_client_state_bench = b.addRunArtifact(client_state_bench);
+    const bench_state_step = b.step("bench-state", "Run world state journal benchmarks");
+    bench_state_step.dependOn(&run_client_state_bench.step);
+
     // Client DB benchmark executable
     const client_db_bench_mod = b.addModule("client_db_bench", .{
         .root_source_file = b.path("client/db/bench.zig"),
@@ -184,18 +237,6 @@ pub fn build(b: *std.Build) void {
     const run_client_trie_bench = b.addRunArtifact(client_trie_bench);
     const bench_trie_step = b.step("bench-trie", "Run Merkle Patricia Trie benchmarks");
     bench_trie_step.dependOn(&run_client_trie_bench.step);
-
-    // Create EVM module for spec tests
-    const evm_mod = b.addModule("evm", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
-            .{ .name = "precompiles", .module = precompiles_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-        },
-    });
 
     // Add execution-specs tests
     // Build option to force refreshing the generated Python fixtures
