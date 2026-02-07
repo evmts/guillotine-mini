@@ -552,7 +552,7 @@ test "ChangeTag: all variants accessible" {
 }
 
 // =========================================================================
-// New tests: just_cache preservation across restore
+// just_cache preservation across restore
 // =========================================================================
 
 test "Journal: just_cache entries survive restore" {
@@ -628,7 +628,7 @@ test "Journal: just_cache preserved on restore to empty_snapshot" {
 }
 
 // =========================================================================
-// New tests: invalid snapshot handling
+// Invalid snapshot handling
 // =========================================================================
 
 test "Journal: restore with snapshot far beyond length returns error" {
@@ -660,7 +660,7 @@ test "Journal: restore with snapshot just past end returns error" {
 }
 
 // =========================================================================
-// New tests: commit API
+// Commit API
 // =========================================================================
 
 test "Journal: commit removes entries and calls callback" {
