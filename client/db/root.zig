@@ -9,9 +9,18 @@
 /// - `Database` — Type-erased vtable interface for any KV backend.
 /// - `WriteBatch` — Batched write operations with optional atomicity.
 /// - `MemoryDatabase` — In-memory backend (for tests and ephemeral state).
-/// - `RocksDatabase` — RocksDB backend stub (null object pattern, no FFI yet).
-/// - `DbSettings` — Configuration for RocksDB instances.
+/// - `NullDb` — Null object backend (reads return null, writes error).
+/// - `RocksDatabase` — RocksDB backend stub (not yet implemented).
 /// - `DbName` — Standard database partition names (matches Nethermind).
+///
+/// ## Architecture (Nethermind parity)
+///
+/// Nethermind separates `NullDb` (null object pattern, singleton) from
+/// `DbOnTheRocks` (real RocksDB backend). This module follows the same
+/// separation:
+///   - `NullDb` — satisfies the Database interface without storing data.
+///   - `RocksDatabase` — stub for future RocksDB FFI (all ops error).
+///   - `MemoryDatabase` — in-memory storage for tests and ephemeral use.
 ///
 /// ## Usage
 ///
@@ -26,6 +35,7 @@
 /// ```
 pub const adapter = @import("adapter.zig");
 pub const memory = @import("memory.zig");
+pub const null_db = @import("null.zig");
 pub const rocksdb = @import("rocksdb.zig");
 
 pub const Database = adapter.Database;
@@ -34,8 +44,8 @@ pub const WriteBatchOp = adapter.WriteBatchOp;
 pub const DbName = adapter.DbName;
 pub const Error = adapter.Error;
 pub const MemoryDatabase = memory.MemoryDatabase;
+pub const NullDb = null_db.NullDb;
 pub const RocksDatabase = rocksdb.RocksDatabase;
-pub const DbSettings = rocksdb.DbSettings;
 
 test {
     @import("std").testing.refAllDecls(@This());
