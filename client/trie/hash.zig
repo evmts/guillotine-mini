@@ -7,19 +7,35 @@
 //! < 32 bytes are returned as raw RLP structures, not hashed).
 //!
 //! Uses Voltaire primitives for RLP encoding and keccak256 hashing.
+//!
+//! ## RLP List Encoding Design Note
+//!
+//! We maintain a custom `rlpEncodeTaggedList()` rather than using Voltaire's
+//! `Rlp.encodeList()` because the MPT requires mixed-mode encoding: some list
+//! items are byte strings needing RLP string encoding, while others are inline
+//! node substructures that must be embedded verbatim (already RLP-encoded).
+//! Voltaire's `encodeList` would re-encode verbatim items as byte strings,
+//! producing incorrect results. We still use Voltaire's `Rlp.encodeBytes()`
+//! for individual string items and `Rlp.encodeLength()` for list headers.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 /// RLP encoding from Voltaire primitives
 const Rlp = @import("primitives").Rlp;
+/// Voltaire Hash type for 32-byte cryptographic hashes
+const VHash = @import("primitives").Hash;
 /// Keccak256 hash function from Voltaire crypto
 const Hash = @import("crypto").Hash;
+
+/// Voltaire Hash type alias for 32-byte Ethereum hashes.
+/// Used throughout the MPT for root hashes and node references.
+pub const Hash32 = VHash.Hash;
 
 /// EMPTY_TRIE_ROOT = keccak256(RLP(b"")) = keccak256(0x80)
 /// = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
 /// Used when the trie has no entries.
-pub const EMPTY_TRIE_ROOT: [32]u8 = .{
+pub const EMPTY_TRIE_ROOT: Hash32 = .{
     0x56, 0xe8, 0x1f, 0x17, 0x1b, 0xcc, 0x55, 0xa6,
     0xff, 0x83, 0x45, 0xe6, 0x92, 0xc0, 0xf8, 0x6e,
     0x5b, 0x48, 0xe0, 0x1b, 0x99, 0x6c, 0xad, 0xc0,
@@ -41,15 +57,18 @@ pub const EncodedNode = union(enum) {
     /// Complete RLP encoding of an inline node (< 32 bytes)
     raw: []const u8,
     /// Keccak256 hash of the RLP encoding (>= 32 bytes)
-    hash: [32]u8,
+    hash: Hash32,
     /// Empty node (encodes to b"")
     empty: void,
 };
 
 /// An item in an RLP list with explicit encoding tag.
-/// This allows us to distinguish between:
-/// - byte strings that should be RLP-encoded as strings
-/// - already-encoded substructures (inline nodes) to embed verbatim
+///
+/// This tagged union is necessary because the MPT spec requires mixed-mode
+/// list encoding: some items are byte strings (needing RLP string encoding)
+/// while others are already-encoded substructures (to embed verbatim).
+/// Voltaire's `Rlp.encodeList()` cannot distinguish these cases, so we use
+/// this type with our custom `rlpEncodeTaggedList()`.
 const RlpItem = union(enum) {
     /// A byte string to be RLP-encoded as a string item
     string: []const u8,
@@ -71,7 +90,7 @@ pub fn trieRoot(
     allocator: Allocator,
     keys: []const []const u8,
     values: []const []const u8,
-) ![32]u8 {
+) !Hash32 {
     std.debug.assert(keys.len == values.len);
 
     if (keys.len == 0) {
@@ -118,7 +137,7 @@ fn freeEncodedNode(allocator: Allocator, node: EncodedNode) void {
     }
 }
 
-/// Convert bytes to nibble-list (each byte → two 4-bit nibbles).
+/// Convert bytes to nibble-list (each byte -> two 4-bit nibbles).
 /// Matches Python's `bytes_to_nibble_list()`.
 fn keyToNibbles(allocator: Allocator, key: []const u8) ![]u8 {
     const nibbles = try allocator.alloc(u8, key.len * 2);
@@ -167,7 +186,7 @@ fn commonPrefixLength(a: []const u8, b: []const u8) usize {
 /// Matches Python's `patricialize(obj, level)`. Instead of using a dict,
 /// we pass parallel arrays of nibble-keys and values.
 ///
-/// Returns an `EncodedNode` — the result of `encode_internal_node()` on
+/// Returns an `EncodedNode` -- the result of `encode_internal_node()` on
 /// the node built at this level.
 fn patricialize(
     allocator: Allocator,
@@ -179,7 +198,7 @@ fn patricialize(
         return .empty;
     }
 
-    // Single entry → leaf node
+    // Single entry -> leaf node
     if (nibble_keys.len == 1) {
         const rest_of_key = nibble_keys[0][level..];
         return encodeInternalLeaf(allocator, rest_of_key, values[0]);
@@ -203,11 +222,16 @@ fn patricialize(
         return encodeInternalExtension(allocator, prefix, child);
     }
 
-    // Branch node: split into 16 buckets by nibble at current level
+    // Branch node: split into 16 buckets by nibble at current level.
+    // Uses a two-pass approach with preallocated contiguous arrays to
+    // minimize per-bucket allocation overhead.
     var bucket_counts: [16]usize = [_]usize{0} ** 16;
     var branch_value: ?[]const u8 = null;
 
-    // Count entries per bucket and find branch value
+    // Count entries per bucket and find branch value.
+    // NOTE: If multiple keys have the same nibble path (duplicate keys),
+    // the last value wins, matching Python dict semantics where later
+    // insertions overwrite earlier ones.
     for (nibble_keys, 0..) |key, idx| {
         if (key.len == level) {
             branch_value = values[idx];
@@ -217,31 +241,28 @@ fn patricialize(
         }
     }
 
-    // Allocate temporary arrays for each bucket
-    var bucket_key_arrays: [16]?[][]const u8 = [_]?[][]const u8{null} ** 16;
-    var bucket_val_arrays: [16]?[][]const u8 = [_]?[][]const u8{null} ** 16;
-    defer {
-        for (0..16) |bi| {
-            if (bucket_key_arrays[bi]) |arr| allocator.free(arr);
-            if (bucket_val_arrays[bi]) |arr| allocator.free(arr);
-        }
-    }
-
+    // Calculate total non-branch entries for contiguous allocation
+    var total_entries: usize = 0;
+    var bucket_offsets: [16]usize = undefined;
     for (0..16) |bi| {
-        if (bucket_counts[bi] > 0) {
-            bucket_key_arrays[bi] = try allocator.alloc([]const u8, bucket_counts[bi]);
-            bucket_val_arrays[bi] = try allocator.alloc([]const u8, bucket_counts[bi]);
-        }
+        bucket_offsets[bi] = total_entries;
+        total_entries += bucket_counts[bi];
     }
 
-    // Fill bucket arrays
+    // Allocate contiguous arrays for all bucket entries
+    const all_keys = try allocator.alloc([]const u8, total_entries);
+    defer allocator.free(all_keys);
+    const all_vals = try allocator.alloc([]const u8, total_entries);
+    defer allocator.free(all_vals);
+
+    // Fill bucket arrays using offsets into contiguous storage
     var fill_counts: [16]usize = [_]usize{0} ** 16;
     for (nibble_keys, 0..) |key, idx| {
         if (key.len == level) continue;
         const nibble = key[level];
-        const fc = fill_counts[nibble];
-        bucket_key_arrays[nibble].?[fc] = key;
-        bucket_val_arrays[nibble].?[fc] = values[idx];
+        const pos = bucket_offsets[nibble] + fill_counts[nibble];
+        all_keys[pos] = key;
+        all_vals[pos] = values[idx];
         fill_counts[nibble] += 1;
     }
 
@@ -255,8 +276,10 @@ fn patricialize(
     }
 
     for (0..16) |bi| {
-        const bkeys = bucket_key_arrays[bi] orelse &[_][]const u8{};
-        const bvals = bucket_val_arrays[bi] orelse &[_][]const u8{};
+        const start = bucket_offsets[bi];
+        const count = bucket_counts[bi];
+        const bkeys = all_keys[start .. start + count];
+        const bvals = all_vals[start .. start + count];
         subnode_encodings[bi] = try patricialize(allocator, bkeys, bvals, level + 1);
         subnode_count = bi + 1;
     }
@@ -323,9 +346,9 @@ fn encodeInternalBranch(allocator: Allocator, subnodes: *const [16]EncodedNode, 
 /// Convert an EncodedNode to an RlpItem for embedding in a parent list.
 ///
 /// In Python, `encode_internal_node` returns:
-/// - `b""` for None → string item
-/// - `keccak256(encoded)` for large nodes → 32-byte string item
-/// - `unencoded` (tuple/list) for small nodes → already-encoded substructure
+/// - `b""` for None -> string item
+/// - `keccak256(encoded)` for large nodes -> 32-byte string item
+/// - `unencoded` (tuple/list) for small nodes -> already-encoded substructure
 ///
 /// When embedded in a parent node, strings get RLP-encoded as strings,
 /// and nested structures get embedded directly (as their RLP form).
@@ -360,63 +383,107 @@ fn encodeInternalFromItems(allocator: Allocator, items: []const RlpItem) !Encode
 
 /// RLP-encode a list of tagged items.
 ///
-/// Each `.string` item is individually RLP-encoded as a byte string.
-/// Each `.verbatim` item is included as-is (already RLP-encoded).
-/// All are concatenated and wrapped with an RLP list header.
+/// Each `.string` item is individually RLP-encoded via Voltaire's
+/// `Rlp.encodeBytes()`. Each `.verbatim` item is included as-is
+/// (already RLP-encoded). All are concatenated and wrapped with an
+/// RLP list header (using Voltaire's `Rlp.encodeLength()` for long lists).
+///
+/// NOTE: We cannot use Voltaire's `Rlp.encodeList()` here because it would
+/// re-encode verbatim items as byte strings. See module-level doc comment.
+///
+/// Allocation strategy: Two-pass approach. First pass computes total payload
+/// size by encoding string items into a fixed-size buffer of pre-encoded
+/// slices. Second pass writes directly into a single output allocation.
 fn rlpEncodeTaggedList(allocator: Allocator, items: []const RlpItem) ![]u8 {
-    // Encode each item
-    var encoded_items = std.ArrayList([]u8){};
-    defer {
-        for (encoded_items.items) |item| allocator.free(item);
-        encoded_items.deinit(allocator);
-    }
+    // First pass: encode string items, keep verbatim as-is, compute total size.
+    // Use a stack buffer for small lists (branch nodes have 17 items).
+    var encoded_buf: [17][]const u8 = undefined;
+    var owned_mask: [17]bool = [_]bool{false} ** 17;
+    std.debug.assert(items.len <= 17);
 
     var total_len: usize = 0;
-    for (items) |item| {
-        const encoded_item = switch (item) {
-            .string => |s| try Rlp.encodeBytes(allocator, s),
-            .verbatim => |v| try allocator.dupe(u8, v),
-        };
-
-        try encoded_items.append(allocator, encoded_item);
-        total_len += encoded_item.len;
+    for (items, 0..) |item, i| {
+        switch (item) {
+            .string => |s| {
+                encoded_buf[i] = try Rlp.encodeBytes(allocator, s);
+                owned_mask[i] = true;
+            },
+            .verbatim => |v| {
+                encoded_buf[i] = v;
+                owned_mask[i] = false;
+            },
+        }
+        total_len += encoded_buf[i].len;
+    }
+    // Ensure we free owned encoded items on all paths
+    defer {
+        for (0..items.len) |i| {
+            if (owned_mask[i]) allocator.free(@constCast(encoded_buf[i]));
+        }
     }
 
-    // Build list with header
-    var result = std.ArrayList(u8){};
-    errdefer result.deinit(allocator);
-
+    // Second pass: compute header size and allocate result in one shot.
+    var header_len: usize = undefined;
+    var header_buf: [9]u8 = undefined; // max RLP list header: 1 + 8 bytes
     if (total_len < 56) {
-        try result.append(allocator, 0xc0 + @as(u8, @intCast(total_len)));
+        header_buf[0] = 0xc0 + @as(u8, @intCast(total_len));
+        header_len = 1;
     } else {
         const len_bytes = try Rlp.encodeLength(allocator, total_len);
         defer allocator.free(len_bytes);
-        try result.append(allocator, 0xf7 + @as(u8, @intCast(len_bytes.len)));
-        try result.appendSlice(allocator, len_bytes);
+        header_buf[0] = 0xf7 + @as(u8, @intCast(len_bytes.len));
+        @memcpy(header_buf[1 .. 1 + len_bytes.len], len_bytes);
+        header_len = 1 + len_bytes.len;
     }
 
-    for (encoded_items.items) |item| {
-        try result.appendSlice(allocator, item);
+    // Single allocation for the complete result
+    const result = try allocator.alloc(u8, header_len + total_len);
+    errdefer allocator.free(result);
+
+    // Write header
+    @memcpy(result[0..header_len], header_buf[0..header_len]);
+
+    // Write payload items contiguously
+    var offset: usize = header_len;
+    for (0..items.len) |i| {
+        const item_data = encoded_buf[i];
+        @memcpy(result[offset .. offset + item_data.len], item_data);
+        offset += item_data.len;
     }
 
-    return try result.toOwnedSlice(allocator);
+    return result;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 // Tests
-// ─────────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
 
 const testing = std.testing;
+
+/// Helper: parse a comptime hex string literal into a fixed-size byte array.
+/// Returns the parsed array directly — evaluated at comptime via inline.
+inline fn hexToBytes(comptime hex: anytype) [@as(usize, hex.len) / 2]u8 {
+    const n = @as(usize, hex.len) / 2;
+    var result: [n]u8 = undefined;
+    for (&result, 0..) |*byte, i| {
+        byte.* = (hexVal(hex[i * 2]) << 4) | hexVal(hex[i * 2 + 1]);
+    }
+    return result;
+}
+
+inline fn hexVal(c: u8) u8 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => c - 'a' + 10,
+        'A'...'F' => c - 'A' + 10,
+        else => unreachable,
+    };
+}
 
 test "EMPTY_TRIE_ROOT matches spec constant" {
     // keccak256(rlp(b'')) = keccak256(0x80) =
     // 56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
-    const expected = [_]u8{
-        0x56, 0xe8, 0x1f, 0x17, 0x1b, 0xcc, 0x55, 0xa6,
-        0xff, 0x83, 0x45, 0xe6, 0x92, 0xc0, 0xf8, 0x6e,
-        0x5b, 0x48, 0xe0, 0x1b, 0x99, 0x6c, 0xad, 0xc0,
-        0x01, 0x62, 0x2f, 0xb5, 0xe3, 0x63, 0xb4, 0x21,
-    };
+    const expected = hexToBytes("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
     try testing.expectEqualSlices(u8, &expected, &EMPTY_TRIE_ROOT);
 }
 
@@ -503,28 +570,134 @@ test "commonPrefixLength - full match" {
     try testing.expectEqual(@as(usize, 3), commonPrefixLength(&a, &b));
 }
 
-test "trieRoot - dogs test (trieanyorder.json)" {
-    // From ethereum-tests/TrieTests/trieanyorder.json "dogs" test:
-    //   doe → reindeer, dog → puppy, dogglesworth → cat
-    //   expected root: 0x8aad789dff2f538bca5d8ea56e8abe10f4c7ba3a5dea95fea4cd6e7c3a1168d3
+// ---------------------------------------------------------------------------
+// trieanyorder.json spec tests (all 7 vectors)
+// ---------------------------------------------------------------------------
+
+test "trieanyorder - singleItem" {
+    // A -> aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     const allocator = testing.allocator;
-
-    const keys = [_][]const u8{ "doe", "dog", "dogglesworth" };
-    const values = [_][]const u8{ "reindeer", "puppy", "cat" };
+    const keys = [_][]const u8{"A"};
+    const values = [_][]const u8{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"};
     const root = try trieRoot(allocator, &keys, &values);
-
-    const expected = [_]u8{
-        0x8a, 0xad, 0x78, 0x9d, 0xff, 0x2f, 0x53, 0x8b,
-        0xca, 0x5d, 0x8e, 0xa5, 0x6e, 0x8a, 0xbe, 0x10,
-        0xf4, 0xc7, 0xba, 0x3a, 0x5d, 0xea, 0x95, 0xfe,
-        0xa4, 0xcd, 0x6e, 0x7c, 0x3a, 0x11, 0x68, 0xd3,
-    };
+    const expected = hexToBytes("d23786fb4a010da3ce639d66d5e904a11dbc02746d1ce25029e53290cabf28ab");
     try testing.expectEqualSlices(u8, &expected, &root);
 }
 
+test "trieanyorder - dogs" {
+    // doe -> reindeer, dog -> puppy, dogglesworth -> cat
+    const allocator = testing.allocator;
+    const keys = [_][]const u8{ "doe", "dog", "dogglesworth" };
+    const values = [_][]const u8{ "reindeer", "puppy", "cat" };
+    const root = try trieRoot(allocator, &keys, &values);
+    const expected = hexToBytes("8aad789dff2f538bca5d8ea56e8abe10f4c7ba3a5dea95fea4cd6e7c3a1168d3");
+    try testing.expectEqualSlices(u8, &expected, &root);
+}
+
+test "trieanyorder - puppy" {
+    // do -> verb, horse -> stallion, doge -> coin, dog -> puppy
+    const allocator = testing.allocator;
+    const keys = [_][]const u8{ "do", "horse", "doge", "dog" };
+    const values = [_][]const u8{ "verb", "stallion", "coin", "puppy" };
+    const root = try trieRoot(allocator, &keys, &values);
+    const expected = hexToBytes("5991bb8c6514148a29db676a14ac506cd2cd5775ace63c30a4fe457715e9ac84");
+    try testing.expectEqualSlices(u8, &expected, &root);
+}
+
+test "trieanyorder - foo" {
+    // foo -> bar, food -> bass
+    const allocator = testing.allocator;
+    const keys = [_][]const u8{ "foo", "food" };
+    const values = [_][]const u8{ "bar", "bass" };
+    const root = try trieRoot(allocator, &keys, &values);
+    const expected = hexToBytes("17beaa1648bafa633cda809c90c04af50fc8aed3cb40d16efbddee6fdf63c4c3");
+    try testing.expectEqualSlices(u8, &expected, &root);
+}
+
+test "trieanyorder - smallValues" {
+    // be -> e, dog -> puppy, bed -> d
+    const allocator = testing.allocator;
+    const keys = [_][]const u8{ "be", "dog", "bed" };
+    const values = [_][]const u8{ "e", "puppy", "d" };
+    const root = try trieRoot(allocator, &keys, &values);
+    const expected = hexToBytes("3f67c7a47520f79faa29255d2d3c084a7a6df0453116ed7232ff10277a8be68b");
+    try testing.expectEqualSlices(u8, &expected, &root);
+}
+
+test "trieanyorder - testy" {
+    // test -> test, te -> testy
+    const allocator = testing.allocator;
+    const keys = [_][]const u8{ "test", "te" };
+    const values = [_][]const u8{ "test", "testy" };
+    const root = try trieRoot(allocator, &keys, &values);
+    const expected = hexToBytes("8452568af70d8d140f58d941338542f645fcca50094b20f3c3d8c3df49337928");
+    try testing.expectEqualSlices(u8, &expected, &root);
+}
+
+test "trieanyorder - hex" {
+    // 0x0045 -> 0x0123456789, 0x4500 -> 0x9876543210
+    // Keys/values are hex-encoded byte strings
+    const allocator = testing.allocator;
+    const keys = [_][]const u8{
+        &hexToBytes("0045"),
+        &hexToBytes("4500"),
+    };
+    const values = [_][]const u8{
+        &hexToBytes("0123456789"),
+        &hexToBytes("9876543210"),
+    };
+    const root = try trieRoot(allocator, &keys, &values);
+    const expected = hexToBytes("285505fcabe84badc8aa310e2aae17eddc7d120aabec8a476902c8184b3a3503");
+    try testing.expectEqualSlices(u8, &expected, &root);
+}
+
+// ---------------------------------------------------------------------------
+// trietest.json spec tests (ordered insertion with updates/deletes)
+// ---------------------------------------------------------------------------
+
+test "trietest - insert-middle-leaf" {
+    // Ordered insertions:
+    //   key1aa -> 0123456789012345678901234567890123456789xxx
+    //   key1   -> 0123456789012345678901234567890123456789Very_Long
+    //   key2bb -> aval3
+    //   key2   -> short
+    //   key3cc -> aval3
+    //   key3   -> 1234567890123456789012345678901
+    const allocator = testing.allocator;
+    const keys = [_][]const u8{ "key1aa", "key1", "key2bb", "key2", "key3cc", "key3" };
+    const values = [_][]const u8{
+        "0123456789012345678901234567890123456789xxx",
+        "0123456789012345678901234567890123456789Very_Long",
+        "aval3",
+        "short",
+        "aval3",
+        "1234567890123456789012345678901",
+    };
+    const root = try trieRoot(allocator, &keys, &values);
+    const expected = hexToBytes("cb65032e2f76c48b82b5c24b3db8f670ce73982869d38cd39a624f23d62a9e89");
+    try testing.expectEqualSlices(u8, &expected, &root);
+}
+
+test "trietest - branch-value-update" {
+    // Ordered insertions where "abc" is set twice (last value wins):
+    //   abc  -> 123
+    //   abcd -> abcd
+    //   abc  -> abc  (overwrites "123")
+    // Our trieRoot takes final state, so pass the final mapping:
+    const allocator = testing.allocator;
+    const keys = [_][]const u8{ "abc", "abcd" };
+    const values = [_][]const u8{ "abc", "abcd" };
+    const root = try trieRoot(allocator, &keys, &values);
+    const expected = hexToBytes("7a320748f780ad9ad5b0837302075ce0eeba6c26e3d8562c67ccc0f1b273298a");
+    try testing.expectEqualSlices(u8, &expected, &root);
+}
+
+// ---------------------------------------------------------------------------
+// Internal structure tests
+// ---------------------------------------------------------------------------
+
 test "rlpEncodeTaggedList - simple leaf" {
     // Verify RLP encoding of a leaf node: [0x20, "reindeer"]
-    // Expected: ca 20 88 72656966e64656572
     const allocator = testing.allocator;
 
     const items = [2]RlpItem{
@@ -534,109 +707,56 @@ test "rlpEncodeTaggedList - simple leaf" {
     const result = try rlpEncodeTaggedList(allocator, &items);
     defer allocator.free(result);
 
-    // 0x20 is a single byte < 0x80, so RLP encodes as itself: 0x20 (1 byte)
-    // "reindeer" is 8 bytes → RLP: 0x88 + 8 bytes (9 bytes)
-    // Total payload: 1 + 9 = 10
-    // List header: 0xc0 + 10 = 0xca
-    const expected_hex = "ca20887265696e64656572";
-    var expected: [expected_hex.len / 2]u8 = undefined;
-    for (0..expected.len) |i| {
-        expected[i] = std.fmt.parseInt(u8, expected_hex[i * 2 .. i * 2 + 2], 16) catch unreachable;
-    }
+    const expected = hexToBytes("ca20887265696e64656572");
     try testing.expectEqualSlices(u8, &expected, result);
 }
 
 test "rlpEncodeTaggedList - branch with inline and hash" {
     // Verify RLP encoding of the branch at level 6 in the dogs test
-    // 15 empty subnodes + 1 inline leaf + 1 value
     const allocator = testing.allocator;
 
-    // The inline leaf: ce89376c6573776f72746883636174
-    const inline_hex = "ce89376c6573776f72746883636174";
-    var inline_bytes: [inline_hex.len / 2]u8 = undefined;
-    for (0..inline_bytes.len) |i| {
-        inline_bytes[i] = std.fmt.parseInt(u8, inline_hex[i * 2 .. i * 2 + 2], 16) catch unreachable;
-    }
+    const inline_bytes = hexToBytes("ce89376c6573776f72746883636174");
 
     var items: [17]RlpItem = undefined;
-    // subnodes 0-5: empty
     for (0..6) |i| items[i] = .{ .string = &[_]u8{} };
-    // subnode 6: inline leaf
     items[6] = .{ .verbatim = &inline_bytes };
-    // subnodes 7-15: empty
     for (7..16) |i| items[i] = .{ .string = &[_]u8{} };
-    // value: "puppy"
     items[16] = .{ .string = "puppy" };
 
     const result = try rlpEncodeTaggedList(allocator, &items);
     defer allocator.free(result);
 
-    const expected_hex = "e4808080808080ce89376c6573776f72746883636174808080808080808080857075707079";
-    var expected: [expected_hex.len / 2]u8 = undefined;
-    for (0..expected.len) |i| {
-        expected[i] = std.fmt.parseInt(u8, expected_hex[i * 2 .. i * 2 + 2], 16) catch unreachable;
-    }
+    const expected = hexToBytes("e4808080808080ce89376c6573776f72746883636174808080808080808080857075707079");
     try testing.expectEqualSlices(u8, &expected, result);
 }
 
 test "rlpEncodeTaggedList - level 5 branch (dogs test)" {
-    // Full branch at level 5: 14 empty + inline doe leaf + empty + hash for dog subtree + empty*8 + value empty
-    // Expected: f83b 80*5 ca20887265696e64656572 80 a037efd1... 80*8 80
     const allocator = testing.allocator;
 
-    // Inline leaf for doe: ca20887265696e64656572
-    const inline_doe_hex = "ca20887265696e64656572";
-    var inline_doe: [inline_doe_hex.len / 2]u8 = undefined;
-    for (0..inline_doe.len) |i| {
-        inline_doe[i] = std.fmt.parseInt(u8, inline_doe_hex[i * 2 .. i * 2 + 2], 16) catch unreachable;
-    }
-
-    // Hash for dog/dogglesworth subtree
-    const hash_hex = "37efd11993cb04a54048c25320e9f29c50a432d28afdf01598b2978ce1ca3068";
-    var hash_bytes: [32]u8 = undefined;
-    for (0..32) |i| {
-        hash_bytes[i] = std.fmt.parseInt(u8, hash_hex[i * 2 .. i * 2 + 2], 16) catch unreachable;
-    }
+    const inline_doe = hexToBytes("ca20887265696e64656572");
+    const hash_bytes = hexToBytes("37efd11993cb04a54048c25320e9f29c50a432d28afdf01598b2978ce1ca3068");
 
     var items: [17]RlpItem = undefined;
-    // subnodes 0-4: empty
     for (0..5) |i| items[i] = .{ .string = &[_]u8{} };
-    // subnode 5: inline doe leaf
     items[5] = .{ .verbatim = &inline_doe };
-    // subnode 6: empty
     items[6] = .{ .string = &[_]u8{} };
-    // subnode 7: hash
     items[7] = .{ .string = &hash_bytes };
-    // subnodes 8-15: empty
     for (8..16) |i| items[i] = .{ .string = &[_]u8{} };
-    // value: empty
     items[16] = .{ .string = &[_]u8{} };
 
     const result = try rlpEncodeTaggedList(allocator, &items);
     defer allocator.free(result);
 
-    const expected_hex = "f83b8080808080ca20887265696e6465657280a037efd11993cb04a54048c25320e9f29c50a432d28afdf01598b2978ce1ca3068808080808080808080";
-    var expected: [expected_hex.len / 2]u8 = undefined;
-    for (0..expected.len) |i| {
-        expected[i] = std.fmt.parseInt(u8, expected_hex[i * 2 .. i * 2 + 2], 16) catch unreachable;
-    }
+    const expected = hexToBytes("f83b8080808080ca20887265696e6465657280a037efd11993cb04a54048c25320e9f29c50a432d28afdf01598b2978ce1ca3068808080808080808080");
     try testing.expectEqualSlices(u8, &expected, result);
 
     // Also verify the hash
-    const expected_hash_hex = "db6ae1fda66890f6693f36560d36b4dca68b4d838f17016b151efe1d4c95c453";
-    var expected_hash: [32]u8 = undefined;
-    for (0..32) |i| {
-        expected_hash[i] = std.fmt.parseInt(u8, expected_hash_hex[i * 2 .. i * 2 + 2], 16) catch unreachable;
-    }
+    const expected_hash = hexToBytes("db6ae1fda66890f6693f36560d36b4dca68b4d838f17016b151efe1d4c95c453");
     const actual_hash = Hash.keccak256(result);
     try testing.expectEqualSlices(u8, &expected_hash, &actual_hash);
 }
 
 test "patricialize - dogs subtree at level 6 (dog + dogglesworth)" {
-    // Test the subtree containing "dog" and "dogglesworth" at level 6
-    // dog nibbles: [6,4,6,f,6,7] (len 6)
-    // dogglesworth nibbles: [6,4,6,f,6,7,6,7,6,c,6,5,7,3,7,7,6,f,7,2,7,4,6,8] (len 24)
-    // At level 6: dog ends → branch value="puppy", dogglesworth → bucket 6
     const allocator = testing.allocator;
 
     const dog_nibbles = [_]u8{ 6, 4, 6, 0xf, 6, 7 };
@@ -648,12 +768,7 @@ test "patricialize - dogs subtree at level 6 (dog + dogglesworth)" {
     const node = try patricialize(allocator, &nibble_keys, &values, 6);
     defer freeEncodedNode(allocator, node);
 
-    // Expected: hash 37efd11993cb04a54048c25320e9f29c50a432d28afdf01598b2978ce1ca3068
-    const expected_hex = "37efd11993cb04a54048c25320e9f29c50a432d28afdf01598b2978ce1ca3068";
-    var expected_hash: [32]u8 = undefined;
-    for (0..32) |i| {
-        expected_hash[i] = std.fmt.parseInt(u8, expected_hex[i * 2 .. i * 2 + 2], 16) catch unreachable;
-    }
+    const expected_hash = hexToBytes("37efd11993cb04a54048c25320e9f29c50a432d28afdf01598b2978ce1ca3068");
 
     switch (node) {
         .hash => |h| try testing.expectEqualSlices(u8, &expected_hash, &h),
@@ -668,7 +783,6 @@ test "patricialize - dogs subtree at level 6 (dog + dogglesworth)" {
 }
 
 test "patricialize - dogs at level 5 (full branch)" {
-    // Test the branch at level 5 with all three keys
     const allocator = testing.allocator;
 
     const doe_nibbles = [_]u8{ 6, 4, 6, 0xf, 6, 5 };
@@ -681,12 +795,7 @@ test "patricialize - dogs at level 5 (full branch)" {
     const node = try patricialize(allocator, &nibble_keys, &values, 5);
     defer freeEncodedNode(allocator, node);
 
-    // Expected: hash db6ae1fda66890f6693f36560d36b4dca68b4d838f17016b151efe1d4c95c453
-    const expected_hex = "db6ae1fda66890f6693f36560d36b4dca68b4d838f17016b151efe1d4c95c453";
-    var expected_hash: [32]u8 = undefined;
-    for (0..32) |i| {
-        expected_hash[i] = std.fmt.parseInt(u8, expected_hex[i * 2 .. i * 2 + 2], 16) catch unreachable;
-    }
+    const expected_hash = hexToBytes("db6ae1fda66890f6693f36560d36b4dca68b4d838f17016b151efe1d4c95c453");
 
     switch (node) {
         .hash => |h| try testing.expectEqualSlices(u8, &expected_hash, &h),
@@ -698,23 +807,4 @@ test "patricialize - dogs at level 5 (full branch)" {
         },
         .empty => return error.TestExpectedEqual,
     }
-}
-
-test "trieRoot - singleItem test (trieanyorder.json)" {
-    // From ethereum-tests/TrieTests/trieanyorder.json "singleItem":
-    //   A → aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-    //   expected root: 0xd23786fb4a010da3ce639d66d5e904a11dbc02746d1ce25029e53290cabf28ab
-    const allocator = testing.allocator;
-
-    const keys = [_][]const u8{"A"};
-    const values = [_][]const u8{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"};
-    const root = try trieRoot(allocator, &keys, &values);
-
-    const expected = [_]u8{
-        0xd2, 0x37, 0x86, 0xfb, 0x4a, 0x01, 0x0d, 0xa3,
-        0xce, 0x63, 0x9d, 0x66, 0xd5, 0xe9, 0x04, 0xa1,
-        0x1d, 0xbc, 0x02, 0x74, 0x6d, 0x1c, 0xe2, 0x50,
-        0x29, 0xe5, 0x32, 0x90, 0xca, 0xbf, 0x28, 0xab,
-    };
-    try testing.expectEqualSlices(u8, &expected, &root);
 }
