@@ -1,4 +1,4 @@
-import { ToolLoopAgent as Agent } from "ai";
+import { ToolLoopAgent as Agent, stepCountIs } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { read, grep, bash } from "smithers/tools";
 import { WHAT_WE_ARE_DOING } from "./claude";
@@ -20,5 +20,17 @@ You review code for:
 6. Performance — this must be faster than Nethermind (C#), every allocation matters
 7. Test coverage — every public function must have tests
 8. Security — no secret leaks, no undefined behavior
-You are EXTREMELY strict. If something can be improved, it MUST be flagged.`,
+You are EXTREMELY strict. If something can be improved, it MUST be flagged.
+
+CRITICAL OUTPUT REQUIREMENT:
+When you have completed your review, you MUST end your response with a JSON object
+wrapped in a code fence. The JSON format is specified in your task prompt.
+Example:
+\`\`\`json
+{"key": "value", "other": "data"}
+\`\`\`
+This JSON output is REQUIRED. The workflow cannot continue without it.
+ALWAYS include the JSON at the END of your final response.`,
+  stopWhen: stepCountIs(100), // Increase step limit for complex tasks
+  maxOutputTokens: 8192, // Ensure enough tokens for JSON output
 });
