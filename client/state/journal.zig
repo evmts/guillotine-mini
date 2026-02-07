@@ -127,7 +127,7 @@ pub fn Journal(comptime K: type, comptime V: type) type {
         // -----------------------------------------------------------------
 
         /// Append a change entry.  Returns the index of the new entry.
-        pub fn append(self: *Self, entry: E) !usize {
+        pub fn append(self: *Self, entry: E) error{OutOfMemory}!usize {
             const idx = self.entries.items.len;
             try self.entries.append(self.allocator, entry);
             return idx;
@@ -312,7 +312,7 @@ pub fn Journal(comptime K: type, comptime V: type) type {
         }
 
         /// Get a mutable reference to an entry by index.
-        pub fn getMut(self: *Self, index: usize) *E {
+        pub fn get_mut(self: *Self, index: usize) *E {
             return &self.entries.items[index];
         }
 
@@ -502,13 +502,13 @@ test "Journal: value can be null (deletion)" {
     try std.testing.expectEqual(ChangeTag.delete, j.get(0).tag);
 }
 
-test "Journal: getMut allows modification" {
+test "Journal: get_mut allows modification" {
     var j = Journal(u32, u64).init(std.testing.allocator);
     defer j.deinit();
 
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .update });
 
-    j.getMut(0).value = 42;
+    j.get_mut(0).value = 42;
 
     try std.testing.expectEqual(@as(?u64, 42), j.get(0).value);
 }
