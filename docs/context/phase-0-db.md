@@ -70,8 +70,26 @@ IWriteOnlyKeyValueStore         <- Set, Remove, PutSpan
 | `nethermind/src/Nethermind/Nethermind.Db/RocksDbSettings.cs` | Settings: `DbName`, `DbPath`, `DeleteOnStart`, `CanDeleteFolder`, `MergeOperator` |
 | `nethermind/src/Nethermind/Nethermind.Db/CompressingDb.cs` | EOA compression decorator: strips/adds empty code hash + storage root suffix |
 | `nethermind/src/Nethermind/Nethermind.Db/MetadataDbKeys.cs` | Constants for metadata DB: `TerminalPoWHash`, `FinalizedBlockHash`, `SafeBlockHash`, etc. |
-| `nethermind/src/Nethermind/Nethermind.Db.Rocks/DbOnTheRocks.cs` | RocksDB concrete impl: uses `RocksDbSharp` library, implements `IDb, ITunableDb, IReadOnlyNativeKeyValueStore, ISortedKeyValueStore, IMergeableKeyValueStore, IKeyValueStoreWithSnapshot` |
-| `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbFactory.cs` | Factory: `CreateDb(DbSettings)` creates `DbOnTheRocks` with shared cache, config, logging |
+| `nethermind/src/Nethermind/Nethermind.Db/InMemoryWriteBatch.cs` | Single-column batch: accumulates in ConcurrentDictionary, flushes to underlying store on Dispose() |
+| `nethermind/src/Nethermind/Nethermind.Db/InMemoryColumnBatch.cs` | Multi-column batch: manages InMemoryWriteBatch per column, disposes all on Dispose() |
+| `nethermind/src/Nethermind/Nethermind.Db.Rocks/DbOnTheRocks.cs` | 74KB main RocksDB wrapper: `IDb, ITunableDb, IReadOnlyNativeKeyValueStore, ISortedKeyValueStore, IMergeableKeyValueStore, IKeyValueStoreWithSnapshot`. Uses `ConcurrentDictionary<string, RocksDb>` for path-based caching. Manages WriteOptions (normal, noWal, lowPriority), ReadOptions (default, hintCacheMiss, readAhead), DbOptions, row cache, iterator management, and file warming. |
+| `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbFactory.cs` | Creates `DbOnTheRocks` with shared `HyperClockCacheWrapper`, `IDbConfig`, `IRocksDbConfigFactory`, `ILogManager` |
+| `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnsDb.cs` | Multi-column-family wrapper: enum-keyed columns, per-column compaction/metrics |
+| `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnDb.cs` | Single column wrapper delegating I/O to parent `DbOnTheRocks` |
+
+### Core API Surface (from Nethermind)
+
+| Operation | Method | Return | Notes |
+|-----------|--------|--------|-------|
+| Single Get | `Get(key)` | `byte[]?` | null if missing |
+| Single Set | `Set(key, value)` | `void` | null value = delete |
+| Multi Get | `this[byte[][] keys]` | `KeyValuePair[]` | Batch read |
+| Key Exists | `KeyExists(key)` | `bool` | |
+| Remove | `Remove(key)` | `void` | Same as Set(key, null) |
+| Batch Write | `StartWriteBatch()` | `IWriteBatch` | Atomic multi-write |
+| Enumerate | `GetAll()` | `IEnumerable<>` | Optional ordering |
+| Metadata | `GatherMetric()` | `DbMetric` | Size, cache stats |
+| Maintenance | `Flush()`, `Clear()`, `Compact()` | `void` | Housekeeping |
 
 ### Key Design Patterns
 
@@ -102,6 +120,20 @@ IWriteOnlyKeyValueStore         <- Set, Remove, PutSpan
 | `trie.zig` | Merkle Patricia Trie (Phase 1, DB must support its storage patterns) |
 | `Storage`, `StorageValue`, `StorageDiff` | Storage types |
 | `State`, `StateDiff`, `StateRoot` | State types |
+| `StorageKey` | Composite key `{ address: [20]u8, slot: u256 }` |
+
+### AccountState Structure (from Voltaire)
+
+```zig
+pub const AccountState = struct {
+    nonce: u64,
+    balance: u256,
+    storage_root: Hash,
+    code_hash: Hash,
+};
+// Methods: isEOA(), isContract(), rlpEncode(), rlpDecode()
+// Constants: EMPTY_CODE_HASH, EMPTY_TRIE_ROOT
+```
 
 ### Relevant State Manager (from `voltaire/packages/voltaire-zig/src/state-manager/`)
 
@@ -132,7 +164,7 @@ Voltaire does **NOT** provide a generic persistent DB abstraction. All storage i
 |------|-----------|
 | `src/host.zig` | Existing vtable pattern for EVM <-> state communication. DB adapter follows this same `ptr + vtable` pattern. |
 | `src/evm.zig` | Consumer of HostInterface — shows how vtable-based DI works |
-| `client/db/adapter.zig` | **Already implemented**: `Database` vtable, `DbName` enum, `Error` type, `MockDb`, tests |
+| `client/db/adapter.zig` | **DONE**: Database vtable, DbName enum, Error type, MockDb, tests |
 | `build.zig` | Build system — new `client/` module will need build integration |
 
 ### HostInterface Pattern (already followed in adapter.zig)
@@ -162,11 +194,15 @@ pub const HostInterface = struct {
 No external test fixtures for this phase. Phase 0 is an internal abstraction tested with inline unit tests.
 
 **Downstream test fixtures** (consumers of DB layer in later phases):
-- `ethereum-tests/TrieTests/trietest.json` — Phase 1 (trie needs DB backend)
+- `ethereum-tests/TrieTests/trietest.json` — Phase 1
 - `ethereum-tests/TrieTests/trieanyorder.json` — Phase 1
 - `ethereum-tests/TrieTests/hex_encoded_securetrie_test.json` — Phase 1
+- `ethereum-tests/TrieTests/trietest_secureTrie.json` — Phase 1
+- `ethereum-tests/TrieTests/trieanyorder_secureTrie.json` — Phase 1
+- `ethereum-tests/TrieTests/trietestnextprev.json` — Phase 1
 - `ethereum-tests/GeneralStateTests/` — Phase 3+
-- `ethereum-tests/BlockchainTests/` — Phase 4+
+- `ethereum-tests/BlockchainTests/ValidBlocks/` — Phase 4+
+- `ethereum-tests/BlockchainTests/InvalidBlocks/` — Phase 4+
 
 ---
 
@@ -246,19 +282,17 @@ All DB operations return error unions (`Error!?[]const u8` for get, `Error!void`
 - `nethermind/src/Nethermind/Nethermind.Db/MemDbFactory.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/RocksDbSettings.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/MetadataDbKeys.cs`
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/DbOnTheRocks.cs` — 74KB main RocksDB wrapper: `IDb, ITunableDb, IReadOnlyNativeKeyValueStore, ISortedKeyValueStore, IMergeableKeyValueStore, IKeyValueStoreWithSnapshot`. Uses `ConcurrentDictionary<string, RocksDb>` for path-based caching. Manages WriteOptions (normal, noWal, lowPriority), ReadOptions (default, hintCacheMiss, readAhead), DbOptions, row cache, iterator management, and file warming.
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbFactory.cs` — Creates `DbOnTheRocks` with shared `HyperClockCacheWrapper`, `IDbConfig`, `IRocksDbConfigFactory`, `ILogManager`
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnsDb.cs` — Multi-column-family wrapper: enum-keyed columns, per-column compaction/metrics
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnDb.cs` — Single column wrapper delegating I/O to parent `DbOnTheRocks`
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbReader.cs` — `ISortedKeyValueStore` impl: iterator management, read-ahead, boundary support (FirstKey, LastKey, GetViewBetween)
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/Config/DbConfig.cs` — 14KB config: write buffer size/number, read-ahead size, max open files, WAL sync, flush-on-exit, stats, checksum verification, row cache size, block cache, file warming, compressibility hints
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/Config/PerTableDbConfig.cs` — Per-table config overrides
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/Statistics/DbMetricsUpdater.cs` — Periodic stats polling: SST files, memory usage, write rate, per-column-family metrics
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/HyperClockCacheWrapper.cs` — Shared block cache singleton across all DB instances
-- `nethermind/src/Nethermind/Nethermind.Db.Rocks/MergeOperatorAdapter.cs` — Pluggable merge operations for atomic read-modify-write
+- `nethermind/src/Nethermind/Nethermind.Db/InMemoryWriteBatch.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/InMemoryColumnBatch.cs`
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/DbOnTheRocks.cs`
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbFactory.cs`
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnsDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnDb.cs`
 
 ### Voltaire Modules
 - `voltaire/packages/voltaire-zig/src/primitives/` — Address, Hash, u256, RLP, AccountState, Block, Tx, Storage, State, Trie
+- `voltaire/packages/voltaire-zig/src/primitives/AccountState/AccountState.zig` — Account state struct
+- `voltaire/packages/voltaire-zig/src/primitives/State/state.zig` — StorageKey composite type
 - `voltaire/packages/voltaire-zig/src/state-manager/StateCache.zig` — Checkpoint/revert pattern model
 - `voltaire/packages/voltaire-zig/src/state-manager/JournaledState.zig` — Dual-cache orchestrator model
 - `voltaire/packages/voltaire-zig/src/state-manager/ForkBackend.zig` — vtable pattern model (RpcClient)
@@ -276,6 +310,9 @@ All DB operations return error unions (`Error!?[]const u8` for get, `Error!void`
 - `ethereum-tests/TrieTests/trietest.json` — Phase 1
 - `ethereum-tests/TrieTests/trieanyorder.json` — Phase 1
 - `ethereum-tests/TrieTests/hex_encoded_securetrie_test.json` — Phase 1
+- `ethereum-tests/TrieTests/trietest_secureTrie.json` — Phase 1
+- `ethereum-tests/TrieTests/trieanyorder_secureTrie.json` — Phase 1
+- `ethereum-tests/TrieTests/trietestnextprev.json` — Phase 1
 - `ethereum-tests/GeneralStateTests/` — Phase 3
 - `ethereum-tests/BlockchainTests/ValidBlocks/` — Phase 4
 - `ethereum-tests/BlockchainTests/InvalidBlocks/` — Phase 4
