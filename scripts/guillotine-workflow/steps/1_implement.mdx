@@ -18,4 +18,13 @@ RULES:
 
 {props.reviewFixes ? `\nReview fixes just applied: ${props.reviewFixes}` : ""}
 
-After implementing, describe what the NEXT smallest atomic unit of work should be.
+IMPORTANT: After completing the implementation and committing, you MUST output a JSON object:
+```json
+{"{"}
+  "filesCreated": ["client/path/to/new_file.zig"],
+  "filesModified": ["src/existing_file.zig"],
+  "commitMessage": "feat(phase-X): Description of what was implemented",
+  "whatWasDone": "Detailed description of what was implemented",
+  "nextSmallestUnit": "Description of the next smallest atomic unit of work to implement"
+{"}"}
+```

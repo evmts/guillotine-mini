@@ -41,3 +41,13 @@ You MUST answer YES (readyToMoveOn = true) ONLY if:
 - The code is production-quality and spec-compliant
 
 List ALL remaining issues. If readyToMoveOn is false, explain exactly what must be fixed.
+
+IMPORTANT: After your final review, you MUST output a JSON object:
+```json
+{"{"}
+  "readyToMoveOn": false,
+  "remainingIssues": ["Issue 1", "Issue 2"],
+  "reasoning": "Detailed reasoning for your decision"
+{"}"}
+```
+Only set readyToMoveOn to true if ALL criteria are met and there are NO remaining issues.

@@ -22,3 +22,13 @@ Read every file. Check:
 8. Does it match the Ethereum spec exactly? Read the relevant execution-specs/ Python code to verify.
 
 Flag ALL issues. Classify severity as: "critical", "major", "minor", or "none".
+
+IMPORTANT: After reviewing, you MUST output a JSON object:
+```json
+{"{"}
+  "issues": ["Issue 1 description", "Issue 2 description"],
+  "severity": "major",
+  "feedback": "Overall feedback on the implementation quality"
+{"}"}
+```
+Use severity "none" only if there are absolutely no issues.

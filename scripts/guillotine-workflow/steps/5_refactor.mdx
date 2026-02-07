@@ -13,3 +13,12 @@ Make improvements. Run zig fmt && zig build && zig build test after each change.
 git commit each meaningful refactor separately.
 
 If nothing needs refactoring, say so and move on.
+
+IMPORTANT: After any refactoring (or if no refactoring needed), you MUST output a JSON object:
+```json
+{"{"}
+  "changesDescription": "Description of refactoring changes made (or 'No refactoring needed')",
+  "commitMessage": "refactor: brief description of changes",
+  "filesChanged": ["path/to/changed/file.zig"]
+{"}"}
+```

@@ -24,3 +24,16 @@ Run ALL of the following test categories and report results:
 
 Report each category: passed or failed with details.
 If any tests fail, provide a clear summary of what's failing and why.
+
+IMPORTANT: After running all tests, you MUST output a JSON object:
+```json
+{"{"}
+  "unitTestsPassed": true,
+  "specTestsPassed": true,
+  "integrationTestsPassed": true,
+  "nethermindDiffPassed": true,
+  "failingSummary": null,
+  "testOutput": "Full test output summary"
+{"}"}
+```
+Set boolean values to true/false based on test results. If any tests fail, put a summary of failures in failingSummary.
