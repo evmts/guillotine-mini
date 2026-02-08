@@ -330,33 +330,33 @@ pub const WriteBatch = struct {
 const MockDb = struct {
     call_count: usize = 0,
 
-    fn getImpl(ptr: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn get_impl(ptr: *anyopaque, _: []const u8) Error!?[]const u8 {
         const self: *MockDb = @ptrCast(@alignCast(ptr));
         self.call_count += 1;
         return null;
     }
 
-    fn putImpl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
         const self: *MockDb = @ptrCast(@alignCast(ptr));
         self.call_count += 1;
     }
 
-    fn deleteImpl(ptr: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, _: []const u8) Error!void {
         const self: *MockDb = @ptrCast(@alignCast(ptr));
         self.call_count += 1;
     }
 
-    fn containsImpl(ptr: *anyopaque, _: []const u8) Error!bool {
+    fn contains_impl(ptr: *anyopaque, _: []const u8) Error!bool {
         const self: *MockDb = @ptrCast(@alignCast(ptr));
         self.call_count += 1;
         return false;
     }
 
     const vtable = Database.VTable{
-        .get = getImpl,
-        .put = putImpl,
-        .delete = deleteImpl,
-        .contains = containsImpl,
+        .get = get_impl,
+        .put = put_impl,
+        .delete = delete_impl,
+        .contains = contains_impl,
     };
 
     fn database(self: *MockDb) Database {
@@ -464,29 +464,29 @@ const TrackingDb = struct {
         self.deletes.deinit(self.alloc);
     }
 
-    fn getImpl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
         return null;
     }
 
-    fn putImpl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
         const self: *TrackingDb = @ptrCast(@alignCast(ptr));
         self.puts.append(self.alloc, .{ .key = key, .value = value }) catch return error.OutOfMemory;
     }
 
-    fn deleteImpl(ptr: *anyopaque, key: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, key: []const u8) Error!void {
         const self: *TrackingDb = @ptrCast(@alignCast(ptr));
         self.deletes.append(self.alloc, key) catch return error.OutOfMemory;
     }
 
-    fn containsImpl(_: *anyopaque, _: []const u8) Error!bool {
+    fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
         return false;
     }
 
     const vtable = Database.VTable{
-        .get = getImpl,
-        .put = putImpl,
-        .delete = deleteImpl,
-        .contains = containsImpl,
+        .get = get_impl,
+        .put = put_impl,
+        .delete = delete_impl,
+        .contains = contains_impl,
     };
 
     fn database(self: *TrackingDb) Database {
@@ -606,11 +606,11 @@ const FailingDb = struct {
     /// Tracks how many writes have been applied.
     applied: usize = 0,
 
-    fn getImpl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
         return null;
     }
 
-    fn putImpl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
         const self: *FailingDb = @ptrCast(@alignCast(ptr));
         if (self.applied >= self.succeed_count) {
             return Error.StorageError;
@@ -618,7 +618,7 @@ const FailingDb = struct {
         self.applied += 1;
     }
 
-    fn deleteImpl(ptr: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, _: []const u8) Error!void {
         const self: *FailingDb = @ptrCast(@alignCast(ptr));
         if (self.applied >= self.succeed_count) {
             return Error.StorageError;
@@ -626,15 +626,15 @@ const FailingDb = struct {
         self.applied += 1;
     }
 
-    fn containsImpl(_: *anyopaque, _: []const u8) Error!bool {
+    fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
         return false;
     }
 
     const vtable = Database.VTable{
-        .get = getImpl,
-        .put = putImpl,
-        .delete = deleteImpl,
-        .contains = containsImpl,
+        .get = get_impl,
+        .put = put_impl,
+        .delete = delete_impl,
+        .contains = contains_impl,
     };
 
     fn database(self: *FailingDb) Database {
@@ -672,25 +672,25 @@ const AtomicDb = struct {
     /// When true, write_batch will fail (to test rollback).
     should_fail: bool = false,
 
-    fn getImpl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
         return null;
     }
 
-    fn putImpl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
         const self: *AtomicDb = @ptrCast(@alignCast(ptr));
         self.committed_count += 1;
     }
 
-    fn deleteImpl(ptr: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, _: []const u8) Error!void {
         const self: *AtomicDb = @ptrCast(@alignCast(ptr));
         self.committed_count += 1;
     }
 
-    fn containsImpl(_: *anyopaque, _: []const u8) Error!bool {
+    fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
         return false;
     }
 
-    fn writeBatchImpl(ptr: *anyopaque, ops: []const WriteBatchOp) Error!void {
+    fn write_batch_impl(ptr: *anyopaque, ops: []const WriteBatchOp) Error!void {
         const self: *AtomicDb = @ptrCast(@alignCast(ptr));
         if (self.should_fail) {
             return Error.StorageError;
@@ -700,11 +700,11 @@ const AtomicDb = struct {
     }
 
     const vtable = Database.VTable{
-        .get = getImpl,
-        .put = putImpl,
-        .delete = deleteImpl,
-        .contains = containsImpl,
-        .write_batch = writeBatchImpl,
+        .get = get_impl,
+        .put = put_impl,
+        .delete = delete_impl,
+        .contains = contains_impl,
+        .write_batch = write_batch_impl,
     };
 
     fn database(self: *AtomicDb) Database {

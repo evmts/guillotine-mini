@@ -33,7 +33,7 @@ const VALUE_SIZE: usize = 128;
 
 /// Pre-generate deterministic keys and values for benchmarks.
 /// Uses a simple PRNG seeded from the index to ensure reproducibility.
-fn generateKey(buf: *[KEY_SIZE]u8, index: usize) void {
+fn generate_key(buf: *[KEY_SIZE]u8, index: usize) void {
     // Use wyhash of the index to fill the key buffer deterministically
     const h = std.hash.Wyhash.hash(0xDEADBEEF, std.mem.asBytes(&index));
     const h_bytes = std.mem.asBytes(&h);
@@ -48,7 +48,7 @@ fn generateKey(buf: *[KEY_SIZE]u8, index: usize) void {
     }
 }
 
-fn generateValue(buf: *[VALUE_SIZE]u8, index: usize) void {
+fn generate_value(buf: *[VALUE_SIZE]u8, index: usize) void {
     const h = std.hash.Wyhash.hash(0x12345678, std.mem.asBytes(&index));
     const h_bytes = std.mem.asBytes(&h);
     for (buf, 0..) |*byte, i| {
@@ -57,7 +57,7 @@ fn generateValue(buf: *[VALUE_SIZE]u8, index: usize) void {
 }
 
 /// Format nanoseconds into a human-readable string.
-fn formatNs(ns: u64) [32]u8 {
+fn format_ns(ns: u64) [32]u8 {
     var buf: [32]u8 = undefined;
     if (ns < 1_000) {
         _ = std.fmt.bufPrint(&buf, "{d} ns", .{ns}) catch unreachable;
@@ -71,7 +71,7 @@ fn formatNs(ns: u64) [32]u8 {
     return buf;
 }
 
-fn formatOpsPerSec(ops: usize, elapsed_ns: u64) [32]u8 {
+fn format_ops_per_sec(ops: usize, elapsed_ns: u64) [32]u8 {
     var buf: [32]u8 = undefined;
     if (elapsed_ns == 0) {
         _ = std.fmt.bufPrint(&buf, "inf ops/s", .{}) catch unreachable;
@@ -96,7 +96,7 @@ const BenchResult = struct {
     ops_per_sec: f64,
 };
 
-fn runBench(name: []const u8, n: usize, func: *const fn (usize) u64) BenchResult {
+fn run_bench(name: []const u8, n: usize, func: *const fn (usize) u64) BenchResult {
     const elapsed = func(n);
     const per_op = if (n > 0) elapsed / n else 0;
     const ops_sec = if (elapsed > 0) @as(f64, @floatFromInt(n)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0) else 0;
@@ -109,10 +109,10 @@ fn runBench(name: []const u8, n: usize, func: *const fn (usize) u64) BenchResult
     };
 }
 
-fn printResult(r: BenchResult) void {
-    const total_str = formatNs(r.elapsed_ns);
-    const per_op_str = formatNs(r.per_op_ns);
-    const ops_str = formatOpsPerSec(r.ops, r.elapsed_ns);
+fn print_result(r: BenchResult) void {
+    const total_str = format_ns(r.elapsed_ns);
+    const per_op_str = format_ns(r.per_op_ns);
+    const ops_str = format_ops_per_sec(r.ops, r.elapsed_ns);
     std.debug.print("  {s:<45} {d:>8} ops  total={s}  per-op={s}  {s}\n", .{
         r.name,
         r.ops,
@@ -127,7 +127,7 @@ fn printResult(r: BenchResult) void {
 // ============================================================================
 
 /// Benchmark 1: Sequential put (simulating trie node writes during block processing)
-fn benchSequentialPut(n: usize) u64 {
+fn bench_sequential_put(n: usize) u64 {
     var db = MemoryDatabase.init(std.heap.page_allocator);
     defer db.deinit();
 
@@ -136,15 +136,15 @@ fn benchSequentialPut(n: usize) u64 {
 
     var timer = std.time.Timer.start() catch unreachable;
     for (0..n) |i| {
-        generateKey(&key_buf, i);
-        generateValue(&val_buf, i);
+        generate_key(&key_buf, i);
+        generate_value(&val_buf, i);
         db.put(&key_buf, &val_buf) catch unreachable;
     }
     return timer.read();
 }
 
 /// Benchmark 2: Sequential get (simulating state reads)
-fn benchSequentialGet(n: usize) u64 {
+fn bench_sequential_get(n: usize) u64 {
     var db = MemoryDatabase.init(std.heap.page_allocator);
     defer db.deinit();
 
@@ -152,21 +152,21 @@ fn benchSequentialGet(n: usize) u64 {
     var key_buf: [KEY_SIZE]u8 = undefined;
     var val_buf: [VALUE_SIZE]u8 = undefined;
     for (0..n) |i| {
-        generateKey(&key_buf, i);
-        generateValue(&val_buf, i);
+        generate_key(&key_buf, i);
+        generate_value(&val_buf, i);
         db.put(&key_buf, &val_buf) catch unreachable;
     }
 
     var timer = std.time.Timer.start() catch unreachable;
     for (0..n) |i| {
-        generateKey(&key_buf, i);
+        generate_key(&key_buf, i);
         _ = db.get(&key_buf);
     }
     return timer.read();
 }
 
 /// Benchmark 3: Random get from pre-populated DB (cache-unfriendly access)
-fn benchRandomGet(n: usize) u64 {
+fn bench_random_get(n: usize) u64 {
     var db = MemoryDatabase.init(std.heap.page_allocator);
     defer db.deinit();
 
@@ -174,8 +174,8 @@ fn benchRandomGet(n: usize) u64 {
     var key_buf: [KEY_SIZE]u8 = undefined;
     var val_buf: [VALUE_SIZE]u8 = undefined;
     for (0..n) |i| {
-        generateKey(&key_buf, i);
-        generateValue(&val_buf, i);
+        generate_key(&key_buf, i);
+        generate_value(&val_buf, i);
         db.put(&key_buf, &val_buf) catch unreachable;
     }
 
@@ -185,14 +185,14 @@ fn benchRandomGet(n: usize) u64 {
     for (0..n) |_| {
         rng_state = rng_state *% 6364136223846793005 +% 1442695040888963407;
         const idx = rng_state % n;
-        generateKey(&key_buf, idx);
+        generate_key(&key_buf, idx);
         _ = db.get(&key_buf);
     }
     return timer.read();
 }
 
 /// Benchmark 4: Contains check (used for warm/cold access tracking)
-fn benchContains(n: usize) u64 {
+fn bench_contains(n: usize) u64 {
     var db = MemoryDatabase.init(std.heap.page_allocator);
     defer db.deinit();
 
@@ -200,21 +200,21 @@ fn benchContains(n: usize) u64 {
     var key_buf: [KEY_SIZE]u8 = undefined;
     var val_buf: [VALUE_SIZE]u8 = undefined;
     for (0..n / 2) |i| {
-        generateKey(&key_buf, i);
-        generateValue(&val_buf, i);
+        generate_key(&key_buf, i);
+        generate_value(&val_buf, i);
         db.put(&key_buf, &val_buf) catch unreachable;
     }
 
     var timer = std.time.Timer.start() catch unreachable;
     for (0..n) |i| {
-        generateKey(&key_buf, i);
+        generate_key(&key_buf, i);
         _ = db.contains(&key_buf);
     }
     return timer.read();
 }
 
 /// Benchmark 5: Delete operations
-fn benchDelete(n: usize) u64 {
+fn bench_delete(n: usize) u64 {
     var db = MemoryDatabase.init(std.heap.page_allocator);
     defer db.deinit();
 
@@ -222,21 +222,21 @@ fn benchDelete(n: usize) u64 {
     var key_buf: [KEY_SIZE]u8 = undefined;
     var val_buf: [VALUE_SIZE]u8 = undefined;
     for (0..n) |i| {
-        generateKey(&key_buf, i);
-        generateValue(&val_buf, i);
+        generate_key(&key_buf, i);
+        generate_value(&val_buf, i);
         db.put(&key_buf, &val_buf) catch unreachable;
     }
 
     var timer = std.time.Timer.start() catch unreachable;
     for (0..n) |i| {
-        generateKey(&key_buf, i);
+        generate_key(&key_buf, i);
         db.delete(&key_buf);
     }
     return timer.read();
 }
 
 /// Benchmark 6: Mixed read/write (80% read, 20% write — simulating block processing)
-fn benchMixedWorkload(n: usize) u64 {
+fn bench_mixed_workload(n: usize) u64 {
     var db = MemoryDatabase.init(std.heap.page_allocator);
     defer db.deinit();
 
@@ -244,8 +244,8 @@ fn benchMixedWorkload(n: usize) u64 {
     var key_buf: [KEY_SIZE]u8 = undefined;
     var val_buf: [VALUE_SIZE]u8 = undefined;
     for (0..n / 2) |i| {
-        generateKey(&key_buf, i);
-        generateValue(&val_buf, i);
+        generate_key(&key_buf, i);
+        generate_value(&val_buf, i);
         db.put(&key_buf, &val_buf) catch unreachable;
     }
 
@@ -254,11 +254,11 @@ fn benchMixedWorkload(n: usize) u64 {
     for (0..n) |_| {
         rng_state = rng_state *% 6364136223846793005 +% 1442695040888963407;
         const idx = rng_state % n;
-        generateKey(&key_buf, idx);
+        generate_key(&key_buf, idx);
 
         if (rng_state % 5 == 0) {
             // 20% writes
-            generateValue(&val_buf, idx);
+            generate_value(&val_buf, idx);
             db.put(&key_buf, &val_buf) catch unreachable;
         } else {
             // 80% reads
@@ -269,7 +269,7 @@ fn benchMixedWorkload(n: usize) u64 {
 }
 
 /// Benchmark 7: WriteBatch put+commit (simulating bulk state updates)
-fn benchWriteBatch(n: usize) u64 {
+fn bench_write_batch(n: usize) u64 {
     var db = MemoryDatabase.init(std.heap.page_allocator);
     defer db.deinit();
 
@@ -286,8 +286,8 @@ fn benchWriteBatch(n: usize) u64 {
         var batch = WriteBatch.init(std.heap.page_allocator, iface);
         for (0..batch_size) |i| {
             const idx = batch_idx * batch_size + i;
-            generateKey(&key_buf, idx);
-            generateValue(&val_buf, idx);
+            generate_key(&key_buf, idx);
+            generate_value(&val_buf, idx);
             batch.put(&key_buf, &val_buf) catch unreachable;
         }
         batch.commit() catch unreachable;
@@ -297,7 +297,7 @@ fn benchWriteBatch(n: usize) u64 {
 }
 
 /// Benchmark 8: Vtable dispatch overhead (indirect vs direct calls)
-fn benchVtableOverhead(n: usize) u64 {
+fn bench_vtable_overhead(n: usize) u64 {
     var db = MemoryDatabase.init(std.heap.page_allocator);
     defer db.deinit();
 
@@ -305,8 +305,8 @@ fn benchVtableOverhead(n: usize) u64 {
     var key_buf: [KEY_SIZE]u8 = undefined;
     var val_buf: [VALUE_SIZE]u8 = undefined;
     for (0..1000) |i| {
-        generateKey(&key_buf, i);
-        generateValue(&val_buf, i);
+        generate_key(&key_buf, i);
+        generate_value(&val_buf, i);
         db.put(&key_buf, &val_buf) catch unreachable;
     }
 
@@ -314,14 +314,14 @@ fn benchVtableOverhead(n: usize) u64 {
 
     var timer = std.time.Timer.start() catch unreachable;
     for (0..n) |i| {
-        generateKey(&key_buf, i % 1000);
+        generate_key(&key_buf, i % 1000);
         _ = iface.get(&key_buf) catch unreachable;
     }
     return timer.read();
 }
 
 /// Benchmark 8b: Direct calls (baseline for vtable comparison)
-fn benchDirectCalls(n: usize) u64 {
+fn bench_direct_calls(n: usize) u64 {
     var db = MemoryDatabase.init(std.heap.page_allocator);
     defer db.deinit();
 
@@ -329,21 +329,21 @@ fn benchDirectCalls(n: usize) u64 {
     var key_buf: [KEY_SIZE]u8 = undefined;
     var val_buf: [VALUE_SIZE]u8 = undefined;
     for (0..1000) |i| {
-        generateKey(&key_buf, i);
-        generateValue(&val_buf, i);
+        generate_key(&key_buf, i);
+        generate_value(&val_buf, i);
         db.put(&key_buf, &val_buf) catch unreachable;
     }
 
     var timer = std.time.Timer.start() catch unreachable;
     for (0..n) |i| {
-        generateKey(&key_buf, i % 1000);
+        generate_key(&key_buf, i % 1000);
         _ = db.get(&key_buf);
     }
     return timer.read();
 }
 
 /// Benchmark 9: Overwrite existing keys (simulating storage slot updates)
-fn benchOverwrite(n: usize) u64 {
+fn bench_overwrite(n: usize) u64 {
     var db = MemoryDatabase.init(std.heap.page_allocator);
     defer db.deinit();
 
@@ -351,16 +351,16 @@ fn benchOverwrite(n: usize) u64 {
     var key_buf: [KEY_SIZE]u8 = undefined;
     var val_buf: [VALUE_SIZE]u8 = undefined;
     for (0..n) |i| {
-        generateKey(&key_buf, i);
-        generateValue(&val_buf, i);
+        generate_key(&key_buf, i);
+        generate_value(&val_buf, i);
         db.put(&key_buf, &val_buf) catch unreachable;
     }
 
     // Overwrite all entries with new values
     var timer = std.time.Timer.start() catch unreachable;
     for (0..n) |i| {
-        generateKey(&key_buf, i);
-        generateValue(&val_buf, i + n); // Different value
+        generate_key(&key_buf, i);
+        generate_value(&val_buf, i + n); // Different value
         db.put(&key_buf, &val_buf) catch unreachable;
     }
     return timer.read();
@@ -369,7 +369,7 @@ fn benchOverwrite(n: usize) u64 {
 /// Benchmark 10: Simulated block processing
 /// Simulates processing a block with ~200 transactions, each touching ~10 storage slots.
 /// This measures the realistic workload pattern for the DB layer.
-fn benchBlockProcessing(n: usize) u64 {
+fn bench_block_processing(n: usize) u64 {
     var db = MemoryDatabase.init(std.heap.page_allocator);
     defer db.deinit();
 
@@ -377,8 +377,8 @@ fn benchBlockProcessing(n: usize) u64 {
     var key_buf: [KEY_SIZE]u8 = undefined;
     var val_buf: [VALUE_SIZE]u8 = undefined;
     for (0..n) |i| {
-        generateKey(&key_buf, i);
-        generateValue(&val_buf, i);
+        generate_key(&key_buf, i);
+        generate_value(&val_buf, i);
         db.put(&key_buf, &val_buf) catch unreachable;
     }
 
@@ -393,14 +393,14 @@ fn benchBlockProcessing(n: usize) u64 {
         // Reads (account lookups, storage reads)
         for (0..reads_per_tx) |_| {
             rng_state = rng_state *% 6364136223846793005 +% 1442695040888963407;
-            generateKey(&key_buf, rng_state % n);
+            generate_key(&key_buf, rng_state % n);
             _ = db.get(&key_buf);
         }
         // Writes (storage updates)
         for (0..writes_per_tx) |_| {
             rng_state = rng_state *% 6364136223846793005 +% 1442695040888963407;
-            generateKey(&key_buf, rng_state % n);
-            generateValue(&val_buf, rng_state);
+            generate_key(&key_buf, rng_state % n);
+            generate_value(&val_buf, rng_state);
             db.put(&key_buf, &val_buf) catch unreachable;
         }
     }
@@ -421,50 +421,50 @@ pub fn main() !void {
 
     // -- Core operations --
     std.debug.print("--- Core Operations ---\n", .{});
-    printResult(runBench("put (sequential, 10K)", MEDIUM_N, benchSequentialPut));
-    printResult(runBench("put (sequential, 100K)", LARGE_N, benchSequentialPut));
-    printResult(runBench("put (sequential, 1M)", XLARGE_N, benchSequentialPut));
+    print_result(run_bench("put (sequential, 10K)", MEDIUM_N, bench_sequential_put));
+    print_result(run_bench("put (sequential, 100K)", LARGE_N, bench_sequential_put));
+    print_result(run_bench("put (sequential, 1M)", XLARGE_N, bench_sequential_put));
     std.debug.print("\n", .{});
 
-    printResult(runBench("get (sequential, 10K)", MEDIUM_N, benchSequentialGet));
-    printResult(runBench("get (sequential, 100K)", LARGE_N, benchSequentialGet));
-    printResult(runBench("get (sequential, 1M)", XLARGE_N, benchSequentialGet));
+    print_result(run_bench("get (sequential, 10K)", MEDIUM_N, bench_sequential_get));
+    print_result(run_bench("get (sequential, 100K)", LARGE_N, bench_sequential_get));
+    print_result(run_bench("get (sequential, 1M)", XLARGE_N, bench_sequential_get));
     std.debug.print("\n", .{});
 
-    printResult(runBench("get (random, 10K)", MEDIUM_N, benchRandomGet));
-    printResult(runBench("get (random, 100K)", LARGE_N, benchRandomGet));
-    printResult(runBench("get (random, 1M)", XLARGE_N, benchRandomGet));
+    print_result(run_bench("get (random, 10K)", MEDIUM_N, bench_random_get));
+    print_result(run_bench("get (random, 100K)", LARGE_N, bench_random_get));
+    print_result(run_bench("get (random, 1M)", XLARGE_N, bench_random_get));
     std.debug.print("\n", .{});
 
-    printResult(runBench("contains (10K, 50% hit)", MEDIUM_N, benchContains));
-    printResult(runBench("contains (100K, 50% hit)", LARGE_N, benchContains));
+    print_result(run_bench("contains (10K, 50% hit)", MEDIUM_N, bench_contains));
+    print_result(run_bench("contains (100K, 50% hit)", LARGE_N, bench_contains));
     std.debug.print("\n", .{});
 
-    printResult(runBench("delete (10K)", MEDIUM_N, benchDelete));
-    printResult(runBench("delete (100K)", LARGE_N, benchDelete));
+    print_result(run_bench("delete (10K)", MEDIUM_N, bench_delete));
+    print_result(run_bench("delete (100K)", LARGE_N, bench_delete));
     std.debug.print("\n", .{});
 
-    printResult(runBench("overwrite (10K)", MEDIUM_N, benchOverwrite));
-    printResult(runBench("overwrite (100K)", LARGE_N, benchOverwrite));
+    print_result(run_bench("overwrite (10K)", MEDIUM_N, bench_overwrite));
+    print_result(run_bench("overwrite (100K)", LARGE_N, bench_overwrite));
     std.debug.print("\n", .{});
 
     // -- Compound operations --
     std.debug.print("--- Compound Operations ---\n", .{});
-    printResult(runBench("mixed 80/20 r/w (10K)", MEDIUM_N, benchMixedWorkload));
-    printResult(runBench("mixed 80/20 r/w (100K)", LARGE_N, benchMixedWorkload));
-    printResult(runBench("mixed 80/20 r/w (1M)", XLARGE_N, benchMixedWorkload));
+    print_result(run_bench("mixed 80/20 r/w (10K)", MEDIUM_N, bench_mixed_workload));
+    print_result(run_bench("mixed 80/20 r/w (100K)", LARGE_N, bench_mixed_workload));
+    print_result(run_bench("mixed 80/20 r/w (1M)", XLARGE_N, bench_mixed_workload));
     std.debug.print("\n", .{});
 
-    printResult(runBench("write-batch (10K, batch=100)", MEDIUM_N, benchWriteBatch));
-    printResult(runBench("write-batch (100K, batch=100)", LARGE_N, benchWriteBatch));
+    print_result(run_bench("write-batch (10K, batch=100)", MEDIUM_N, bench_write_batch));
+    print_result(run_bench("write-batch (100K, batch=100)", LARGE_N, bench_write_batch));
     std.debug.print("\n", .{});
 
     // -- Vtable overhead --
     std.debug.print("--- Vtable Dispatch Overhead ---\n", .{});
-    const direct = runBench("direct get (1M lookups in 1K DB)", XLARGE_N, benchDirectCalls);
-    const vtable = runBench("vtable get (1M lookups in 1K DB)", XLARGE_N, benchVtableOverhead);
-    printResult(direct);
-    printResult(vtable);
+    const direct = run_bench("direct get (1M lookups in 1K DB)", XLARGE_N, bench_direct_calls);
+    const vtable = run_bench("vtable get (1M lookups in 1K DB)", XLARGE_N, bench_vtable_overhead);
+    print_result(direct);
+    print_result(vtable);
     if (direct.per_op_ns > 0) {
         const overhead_pct = if (vtable.per_op_ns > direct.per_op_ns)
             @as(f64, @floatFromInt(vtable.per_op_ns - direct.per_op_ns)) / @as(f64, @floatFromInt(direct.per_op_ns)) * 100.0
@@ -477,12 +477,12 @@ pub fn main() !void {
     // -- Block processing simulation --
     std.debug.print("--- Block Processing Simulation ---\n", .{});
     std.debug.print("  (200 txs/block, 10 reads + 3 writes per tx)\n", .{});
-    const small_state = runBench("block (1K state entries)", SMALL_N, benchBlockProcessing);
-    const medium_state = runBench("block (10K state entries)", MEDIUM_N, benchBlockProcessing);
-    const large_state = runBench("block (100K state entries)", LARGE_N, benchBlockProcessing);
-    printResult(small_state);
-    printResult(medium_state);
-    printResult(large_state);
+    const small_state = run_bench("block (1K state entries)", SMALL_N, bench_block_processing);
+    const medium_state = run_bench("block (10K state entries)", MEDIUM_N, bench_block_processing);
+    const large_state = run_bench("block (100K state entries)", LARGE_N, bench_block_processing);
+    print_result(small_state);
+    print_result(medium_state);
+    print_result(large_state);
     std.debug.print("\n", .{});
 
     // -- Throughput analysis vs Nethermind target --

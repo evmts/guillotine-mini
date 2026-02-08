@@ -46,28 +46,28 @@ pub const NullDb = struct {
     // -- VTable implementation (Null Object pattern) --------------------------
 
     const vtable = Database.VTable{
-        .get = getImpl,
-        .put = putImpl,
-        .delete = deleteImpl,
-        .contains = containsImpl,
+        .get = get_impl,
+        .put = put_impl,
+        .delete = delete_impl,
+        .contains = contains_impl,
     };
 
-    fn getImpl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
         // Null database: no data stored, always returns null.
         return null;
     }
 
-    fn putImpl(_: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(_: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
         // Null database: writes are not supported.
         return error.StorageError;
     }
 
-    fn deleteImpl(_: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(_: *anyopaque, _: []const u8) Error!void {
         // Null database: deletes are not supported.
         return error.StorageError;
     }
 
-    fn containsImpl(_: *anyopaque, _: []const u8) Error!bool {
+    fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
         // Null database: no data stored, key never exists.
         return false;
     }

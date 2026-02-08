@@ -167,18 +167,18 @@ pub const ReadOnlyDb = struct {
     // -- VTable implementation ------------------------------------------------
 
     const vtable = Database.VTable{
-        .get = getImpl,
-        .put = putImpl,
-        .delete = deleteImpl,
-        .contains = containsImpl,
+        .get = get_impl,
+        .put = put_impl,
+        .delete = delete_impl,
+        .contains = contains_impl,
     };
 
-    fn getImpl(ptr: *anyopaque, key: []const u8) Error!?[]const u8 {
+    fn get_impl(ptr: *anyopaque, key: []const u8) Error!?[]const u8 {
         const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
         return self.get(key);
     }
 
-    fn putImpl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
         const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
         if (self.overlay) |ov| {
             // Write to overlay only — never touches the wrapped database.
@@ -189,7 +189,7 @@ pub const ReadOnlyDb = struct {
         return error.StorageError;
     }
 
-    fn deleteImpl(ptr: *anyopaque, key: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, key: []const u8) Error!void {
         const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
         if (self.overlay) |ov| {
             // Delete from overlay only.
@@ -200,7 +200,7 @@ pub const ReadOnlyDb = struct {
         return error.StorageError;
     }
 
-    fn containsImpl(ptr: *anyopaque, key: []const u8) Error!bool {
+    fn contains_impl(ptr: *anyopaque, key: []const u8) Error!bool {
         const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
         return self.contains(key);
     }

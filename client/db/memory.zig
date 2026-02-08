@@ -141,28 +141,28 @@ pub const MemoryDatabase = struct {
     // -- VTable implementation ------------------------------------------------
 
     const vtable = Database.VTable{
-        .get = getImpl,
-        .put = putImpl,
-        .delete = deleteImpl,
-        .contains = containsImpl,
+        .get = get_impl,
+        .put = put_impl,
+        .delete = delete_impl,
+        .contains = contains_impl,
     };
 
-    fn getImpl(ptr: *anyopaque, key: []const u8) Error!?[]const u8 {
+    fn get_impl(ptr: *anyopaque, key: []const u8) Error!?[]const u8 {
         const self: *MemoryDatabase = @ptrCast(@alignCast(ptr));
         return self.get(key);
     }
 
-    fn putImpl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
         const self: *MemoryDatabase = @ptrCast(@alignCast(ptr));
         return self.put(key, value);
     }
 
-    fn deleteImpl(ptr: *anyopaque, key: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, key: []const u8) Error!void {
         const self: *MemoryDatabase = @ptrCast(@alignCast(ptr));
         self.delete(key);
     }
 
-    fn containsImpl(ptr: *anyopaque, key: []const u8) Error!bool {
+    fn contains_impl(ptr: *anyopaque, key: []const u8) Error!bool {
         const self: *MemoryDatabase = @ptrCast(@alignCast(ptr));
         return self.contains(key);
     }

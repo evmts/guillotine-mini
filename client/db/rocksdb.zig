@@ -66,28 +66,28 @@ pub const RocksDatabase = struct {
     // -- VTable implementation (stub — all ops error) -------------------------
 
     const vtable = Database.VTable{
-        .get = getImpl,
-        .put = putImpl,
-        .delete = deleteImpl,
-        .contains = containsImpl,
+        .get = get_impl,
+        .put = put_impl,
+        .delete = delete_impl,
+        .contains = contains_impl,
     };
 
-    fn getImpl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
         // Stub: RocksDB backend not implemented yet.
         return error.StorageError;
     }
 
-    fn putImpl(_: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(_: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
         // Stub: RocksDB backend not implemented yet.
         return error.StorageError;
     }
 
-    fn deleteImpl(_: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(_: *anyopaque, _: []const u8) Error!void {
         // Stub: RocksDB backend not implemented yet.
         return error.StorageError;
     }
 
-    fn containsImpl(_: *anyopaque, _: []const u8) Error!bool {
+    fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
         // Stub: RocksDB backend not implemented yet.
         return error.StorageError;
     }
