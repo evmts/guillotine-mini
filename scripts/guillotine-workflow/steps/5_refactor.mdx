@@ -10,7 +10,17 @@ Review all code written in this phase for:
 7. Consistent error handling patterns
 
 Make improvements. Run zig fmt && zig build && zig build test after each change.
-git commit each meaningful refactor separately.
+
+GIT COMMIT RULES:
+- Make atomic commits — one refactor per commit
+- Use emoji prefixes: ♻️ refactor, 📋 docs, 🔧 chore
+- Format: "EMOJI type(scope): description"
+- Examples:
+  - "♻️ refactor(phase-0-db): extract shared iterator logic into helper"
+  - "📋 docs(phase-0-db): add doc comments to public API"
+  - "🔧 chore(phase-0-db): clean up unused imports"
+- git add the specific files changed, then git commit with the emoji message
+- Each meaningful refactor gets its own atomic commit
 
 If nothing needs refactoring, say so and move on.
 
@@ -18,7 +28,7 @@ IMPORTANT: After any refactoring (or if no refactoring needed), you MUST output 
 ```json
 {"{"}
   "changesDescription": "Description of refactoring changes made (or 'No refactoring needed')",
-  "commitMessage": "refactor: brief description of changes",
+  "commitMessage": "♻️ refactor(phase-X): brief description of changes",
   "filesChanged": ["path/to/changed/file.zig"]
 {"}"}
 ```

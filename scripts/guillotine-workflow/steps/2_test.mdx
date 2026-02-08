@@ -22,6 +22,15 @@ Run ALL of the following test categories and report results:
    For state: same tx → same post-state root
    For block processing: same block → same receipts root
 
+If any tests fail and you need to fix code to make them pass, commit each fix atomically:
+- git add the specific files, then commit
+- Format: "🐛 fix(SCOPE): what was fixed"
+- Example: "🐛 fix(phase-0-db): correct batch write ordering"
+
+If you add new test files, commit them:
+- Format: "🧪 test(SCOPE): what was tested"
+- Example: "🧪 test(phase-0-db): add edge case tests for iterator"
+
 Report each category: passed or failed with details.
 If any tests fail, provide a clear summary of what's failing and why.
 

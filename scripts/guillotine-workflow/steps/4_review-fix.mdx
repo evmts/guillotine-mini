@@ -11,13 +11,19 @@ Fix ALL issues. For each issue:
 3. Run zig fmt && zig build to verify
 4. Run zig build test to verify tests still pass
 
-Then git add and git commit with message: "fix: address review feedback - [brief description]"
+GIT COMMIT RULES:
+- Make atomic commits — one fix per commit
+- Use emoji prefixes: 🐛 fix, ♻️ refactor, 🧪 test, ⚡ perf
+- Format: "EMOJI type(scope): description"
+- Example: "🐛 fix(phase-0-db): address review feedback — handle nil pointer in iterator"
+- git add the specific files changed, then git commit with the emoji message
+- Do NOT batch all fixes into one commit — each fix gets its own atomic commit
 
 IMPORTANT: After fixing all issues and committing, you MUST output a JSON object:
 ```json
 {"{"}
   "fixesMade": ["Fix 1 description", "Fix 2 description"],
-  "commitMessage": "fix: address review feedback - brief description",
+  "commitMessage": "🐛 fix(phase-X): address review feedback — brief description",
   "summary": "Summary of all fixes applied"
 {"}"}
 ```

@@ -10,7 +10,6 @@ RULES:
 - Read the Nethermind equivalent code first, then implement in idiomatic Zig
 - After implementing, run: zig fmt client/ && zig build
 - Write inline tests (test "..." blocks) for every public function
-- git add, git commit with a descriptive message
 
 {props.previousWork ? `\nPrevious implementation did: ${props.previousWork.whatWasDone}\nNext smallest unit to implement: ${props.previousWork.nextSmallestUnit}` : "Start with the first item from the plan."}
 
@@ -18,12 +17,23 @@ RULES:
 
 {props.reviewFixes ? `\nReview fixes just applied: ${props.reviewFixes}` : ""}
 
+GIT COMMIT RULES:
+- Make atomic commits — one logical change per commit
+- Commit EACH smallest unit of work separately, do NOT batch everything into one commit
+- Use emoji prefixes: ✨ feat, 🧪 test, 🐛 fix, ♻️ refactor, ⚡ perf, 🔧 chore
+- Format: "EMOJI type(scope): description"
+- Examples:
+  - "✨ feat(phase-0-db): add RocksDB adapter with get/put/delete"
+  - "🧪 test(phase-0-db): add unit tests for RocksDB adapter"
+  - "🐛 fix(phase-0-db): handle missing key edge case in get()"
+- git add the specific files changed, then git commit with the emoji message
+
 IMPORTANT: After completing the implementation and committing, you MUST output a JSON object:
 ```json
 {"{"}
   "filesCreated": ["client/path/to/new_file.zig"],
   "filesModified": ["src/existing_file.zig"],
-  "commitMessage": "feat(phase-X): Description of what was implemented",
+  "commitMessage": "✨ feat(phase-X): Description of what was implemented",
   "whatWasDone": "Detailed description of what was implemented",
   "nextSmallestUnit": "Description of the next smallest atomic unit of work to implement"
 {"}"}
