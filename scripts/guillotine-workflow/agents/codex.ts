@@ -1,14 +1,13 @@
 import { ToolLoopAgent as Agent, stepCountIs } from "ai";
 import { openai } from "@ai-sdk/openai";
+import { CodexAgent } from "smithers";
 import { read, grep, bash } from "smithers/tools";
 import { WHAT_WE_ARE_DOING } from "./claude";
 
 const CODEX_MODEL = process.env.CODEX_MODEL ?? "gpt-5.2-codex";
+const USE_CLI = process.env.USE_CLI_AGENTS !== "0" && process.env.USE_CLI_AGENTS !== "false";
 
-export const codex = new Agent({
-  model: openai(CODEX_MODEL),
-  tools: { read, grep, bash },
-  instructions: `${WHAT_WE_ARE_DOING}
+const CODEX_INSTRUCTIONS = `${WHAT_WE_ARE_DOING}
 
 You are a ruthless, meticulous code reviewer for a high-performance Ethereum execution client in Zig.
 You review code for:
@@ -30,7 +29,20 @@ Example:
 {"key": "value", "other": "data"}
 \`\`\`
 This JSON output is REQUIRED. The workflow cannot continue without it.
-ALWAYS include the JSON at the END of your final response.`,
-  stopWhen: stepCountIs(100), // Increase step limit for complex tasks
-  maxOutputTokens: 8192, // Ensure enough tokens for JSON output
+ALWAYS include the JSON at the END of your final response.`;
+
+const apiAgent = new Agent({
+  model: openai(CODEX_MODEL),
+  tools: { read, grep, bash },
+  instructions: CODEX_INSTRUCTIONS,
+  stopWhen: stepCountIs(100),
+  maxOutputTokens: 8192,
 });
+
+const cliAgent = new CodexAgent({
+  model: CODEX_MODEL,
+  systemPrompt: CODEX_INSTRUCTIONS,
+  fullAuto: true,
+});
+
+export const codex = USE_CLI ? cliAgent : apiAgent;

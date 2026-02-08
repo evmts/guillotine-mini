@@ -59,7 +59,7 @@ export default smithers(db, (ctx) => {
 
             return (
               <Sequence key={id} skipIf={isPhaseComplete}>
-                <Task id={`${id}:context`} output={schema.context} outputSchema={contextOutputSchema} agent={claude}>
+                <Task id={`${id}:context`} output={schema.context} outputSchema={contextOutputSchema} agent={codex}>
                   {render(ContextPrompt, {
                     phase,
                     previousFeedback: latestFinalReview ?? null,
@@ -68,7 +68,7 @@ export default smithers(db, (ctx) => {
                   })}
                 </Task>
 
-                <Task id={`${id}:implement`} output={schema.implement} outputSchema={implementOutputSchema} agent={claude}>
+                <Task id={`${id}:implement`} output={schema.implement} outputSchema={implementOutputSchema} agent={codex}>
                   {render(ImplementPrompt, {
                     phase,
                     contextFilePath: latestContext?.contextFilePath ?? `docs/context/${id}.md`,
@@ -78,7 +78,7 @@ export default smithers(db, (ctx) => {
                   })}
                 </Task>
 
-                <Task id={`${id}:test`} output={schema.test_results} outputSchema={testOutputSchema} agent={claude}>
+                <Task id={`${id}:test`} output={schema.test_results} outputSchema={testOutputSchema} agent={codex}>
                   {render(TestPrompt, { phase })}
                 </Task>
 
@@ -95,7 +95,7 @@ export default smithers(db, (ctx) => {
                   })}
                 </Task>
 
-                <Task id={`${id}:review-fix`} output={schema.review_fix} outputSchema={reviewFixOutputSchema} agent={claude} skipIf={latestReview?.severity === "none"}>
+                <Task id={`${id}:review-fix`} output={schema.review_fix} outputSchema={reviewFixOutputSchema} agent={codex} skipIf={latestReview?.severity === "none"}>
                   {render(ReviewFixPrompt, {
                     phase,
                     severity: latestReview?.severity ?? "",
@@ -116,12 +116,17 @@ export default smithers(db, (ctx) => {
                   })}
                 </Task>
 
-                <Task id={`${id}:refactor`} output={schema.refactor} outputSchema={refactorOutputSchema} agent={claude}>
+                <Task id={`${id}:refactor`} output={schema.refactor} outputSchema={refactorOutputSchema} agent={codex}>
                   {render(RefactorPrompt, { phase })}
                 </Task>
 
-                <Task id={`${id}:benchmark`} output={schema.benchmark} outputSchema={benchmarkOutputSchema} agent={claude}>
-                  {render(BenchmarkPrompt, { phase })}
+                <Task id={`${id}:benchmark`} output={schema.benchmark} outputSchema={benchmarkOutputSchema} agent={codex} retries={2}>
+                  {render(BenchmarkPrompt, {
+                    phase,
+                    filesCreated: latestImplement?.filesCreated ?? [],
+                    filesModified: latestImplement?.filesModified ?? [],
+                    whatWasDone: latestImplement?.whatWasDone ?? null,
+                  })}
                 </Task>
 
                 <Task id={`${id}:final-review`} output={schema.final_review} outputSchema={finalReviewOutputSchema} agent={codex}>

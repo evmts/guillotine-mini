@@ -10,11 +10,17 @@ STEPS:
 5. Read src/host.zig — understand the HostInterface
 6. List ethereum-tests/ directories — note test fixture paths
 7. WRITE docs/context/{props.phase}.md with paths and summaries
-8. Run: git add docs/context/{props.phase}.md
+8. Commit: git add docs/context/{props.phase}.md && git commit -m "📋 docs({props.phase}): gather context and reference materials"
 
 {props.previousFeedback ? `PREVIOUS FEEDBACK: ${props.previousFeedback.reasoning}` : ""}
 {props.reviewFeedback ? `REVIEW FEEDBACK: ${props.reviewFeedback.feedback}` : ""}
 {props.failingTests ? `FAILING TESTS: ${props.failingTests}` : ""}
+
+GIT COMMIT RULES:
+- Make atomic commits — one logical change per commit
+- Use emoji prefixes: 📋 docs, ✨ feat, 🧪 test, 🐛 fix, ♻️ refactor, ⚡ perf, 🔧 chore
+- Format: "EMOJI type(scope): description"
+- Example: "📋 docs(phase-0-db): gather context and reference materials"
 
 **REQUIRED OUTPUT** — You MUST end with this exact JSON structure:
 ```json

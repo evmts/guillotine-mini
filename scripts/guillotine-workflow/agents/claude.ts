@@ -1,8 +1,10 @@
 import { ToolLoopAgent as Agent, stepCountIs } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
+import { ClaudeCodeAgent } from "smithers";
 import { read, edit, bash, grep, write } from "smithers/tools";
 
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL ?? "claude-opus-4-6";
+const USE_CLI = process.env.USE_CLI_AGENTS !== "0" && process.env.USE_CLI_AGENTS !== "false";
 
 export const WHAT_WE_ARE_DOING = `We are building an Ethereum execution client in Zig.
 You have access to the full codebase and all reference materials
@@ -25,10 +27,18 @@ Example:
 This JSON output is REQUIRED. The workflow cannot continue without it.
 ALWAYS include the JSON at the END of your final response.`;
 
-export const claude = new Agent({
+const apiAgent = new Agent({
   model: anthropic(CLAUDE_MODEL),
   tools: { read, edit, bash, grep, write },
   instructions: WHAT_WE_ARE_DOING,
-  stopWhen: stepCountIs(100), // Increase step limit for complex tasks
-  maxOutputTokens: 8192, // Ensure enough tokens for JSON output
+  stopWhen: stepCountIs(100),
+  maxOutputTokens: 8192,
 });
+
+const cliAgent = new ClaudeCodeAgent({
+  model: CLAUDE_MODEL,
+  systemPrompt: WHAT_WE_ARE_DOING,
+  dangerouslySkipPermissions: true,
+});
+
+export const claude = USE_CLI ? cliAgent : apiAgent;

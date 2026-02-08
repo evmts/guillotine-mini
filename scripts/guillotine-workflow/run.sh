@@ -12,6 +12,12 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$SCRIPT_DIR"
 
+# Use CLI agents, not API agents
+unset ANTHROPIC_API_KEY
+
+# Show engine errors instead of swallowing them
+export SMITHERS_DEBUG=1
+
 echo "Starting Guillotine build workflow — Phase: $PHASE"
 echo "Root directory: $ROOT_DIR"
 echo "Press Ctrl+C to stop."

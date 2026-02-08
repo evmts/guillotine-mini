@@ -1,5 +1,25 @@
 BENCHMARK PHASE: {props.phase}
 
+{props.filesCreated && props.filesCreated.length > 0 ? (
+<>
+Files created in this phase:
+{props.filesCreated.map(f => `- ${f}`).join('\n')}
+</>
+) : null}
+
+{props.filesModified && props.filesModified.length > 0 ? (
+<>
+Files modified in this phase:
+{props.filesModified.map(f => `- ${f}`).join('\n')}
+</>
+) : null}
+
+{props.whatWasDone ? (
+<>
+What was implemented: {props.whatWasDone}
+</>
+) : null}
+
 For the code built in this phase:
 
 1. If applicable, write simple benchmarks:
@@ -23,6 +43,12 @@ For the code built in this phase:
 
 Report results and whether we meet performance targets.
 If there are performance issues, list specific suggestions.
+
+GIT COMMIT RULES:
+- If you create benchmark files, commit them atomically
+- Format: "⚡ perf(SCOPE): add benchmarks for COMPONENT"
+- Example: "⚡ perf(phase-0-db): add read/write throughput benchmarks"
+- git add the specific files, then git commit with the emoji message
 
 IMPORTANT: After benchmarking, you MUST output a JSON object:
 ```json
