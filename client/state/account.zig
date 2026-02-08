@@ -23,6 +23,7 @@
 /// |--------------------|-----------------------------------------|------------------------------------------|
 /// | `is_empty`         | Python: `account == EMPTY_ACCOUNT`      | nonce=0, balance=0, code=empty           |
 /// | `is_totally_empty` | Nethermind: `IsTotallyEmpty`            | is_empty AND storage_root=empty          |
+/// | `is_account_alive` | Python: `is_account_alive()`            | exists AND NOT totally empty             |
 /// | `has_code_or_nonce`| Python: `account_has_code_or_nonce()`   | nonce!=0 OR code!=empty                  |
 ///
 /// These predicates are critical for EIP-158 (spurious dragon) empty account
@@ -79,6 +80,23 @@ pub fn is_totally_empty(account: *const AccountState) bool {
         std.mem.eql(u8, &account.storage_root, &EMPTY_TRIE_ROOT);
 }
 
+/// Check whether an account is "alive" per execution-specs.
+///
+/// Equivalent to Python's `is_account_alive()`:
+/// ```python
+/// account = get_account_optional(state, address)
+/// return account is not None and account != EMPTY_ACCOUNT
+/// ```
+///
+/// This is stronger than `!is_empty` because it requires the account to be
+/// present and not totally empty (i.e. not equal to `EMPTY_ACCOUNT`).
+pub fn is_account_alive(account: ?AccountState) bool {
+    if (account) |acct| {
+        return !is_totally_empty(&acct);
+    }
+    return false;
+}
+
 /// Check whether an account has code or a non-zero nonce.
 ///
 /// Equivalent to Python's `account_has_code_or_nonce()`:
@@ -109,6 +127,36 @@ test "EMPTY_ACCOUNT is empty" {
 
 test "EMPTY_ACCOUNT is totally empty" {
     try std.testing.expect(is_totally_empty(&EMPTY_ACCOUNT));
+}
+
+test "is_account_alive: false for null account" {
+    const account: ?AccountState = null;
+    try std.testing.expect(!is_account_alive(account));
+}
+
+test "is_account_alive: false for EMPTY_ACCOUNT" {
+    try std.testing.expect(!is_account_alive(EMPTY_ACCOUNT));
+}
+
+test "is_account_alive: true for non-zero nonce" {
+    const account = AccountState.from(.{ .nonce = 1 });
+    try std.testing.expect(is_account_alive(account));
+}
+
+test "is_account_alive: true when storage root is non-empty" {
+    var custom_root: [32]u8 = undefined;
+    @memset(&custom_root, 0xAB);
+
+    const account = AccountState.from(.{
+        .nonce = 0,
+        .balance = 0,
+        .code_hash = EMPTY_CODE_HASH,
+        .storage_root = custom_root,
+    });
+
+    // Not totally empty because storage_root != EMPTY_TRIE_ROOT.
+    try std.testing.expect(is_account_alive(account));
+    try std.testing.expect(!is_totally_empty(&account));
 }
 
 test "EMPTY_ACCOUNT has no code or nonce" {
