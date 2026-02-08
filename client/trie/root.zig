@@ -34,10 +34,12 @@ pub const node = @import("node.zig");
 // Re-export primary API
 pub const trieRoot = hash.trieRoot;
 pub const EMPTY_TRIE_ROOT = hash.EMPTY_TRIE_ROOT;
+pub const Hash32 = node.Hash32;
 
 // Re-export node types
 pub const Node = node.Node;
 pub const NodeType = node.NodeType;
+pub const TrieMask = node.TrieMask;
 pub const LeafNode = node.LeafNode;
 pub const ExtensionNode = node.ExtensionNode;
 pub const BranchNode = node.BranchNode;
