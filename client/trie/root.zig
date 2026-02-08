@@ -41,7 +41,6 @@ pub const NodeType = node.NodeType;
 pub const LeafNode = node.LeafNode;
 pub const ExtensionNode = node.ExtensionNode;
 pub const BranchNode = node.BranchNode;
-pub const ChildRef = node.ChildRef;
 
 test {
     // Ensure all sub-modules compile and their tests run.
