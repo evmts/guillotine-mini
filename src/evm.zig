@@ -125,6 +125,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // Create arena and get allocator for state HashMaps
             var arena = std.heap.ArenaAllocator.init(allocator);
+            errdefer arena.deinit();
             const arena_alloc = arena.allocator();
 
             return Self{
@@ -1525,7 +1526,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 else
                     self.nonces.get(caller) orelse 0;
 
-                if (is_top_level_create) {
+                if (is_top_level_create and nonce > 0) {
                     nonce -= 1; // Undo the increment that runner already did
                 }
 

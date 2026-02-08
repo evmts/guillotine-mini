@@ -24,6 +24,7 @@ fn createTestEvm(allocator: std.mem.Allocator, hardfork: Hardfork) !*Evm {
         .blob_base_fee = 1,
     };
     evm.* = try Evm.init(allocator, null, hardfork, block_context, null);
+    try evm.initTransactionState(null);
     return evm;
 }
 
@@ -70,7 +71,7 @@ test "SLOAD: basic load from storage" {
 
     // Setup: Set storage slot 0 to value 42
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
-    try evm.storage.set(address, 0, 42);
+    try evm.storage.putInCache(address, 0, 42);
 
     // Push key onto stack
     try frame.pushStack(0);
@@ -227,8 +228,8 @@ test "SSTORE: basic store to storage" {
     defer frame.deinit();
 
     // Setup: key=0, value=42
-    try frame.pushStack(0); // key
     try frame.pushStack(42); // value
+    try frame.pushStack(0); // key
 
     const initial_gas = frame.gas_remaining;
 
@@ -261,8 +262,8 @@ test "SSTORE: static call violation" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000, true); // is_static=true
     defer frame.deinit();
 
-    try frame.pushStack(0); // key
     try frame.pushStack(42); // value
+    try frame.pushStack(0); // key
 
     // Execute SSTORE in static context
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
@@ -284,8 +285,8 @@ test "SSTORE: sentry gas check (Istanbul+)" {
     var frame = try createTestFrame(allocator, evm, bytecode, .ISTANBUL, 2300, false); // Exactly 2300 gas
     defer frame.deinit();
 
-    try frame.pushStack(0); // key
     try frame.pushStack(42); // value
+    try frame.pushStack(0); // key
 
     // Execute SSTORE with exactly 2300 gas (should fail, needs > 2300)
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
@@ -307,8 +308,8 @@ test "SSTORE: sentry gas check passes with sufficient gas" {
     var frame = try createTestFrame(allocator, evm, bytecode, .ISTANBUL, 1_000_000, false);
     defer frame.deinit();
 
-    try frame.pushStack(0); // key
     try frame.pushStack(42); // value
+    try frame.pushStack(0); // key
 
     // Execute SSTORE with sufficient gas (should succeed)
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
@@ -332,8 +333,8 @@ test "SSTORE: cold storage access (Berlin+)" {
     var frame = try createTestFrame(allocator, evm, bytecode, .BERLIN, 1_000_000, false);
     defer frame.deinit();
 
-    try frame.pushStack(0); // key
     try frame.pushStack(42); // value (0 -> non-zero = SET)
+    try frame.pushStack(0); // key
 
     const initial_gas = frame.gas_remaining;
 
@@ -365,10 +366,10 @@ test "SSTORE: warm storage access (Berlin+)" {
     _ = try evm.accessStorageSlot(address, 0);
 
     // Set initial value
-    try evm.storage.set(address, 0, 10);
+    try evm.storage.putInCache(address, 0, 10);
 
-    try frame.pushStack(0); // key
     try frame.pushStack(20); // value (10 -> 20 = UPDATE, warm)
+    try frame.pushStack(0); // key
 
     const initial_gas = frame.gas_remaining;
 
@@ -396,11 +397,11 @@ test "SSTORE: original storage tracking" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set initial storage value
-    try evm.storage.set(address, 0, 100);
+    try evm.storage.putInCache(address, 0, 100);
 
     // First SSTORE: should track original value (100)
-    try frame.pushStack(0); // key
     try frame.pushStack(200); // value
+    try frame.pushStack(0); // key
 
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
     try StorageHandlers.sstore(&frame);
@@ -427,8 +428,8 @@ test "SSTORE: set zero to non-zero (SET operation)" {
     defer frame.deinit();
 
     // Storage slot starts at 0, set to non-zero (SET)
-    try frame.pushStack(5); // key
     try frame.pushStack(99); // value (0 -> 99 = SET)
+    try frame.pushStack(5); // key
 
     const initial_gas = frame.gas_remaining;
 
@@ -455,10 +456,10 @@ test "SSTORE: update non-zero to non-zero (UPDATE operation)" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set initial non-zero value
-    try evm.storage.set(address, 5, 100);
+    try evm.storage.putInCache(address, 5, 100);
 
-    try frame.pushStack(5); // key
     try frame.pushStack(200); // value (100 -> 200 = UPDATE)
+    try frame.pushStack(5); // key
 
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
     try StorageHandlers.sstore(&frame);
@@ -483,12 +484,12 @@ test "SSTORE: clear storage (non-zero to zero)" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set initial non-zero value
-    try evm.storage.set(address, 7, 500);
+    try evm.storage.putInCache(address, 7, 500);
 
     const initial_refund = evm.gas_refund;
 
-    try frame.pushStack(7); // key
     try frame.pushStack(0); // value (500 -> 0 = CLEAR)
+    try frame.pushStack(7); // key
 
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
     try StorageHandlers.sstore(&frame);
@@ -516,13 +517,13 @@ test "SSTORE: refund calculation (London+)" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set initial value
-    try evm.storage.set(address, 0, 100);
+    try evm.storage.putInCache(address, 0, 100);
 
     const initial_refund = evm.gas_refund;
 
     // Clear storage (100 -> 0)
-    try frame.pushStack(0); // key
     try frame.pushStack(0); // value
+    try frame.pushStack(0); // key
 
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
     try StorageHandlers.sstore(&frame);
@@ -547,14 +548,14 @@ test "SSTORE: restore to original value refund (London+)" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set original value
-    try evm.storage.set(address, 0, 50);
+    try evm.storage.putInCache(address, 0, 50);
 
     // First SSTORE: change to different value
     {
         var frame1 = try createTestFrame(allocator, evm, bytecode, .LONDON, 1_000_000, false);
         defer frame1.deinit();
-        try frame1.pushStack(0); // key
         try frame1.pushStack(100); // value (50 -> 100)
+        try frame1.pushStack(0); // key
 
         const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame1));
         try StorageHandlers.sstore(&frame1);
@@ -563,8 +564,8 @@ test "SSTORE: restore to original value refund (London+)" {
     const initial_refund = evm.gas_refund;
 
     // Second SSTORE: restore to original value (100 -> 50)
-    try frame.pushStack(0); // key
     try frame.pushStack(50); // value (restore to original)
+    try frame.pushStack(0); // key
 
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
     try StorageHandlers.sstore(&frame);
@@ -589,8 +590,8 @@ test "SSTORE: pre-Istanbul simple gas rules" {
     defer frame.deinit();
 
     // Pre-Istanbul: 0 -> non-zero = 20000, otherwise 5000
-    try frame.pushStack(0); // key
     try frame.pushStack(42); // value (0 -> 42 = SET)
+    try frame.pushStack(0); // key
 
     const initial_gas = frame.gas_remaining;
 
@@ -796,8 +797,8 @@ test "TSTORE: basic store to transient storage" {
     defer frame.deinit();
 
     // Setup: key=5, value=123
-    try frame.pushStack(5); // key
     try frame.pushStack(123); // value
+    try frame.pushStack(5); // key
 
     const initial_gas = frame.gas_remaining;
 
@@ -829,8 +830,8 @@ test "TSTORE: static call violation" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000, true); // is_static=true
     defer frame.deinit();
 
-    try frame.pushStack(0); // key
     try frame.pushStack(42); // value
+    try frame.pushStack(0); // key
 
     // Execute TSTORE in static context
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
@@ -852,8 +853,8 @@ test "TSTORE: invalid before Cancun" {
     var frame = try createTestFrame(allocator, evm, bytecode, .SHANGHAI, 1_000_000, false);
     defer frame.deinit();
 
-    try frame.pushStack(0); // key
     try frame.pushStack(42); // value
+    try frame.pushStack(0); // key
 
     // Execute TSTORE before Cancun
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
@@ -875,8 +876,8 @@ test "TSTORE: always warm access cost" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000, false);
     defer frame.deinit();
 
-    try frame.pushStack(999); // key
     try frame.pushStack(888); // value
+    try frame.pushStack(999); // key
 
     const initial_gas = frame.gas_remaining;
 
@@ -909,8 +910,8 @@ test "TSTORE: no refunds" {
     const initial_refund = evm.gas_refund;
 
     // Clear transient storage (100 -> 0)
-    try frame.pushStack(0); // key
     try frame.pushStack(0); // value
+    try frame.pushStack(0); // key
 
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
     try StorageHandlers.tstore(&frame);
@@ -937,8 +938,8 @@ test "TSTORE: overwrite existing value" {
     try evm.storage.setTransient(address, 7, 500);
 
     // Overwrite with new value
-    try frame.pushStack(7); // key
     try frame.pushStack(999); // new value
+    try frame.pushStack(7); // key
 
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
     try StorageHandlers.tstore(&frame);
@@ -983,8 +984,8 @@ test "TSTORE: out of gas error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 50, false); // Only 50 gas
     defer frame.deinit();
 
-    try frame.pushStack(0); // key
     try frame.pushStack(42); // value
+    try frame.pushStack(0); // key
 
     // Execute TSTORE with insufficient gas (need 100, have 50)
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame));
@@ -1013,8 +1014,8 @@ test "SLOAD/SSTORE: round-trip storage" {
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame1));
 
     // SSTORE: key=10, value=777
-    try frame1.pushStack(10);
     try frame1.pushStack(777);
+    try frame1.pushStack(10);
     try StorageHandlers.sstore(&frame1);
 
     // SLOAD: key=10
@@ -1042,8 +1043,8 @@ test "TLOAD/TSTORE: round-trip transient storage" {
     const StorageHandlers = @import("handlers_storage.zig").Handlers(@TypeOf(frame1));
 
     // TSTORE: key=20, value=555
-    try frame1.pushStack(20);
     try frame1.pushStack(555);
+    try frame1.pushStack(20);
     try StorageHandlers.tstore(&frame1);
 
     // TLOAD: key=20
@@ -1070,15 +1071,15 @@ test "SSTORE/TSTORE: persistent vs transient isolation" {
     // SSTORE: key=0, value=100 (persistent)
     var frame1 = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000, false);
     defer frame1.deinit();
-    try frame1.pushStack(0);
     try frame1.pushStack(100);
+    try frame1.pushStack(0);
     try StorageHandlers.sstore(&frame1);
 
     // TSTORE: key=0, value=200 (transient, same key)
     var frame2 = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000, false);
     defer frame2.deinit();
-    try frame2.pushStack(0);
     try frame2.pushStack(200);
+    try frame2.pushStack(0);
     try StorageHandlers.tstore(&frame2);
 
     // SLOAD: key=0 (should get persistent value)
