@@ -10,7 +10,7 @@
 /// | Module          | Nethermind equivalent            | Purpose                                    |
 /// |-----------------|----------------------------------|--------------------------------------------|
 /// | `journal`       | `PartialStorageProviderBase`     | Change-list journal with snapshot/restore   |
-/// | `account`       | `Account.cs`                     | Account helpers (isEmpty, hasCodeOrNonce)   |
+/// | `account`       | `Account.cs`                     | Account helpers (is_empty, has_code_or_nonce) |
 ///
 /// ## Modules
 ///
@@ -19,9 +19,9 @@
 /// - `Entry`         — Single change record (key + value + tag)
 /// - `JournalError`  — Error set for journal operations (InvalidSnapshot, OutOfMemory)
 /// - `AccountState`  — Voltaire account state type (re-exported)
-/// - `isEmpty`       — EIP-161 empty account predicate
-/// - `isTotallyEmpty` — Empty account with empty storage predicate
-/// - `hasCodeOrNonce` — Code-or-nonce predicate (for CREATE collision check)
+/// - `is_empty`       — EIP-161 empty account predicate
+/// - `is_totally_empty` — Empty account with empty storage predicate
+/// - `has_code_or_nonce` — Code-or-nonce predicate (for CREATE collision check)
 ///
 /// ## Usage
 ///
@@ -69,13 +69,13 @@ pub const EMPTY_CODE_HASH = account.EMPTY_CODE_HASH;
 pub const EMPTY_TRIE_ROOT = account.EMPTY_TRIE_ROOT;
 
 /// Check whether an account is "empty" per EIP-161.
-pub const isEmpty = account.isEmpty;
+pub const is_empty = account.is_empty;
 
 /// Check whether an account is "totally empty" (empty AND no storage).
-pub const isTotallyEmpty = account.isTotallyEmpty;
+pub const is_totally_empty = account.is_totally_empty;
 
 /// Check whether an account has code or a non-zero nonce.
-pub const hasCodeOrNonce = account.hasCodeOrNonce;
+pub const has_code_or_nonce = account.has_code_or_nonce;
 
 test {
     // Ensure all sub-modules compile and their tests run.
