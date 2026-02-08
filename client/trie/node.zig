@@ -5,28 +5,27 @@
 //! the client.
 
 const primitives = @import("primitives");
-const trie = @import("primitives/trie.zig");
 
 /// 32-byte hash type used for node references and root hashes.
 pub const Hash32 = primitives.Hash.Hash;
 
 /// 16-bit child mask for branch nodes.
-pub const TrieMask = trie.TrieMask;
+pub const TrieMask = primitives.TrieMask;
 
 /// Node type discriminator.
-pub const NodeType = trie.NodeType;
+pub const NodeType = primitives.TrieNodeType;
 
 /// Trie node union.
-pub const Node = trie.Node;
+pub const Node = primitives.TrieNode;
 
 /// Leaf node type.
-pub const LeafNode = trie.LeafNode;
+pub const LeafNode = primitives.TrieLeafNode;
 
 /// Extension node type.
-pub const ExtensionNode = trie.ExtensionNode;
+pub const ExtensionNode = primitives.TrieExtensionNode;
 
 /// Branch node type.
-pub const BranchNode = trie.BranchNode;
+pub const BranchNode = primitives.TrieBranchNode;
 
 test {
     @import("std").testing.refAllDecls(@This());
