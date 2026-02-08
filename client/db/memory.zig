@@ -80,7 +80,7 @@ pub const MemoryDatabase = struct {
     /// is re-initialized to an empty state.
     ///
     /// Mirrors Nethermind's `MemDb.Clear()` which wipes the underlying
-    /// ConcurrentDictionary. Used by `ReadOnlyDb.clearTempChanges()` to
+    /// ConcurrentDictionary. Used by `ReadOnlyDb.clear_temp_changes()` to
     /// discard temporary write-overlay data.
     pub fn clear(self: *MemoryDatabase) void {
         // Reset arena — frees all key/value copies and map internal tables.

@@ -9,9 +9,9 @@
 /// - **Strict read-only** (`init`): All writes return `error.StorageError`.
 ///   Reads delegate directly to the wrapped database.
 ///
-/// - **Write overlay** (`initWithWriteStore`): Writes go to an in-memory
+/// - **Write overlay** (`init_with_write_store`): Writes go to an in-memory
 ///   overlay (`MemoryDatabase`). Reads check the overlay first, then fall
-///   back to the wrapped database. Call `clearTempChanges()` to discard all
+///   back to the wrapped database. Call `clear_temp_changes()` to discard all
 ///   overlay writes without affecting the wrapped database.
 ///
 /// This matches Nethermind's `ReadOnlyDb(wrappedDb, createInMemWriteStore)`
@@ -38,13 +38,13 @@
 /// defer mem.deinit();
 /// try mem.put("key", "original");
 ///
-/// var ro = ReadOnlyDb.initWithWriteStore(mem.database(), allocator);
+/// var ro = ReadOnlyDb.init_with_write_store(mem.database(), allocator);
 /// defer ro.deinit();
 /// const iface = ro.database();
 ///
 /// try iface.put("key", "temp");          // writes to overlay only
 /// const val = try iface.get("key");      // returns "temp" (overlay wins)
-/// ro.clearTempChanges();                 // discard overlay writes
+/// ro.clear_temp_changes();               // discard overlay writes
 /// const val2 = try iface.get("key");     // returns "original" (wrapped db)
 /// ```
 const std = @import("std");
@@ -58,7 +58,7 @@ const MemoryDatabase = @import("memory.zig").MemoryDatabase;
 /// Mirrors Nethermind's `ReadOnlyDb`:
 /// - Reads: check overlay first (if present), then fall back to wrapped database.
 /// - Writes: buffer in overlay if `create_in_mem_write_store` was set, else error.
-/// - `clearTempChanges()`: wipe overlay without touching wrapped database.
+/// - `clear_temp_changes()`: wipe overlay without touching wrapped database.
 ///
 /// When `overlay` is null, the struct is zero-allocation (strict read-only mode).
 /// When `overlay` is non-null, it owns the MemoryDatabase and frees it on `deinit`.
@@ -88,10 +88,10 @@ pub const ReadOnlyDb = struct {
     ///
     /// Writes are buffered in the overlay and do not touch the wrapped database.
     /// Reads check the overlay first, then fall back to the wrapped database.
-    /// Call `clearTempChanges()` to discard all overlay writes.
+    /// Call `clear_temp_changes()` to discard all overlay writes.
     ///
     /// Equivalent to Nethermind's `ReadOnlyDb(wrappedDb, createInMemWriteStore: true)`.
-    pub fn initWithWriteStore(wrapped: Database, allocator: std.mem.Allocator) Error!ReadOnlyDb {
+    pub fn init_with_write_store(wrapped: Database, allocator: std.mem.Allocator) Error!ReadOnlyDb {
         const overlay = allocator.create(MemoryDatabase) catch return error.OutOfMemory;
         overlay.* = MemoryDatabase.init(allocator);
         return .{
@@ -153,14 +153,14 @@ pub const ReadOnlyDb = struct {
     ///
     /// No-op if no write overlay was created.
     /// Mirrors Nethermind's `ClearTempChanges()` which calls `_memDb.Clear()`.
-    pub fn clearTempChanges(self: *ReadOnlyDb) void {
+    pub fn clear_temp_changes(self: *ReadOnlyDb) void {
         if (self.overlay) |ov| {
             ov.clear();
         }
     }
 
     /// Return whether this ReadOnlyDb has a write overlay enabled.
-    pub fn hasWriteOverlay(self: *const ReadOnlyDb) bool {
+    pub fn has_write_overlay(self: *const ReadOnlyDb) bool {
         return self.overlay != null;
     }
 
@@ -353,17 +353,17 @@ test "ReadOnlyDb: does not modify underlying database on write attempts" {
     try std.testing.expectEqualStrings("original", mem.get("key").?);
 }
 
-test "ReadOnlyDb: hasWriteOverlay is false without overlay" {
+test "ReadOnlyDb: has_write_overlay is false without overlay" {
     var mem = MemoryDatabase.init(std.testing.allocator);
     defer mem.deinit();
 
     var ro = ReadOnlyDb.init(mem.database());
     defer ro.deinit();
 
-    try std.testing.expect(!ro.hasWriteOverlay());
+    try std.testing.expect(!ro.has_write_overlay());
 }
 
-test "ReadOnlyDb: clearTempChanges is no-op without overlay" {
+test "ReadOnlyDb: clear_temp_changes is no-op without overlay" {
     var mem = MemoryDatabase.init(std.testing.allocator);
     defer mem.deinit();
 
@@ -371,21 +371,21 @@ test "ReadOnlyDb: clearTempChanges is no-op without overlay" {
     defer ro.deinit();
 
     // Should not panic or crash
-    ro.clearTempChanges();
+    ro.clear_temp_changes();
 }
 
 // ---------------------------------------------------------------------------
 // Tests — Write overlay mode (Nethermind ClearTempChanges pattern)
 // ---------------------------------------------------------------------------
 
-test "ReadOnlyDb: initWithWriteStore enables overlay" {
+test "ReadOnlyDb: init_with_write_store enables overlay" {
     var mem = MemoryDatabase.init(std.testing.allocator);
     defer mem.deinit();
 
-    var ro = try ReadOnlyDb.initWithWriteStore(mem.database(), std.testing.allocator);
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
     defer ro.deinit();
 
-    try std.testing.expect(ro.hasWriteOverlay());
+    try std.testing.expect(ro.has_write_overlay());
 }
 
 test "ReadOnlyDb: overlay put succeeds and get returns overlay value" {
@@ -394,7 +394,7 @@ test "ReadOnlyDb: overlay put succeeds and get returns overlay value" {
 
     try mem.put("base_key", "base_val");
 
-    var ro = try ReadOnlyDb.initWithWriteStore(mem.database(), std.testing.allocator);
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
     defer ro.deinit();
 
     const iface = ro.database();
@@ -419,7 +419,7 @@ test "ReadOnlyDb: overlay value takes precedence over wrapped" {
 
     try mem.put("key", "original");
 
-    var ro = try ReadOnlyDb.initWithWriteStore(mem.database(), std.testing.allocator);
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
     defer ro.deinit();
 
     const iface = ro.database();
@@ -436,13 +436,13 @@ test "ReadOnlyDb: overlay value takes precedence over wrapped" {
     try std.testing.expectEqualStrings("original", mem.get("key").?);
 }
 
-test "ReadOnlyDb: clearTempChanges discards overlay writes" {
+test "ReadOnlyDb: clear_temp_changes discards overlay writes" {
     var mem = MemoryDatabase.init(std.testing.allocator);
     defer mem.deinit();
 
     try mem.put("key", "original");
 
-    var ro = try ReadOnlyDb.initWithWriteStore(mem.database(), std.testing.allocator);
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
     defer ro.deinit();
 
     const iface = ro.database();
@@ -456,7 +456,7 @@ test "ReadOnlyDb: clearTempChanges discards overlay writes" {
     try std.testing.expect(try iface.contains("extra"));
 
     // Clear overlay
-    ro.clearTempChanges();
+    ro.clear_temp_changes();
 
     // Overlay values are gone — falls back to wrapped
     try std.testing.expectEqualStrings("original", (try iface.get("key")).?);
@@ -470,7 +470,7 @@ test "ReadOnlyDb: overlay delete does not affect wrapped database" {
 
     try mem.put("key", "value");
 
-    var ro = try ReadOnlyDb.initWithWriteStore(mem.database(), std.testing.allocator);
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
     defer ro.deinit();
 
     const iface = ro.database();
@@ -492,7 +492,7 @@ test "ReadOnlyDb: contains checks overlay then wrapped" {
 
     try mem.put("wrapped_key", "val");
 
-    var ro = try ReadOnlyDb.initWithWriteStore(mem.database(), std.testing.allocator);
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
     defer ro.deinit();
 
     const iface = ro.database();
@@ -508,11 +508,11 @@ test "ReadOnlyDb: contains checks overlay then wrapped" {
     try std.testing.expect(!try iface.contains("missing"));
 }
 
-test "ReadOnlyDb: overlay reusable after clearTempChanges" {
+test "ReadOnlyDb: overlay reusable after clear_temp_changes" {
     var mem = MemoryDatabase.init(std.testing.allocator);
     defer mem.deinit();
 
-    var ro = try ReadOnlyDb.initWithWriteStore(mem.database(), std.testing.allocator);
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
     defer ro.deinit();
 
     const iface = ro.database();
@@ -522,7 +522,7 @@ test "ReadOnlyDb: overlay reusable after clearTempChanges" {
     try std.testing.expectEqualStrings("val1", (try iface.get("key1")).?);
 
     // Clear
-    ro.clearTempChanges();
+    ro.clear_temp_changes();
     try std.testing.expectEqual(null, try iface.get("key1"));
 
     // Second round of writes — overlay should work again
@@ -530,7 +530,7 @@ test "ReadOnlyDb: overlay reusable after clearTempChanges" {
     try std.testing.expectEqualStrings("val2", (try iface.get("key2")).?);
 
     // Clear again
-    ro.clearTempChanges();
+    ro.clear_temp_changes();
     try std.testing.expectEqual(null, try iface.get("key2"));
 }
 
@@ -540,7 +540,7 @@ test "ReadOnlyDb: wrapped database never modified by overlay writes" {
 
     try mem.put("existing", "original");
 
-    var ro = try ReadOnlyDb.initWithWriteStore(mem.database(), std.testing.allocator);
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
     defer ro.deinit();
 
     const iface = ro.database();
@@ -555,7 +555,7 @@ test "ReadOnlyDb: wrapped database never modified by overlay writes" {
     try std.testing.expectEqual(null, mem.get("new_key"));
 
     // Even after clearing overlay, wrapped database is still pristine
-    ro.clearTempChanges();
+    ro.clear_temp_changes();
     try std.testing.expectEqualStrings("original", mem.get("existing").?);
     try std.testing.expectEqual(null, mem.get("new_key"));
 }
@@ -564,7 +564,7 @@ test "ReadOnlyDb: deinit frees overlay memory (leak check)" {
     var mem = MemoryDatabase.init(std.testing.allocator);
     defer mem.deinit();
 
-    var ro = try ReadOnlyDb.initWithWriteStore(mem.database(), std.testing.allocator);
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
 
     // Write some data to the overlay
     const iface = ro.database();
