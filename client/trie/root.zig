@@ -22,7 +22,7 @@
 //! ## Usage
 //!
 //! ```zig
-//! const trie = @import("client/trie/root.zig");
+//! const trie = @import("client_trie");
 //!
 //! // Compute root hash from key-value pairs
 //! const root = try trie.trieRoot(allocator, &keys, &values);
