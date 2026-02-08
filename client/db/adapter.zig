@@ -162,7 +162,7 @@ pub const Database = struct {
         ///
         /// On success, all operations in `ops` are applied. On error, the
         /// backend must guarantee that NO operations were applied (rollback).
-        writeBatch: ?*const fn (ptr: *anyopaque, ops: []const WriteBatchOp) Error!void = null,
+        write_batch: ?*const fn (ptr: *anyopaque, ops: []const WriteBatchOp) Error!void = null,
     };
 
     /// Retrieve the value associated with `key`.
@@ -188,7 +188,7 @@ pub const Database = struct {
     }
 };
 
-/// A single write operation for use with `Database.VTable.writeBatch`.
+/// A single write operation for use with `Database.VTable.write_batch`.
 ///
 /// Each operation represents either a key-value insertion or a key deletion.
 /// Operations are accumulated in a `WriteBatch` and applied together via
@@ -219,7 +219,7 @@ pub const WriteBatchOp = union(enum) {
 ///
 /// ## Atomicity
 ///
-/// If the target database implements `VTable.writeBatch`, commit uses it
+/// If the target database implements `VTable.write_batch`, commit uses it
 /// for true all-or-nothing semantics. Otherwise, operations are applied
 /// sequentially; on error, already-applied operations are NOT rolled back
 /// and the batch is NOT cleared (caller can inspect/retry).
@@ -274,7 +274,7 @@ pub const WriteBatch = struct {
 
     /// Apply all pending operations to the target database.
     ///
-    /// If the backend provides `writeBatch`, all operations are applied
+    /// If the backend provides `write_batch`, all operations are applied
     /// atomically (all-or-nothing). Otherwise, operations are applied
     /// sequentially; on error, already-applied operations remain and the
     /// batch retains its pending ops for inspection or retry.
@@ -284,7 +284,7 @@ pub const WriteBatch = struct {
     pub fn commit(self: *WriteBatch) Error!void {
         if (self.ops.items.len == 0) return;
 
-        if (self.target.vtable.writeBatch) |batch_fn| {
+        if (self.target.vtable.write_batch) |batch_fn| {
             // Atomic path: backend handles all-or-nothing semantics.
             try batch_fn(self.target.ptr, self.ops.items);
         } else {
@@ -665,11 +665,11 @@ test "WriteBatch: sequential fallback retains ops on error for retry" {
     try std.testing.expectEqual(@as(usize, 1), failing.applied);
 }
 
-/// A mock database that supports atomic writeBatch (all-or-nothing).
+/// A mock database that supports atomic write_batch (all-or-nothing).
 const AtomicDb = struct {
     /// Tracks how many ops were committed atomically.
     committed_count: usize = 0,
-    /// When true, writeBatch will fail (to test rollback).
+    /// When true, write_batch will fail (to test rollback).
     should_fail: bool = false,
 
     fn getImpl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
@@ -704,7 +704,7 @@ const AtomicDb = struct {
         .put = putImpl,
         .delete = deleteImpl,
         .contains = containsImpl,
-        .writeBatch = writeBatchImpl,
+        .write_batch = writeBatchImpl,
     };
 
     fn database(self: *AtomicDb) Database {
@@ -715,7 +715,7 @@ const AtomicDb = struct {
     }
 };
 
-test "WriteBatch: uses writeBatch vtable for atomic commit" {
+test "WriteBatch: uses write_batch vtable for atomic commit" {
     var atomic = AtomicDb{};
 
     var batch = WriteBatch.init(std.testing.allocator, atomic.database());
@@ -727,7 +727,7 @@ test "WriteBatch: uses writeBatch vtable for atomic commit" {
 
     try batch.commit();
 
-    // All 3 ops committed atomically via writeBatch
+    // All 3 ops committed atomically via write_batch
     try std.testing.expectEqual(@as(usize, 3), atomic.committed_count);
     try std.testing.expectEqual(@as(usize, 0), batch.pending());
 }

@@ -19,7 +19,7 @@
 ///
 /// - Replace stub vtable functions with RocksDB C API calls
 /// - Add column family support (`IColumnsDb<T>` equivalent)
-/// - Implement native `writeBatch` via RocksDB WriteBatch
+/// - Implement native `write_batch` via RocksDB WriteBatch
 /// - Add `ReadFlags` / `WriteFlags` hint enums for tuning
 /// - Add `DbMetric` for monitoring (size, cache, reads, writes)
 /// - Add configuration struct with RocksDB tuning parameters
