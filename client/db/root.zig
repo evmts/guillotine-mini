@@ -10,6 +10,7 @@
 /// - `WriteBatch` — Batched write operations with optional atomicity.
 /// - `MemoryDatabase` — In-memory backend (for tests and ephemeral state).
 /// - `NullDb` — Null object backend (reads return null, writes error).
+/// - `ReadOnlyDb` — Read-only wrapper with optional in-memory overlay.
 /// - `RocksDatabase` — RocksDB backend stub (not yet implemented).
 /// - `DbName` — Standard database partition names (matches Nethermind).
 ///
@@ -43,14 +44,23 @@ const read_only = @import("read_only.zig");
 
 // -- Public API: flat re-exports of all user-facing types -----------------
 
+/// Type-erased vtable interface for any KV backend.
 pub const Database = adapter.Database;
+/// Batched write operations with optional atomicity.
 pub const WriteBatch = adapter.WriteBatch;
+/// Single write operation used in batched commits.
 pub const WriteBatchOp = adapter.WriteBatchOp;
+/// Standard database partition names (matches Nethermind).
 pub const DbName = adapter.DbName;
+/// Database error set for backend operations.
 pub const Error = adapter.Error;
+/// In-memory backend (for tests and ephemeral state).
 pub const MemoryDatabase = memory.MemoryDatabase;
+/// Null object backend (reads return null, writes error).
 pub const NullDb = null_db.NullDb;
+/// RocksDB backend stub (not yet implemented).
 pub const RocksDatabase = rocksdb.RocksDatabase;
+/// Read-only wrapper with optional in-memory overlay.
 pub const ReadOnlyDb = read_only.ReadOnlyDb;
 
 test {

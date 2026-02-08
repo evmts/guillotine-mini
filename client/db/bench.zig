@@ -411,6 +411,7 @@ fn benchBlockProcessing(n: usize) u64 {
 // Main benchmark entry point
 // ============================================================================
 
+/// Entry point for DB abstraction layer benchmarks.
 pub fn main() !void {
     std.debug.print("\n", .{});
     std.debug.print("=" ** 100 ++ "\n", .{});
