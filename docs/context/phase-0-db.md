@@ -6,29 +6,39 @@ Create a database abstraction layer for persistent key-value storage that will u
 
 **Deliverables:**
 - `client/db/adapter.zig` — Generic database interface (vtable-based, comptime DI) **[DONE]**
-- `client/db/memory.zig` — In-memory backend for testing
-- `client/db/rocksdb.zig` — RocksDB backend (future; interface only for now)
+- `client/db/memory.zig` — In-memory backend for testing **[DONE]**
+- `client/db/null.zig` — Null object backend **[DONE]**
+- `client/db/rocksdb.zig` — RocksDB backend stub (all ops error) **[DONE]**
+- `client/db/bench.zig` — Benchmarks **[DONE]**
+- `client/db/root.zig` — Module root with re-exports **[DONE]**
 
 **Specs**: N/A (internal abstraction — no Ethereum spec governs DB layout)
-**Tests**: Unit tests only (inline `test` blocks)
+**Tests**: Unit tests only (inline `test` blocks) — 41 tests total
 
 ---
 
 ## Current State
 
-- `client/db/adapter.zig` already exists with:
-  - `Database` vtable struct (ptr + vtable pattern from `src/host.zig`)
-  - `VTable` with `get`, `put`, `delete`, `contains` operations
-  - `Error` enum: `StorageError`, `KeyTooLarge`, `ValueTooLarge`, `DatabaseClosed`
-  - `DbName` enum with 12 variants matching Nethermind's `DbNames`
-  - `MockDb` for testing vtable dispatch
-  - All inline tests passing
+All core Phase 0 files are **implemented and tested**:
 
-**Remaining work:**
-1. `client/db/memory.zig` — Full in-memory `MemoryDatabase` implementing `Database` interface
-2. `client/db/rocksdb.zig` — RocksDB stub (interface only, no FFI)
-3. `WriteBatch` interface for atomic multi-key writes
-4. Build integration into `build.zig`
+| File | Status | Contents |
+|------|--------|----------|
+| `client/db/adapter.zig` | **DONE** | `Database` vtable (get/put/delete/contains/writeBatch), `WriteBatch` with arena + atomic/sequential commit, `WriteBatchOp` tagged union, `DbName` enum (15 variants), `Error` type. 14 tests. |
+| `client/db/memory.zig` | **DONE** | `MemoryDatabase` (HashMap + arena, read/write counters, vtable impl). 14 tests. |
+| `client/db/null.zig` | **DONE** | `NullDb` (null object: reads→null, writes→StorageError). 6 tests. |
+| `client/db/rocksdb.zig` | **DONE** | `RocksDatabase` stub (name-based, all ops→StorageError). 7 tests. |
+| `client/db/bench.zig` | **DONE** | Sequential writes, random reads, mixed workloads, WriteBatch, vtable overhead benchmarks. |
+| `client/db/root.zig` | **DONE** | Module root, re-exports all public types, `refAllDecls` test. |
+
+**Not yet implemented (future work):**
+1. RocksDB FFI (C API bindings) — `rocksdb.zig` is a stub
+2. Column family support (`IColumnsDb<T>` equivalent)
+3. `ReadFlags`/`WriteFlags` hint enums (for RocksDB tuning)
+4. `DbMetric` for monitoring (size, cache, reads, writes)
+5. Iterator/range scan support
+6. `DbProvider` (registry of named databases)
+7. `ReadOnlyDb` wrapper (decorator pattern)
+8. Integration with `build.zig` (no `client/db` build targets yet)
 
 ---
 
@@ -251,12 +261,16 @@ All DB operations return error unions (`Error!?[]const u8` for get, `Error!void`
 
 ---
 
-## Implementation Order (remaining)
+## Implementation Order (remaining — future work only)
 
-1. **`client/db/memory.zig`** — `MemoryDatabase` implementing `Database` (HashMap-backed, tracks reads/writes)
-2. **`WriteBatch` in adapter.zig** — Batch interface for atomic multi-key writes
-3. **`client/db/rocksdb.zig`** — `RocksDatabase` stub (interface only, no FFI yet)
-4. **Integration**: Wire into `build.zig` as a new module
+1. **RocksDB FFI** — Replace stub with C API bindings in `rocksdb.zig`
+2. **Column families** — Add `IColumnsDb<T>` equivalent for RocksDB column families
+3. **`DbProvider`** — Registry of named databases (mirrors Nethermind's `IDbProvider`)
+4. **`ReadOnlyDb`** — Decorator wrapping base DB + optional MemDb write overlay
+5. **`ReadFlags`/`WriteFlags`** — Hint enums for RocksDB tuning
+6. **`DbMetric`** — Monitoring struct (size, cache stats, read/write counts)
+7. **Iterator support** — Range scans for state enumeration
+8. **`build.zig` integration** — Build targets for client/db module and bench
 
 ---
 
@@ -266,33 +280,35 @@ All DB operations return error unions (`Error!?[]const u8` for get, `Error!void`
 - `nethermind/src/Nethermind/Nethermind.Core/IKeyValueStore.cs`
 - `nethermind/src/Nethermind/Nethermind.Core/IKeyValueStoreWithBatching.cs`
 - `nethermind/src/Nethermind/Nethermind.Core/IWriteBatch.cs`
+- `nethermind/src/Nethermind/Nethermind.Core/FakeWriteBatch.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/IDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/IFullDb.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/NullDb.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDb.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/DbNames.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/IDbFactory.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/IDbProvider.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/DbProvider.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/IColumnsDb.cs`
-- `nethermind/src/Nethermind/Nethermind.Db/IFullDb.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/IReadOnlyDb.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/ITunableDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/RocksDbSettings.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/MetadataDbKeys.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/DbExtensions.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/CompressingDb.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/MemDbFactory.cs`
-- `nethermind/src/Nethermind/Nethermind.Db/RocksDbSettings.cs`
-- `nethermind/src/Nethermind/Nethermind.Db/MetadataDbKeys.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/InMemoryWriteBatch.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/InMemoryColumnBatch.cs`
 - `nethermind/src/Nethermind/Nethermind.Db.Rocks/DbOnTheRocks.cs`
 - `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbFactory.cs`
 - `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnsDb.cs`
 - `nethermind/src/Nethermind/Nethermind.Db.Rocks/ColumnDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksDbReader.cs`
+- `nethermind/src/Nethermind/Nethermind.Db.Rocks/RocksdbSortedView.cs`
 
 ### Voltaire Modules
 - `voltaire/packages/voltaire-zig/src/primitives/` — Address, Hash, u256, RLP, AccountState, Block, Tx, Storage, State, Trie
-- `voltaire/packages/voltaire-zig/src/primitives/AccountState/AccountState.zig` — Account state struct
-- `voltaire/packages/voltaire-zig/src/primitives/State/state.zig` — StorageKey composite type
 - `voltaire/packages/voltaire-zig/src/state-manager/StateCache.zig` — Checkpoint/revert pattern model
 - `voltaire/packages/voltaire-zig/src/state-manager/JournaledState.zig` — Dual-cache orchestrator model
 - `voltaire/packages/voltaire-zig/src/state-manager/ForkBackend.zig` — vtable pattern model (RpcClient)
@@ -300,33 +316,50 @@ All DB operations return error unions (`Error!?[]const u8` for get, `Error!void`
 - `voltaire/packages/voltaire-zig/src/blockchain/BlockStore.zig` — In-memory block storage model
 - `voltaire/packages/voltaire-zig/src/blockchain/Blockchain.zig` — Block chain orchestrator
 
-### Existing Zig Files
-- `src/host.zig` — vtable pattern to follow
+### Existing Zig Files (Phase 0 — all DONE)
+- `client/db/adapter.zig` — Database vtable, WriteBatch, WriteBatchOp, DbName, Error. 14 tests.
+- `client/db/memory.zig` — MemoryDatabase (HashMap + arena, read/write counters). 14 tests.
+- `client/db/null.zig` — NullDb (null object pattern). 6 tests.
+- `client/db/rocksdb.zig` — RocksDatabase stub (name-based). 7 tests.
+- `client/db/bench.zig` — Benchmarks for all backends.
+- `client/db/root.zig` — Module root with re-exports.
+
+### Reference Zig Files
+- `src/host.zig` — vtable pattern reference (ptr + vtable DI)
 - `src/evm.zig` — consumer of vtable-based DI
-- `client/db/adapter.zig` — **DONE**: Database vtable, DbName enum, Error, MockDb, tests
-- `build.zig` — build system (needs new client/ module)
+- `build.zig` — build system (needs client/ module integration)
 
 ### Test Fixtures (downstream phases)
-- `ethereum-tests/TrieTests/trietest.json` — Phase 1
-- `ethereum-tests/TrieTests/trieanyorder.json` — Phase 1
-- `ethereum-tests/TrieTests/hex_encoded_securetrie_test.json` — Phase 1
-- `ethereum-tests/TrieTests/trietest_secureTrie.json` — Phase 1
-- `ethereum-tests/TrieTests/trieanyorder_secureTrie.json` — Phase 1
-- `ethereum-tests/TrieTests/trietestnextprev.json` — Phase 1
+- `ethereum-tests/TrieTests/` — Phase 1
 - `ethereum-tests/GeneralStateTests/` — Phase 3
-- `ethereum-tests/BlockchainTests/ValidBlocks/` — Phase 4
-- `ethereum-tests/BlockchainTests/InvalidBlocks/` — Phase 4
+- `ethereum-tests/BlockchainTests/` — Phase 4
 
-### MemDb Unit Test Patterns (from Nethermind MemDb.cs)
+### Implemented MemDb Test Patterns (all passing in memory.zig)
 
-The following test patterns should be implemented for the in-memory backend:
 - Basic `put(key, value)` then `get(key)` round-trip
 - `get()` missing key returns `null`
 - `delete()` existing key, then `get()` returns `null`
 - `delete()` non-existing key is a no-op
 - `contains(key)` returns true/false correctly
-- `put(key, null_or_empty)` behaves as delete (Nethermind pattern: `Set(key, null)` calls `Remove`)
-- Read/write count tracking
-- `getAll()` returns all stored pairs
-- Batch operations: accumulate, commit atomically
+- `put(key, null)` behaves as delete (Nethermind pattern)
+- Read/write count tracking (reads_count, writes_count)
+- Overwrite existing key
+- Empty keys and values
+- Binary (non-UTF8) keys and values
+- Many entries (100+)
+- Vtable interface dispatch
 - `deinit()` frees all memory cleanly (no leaks under test allocator)
+
+### Implemented WriteBatch Test Patterns (all passing in adapter.zig)
+
+- Commit applies put operations
+- Commit applies delete operations
+- Mixed operations in order
+- Clear discards pending operations
+- Empty batch commit is no-op
+- Deinit frees all memory (leak check)
+- Sequential fallback retains ops on error for retry
+- Atomic writeBatch vtable for all-or-nothing semantics
+- Atomic commit retains ops on failure (no partial apply)
+- Clear resets arena memory (reusable after clear)
+- Put/delete propagate OutOfMemory (not StorageError)
