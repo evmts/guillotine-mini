@@ -12,7 +12,7 @@ Phase 0 (DB Abstraction) is complete. Phase 1 work has started with root hash co
 
 | File | Status | Purpose |
 |------|--------|---------|
-| `client/trie/root.zig` | Done | Module root, re-exports `hash.trieRoot` and `EMPTY_TRIE_ROOT` |
+| `client/trie/root.zig` | Done | Module root, re-exports `hash.trie_root` and `EMPTY_TRIE_ROOT` |
 | `client/trie/hash.zig` | Done | `patricialize()` algorithm for root hash computation (spec-compliant, uses `EncodedNode` union for inline vs hashed nodes) |
 | `client/trie/bench.zig` | Done | Benchmarks |
 | `client/trie/node.zig` | TODO | Trie node types (Leaf, Extension, Branch, Empty) |
@@ -33,7 +33,7 @@ Phase 0 (DB Abstraction) is complete. Phase 1 work has started with root hash co
 
 | Module | Import Path | What It Provides |
 |--------|-------------|------------------|
-| **trie.zig** | `voltaire-zig/src/primitives/trie.zig` | `TrieMask`, `Node` (union), `NodeType`, `LeafNode`, `ExtensionNode`, `BranchNode`, `Trie` struct, `keyToNibbles`, `nibblesToKey`, `encodePath`, `decodePath`, `common_prefix_length` |
+| **trie.zig** | `voltaire-zig/src/primitives/trie.zig` | `TrieMask`, `Node` (union), `NodeType`, `LeafNode`, `ExtensionNode`, `BranchNode`, `Trie` struct, `key_to_nibbles`, `nibblesToKey`, `encodePath`, `decodePath`, `common_prefix_length` |
 | **Rlp.zig** | `voltaire-zig/src/primitives/Rlp/Rlp.zig` | RLP encode/decode (strings, lists, nested structures) |
 | **Hash.zig** | `voltaire-zig/src/primitives/Hash/Hash.zig` | `Hash` type (`[32]u8`), `ZERO`, `fromBytes`, `fromHex` |
 | **StateRoot.zig** | `voltaire-zig/src/primitives/StateRoot/StateRoot.zig` | `StateRoot` = `Hash` type alias for trie root hashes |
@@ -46,7 +46,7 @@ Phase 0 (DB Abstraction) is complete. Phase 1 work has started with root hash co
 The file `voltaire-zig/src/primitives/trie.zig` (1924 lines) already contains:
 - **Complete node types**: `LeafNode`, `ExtensionNode`, `BranchNode`, `Node` (tagged union)
 - **`TrieMask`**: 16-bit bitmap for efficient branch child tracking
-- **Nibble utilities**: `keyToNibbles`, `nibblesToKey`, `encodePath` (hex prefix), `decodePath`
+- **Nibble utilities**: `key_to_nibbles`, `nibblesToKey`, `encodePath` (hex prefix), `decodePath`
 - **Full `Trie` struct** with `put`, `get`, `delete`, `clear`, `root_hash`
 - **Node hashing**: RLP encode + Keccak256 (via `hash_node()` function using Rlp and crypto modules)
 - **40+ tests**: Comprehensive unit tests covering all operations
@@ -64,7 +64,7 @@ The file `voltaire-zig/src/primitives/trie.zig` (1924 lines) already contains:
 The already-implemented `hash.zig` uses a spec-faithful approach:
 - `EncodedNode` union: `.hash` (32-byte keccak), `.raw` (inline RLP < 32 bytes), `.empty` (b"")
 - `RlpItem` tagged union for mixed-mode RLP list encoding (string items vs verbatim substructures)
-- Custom `rlpEncodeTaggedList()` because Voltaire's `Rlp.encodeList()` would re-encode verbatim items
+- Custom `rlp_encode_tagged_list()` because Voltaire's `Rlp.encodeList()` would re-encode verbatim items
 - Uses Voltaire's `Rlp.encodeBytes()` for individual items and `Rlp.encodeLength()` for list headers
 
 ---
@@ -166,7 +166,7 @@ EMPTY_TRIE_ROOT = keccak256(rlp.encode(b''))
 | File | Purpose | Zig Mapping |
 |------|---------|-------------|
 | `HexPrefix.cs` | Hex prefix encoding (nibble <-> compact) with cached arrays for 1-3 nibble paths | Already in Voltaire `encodePath/decodePath` |
-| `Nibbles.cs` | `Nibble` struct wrapping a byte (0-15) | Already in Voltaire `keyToNibbles` |
+| `Nibbles.cs` | `Nibble` struct wrapping a byte (0-15) | Already in Voltaire `key_to_nibbles` |
 | `NibbleExtensions.cs` | Extension methods for nibble arrays | Nibble utilities |
 
 #### Storage Interface
@@ -223,7 +223,7 @@ EMPTY_TRIE_ROOT = keccak256(rlp.encode(b''))
 | File | Relevance |
 |------|-----------|
 | `client/trie/hash.zig` | Already-implemented root hash computation via `patricialize()` |
-| `client/trie/root.zig` | Module root, re-exports `trieRoot` and `EMPTY_TRIE_ROOT` |
+| `client/trie/root.zig` | Module root, re-exports `trie_root` and `EMPTY_TRIE_ROOT` |
 | `client/db/adapter.zig` | `Database` vtable interface for KV storage |
 | `client/db/memory.zig` | `MemoryDatabase` — in-memory backend for testing |
 | `client/db/root.zig` | DB module root with all re-exports |
@@ -286,7 +286,7 @@ EMPTY_TRIE_ROOT = keccak256(rlp.encode(b''))
 ## Implementation Priority
 
 ### Step 1: Verify Existing Root Hash Computation
-- The `client/trie/hash.zig` `trieRoot()` function already implements `patricialize()`
+- The `client/trie/hash.zig` `trie_root()` function already implements `patricialize()`
 - Write a test runner that loads `trietest.json` and `trieanyorder.json`
 - Compare computed root hashes against expected values
 
@@ -297,7 +297,7 @@ EMPTY_TRIE_ROOT = keccak256(rlp.encode(b''))
 ### Step 3: Add Mutable Trie (`client/trie/trie.zig`)
 - Mutable trie with `put()`, `get()`, `delete()` operations
 - Uses node types from Step 2
-- Computes root hash matching `trieRoot()` from `hash.zig`
+- Computes root hash matching `trie_root()` from `hash.zig`
 
 ### Step 4: Add Secure Trie Support
 - Wrap trie with keccak256 key hashing

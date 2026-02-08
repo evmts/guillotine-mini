@@ -25,24 +25,21 @@
 //! const trie = @import("client_trie");
 //!
 //! // Compute root hash from key-value pairs
-//! const root = try trie.trieRoot(allocator, &keys, &values);
+//! const root = try trie.trie_root(allocator, &keys, &values);
 //! ```
 
+/// Hashing and patricialize implementation details.
 pub const hash = @import("hash.zig");
+/// Voltaire trie node types re-export module.
 pub const node = @import("node.zig");
 
 // Re-export primary API
-pub const trieRoot = hash.trieRoot;
+/// Compute the Merkle Patricia Trie root hash for key-value pairs.
+pub const trie_root = hash.trie_root;
+/// Root hash for an empty trie (keccak256(RLP(""))).
 pub const EMPTY_TRIE_ROOT = hash.EMPTY_TRIE_ROOT;
+/// 32-byte hash type used for root hashes.
 pub const Hash32 = node.Hash32;
-
-// Re-export node types
-pub const Node = node.Node;
-pub const NodeType = node.NodeType;
-pub const TrieMask = node.TrieMask;
-pub const LeafNode = node.LeafNode;
-pub const ExtensionNode = node.ExtensionNode;
-pub const BranchNode = node.BranchNode;
 
 test {
     // Ensure all sub-modules compile and their tests run.

@@ -15,7 +15,7 @@
 /// from these changes within the block processing budget.
 const std = @import("std");
 const hash_mod = @import("hash.zig");
-const trieRoot = hash_mod.trieRoot;
+const trie_root = hash_mod.trie_root;
 const EMPTY_TRIE_ROOT = hash_mod.EMPTY_TRIE_ROOT;
 const Hash = @import("crypto").Hash;
 
@@ -39,7 +39,7 @@ const WARMUP_ITERS: usize = 2;
 const BENCH_ITERS: usize = 5;
 
 /// Pre-generate a deterministic key (simulating keccak256 of an address).
-fn generateKey(buf: *[KEY_SIZE]u8, index: usize) void {
+fn generate_key(buf: *[KEY_SIZE]u8, index: usize) void {
     const h = std.hash.Wyhash.hash(0xDEADBEEF, std.mem.asBytes(&index));
     const h_bytes = std.mem.asBytes(&h);
     @memcpy(buf[0..@sizeOf(@TypeOf(h))], h_bytes);
@@ -52,7 +52,7 @@ fn generateKey(buf: *[KEY_SIZE]u8, index: usize) void {
 }
 
 /// Pre-generate a deterministic value of a given size.
-fn generateValue(buf: []u8, index: usize) void {
+fn generate_value(buf: []u8, index: usize) void {
     const h = std.hash.Wyhash.hash(0x12345678, std.mem.asBytes(&index));
     const h_bytes = std.mem.asBytes(&h);
     for (buf, 0..) |*byte, i| {
@@ -61,7 +61,7 @@ fn generateValue(buf: []u8, index: usize) void {
 }
 
 /// Format nanoseconds into a human-readable string.
-fn formatNs(ns: u64) [32]u8 {
+fn format_ns(ns: u64) [32]u8 {
     var buf: [32]u8 = [_]u8{0} ** 32;
     if (ns < 1_000) {
         _ = std.fmt.bufPrint(&buf, "{d} ns", .{ns}) catch unreachable;
@@ -75,7 +75,7 @@ fn formatNs(ns: u64) [32]u8 {
     return buf;
 }
 
-fn formatOpsPerSec(ops: usize, elapsed_ns: u64) [32]u8 {
+fn format_ops_per_sec(ops: usize, elapsed_ns: u64) [32]u8 {
     var buf: [32]u8 = [_]u8{0} ** 32;
     if (elapsed_ns == 0) {
         _ = std.fmt.bufPrint(&buf, "inf ops/s", .{}) catch unreachable;
@@ -100,10 +100,10 @@ const BenchResult = struct {
     keys_per_sec: f64,
 };
 
-fn printResult(r: BenchResult) void {
-    const total_str = formatNs(r.elapsed_ns);
-    const per_key_str = formatNs(r.per_key_ns);
-    const ops_str = formatOpsPerSec(r.n_keys, r.elapsed_ns);
+fn print_result(r: BenchResult) void {
+    const total_str = format_ns(r.elapsed_ns);
+    const per_key_str = format_ns(r.per_key_ns);
+    const ops_str = format_ops_per_sec(r.n_keys, r.elapsed_ns);
     std.debug.print("  {s:<55} {d:>6} keys  total={s}  per-key={s}  {s}\n", .{
         r.name,
         r.n_keys,
@@ -117,9 +117,9 @@ fn printResult(r: BenchResult) void {
 // Benchmark: Trie root hash computation
 // ============================================================================
 
-/// Benchmark computing trieRoot for N keys with a given value size.
+/// Benchmark computing trie_root for N keys with a given value size.
 /// Uses arena allocator (transaction-scoped) matching production patterns.
-fn benchTrieRoot(n: usize, value_size: usize) u64 {
+fn bench_trie_root(n: usize, value_size: usize) u64 {
     // Pre-generate all keys and values
     var key_bufs: [LARGE_N][KEY_SIZE]u8 = undefined;
     var val_bufs: [LARGE_N][LARGE_VALUE_SIZE]u8 = undefined;
@@ -127,8 +127,8 @@ fn benchTrieRoot(n: usize, value_size: usize) u64 {
     const actual_n = @min(n, LARGE_N);
 
     for (0..actual_n) |i| {
-        generateKey(&key_bufs[i], i);
-        generateValue(val_bufs[i][0..value_size], i);
+        generate_key(&key_bufs[i], i);
+        generate_value(val_bufs[i][0..value_size], i);
     }
 
     // Create slices referencing the buffers
@@ -142,7 +142,7 @@ fn benchTrieRoot(n: usize, value_size: usize) u64 {
     // Warmup
     for (0..WARMUP_ITERS) |_| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        _ = trieRoot(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
+        _ = trie_root(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
         arena.deinit();
     }
 
@@ -151,7 +151,7 @@ fn benchTrieRoot(n: usize, value_size: usize) u64 {
     for (0..BENCH_ITERS) |_| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         var timer = std.time.Timer.start() catch unreachable;
-        _ = trieRoot(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
+        _ = trie_root(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
         total_ns += timer.read();
         arena.deinit(); // Free ALL memory at once (transaction boundary)
     }
@@ -160,7 +160,7 @@ fn benchTrieRoot(n: usize, value_size: usize) u64 {
 }
 
 /// Benchmark with keccak256'd keys (simulating secure trie / state trie).
-fn benchTrieRootSecure(n: usize, value_size: usize) u64 {
+fn bench_trie_root_secure(n: usize, value_size: usize) u64 {
     var key_bufs: [LARGE_N][KEY_SIZE]u8 = undefined;
     var val_bufs: [LARGE_N][LARGE_VALUE_SIZE]u8 = undefined;
 
@@ -169,9 +169,9 @@ fn benchTrieRootSecure(n: usize, value_size: usize) u64 {
     // Generate keys as keccak256(address), like the actual state trie
     for (0..actual_n) |i| {
         var raw_key: [KEY_SIZE]u8 = undefined;
-        generateKey(&raw_key, i);
+        generate_key(&raw_key, i);
         key_bufs[i] = Hash.keccak256(&raw_key);
-        generateValue(val_bufs[i][0..value_size], i);
+        generate_value(val_bufs[i][0..value_size], i);
     }
 
     var keys: [LARGE_N][]const u8 = undefined;
@@ -184,7 +184,7 @@ fn benchTrieRootSecure(n: usize, value_size: usize) u64 {
     // Warmup
     for (0..WARMUP_ITERS) |_| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        _ = trieRoot(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
+        _ = trie_root(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
         arena.deinit();
     }
 
@@ -193,7 +193,7 @@ fn benchTrieRootSecure(n: usize, value_size: usize) u64 {
     for (0..BENCH_ITERS) |_| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         var timer = std.time.Timer.start() catch unreachable;
-        _ = trieRoot(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
+        _ = trie_root(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
         total_ns += timer.read();
         arena.deinit();
     }
@@ -202,15 +202,15 @@ fn benchTrieRootSecure(n: usize, value_size: usize) u64 {
 }
 
 /// Measure peak memory usage for trie root computation.
-fn benchTrieMemory(n: usize, value_size: usize) struct { elapsed_ns: u64, peak_bytes: usize } {
+fn bench_trie_memory(n: usize, value_size: usize) struct { elapsed_ns: u64, peak_bytes: usize } {
     var key_bufs: [LARGE_N][KEY_SIZE]u8 = undefined;
     var val_bufs: [LARGE_N][LARGE_VALUE_SIZE]u8 = undefined;
 
     const actual_n = @min(n, LARGE_N);
 
     for (0..actual_n) |i| {
-        generateKey(&key_bufs[i], i);
-        generateValue(val_bufs[i][0..value_size], i);
+        generate_key(&key_bufs[i], i);
+        generate_value(val_bufs[i][0..value_size], i);
     }
 
     var keys: [LARGE_N][]const u8 = undefined;
@@ -226,7 +226,7 @@ fn benchTrieMemory(n: usize, value_size: usize) struct { elapsed_ns: u64, peak_b
 
     var arena = std.heap.ArenaAllocator.init(gpa.allocator());
     var timer = std.time.Timer.start() catch unreachable;
-    _ = trieRoot(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
+    _ = trie_root(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
     const elapsed = timer.read();
 
     // Get allocation stats before freeing
@@ -242,12 +242,12 @@ fn benchTrieMemory(n: usize, value_size: usize) struct { elapsed_ns: u64, peak_b
 
 /// Benchmark simulating state root after block processing.
 /// Computes trie root for N account-like entries (nonce, balance, storageRoot, codeHash).
-fn benchBlockStateRoot(n_accounts: usize) u64 {
+fn bench_block_state_root(n_accounts: usize) u64 {
     // Simulate RLP-encoded account (nonce=0, balance=1eth, storageRoot=empty, codeHash=empty)
     // Typical RLP account is ~80 bytes
     const account_rlp_size = MEDIUM_VALUE_SIZE;
 
-    return benchTrieRootSecure(n_accounts, account_rlp_size);
+    return bench_trie_root_secure(n_accounts, account_rlp_size);
 }
 
 // ============================================================================
@@ -267,10 +267,10 @@ pub fn main() !void {
     {
         const sizes = [_]usize{ TINY_N, SMALL_N, MEDIUM_N, LARGE_N };
         for (sizes) |n| {
-            const elapsed = benchTrieRoot(n, SMALL_VALUE_SIZE);
+            const elapsed = bench_trie_root(n, SMALL_VALUE_SIZE);
             const per_key = if (n > 0) elapsed / n else 0;
-            printResult(.{
-                .name = std.fmt.comptimePrint("trieRoot (small values, {d} keys)", .{0}),
+            print_result(.{
+                .name = std.fmt.comptimePrint("trie_root (small values, {d} keys)", .{0}),
                 .n_keys = n,
                 .elapsed_ns = elapsed,
                 .per_key_ns = per_key,
@@ -288,10 +288,10 @@ pub fn main() !void {
     {
         const sizes = [_]usize{ TINY_N, SMALL_N, MEDIUM_N, LARGE_N };
         for (sizes) |n| {
-            const elapsed = benchTrieRoot(n, MEDIUM_VALUE_SIZE);
+            const elapsed = bench_trie_root(n, MEDIUM_VALUE_SIZE);
             const per_key = if (n > 0) elapsed / n else 0;
-            printResult(.{
-                .name = std.fmt.comptimePrint("trieRoot (medium values, {d} keys)", .{0}),
+            print_result(.{
+                .name = std.fmt.comptimePrint("trie_root (medium values, {d} keys)", .{0}),
                 .n_keys = n,
                 .elapsed_ns = elapsed,
                 .per_key_ns = per_key,
@@ -309,10 +309,10 @@ pub fn main() !void {
     {
         const sizes = [_]usize{ TINY_N, SMALL_N, MEDIUM_N, LARGE_N };
         for (sizes) |n| {
-            const elapsed = benchTrieRoot(n, LARGE_VALUE_SIZE);
+            const elapsed = bench_trie_root(n, LARGE_VALUE_SIZE);
             const per_key = if (n > 0) elapsed / n else 0;
-            printResult(.{
-                .name = std.fmt.comptimePrint("trieRoot (large values, {d} keys)", .{0}),
+            print_result(.{
+                .name = std.fmt.comptimePrint("trie_root (large values, {d} keys)", .{0}),
                 .n_keys = n,
                 .elapsed_ns = elapsed,
                 .per_key_ns = per_key,
@@ -330,9 +330,9 @@ pub fn main() !void {
     {
         const sizes = [_]usize{ TINY_N, SMALL_N, MEDIUM_N, LARGE_N };
         for (sizes) |n| {
-            const elapsed = benchTrieRootSecure(n, MEDIUM_VALUE_SIZE);
+            const elapsed = bench_trie_root_secure(n, MEDIUM_VALUE_SIZE);
             const per_key = if (n > 0) elapsed / n else 0;
-            printResult(.{
+            print_result(.{
                 .name = std.fmt.comptimePrint("secureTrie (medium values, {d} keys)", .{0}),
                 .n_keys = n,
                 .elapsed_ns = elapsed,
@@ -351,10 +351,10 @@ pub fn main() !void {
     {
         const sizes = [_]usize{ TINY_N, SMALL_N, MEDIUM_N };
         for (sizes) |n| {
-            const result = benchTrieMemory(n, MEDIUM_VALUE_SIZE);
+            const result = bench_trie_memory(n, MEDIUM_VALUE_SIZE);
             const bytes_per_key = if (n > 0) result.peak_bytes / n else 0;
             std.debug.print("  {d:>6} keys: {d:>10} bytes total ({d} bytes/key)", .{ n, result.peak_bytes, bytes_per_key });
-            const elapsed_str = formatNs(result.elapsed_ns);
+            const elapsed_str = format_ns(result.elapsed_ns);
             std.debug.print("  time={s}\n", .{&elapsed_str});
         }
     }
@@ -374,8 +374,8 @@ pub fn main() !void {
         };
 
         for (block_sizes) |bs| {
-            const elapsed = benchBlockStateRoot(bs.accounts);
-            const elapsed_str = formatNs(elapsed);
+            const elapsed = bench_block_state_root(bs.accounts);
+            const elapsed_str = format_ns(elapsed);
             const blocks_per_sec = if (elapsed > 0)
                 1_000_000_000.0 / @as(f64, @floatFromInt(elapsed))
             else
@@ -395,14 +395,14 @@ pub fn main() !void {
         // Target: 700 MGas/s, block = 15M gas, so ~46.7 blocks/s
         // Each block has ~2000 state changes needing trie root computation
         const n_changes: usize = 2000;
-        const elapsed = benchBlockStateRoot(n_changes);
+        const elapsed = bench_block_state_root(n_changes);
         const blocks_per_sec = if (elapsed > 0)
             1_000_000_000.0 / @as(f64, @floatFromInt(elapsed))
         else
             0.0;
         const effective_mgas = blocks_per_sec * 15.0; // 15M gas per block
 
-        std.debug.print("  State root compute time (2000 changes): {s}\n", .{&formatNs(elapsed)});
+        std.debug.print("  State root compute time (2000 changes): {s}\n", .{&format_ns(elapsed)});
         std.debug.print("  Block throughput (trie only):            {d:.1} blocks/s\n", .{blocks_per_sec});
         std.debug.print("  Effective MGas/s (trie only):            {d:.0} MGas/s\n", .{effective_mgas});
         std.debug.print("  Nethermind target:                       700 MGas/s (full client)\n", .{});
@@ -424,7 +424,7 @@ pub fn main() !void {
 
         // Per-key amortized cost
         const per_key = if (n_changes > 0) elapsed / n_changes else 0;
-        std.debug.print("  Per-key amortized cost:                  {s}\n", .{&formatNs(per_key)});
+        std.debug.print("  Per-key amortized cost:                  {s}\n", .{&format_ns(per_key)});
     }
 
     std.debug.print("\n", .{});
@@ -439,7 +439,7 @@ pub fn main() !void {
         std.debug.print("  - Zero memory leaks (arena owns everything)\n", .{});
 
         // Measure arena overhead vs direct allocator
-        const result = benchTrieMemory(1000, MEDIUM_VALUE_SIZE);
+        const result = bench_trie_memory(1000, MEDIUM_VALUE_SIZE);
         const bytes_per_key = result.peak_bytes / 1000;
         std.debug.print("  Memory efficiency: {d} bytes/key (1000 keys, {d}-byte values)\n", .{ bytes_per_key, MEDIUM_VALUE_SIZE });
 
