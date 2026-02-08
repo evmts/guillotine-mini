@@ -19,11 +19,11 @@
 /// Voltaire's `AccountState` already provides `isEOA()`, `isContract()`,
 /// `createEmpty()`, `equals()`, and RLP encode/decode.  This module adds:
 ///
-/// | Helper          | Spec equivalent                         | Semantics                                |
-/// |-----------------|-----------------------------------------|------------------------------------------|
-/// | `isEmpty`       | Python: `account == EMPTY_ACCOUNT`      | nonce=0, balance=0, code=empty           |
-/// | `isTotallyEmpty`| Nethermind: `IsTotallyEmpty`            | isEmpty AND storage_root=empty           |
-/// | `hasCodeOrNonce`| Python: `account_has_code_or_nonce()`   | nonce!=0 OR code!=empty                  |
+/// | Helper             | Spec equivalent                         | Semantics                                |
+/// |--------------------|-----------------------------------------|------------------------------------------|
+/// | `is_empty`         | Python: `account == EMPTY_ACCOUNT`      | nonce=0, balance=0, code=empty           |
+/// | `is_totally_empty` | Nethermind: `IsTotallyEmpty`            | is_empty AND storage_root=empty          |
+/// | `has_code_or_nonce`| Python: `account_has_code_or_nonce()`   | nonce!=0 OR code!=empty                  |
 ///
 /// These predicates are critical for EIP-158 (spurious dragon) empty account
 /// cleanup and EIP-161 state clearing.
@@ -59,9 +59,9 @@ pub const EMPTY_ACCOUNT: AccountState = AccountState.createEmpty();
 /// - Nethermind: `Account.IsEmpty` (`_codeHash is null && Balance.IsZero && Nonce.IsZero`)
 ///
 /// Note: does NOT check `storage_root`. An account with leftover storage but
-/// zero nonce/balance/code is still "empty" per EIP-161.  Use `isTotallyEmpty`
+/// zero nonce/balance/code is still "empty" per EIP-161.  Use `is_totally_empty`
 /// to also check storage.
-pub fn isEmpty(account: *const AccountState) bool {
+pub fn is_empty(account: *const AccountState) bool {
     return account.nonce == 0 and
         account.balance == 0 and
         std.mem.eql(u8, &account.code_hash, &EMPTY_CODE_HASH);
@@ -72,10 +72,10 @@ pub fn isEmpty(account: *const AccountState) bool {
 /// Equivalent to Nethermind's `Account.IsTotallyEmpty`:
 /// `_storageRoot is null && IsEmpty`
 ///
-/// This is stronger than `isEmpty` — it also requires that the storage
+/// This is stronger than `is_empty` — it also requires that the storage
 /// trie root matches the empty trie root (i.e., no storage entries).
-pub fn isTotallyEmpty(account: *const AccountState) bool {
-    return isEmpty(account) and
+pub fn is_totally_empty(account: *const AccountState) bool {
+    return is_empty(account) and
         std.mem.eql(u8, &account.storage_root, &EMPTY_TRIE_ROOT);
 }
 
@@ -89,7 +89,7 @@ pub fn isTotallyEmpty(account: *const AccountState) bool {
 /// ```
 ///
 /// Used during CREATE to check for address collision (EIP-7610).
-pub fn hasCodeOrNonce(account: *const AccountState) bool {
+pub fn has_code_or_nonce(account: *const AccountState) bool {
     return account.nonce != 0 or
         !std.mem.eql(u8, &account.code_hash, &EMPTY_CODE_HASH);
 }
@@ -104,45 +104,45 @@ test "EMPTY_ACCOUNT matches createEmpty" {
 }
 
 test "EMPTY_ACCOUNT is empty" {
-    try std.testing.expect(isEmpty(&EMPTY_ACCOUNT));
+    try std.testing.expect(is_empty(&EMPTY_ACCOUNT));
 }
 
 test "EMPTY_ACCOUNT is totally empty" {
-    try std.testing.expect(isTotallyEmpty(&EMPTY_ACCOUNT));
+    try std.testing.expect(is_totally_empty(&EMPTY_ACCOUNT));
 }
 
 test "EMPTY_ACCOUNT has no code or nonce" {
-    try std.testing.expect(!hasCodeOrNonce(&EMPTY_ACCOUNT));
+    try std.testing.expect(!has_code_or_nonce(&EMPTY_ACCOUNT));
 }
 
-test "isEmpty: true for zero nonce, zero balance, empty code" {
+test "is_empty: true for zero nonce, zero balance, empty code" {
     const acct = AccountState.from(.{
         .nonce = 0,
         .balance = 0,
         .code_hash = EMPTY_CODE_HASH,
     });
-    try std.testing.expect(isEmpty(&acct));
+    try std.testing.expect(is_empty(&acct));
 }
 
-test "isEmpty: false when nonce is non-zero" {
+test "is_empty: false when nonce is non-zero" {
     const acct = AccountState.from(.{
         .nonce = 1,
         .balance = 0,
         .code_hash = EMPTY_CODE_HASH,
     });
-    try std.testing.expect(!isEmpty(&acct));
+    try std.testing.expect(!is_empty(&acct));
 }
 
-test "isEmpty: false when balance is non-zero" {
+test "is_empty: false when balance is non-zero" {
     const acct = AccountState.from(.{
         .nonce = 0,
         .balance = 42,
         .code_hash = EMPTY_CODE_HASH,
     });
-    try std.testing.expect(!isEmpty(&acct));
+    try std.testing.expect(!is_empty(&acct));
 }
 
-test "isEmpty: false when code hash is non-empty" {
+test "is_empty: false when code hash is non-empty" {
     var custom_hash: [32]u8 = undefined;
     @memset(&custom_hash, 0xAB);
 
@@ -151,11 +151,11 @@ test "isEmpty: false when code hash is non-empty" {
         .balance = 0,
         .code_hash = custom_hash,
     });
-    try std.testing.expect(!isEmpty(&acct));
+    try std.testing.expect(!is_empty(&acct));
 }
 
-test "isEmpty: true even with non-empty storage root" {
-    // Per EIP-161, isEmpty does NOT check storage_root.
+test "is_empty: true even with non-empty storage root" {
+    // Per EIP-161, is_empty does NOT check storage_root.
     var custom_root: [32]u8 = undefined;
     @memset(&custom_root, 0xFF);
 
@@ -165,15 +165,15 @@ test "isEmpty: true even with non-empty storage root" {
         .code_hash = EMPTY_CODE_HASH,
         .storage_root = custom_root,
     });
-    try std.testing.expect(isEmpty(&acct));
+    try std.testing.expect(is_empty(&acct));
 }
 
-test "isTotallyEmpty: true for default empty account" {
+test "is_totally_empty: true for default empty account" {
     const acct = AccountState.createEmpty();
-    try std.testing.expect(isTotallyEmpty(&acct));
+    try std.testing.expect(is_totally_empty(&acct));
 }
 
-test "isTotallyEmpty: false when storage root is non-empty" {
+test "is_totally_empty: false when storage root is non-empty" {
     var custom_root: [32]u8 = undefined;
     @memset(&custom_root, 0xFF);
 
@@ -183,22 +183,22 @@ test "isTotallyEmpty: false when storage root is non-empty" {
         .code_hash = EMPTY_CODE_HASH,
         .storage_root = custom_root,
     });
-    // isEmpty is true, but isTotallyEmpty is false because storage_root != EMPTY_TRIE_ROOT.
-    try std.testing.expect(isEmpty(&acct));
-    try std.testing.expect(!isTotallyEmpty(&acct));
+    // is_empty is true, but is_totally_empty is false because storage_root != EMPTY_TRIE_ROOT.
+    try std.testing.expect(is_empty(&acct));
+    try std.testing.expect(!is_totally_empty(&acct));
 }
 
-test "isTotallyEmpty: false when nonce is non-zero" {
+test "is_totally_empty: false when nonce is non-zero" {
     const acct = AccountState.from(.{ .nonce = 1 });
-    try std.testing.expect(!isTotallyEmpty(&acct));
+    try std.testing.expect(!is_totally_empty(&acct));
 }
 
-test "hasCodeOrNonce: true when nonce is non-zero" {
+test "has_code_or_nonce: true when nonce is non-zero" {
     const acct = AccountState.from(.{ .nonce = 5 });
-    try std.testing.expect(hasCodeOrNonce(&acct));
+    try std.testing.expect(has_code_or_nonce(&acct));
 }
 
-test "hasCodeOrNonce: true when code is non-empty" {
+test "has_code_or_nonce: true when code is non-empty" {
     var custom_hash: [32]u8 = undefined;
     @memset(&custom_hash, 0xCD);
 
@@ -206,10 +206,10 @@ test "hasCodeOrNonce: true when code is non-empty" {
         .nonce = 0,
         .code_hash = custom_hash,
     });
-    try std.testing.expect(hasCodeOrNonce(&acct));
+    try std.testing.expect(has_code_or_nonce(&acct));
 }
 
-test "hasCodeOrNonce: true when both nonce and code are non-empty" {
+test "has_code_or_nonce: true when both nonce and code are non-empty" {
     var custom_hash: [32]u8 = undefined;
     @memset(&custom_hash, 0xEF);
 
@@ -217,37 +217,37 @@ test "hasCodeOrNonce: true when both nonce and code are non-empty" {
         .nonce = 3,
         .code_hash = custom_hash,
     });
-    try std.testing.expect(hasCodeOrNonce(&acct));
+    try std.testing.expect(has_code_or_nonce(&acct));
 }
 
-test "hasCodeOrNonce: false for empty account" {
+test "has_code_or_nonce: false for empty account" {
     const acct = AccountState.createEmpty();
-    try std.testing.expect(!hasCodeOrNonce(&acct));
+    try std.testing.expect(!has_code_or_nonce(&acct));
 }
 
-test "hasCodeOrNonce: false when only balance is set" {
-    // Balance alone does not make hasCodeOrNonce true.
+test "has_code_or_nonce: false when only balance is set" {
+    // Balance alone does not make has_code_or_nonce true.
     const acct = AccountState.from(.{
         .nonce = 0,
         .balance = 1_000_000,
         .code_hash = EMPTY_CODE_HASH,
     });
-    try std.testing.expect(!hasCodeOrNonce(&acct));
+    try std.testing.expect(!has_code_or_nonce(&acct));
 }
 
-test "isEmpty and hasCodeOrNonce are mutually consistent" {
-    // For the EMPTY_ACCOUNT: isEmpty=true, hasCodeOrNonce=false
-    try std.testing.expect(isEmpty(&EMPTY_ACCOUNT));
-    try std.testing.expect(!hasCodeOrNonce(&EMPTY_ACCOUNT));
+test "is_empty and has_code_or_nonce are mutually consistent" {
+    // For the EMPTY_ACCOUNT: is_empty=true, has_code_or_nonce=false
+    try std.testing.expect(is_empty(&EMPTY_ACCOUNT));
+    try std.testing.expect(!has_code_or_nonce(&EMPTY_ACCOUNT));
 
-    // For an account with nonce: isEmpty=false, hasCodeOrNonce=true
+    // For an account with nonce: is_empty=false, has_code_or_nonce=true
     const with_nonce = AccountState.from(.{ .nonce = 1 });
-    try std.testing.expect(!isEmpty(&with_nonce));
-    try std.testing.expect(hasCodeOrNonce(&with_nonce));
+    try std.testing.expect(!is_empty(&with_nonce));
+    try std.testing.expect(has_code_or_nonce(&with_nonce));
 
-    // For an account with only balance: isEmpty=false, hasCodeOrNonce=false
+    // For an account with only balance: is_empty=false, has_code_or_nonce=false
     // (balance makes it non-empty, but doesn't give it code or nonce)
     const with_balance = AccountState.from(.{ .balance = 100 });
-    try std.testing.expect(!isEmpty(&with_balance));
-    try std.testing.expect(!hasCodeOrNonce(&with_balance));
+    try std.testing.expect(!is_empty(&with_balance));
+    try std.testing.expect(!has_code_or_nonce(&with_balance));
 }
