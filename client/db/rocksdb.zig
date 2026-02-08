@@ -142,7 +142,7 @@ test "RocksDatabase: name is accessible after init" {
     defer db.deinit();
 
     try std.testing.expectEqual(DbName.headers, db.name);
-    try std.testing.expectEqualStrings("headers", db.name.toString());
+    try std.testing.expectEqualStrings("headers", db.name.to_string());
 }
 
 test "RocksDatabase: multiple instances with different names" {

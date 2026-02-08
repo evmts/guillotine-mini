@@ -85,7 +85,7 @@ pub const DbName = enum {
     peers,
 
     /// Returns the string representation matching Nethermind's DbNames constants.
-    pub fn toString(self: DbName) []const u8 {
+    pub fn to_string(self: DbName) []const u8 {
         return switch (self) {
             .state => "state",
             .storage => "storage",
@@ -421,22 +421,22 @@ test "Database vtable dispatches multiple operations" {
     try std.testing.expectEqual(@as(usize, 4), mock.call_count);
 }
 
-test "DbName toString matches Nethermind constants" {
-    try std.testing.expectEqualStrings("state", DbName.state.toString());
-    try std.testing.expectEqualStrings("storage", DbName.storage.toString());
-    try std.testing.expectEqualStrings("code", DbName.code.toString());
-    try std.testing.expectEqualStrings("blocks", DbName.blocks.toString());
-    try std.testing.expectEqualStrings("headers", DbName.headers.toString());
-    try std.testing.expectEqualStrings("blockNumbers", DbName.block_numbers.toString());
-    try std.testing.expectEqualStrings("receipts", DbName.receipts.toString());
-    try std.testing.expectEqualStrings("blockInfos", DbName.block_infos.toString());
-    try std.testing.expectEqualStrings("badBlocks", DbName.bad_blocks.toString());
-    try std.testing.expectEqualStrings("bloom", DbName.bloom.toString());
-    try std.testing.expectEqualStrings("metadata", DbName.metadata.toString());
-    try std.testing.expectEqualStrings("blobTransactions", DbName.blob_transactions.toString());
-    try std.testing.expectEqualStrings("discoveryNodes", DbName.discovery_nodes.toString());
-    try std.testing.expectEqualStrings("discoveryV5Nodes", DbName.discovery_v5_nodes.toString());
-    try std.testing.expectEqualStrings("peers", DbName.peers.toString());
+test "DbName to_string matches Nethermind constants" {
+    try std.testing.expectEqualStrings("state", DbName.state.to_string());
+    try std.testing.expectEqualStrings("storage", DbName.storage.to_string());
+    try std.testing.expectEqualStrings("code", DbName.code.to_string());
+    try std.testing.expectEqualStrings("blocks", DbName.blocks.to_string());
+    try std.testing.expectEqualStrings("headers", DbName.headers.to_string());
+    try std.testing.expectEqualStrings("blockNumbers", DbName.block_numbers.to_string());
+    try std.testing.expectEqualStrings("receipts", DbName.receipts.to_string());
+    try std.testing.expectEqualStrings("blockInfos", DbName.block_infos.to_string());
+    try std.testing.expectEqualStrings("badBlocks", DbName.bad_blocks.to_string());
+    try std.testing.expectEqualStrings("bloom", DbName.bloom.to_string());
+    try std.testing.expectEqualStrings("metadata", DbName.metadata.to_string());
+    try std.testing.expectEqualStrings("blobTransactions", DbName.blob_transactions.to_string());
+    try std.testing.expectEqualStrings("discoveryNodes", DbName.discovery_nodes.to_string());
+    try std.testing.expectEqualStrings("discoveryV5Nodes", DbName.discovery_v5_nodes.to_string());
+    try std.testing.expectEqualStrings("peers", DbName.peers.to_string());
 }
 
 test "DbName enum has all expected variants" {
