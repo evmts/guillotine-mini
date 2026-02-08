@@ -16,7 +16,6 @@
 const std = @import("std");
 const hash_mod = @import("hash.zig");
 const trie_root = hash_mod.trie_root;
-const EMPTY_TRIE_ROOT = hash_mod.EMPTY_TRIE_ROOT;
 const Hash = @import("crypto").Hash;
 
 /// Number of iterations for each benchmark tier.
@@ -97,7 +96,6 @@ const BenchResult = struct {
     n_keys: usize,
     elapsed_ns: u64,
     per_key_ns: u64,
-    keys_per_sec: f64,
 };
 
 fn print_result(r: BenchResult) void {
@@ -111,6 +109,29 @@ fn print_result(r: BenchResult) void {
         &per_key_str,
         &ops_str,
     });
+}
+
+fn run_trie_root_bench(keys: []const []const u8, values: []const []const u8) u64 {
+    std.debug.assert(keys.len == values.len);
+
+    // Warmup
+    for (0..WARMUP_ITERS) |_| {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        _ = trie_root(arena.allocator(), keys, values) catch unreachable;
+        arena.deinit();
+    }
+
+    // Timed iterations
+    var total_ns: u64 = 0;
+    for (0..BENCH_ITERS) |_| {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var timer = std.time.Timer.start() catch unreachable;
+        _ = trie_root(arena.allocator(), keys, values) catch unreachable;
+        total_ns += timer.read();
+        arena.deinit(); // Free ALL memory at once (transaction boundary)
+    }
+
+    return total_ns / BENCH_ITERS;
 }
 
 // ============================================================================
@@ -139,24 +160,7 @@ fn bench_trie_root(n: usize, value_size: usize) u64 {
         values[i] = val_bufs[i][0..value_size];
     }
 
-    // Warmup
-    for (0..WARMUP_ITERS) |_| {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        _ = trie_root(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
-        arena.deinit();
-    }
-
-    // Timed iterations
-    var total_ns: u64 = 0;
-    for (0..BENCH_ITERS) |_| {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        var timer = std.time.Timer.start() catch unreachable;
-        _ = trie_root(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
-        total_ns += timer.read();
-        arena.deinit(); // Free ALL memory at once (transaction boundary)
-    }
-
-    return total_ns / BENCH_ITERS;
+    return run_trie_root_bench(keys[0..actual_n], values[0..actual_n]);
 }
 
 /// Benchmark with keccak256'd keys (simulating secure trie / state trie).
@@ -181,24 +185,7 @@ fn bench_trie_root_secure(n: usize, value_size: usize) u64 {
         values[i] = val_bufs[i][0..value_size];
     }
 
-    // Warmup
-    for (0..WARMUP_ITERS) |_| {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        _ = trie_root(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
-        arena.deinit();
-    }
-
-    // Timed iterations
-    var total_ns: u64 = 0;
-    for (0..BENCH_ITERS) |_| {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        var timer = std.time.Timer.start() catch unreachable;
-        _ = trie_root(arena.allocator(), keys[0..actual_n], values[0..actual_n]) catch unreachable;
-        total_ns += timer.read();
-        arena.deinit();
-    }
-
-    return total_ns / BENCH_ITERS;
+    return run_trie_root_bench(keys[0..actual_n], values[0..actual_n]);
 }
 
 /// Measure peak memory usage for trie root computation.
@@ -274,10 +261,6 @@ pub fn main() !void {
                 .n_keys = n,
                 .elapsed_ns = elapsed,
                 .per_key_ns = per_key,
-                .keys_per_sec = if (elapsed > 0)
-                    @as(f64, @floatFromInt(n)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0)
-                else
-                    0,
             });
         }
     }
@@ -295,10 +278,6 @@ pub fn main() !void {
                 .n_keys = n,
                 .elapsed_ns = elapsed,
                 .per_key_ns = per_key,
-                .keys_per_sec = if (elapsed > 0)
-                    @as(f64, @floatFromInt(n)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0)
-                else
-                    0,
             });
         }
     }
@@ -316,10 +295,6 @@ pub fn main() !void {
                 .n_keys = n,
                 .elapsed_ns = elapsed,
                 .per_key_ns = per_key,
-                .keys_per_sec = if (elapsed > 0)
-                    @as(f64, @floatFromInt(n)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0)
-                else
-                    0,
             });
         }
     }
@@ -337,10 +312,6 @@ pub fn main() !void {
                 .n_keys = n,
                 .elapsed_ns = elapsed,
                 .per_key_ns = per_key,
-                .keys_per_sec = if (elapsed > 0)
-                    @as(f64, @floatFromInt(n)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0)
-                else
-                    0,
             });
         }
     }
