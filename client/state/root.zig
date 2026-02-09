@@ -21,7 +21,7 @@
 /// - `AccountState`  — Voltaire account state type (re-exported)
 /// - `is_empty`       — EIP-161 empty account predicate
 /// - `is_totally_empty` — Empty account with empty storage predicate
-/// - `is_account_alive` — Exists + not totally empty predicate
+/// - `is_account_alive` — Exists + not empty predicate (account != EMPTY_ACCOUNT)
 /// - `has_code_or_nonce` — Code-or-nonce predicate (for CREATE collision check)
 ///
 /// ## Usage
@@ -78,7 +78,7 @@ pub const is_totally_empty = account.is_totally_empty;
 /// Check whether an account has code or a non-zero nonce.
 pub const has_code_or_nonce = account.has_code_or_nonce;
 
-/// Check whether an account exists and is not totally empty.
+/// Check whether an account exists and is not empty.
 pub const is_account_alive = account.is_account_alive;
 
 test {

@@ -23,7 +23,7 @@
 /// |--------------------|-----------------------------------------|------------------------------------------|
 /// | `is_empty`         | Python: `account == EMPTY_ACCOUNT`      | nonce=0, balance=0, code=empty           |
 /// | `is_totally_empty` | Nethermind: `IsTotallyEmpty`            | is_empty AND storage_root=empty          |
-/// | `is_account_alive` | Python: `is_account_alive()`            | exists AND NOT totally empty             |
+/// | `is_account_alive` | Python: `is_account_alive()`            | exists AND NOT empty                     |
 /// | `has_code_or_nonce`| Python: `account_has_code_or_nonce()`   | nonce!=0 OR code!=empty                  |
 ///
 /// These predicates are critical for EIP-158 (spurious dragon) empty account
@@ -88,8 +88,8 @@ pub fn is_totally_empty(account: *const AccountState) bool {
 /// return account is not None and account != EMPTY_ACCOUNT
 /// ```
 ///
-/// This is stronger than `!is_empty` because it requires the account to be
-/// present and not totally empty (i.e. not equal to `EMPTY_ACCOUNT`).
+/// This is equivalent to `account != EMPTY_ACCOUNT` and requires the account
+/// to be present; storage_root is not considered.
 pub fn is_account_alive(account: ?AccountState) bool {
     if (account) |acct| {
         return !is_empty(&acct);
