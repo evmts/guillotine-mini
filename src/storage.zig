@@ -54,6 +54,13 @@ pub const Storage = struct {
         };
     }
 
+    /// Clean up storage maps when using a non-arena allocator.
+    pub fn deinit(self: *Storage) void {
+        self.storage.deinit();
+        self.original_storage.deinit();
+        self.transient.deinit();
+    }
+
     /// Clear injector cache (call at transaction start)
     ///
     /// Clears the storage injector's cache of previously fetched values.
@@ -278,6 +285,7 @@ pub const Storage = struct {
 test "Storage: init creates empty storage" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator, null, null);
+    defer storage.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), storage.storage.count());
     try std.testing.expectEqual(@as(usize, 0), storage.original_storage.count());
@@ -287,6 +295,7 @@ test "Storage: init creates empty storage" {
 test "Storage: get returns 0 for empty slot" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator, null, null);
+    defer storage.deinit();
 
     const addr = primitives.Address{ .bytes = [_]u8{0xab} ** 20 };
     const value = try storage.get(addr, 123);
@@ -296,6 +305,7 @@ test "Storage: get returns 0 for empty slot" {
 test "Storage: set and get persistent storage" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator, null, null);
+    defer storage.deinit();
 
     const addr = primitives.Address{ .bytes = [_]u8{0xab} ** 20 };
     const slot: u256 = 42;
@@ -316,6 +326,7 @@ test "Storage: set and get persistent storage" {
 test "Storage: set to zero deletes slot" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator, null, null);
+    defer storage.deinit();
 
     const addr = primitives.Address{ .bytes = [_]u8{0xab} ** 20 };
     const slot: u256 = 42;
@@ -332,6 +343,7 @@ test "Storage: set to zero deletes slot" {
 test "Storage: getOriginal returns current for unmodified slots" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator, null, null);
+    defer storage.deinit();
 
     const addr = primitives.Address{ .bytes = [_]u8{0xab} ** 20 };
     const slot: u256 = 42;
@@ -353,6 +365,7 @@ test "Storage: getOriginal returns current for unmodified slots" {
 test "Storage: transient storage get/set" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator, null, null);
+    defer storage.deinit();
 
     const addr = primitives.Address{ .bytes = [_]u8{0xcd} ** 20 };
     const slot: u256 = 789;
@@ -374,6 +387,7 @@ test "Storage: transient storage get/set" {
 test "Storage: transient storage set to zero deletes slot" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator, null, null);
+    defer storage.deinit();
 
     const addr = primitives.Address{ .bytes = [_]u8{0xef} ** 20 };
     const slot: u256 = 100;
@@ -390,6 +404,7 @@ test "Storage: transient storage set to zero deletes slot" {
 test "Storage: clearTransient removes all transient storage" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator, null, null);
+    defer storage.deinit();
 
     const addr1 = primitives.Address{ .bytes = [_]u8{0x11} ** 20 };
     const addr2 = primitives.Address{ .bytes = [_]u8{0x22} ** 20 };
@@ -416,6 +431,7 @@ test "Storage: clearTransient removes all transient storage" {
 test "Storage: multiple addresses with same slot" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator, null, null);
+    defer storage.deinit();
 
     const addr1 = primitives.Address{ .bytes = [_]u8{0xaa} ** 20 };
     const addr2 = primitives.Address{ .bytes = [_]u8{0xbb} ** 20 };
