@@ -204,59 +204,53 @@ const makeJournal = <K, V>(): JournalService<K, V> => {
 
 /** Production journal layer. */
 export const JournalLive = <K, V>(): Layer.Layer<Journal> =>
-  Layer.succeed(
-    Journal,
-    makeJournal<K, V>() as JournalService<unknown, unknown>,
-  );
+  Layer.succeed(Journal, makeJournal<unknown, unknown>());
 
 /** Deterministic journal layer for tests. */
 export const JournalTest = <K, V>(): Layer.Layer<Journal> =>
   JournalLive<K, V>();
 
+const journalService = <K, V>() =>
+  Effect.map(Journal, (journal) => journal as JournalService<K, V>);
+
+const withJournal = <K, V, A, E>(
+  f: (journal: JournalService<K, V>) => Effect.Effect<A, E>,
+) => Effect.flatMap(journalService<K, V>(), f);
+
 /** Append a journal entry and return its index. */
 export const append = <K, V>(entry: JournalEntry<K, V>) =>
-  Effect.gen(function* () {
-    const journal = (yield* Journal) as JournalService<K, V>;
-    return yield* journal.append(entry);
-  });
+  withJournal<K, V, number, never>((journal) => journal.append(entry));
 
 /** Capture the current journal snapshot. */
 export const takeSnapshot = () =>
-  Effect.gen(function* () {
-    const journal = (yield* Journal) as JournalService<unknown, unknown>;
-    return yield* journal.takeSnapshot();
-  });
+  withJournal<unknown, unknown, JournalSnapshot, never>((journal) =>
+    journal.takeSnapshot(),
+  );
 
 /** Restore the journal to a snapshot, preserving just-cache entries. */
 export const restore = <K, V, E = never>(
   snapshot: JournalSnapshot,
   onRevert?: (entry: JournalEntry<K, V>) => Effect.Effect<void, E>,
 ) =>
-  Effect.gen(function* () {
-    const journal = (yield* Journal) as JournalService<K, V>;
-    yield* journal.restore(snapshot, onRevert);
-  });
+  withJournal<K, V, void, InvalidSnapshotError | E>((journal) =>
+    journal.restore(snapshot, onRevert),
+  );
 
 /** Commit entries since a snapshot and truncate the journal. */
 export const commit = <K, V, E = never>(
   snapshot: JournalSnapshot,
   onCommit?: (entry: JournalEntry<K, V>) => Effect.Effect<void, E>,
 ) =>
-  Effect.gen(function* () {
-    const journal = (yield* Journal) as JournalService<K, V>;
-    yield* journal.commit(snapshot, onCommit);
-  });
+  withJournal<K, V, void, InvalidSnapshotError | E>((journal) =>
+    journal.commit(snapshot, onCommit),
+  );
 
 /** Clear all journal entries. */
 export const clear = () =>
-  Effect.gen(function* () {
-    const journal = (yield* Journal) as JournalService<unknown, unknown>;
-    yield* journal.clear();
-  });
+  withJournal<unknown, unknown, void, never>((journal) => journal.clear());
 
 /** Read a snapshot of all journal entries. */
 export const entries = <K, V>() =>
-  Effect.gen(function* () {
-    const journal = (yield* Journal) as JournalService<K, V>;
-    return yield* journal.entries();
-  });
+  withJournal<K, V, ReadonlyArray<JournalEntry<K, V>>, never>((journal) =>
+    journal.entries(),
+  );
