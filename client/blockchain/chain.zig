@@ -16,9 +16,11 @@ pub const Chain = struct {
     vtable: *const VTable,
     chain_id: ChainId.ChainId,
 
+    pub const ChainError = anyerror;
+
     pub const VTable = struct {
-        getBlockByHash: *const fn (ptr: *anyopaque, hash: Hash.Hash) !?Block.Block,
-        getBlockByNumber: *const fn (ptr: *anyopaque, number: u64) !?Block.Block,
+        getBlockByHash: *const fn (ptr: *anyopaque, hash: Hash.Hash) ChainError!?Block.Block,
+        getBlockByNumber: *const fn (ptr: *anyopaque, number: u64) ChainError!?Block.Block,
     };
 
     /// Create a Chain view over a Voltaire Blockchain backend.
