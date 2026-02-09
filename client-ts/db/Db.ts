@@ -64,6 +64,18 @@ export class DbError extends Data.TaggedError("DbError")<{
   readonly cause?: unknown;
 }> {}
 
+/** Single write operation for batched commits. */
+export type DbWriteOp =
+  | {
+      readonly _tag: "put";
+      readonly key: BytesType;
+      readonly value: BytesType;
+    }
+  | {
+      readonly _tag: "del";
+      readonly key: BytesType;
+    };
+
 /** Batched write operations. */
 export interface WriteBatch {
   readonly put: (
@@ -86,6 +98,9 @@ export interface DbService {
   ) => Effect.Effect<void, DbError>;
   readonly remove: (key: BytesType) => Effect.Effect<void, DbError>;
   readonly has: (key: BytesType) => Effect.Effect<boolean, DbError>;
+  readonly writeBatch: (
+    ops: ReadonlyArray<DbWriteOp>,
+  ) => Effect.Effect<void, DbError>;
   readonly startWriteBatch: () => Effect.Effect<
     WriteBatch,
     DbError,
@@ -109,6 +124,17 @@ const encodeKey = (key: BytesType): Effect.Effect<string, DbError> =>
   });
 
 const cloneBytes = (value: BytesType): BytesType => value.slice() as BytesType;
+
+type PreparedWriteOp =
+  | {
+      readonly _tag: "put";
+      readonly keyHex: string;
+      readonly value: BytesType;
+    }
+  | {
+      readonly _tag: "del";
+      readonly keyHex: string;
+    };
 
 const makeMemoryDb = (config: DbConfig) =>
   Effect.gen(function* () {
@@ -141,6 +167,42 @@ const makeMemoryDb = (config: DbConfig) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
         return store.has(keyHex);
+      });
+
+    const writeBatch = (ops: ReadonlyArray<DbWriteOp>) =>
+      Effect.gen(function* () {
+        if (ops.length === 0) {
+          return;
+        }
+
+        const prepared: Array<PreparedWriteOp> = [];
+
+        for (const op of ops) {
+          switch (op._tag) {
+            case "put": {
+              const keyHex = yield* encodeKey(op.key);
+              prepared.push({
+                _tag: "put",
+                keyHex,
+                value: cloneBytes(op.value),
+              });
+              break;
+            }
+            case "del": {
+              const keyHex = yield* encodeKey(op.key);
+              prepared.push({ _tag: "del", keyHex });
+              break;
+            }
+          }
+        }
+
+        for (const op of prepared) {
+          if (op._tag === "put") {
+            store.set(op.keyHex, op.value);
+          } else {
+            store.delete(op.keyHex);
+          }
+        }
       });
 
     const startWriteBatch = () =>
@@ -193,6 +255,7 @@ const makeMemoryDb = (config: DbConfig) =>
       put,
       remove,
       has,
+      writeBatch,
       startWriteBatch,
     } satisfies DbService;
   });
@@ -232,6 +295,13 @@ export const has = (key: BytesType) =>
   Effect.gen(function* () {
     const db = yield* Db;
     return yield* db.has(key);
+  });
+
+/** Apply a batch of write operations. */
+export const writeBatch = (ops: ReadonlyArray<DbWriteOp>) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db.writeBatch(ops);
   });
 
 /** Start a write batch scope. */
