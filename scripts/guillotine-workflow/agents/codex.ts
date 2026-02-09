@@ -39,10 +39,14 @@ const apiAgent = new Agent({
   maxOutputTokens: 8192,
 });
 
+const REPO_ROOT = new URL("../../..", import.meta.url).pathname.replace(/\/$/, "");
+
 const cliAgent = new CodexAgent({
   model: CODEX_MODEL,
   systemPrompt: CODEX_INSTRUCTIONS,
-  fullAuto: true,
+  yolo: true,
+  cwd: REPO_ROOT,
+  config: { model_reasoning_effort: "xhigh" },
 });
 
 export const codex = USE_CLI ? cliAgent : apiAgent;
