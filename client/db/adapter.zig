@@ -352,6 +352,14 @@ pub const WriteBatch = struct {
 // Tests
 // ---------------------------------------------------------------------------
 
+fn get_null(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+    return null;
+}
+
+fn contains_false(_: *anyopaque, _: []const u8) Error!bool {
+    return false;
+}
+
 /// Minimal mock database for testing the vtable dispatch mechanism.
 /// This is NOT the full MemoryDatabase (that goes in memory.zig).
 const MockDb = struct {
@@ -447,25 +455,17 @@ test "Database supports_write_batch reports true when present" {
     const BatchDb = struct {
         const Self = @This();
 
-        fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
-            return null;
-        }
-
         fn put_impl(_: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {}
 
         fn delete_impl(_: *anyopaque, _: []const u8) Error!void {}
 
-        fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
-            return false;
-        }
-
         fn write_batch_impl(_: *anyopaque, _: []const WriteBatchOp) Error!void {}
 
         const vtable = Database.VTable{
-            .get = get_impl,
+            .get = get_null,
             .put = put_impl,
             .delete = delete_impl,
-            .contains = contains_impl,
+            .contains = contains_false,
             .write_batch = write_batch_impl,
         };
 
@@ -560,10 +560,6 @@ const TrackingDb = struct {
         self.deletes.deinit(self.alloc);
     }
 
-    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
-        return null;
-    }
-
     fn put_impl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
         const self: *TrackingDb = @ptrCast(@alignCast(ptr));
         const owned_key = self.alloc.dupe(u8, key) catch return error.OutOfMemory;
@@ -590,15 +586,11 @@ const TrackingDb = struct {
         };
     }
 
-    fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
-        return false;
-    }
-
     const vtable = Database.VTable{
-        .get = get_impl,
+        .get = get_null,
         .put = put_impl,
         .delete = delete_impl,
-        .contains = contains_impl,
+        .contains = contains_false,
     };
 
     fn database(self: *TrackingDb) Database {
@@ -718,10 +710,6 @@ const FailingDb = struct {
     /// Tracks how many writes have been applied.
     applied: usize = 0,
 
-    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
-        return null;
-    }
-
     fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
         const self: *FailingDb = @ptrCast(@alignCast(ptr));
         if (self.applied >= self.succeed_count) {
@@ -738,15 +726,11 @@ const FailingDb = struct {
         self.applied += 1;
     }
 
-    fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
-        return false;
-    }
-
     const vtable = Database.VTable{
-        .get = get_impl,
+        .get = get_null,
         .put = put_impl,
         .delete = delete_impl,
-        .contains = contains_impl,
+        .contains = contains_false,
     };
 
     fn database(self: *FailingDb) Database {
@@ -784,10 +768,6 @@ const AtomicDb = struct {
     /// When true, write_batch will fail (to test rollback).
     should_fail: bool = false,
 
-    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
-        return null;
-    }
-
     fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
         const self: *AtomicDb = @ptrCast(@alignCast(ptr));
         self.committed_count += 1;
@@ -796,10 +776,6 @@ const AtomicDb = struct {
     fn delete_impl(ptr: *anyopaque, _: []const u8) Error!void {
         const self: *AtomicDb = @ptrCast(@alignCast(ptr));
         self.committed_count += 1;
-    }
-
-    fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
-        return false;
     }
 
     fn write_batch_impl(ptr: *anyopaque, ops: []const WriteBatchOp) Error!void {
@@ -812,10 +788,10 @@ const AtomicDb = struct {
     }
 
     const vtable = Database.VTable{
-        .get = get_impl,
+        .get = get_null,
         .put = put_impl,
         .delete = delete_impl,
-        .contains = contains_impl,
+        .contains = contains_false,
         .write_batch = write_batch_impl,
     };
 
