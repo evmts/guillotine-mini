@@ -14,7 +14,7 @@ const primitives = @import("primitives");
 const Hardfork = primitives.Hardfork;
 const tx_mod = primitives.Transaction;
 const intrinsic_gas = @import("intrinsic_gas.zig");
-const calculateIntrinsicGas = intrinsic_gas.calculateIntrinsicGas;
+const calculate_intrinsic_gas = intrinsic_gas.calculate_intrinsic_gas;
 const MAX_INIT_CODE_SIZE = intrinsic_gas.MAX_INIT_CODE_SIZE;
 
 /// Validate a transaction per execution-specs and return its intrinsic gas.
@@ -23,7 +23,7 @@ const MAX_INIT_CODE_SIZE = intrinsic_gas.MAX_INIT_CODE_SIZE;
 /// - gas limit >= max(intrinsic gas, calldata floor) (Prague+ EIP-7623)
 /// - nonce < 2**64 - 1
 /// - init code size <= MAX_INIT_CODE_SIZE (Shanghai+ contract creation)
-pub fn validateTransaction(
+pub fn validate_transaction(
     tx: anytype,
     hardfork: Hardfork,
 ) error{ InsufficientGas, NonceOverflow, InitCodeTooLarge, UnsupportedTransactionType }!u64 {
@@ -35,7 +35,7 @@ pub fn validateTransaction(
             Tx != tx_mod.Eip4844Transaction and
             Tx != tx_mod.Eip7702Transaction)
         {
-            @compileError("Unsupported transaction type for validateTransaction");
+            @compileError("Unsupported transaction type for validate_transaction");
         }
     }
 
@@ -70,7 +70,7 @@ pub fn validateTransaction(
         authorization_count = @intCast(tx.authorization_list.len);
     }
 
-    const intrinsic = calculateIntrinsicGas(.{
+    const intrinsic = calculate_intrinsic_gas(.{
         .data = tx.data,
         .is_create = is_create,
         .access_list_address_count = access_list_address_count,
@@ -79,7 +79,7 @@ pub fn validateTransaction(
         .hardfork = hardfork,
     });
 
-    const calldata_floor = intrinsic_gas.calculateCalldataFloorGas(tx.data, hardfork);
+    const calldata_floor = intrinsic_gas.calculate_calldata_floor_gas(tx.data, hardfork);
     const required_gas = if (calldata_floor > intrinsic) calldata_floor else intrinsic;
     if (required_gas > tx.gas_limit) return error.InsufficientGas;
     if (tx.nonce >= std.math.maxInt(u64)) return error.NonceOverflow;
@@ -95,7 +95,7 @@ pub fn validateTransaction(
 // Tests
 // =============================================================================
 
-test "validateTransaction — legacy ok" {
+test "validate_transaction — legacy ok" {
     const Address = primitives.Address;
 
     const tx = tx_mod.LegacyTransaction{
@@ -110,11 +110,11 @@ test "validateTransaction — legacy ok" {
         .s = [_]u8{0} ** 32,
     };
 
-    const intrinsic = try validateTransaction(tx, .LONDON);
+    const intrinsic = try validate_transaction(tx, .LONDON);
     try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), intrinsic);
 }
 
-test "validateTransaction — legacy insufficient gas" {
+test "validate_transaction — legacy insufficient gas" {
     const Address = primitives.Address;
 
     const tx = tx_mod.LegacyTransaction{
@@ -129,10 +129,10 @@ test "validateTransaction — legacy insufficient gas" {
         .s = [_]u8{0} ** 32,
     };
 
-    try std.testing.expectError(error.InsufficientGas, validateTransaction(tx, .LONDON));
+    try std.testing.expectError(error.InsufficientGas, validate_transaction(tx, .LONDON));
 }
 
-test "validateTransaction — nonce overflow" {
+test "validate_transaction — nonce overflow" {
     const Address = primitives.Address;
 
     const tx = tx_mod.LegacyTransaction{
@@ -147,17 +147,17 @@ test "validateTransaction — nonce overflow" {
         .s = [_]u8{0} ** 32,
     };
 
-    try std.testing.expectError(error.NonceOverflow, validateTransaction(tx, .LONDON));
+    try std.testing.expectError(error.NonceOverflow, validate_transaction(tx, .LONDON));
 }
 
-test "validateTransaction — init code size limit (Shanghai+)" {
+test "validate_transaction — init code size limit (Shanghai+)" {
     const allocator = std.testing.allocator;
 
     const size: usize = @intCast(MAX_INIT_CODE_SIZE + 1);
     const init_code = try allocator.alloc(u8, size);
     defer allocator.free(init_code);
 
-    const intrinsic = intrinsic_gas.calculateIntrinsicGas(.{
+    const intrinsic = intrinsic_gas.calculate_intrinsic_gas(.{
         .data = init_code,
         .is_create = true,
         .hardfork = .SHANGHAI,
@@ -175,10 +175,10 @@ test "validateTransaction — init code size limit (Shanghai+)" {
         .s = [_]u8{0} ** 32,
     };
 
-    try std.testing.expectError(error.InitCodeTooLarge, validateTransaction(tx, .SHANGHAI));
+    try std.testing.expectError(error.InitCodeTooLarge, validate_transaction(tx, .SHANGHAI));
 }
 
-test "validateTransaction — eip1559 access list intrinsic gas" {
+test "validate_transaction — eip1559 access list intrinsic gas" {
     const Address = primitives.Address;
 
     const key1 = [_]u8{0x01} ** 32;
@@ -208,11 +208,11 @@ test "validateTransaction — eip1559 access list intrinsic gas" {
         .s = [_]u8{0} ** 32,
     };
 
-    const intrinsic = try validateTransaction(tx, .CANCUN);
+    const intrinsic = try validate_transaction(tx, .CANCUN);
     try std.testing.expectEqual(@as(u64, expected_gas), intrinsic);
 }
 
-test "validateTransaction — eip2930 access list intrinsic gas" {
+test "validate_transaction — eip2930 access list intrinsic gas" {
     const Address = primitives.Address;
 
     const key1 = [_]u8{0x0A} ** 32;
@@ -241,11 +241,11 @@ test "validateTransaction — eip2930 access list intrinsic gas" {
         .s = [_]u8{0} ** 32,
     };
 
-    const intrinsic = try validateTransaction(tx, .BERLIN);
+    const intrinsic = try validate_transaction(tx, .BERLIN);
     try std.testing.expectEqual(@as(u64, expected_gas), intrinsic);
 }
 
-test "validateTransaction — eip1559 rejected before London" {
+test "validate_transaction — eip1559 rejected before London" {
     const Address = primitives.Address;
 
     const tx = tx_mod.Eip1559Transaction{
@@ -263,10 +263,10 @@ test "validateTransaction — eip1559 rejected before London" {
         .s = [_]u8{0} ** 32,
     };
 
-    try std.testing.expectError(error.UnsupportedTransactionType, validateTransaction(tx, .BERLIN));
+    try std.testing.expectError(error.UnsupportedTransactionType, validate_transaction(tx, .BERLIN));
 }
 
-test "validateTransaction — eip2930 rejected before Berlin" {
+test "validate_transaction — eip2930 rejected before Berlin" {
     const Address = primitives.Address;
 
     const tx = tx_mod.Eip2930Transaction{
@@ -283,10 +283,10 @@ test "validateTransaction — eip2930 rejected before Berlin" {
         .s = [_]u8{0} ** 32,
     };
 
-    try std.testing.expectError(error.UnsupportedTransactionType, validateTransaction(tx, .ISTANBUL));
+    try std.testing.expectError(error.UnsupportedTransactionType, validate_transaction(tx, .ISTANBUL));
 }
 
-test "validateTransaction — eip4844 rejected before Cancun" {
+test "validate_transaction — eip4844 rejected before Cancun" {
     const Address = primitives.Address;
     const VersionedHash = primitives.Blob.VersionedHash;
 
@@ -309,10 +309,10 @@ test "validateTransaction — eip4844 rejected before Cancun" {
         .s = [_]u8{0} ** 32,
     };
 
-    try std.testing.expectError(error.UnsupportedTransactionType, validateTransaction(tx, .SHANGHAI));
+    try std.testing.expectError(error.UnsupportedTransactionType, validate_transaction(tx, .SHANGHAI));
 }
 
-test "validateTransaction — eip7702 rejected before Prague" {
+test "validate_transaction — eip7702 rejected before Prague" {
     const Address = primitives.Address;
     const Authorization = primitives.Authorization.Authorization;
 
@@ -341,10 +341,10 @@ test "validateTransaction — eip7702 rejected before Prague" {
         .s = [_]u8{0} ** 32,
     };
 
-    try std.testing.expectError(error.UnsupportedTransactionType, validateTransaction(tx, .CANCUN));
+    try std.testing.expectError(error.UnsupportedTransactionType, validate_transaction(tx, .CANCUN));
 }
 
-test "validateTransaction — eip4844 intrinsic gas" {
+test "validate_transaction — eip4844 intrinsic gas" {
     const Address = primitives.Address;
     const VersionedHash = primitives.Blob.VersionedHash;
 
@@ -367,15 +367,15 @@ test "validateTransaction — eip4844 intrinsic gas" {
         .s = [_]u8{0} ** 32,
     };
 
-    const intrinsic = try validateTransaction(tx, .CANCUN);
+    const intrinsic = try validate_transaction(tx, .CANCUN);
     try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), intrinsic);
 }
 
-test "validateTransaction — prague calldata floor enforced" {
+test "validate_transaction — prague calldata floor enforced" {
     const Address = primitives.Address;
 
     const data = [_]u8{0x01}; // one non-zero byte => floor > intrinsic
-    const intrinsic = intrinsic_gas.calculateIntrinsicGas(.{
+    const intrinsic = intrinsic_gas.calculate_intrinsic_gas(.{
         .data = &data,
         .hardfork = .PRAGUE,
     });
@@ -392,10 +392,10 @@ test "validateTransaction — prague calldata floor enforced" {
         .s = [_]u8{0} ** 32,
     };
 
-    try std.testing.expectError(error.InsufficientGas, validateTransaction(tx, .PRAGUE));
+    try std.testing.expectError(error.InsufficientGas, validate_transaction(tx, .PRAGUE));
 }
 
-test "validateTransaction — eip7702 authorization intrinsic gas" {
+test "validate_transaction — eip7702 authorization intrinsic gas" {
     const Address = primitives.Address;
     const Authorization = primitives.Authorization.Authorization;
 
@@ -436,6 +436,6 @@ test "validateTransaction — eip7702 authorization intrinsic gas" {
         .s = [_]u8{0} ** 32,
     };
 
-    const intrinsic = try validateTransaction(tx, .PRAGUE);
+    const intrinsic = try validate_transaction(tx, .PRAGUE);
     try std.testing.expectEqual(@as(u64, expected), intrinsic);
 }

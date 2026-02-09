@@ -28,7 +28,7 @@
 /// const host = adapter.host_interface();
 ///
 /// // Calculate intrinsic gas for a transaction
-/// const gas = client_evm.calculateIntrinsicGas(.{
+/// const gas = client_evm.calculate_intrinsic_gas(.{
 ///     .data = tx_data,
 ///     .is_create = true,
 ///     .hardfork = .CANCUN,
@@ -44,26 +44,41 @@ const processor = @import("processor.zig");
 pub const HostAdapter = host_adapter.HostAdapter;
 
 /// Calculate the intrinsic gas cost of a transaction.
-pub const calculateIntrinsicGas = intrinsic_gas.calculateIntrinsicGas;
+pub const calculate_intrinsic_gas = intrinsic_gas.calculate_intrinsic_gas;
 
 /// Calculate the gas cost for init code words (EIP-3860).
-pub const initCodeCost = intrinsic_gas.initCodeCost;
+pub const init_code_cost = intrinsic_gas.init_code_cost;
 
 /// Parameters for intrinsic gas calculation.
 pub const IntrinsicGasParams = intrinsic_gas.IntrinsicGasParams;
 
 /// Validate a transaction and return its intrinsic gas.
-pub const validateTransaction = processor.validateTransaction;
+pub const validate_transaction = processor.validate_transaction;
 
 // -- Gas constants re-exports ----------------------------------------------
 
+/// Base cost of any transaction.
 pub const TX_BASE_COST = intrinsic_gas.TX_BASE_COST;
+
+/// Gas cost per zero byte in transaction data.
 pub const TX_DATA_COST_PER_ZERO = intrinsic_gas.TX_DATA_COST_PER_ZERO;
+
+/// Gas cost per non-zero byte in transaction data.
 pub const TX_DATA_COST_PER_NON_ZERO = intrinsic_gas.TX_DATA_COST_PER_NON_ZERO;
+
+/// Additional gas cost for contract creation transactions.
 pub const TX_CREATE_COST = intrinsic_gas.TX_CREATE_COST;
+
+/// Gas cost per address in an EIP-2930 access list.
 pub const TX_ACCESS_LIST_ADDRESS_COST = intrinsic_gas.TX_ACCESS_LIST_ADDRESS_COST;
+
+/// Gas cost per storage key in an EIP-2930 access list.
 pub const TX_ACCESS_LIST_STORAGE_KEY_COST = intrinsic_gas.TX_ACCESS_LIST_STORAGE_KEY_COST;
+
+/// Gas cost per 32-byte word of init code (EIP-3860).
 pub const INIT_CODE_WORD_COST = intrinsic_gas.INIT_CODE_WORD_COST;
+
+/// Maximum allowed init code size in bytes (EIP-3860).
 pub const MAX_INIT_CODE_SIZE = intrinsic_gas.MAX_INIT_CODE_SIZE;
 
 test {

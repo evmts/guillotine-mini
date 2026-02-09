@@ -97,7 +97,7 @@ pub const IntrinsicGasParams = struct {
 ///
 /// Follows the Python spec: `calculate_intrinsic_cost(tx)` from
 /// `execution-specs/src/ethereum/forks/cancun/transactions.py`.
-pub fn calculateIntrinsicGas(params: IntrinsicGasParams) u64 {
+pub fn calculate_intrinsic_gas(params: IntrinsicGasParams) u64 {
     // 1. Data cost: 4 gas per zero byte, 16 gas per non-zero byte
     var data_cost: u64 = 0;
     for (params.data) |byte| {
@@ -114,7 +114,7 @@ pub fn calculateIntrinsicGas(params: IntrinsicGasParams) u64 {
         create_cost = TX_CREATE_COST;
         // EIP-3860 (Shanghai+): charge 2 gas per 32-byte word of init code
         if (params.hardfork.isAtLeast(.SHANGHAI)) {
-            create_cost += initCodeCost(params.data.len);
+            create_cost += init_code_cost(params.data.len);
         }
     }
 
@@ -136,7 +136,7 @@ pub fn calculateIntrinsicGas(params: IntrinsicGasParams) u64 {
 /// Calculate the calldata floor gas cost (EIP-7623, Prague+).
 ///
 /// Returns zero for pre-Prague hardforks.
-pub fn calculateCalldataFloorGas(data: []const u8, hardfork: Hardfork) u64 {
+pub fn calculate_calldata_floor_gas(data: []const u8, hardfork: Hardfork) u64 {
     if (!hardfork.isAtLeast(.PRAGUE)) return 0;
 
     var zero_bytes: u64 = 0;
@@ -157,7 +157,7 @@ pub fn calculateCalldataFloorGas(data: []const u8, hardfork: Hardfork) u64 {
 ///
 /// Python spec: `GAS_INIT_CODE_WORD_COST * ceil32(init_code_length) // 32`
 /// from `execution-specs/src/ethereum/forks/cancun/vm/gas.py`.
-pub fn initCodeCost(init_code_length: usize) u64 {
+pub fn init_code_cost(init_code_length: usize) u64 {
     const len: u64 = @intCast(init_code_length);
     // ceil32(len) = ((len + 31) / 32) * 32, then divide by 32
     // Simplifies to: (len + 31) / 32
@@ -170,34 +170,34 @@ pub fn initCodeCost(init_code_length: usize) u64 {
 // =============================================================================
 
 test "intrinsic gas — simple transfer (no data, no create)" {
-    const gas = calculateIntrinsicGas(.{});
+    const gas = calculate_intrinsic_gas(.{});
     try std.testing.expectEqual(@as(u64, 21_000), gas);
 }
 
 test "intrinsic gas — transfer with zero-byte data" {
     const data = [_]u8{ 0, 0, 0, 0 };
-    const gas = calculateIntrinsicGas(.{ .data = &data });
+    const gas = calculate_intrinsic_gas(.{ .data = &data });
     // 21000 + 4 * 4 = 21016
     try std.testing.expectEqual(@as(u64, 21_016), gas);
 }
 
 test "intrinsic gas — transfer with non-zero-byte data" {
     const data = [_]u8{ 0xFF, 0xAB, 0x01 };
-    const gas = calculateIntrinsicGas(.{ .data = &data });
+    const gas = calculate_intrinsic_gas(.{ .data = &data });
     // 21000 + 3 * 16 = 21048
     try std.testing.expectEqual(@as(u64, 21_048), gas);
 }
 
 test "intrinsic gas — transfer with mixed data" {
     const data = [_]u8{ 0x00, 0xFF, 0x00, 0xAB };
-    const gas = calculateIntrinsicGas(.{ .data = &data });
+    const gas = calculate_intrinsic_gas(.{ .data = &data });
     // 21000 + 2*4 + 2*16 = 21000 + 8 + 32 = 21040
     try std.testing.expectEqual(@as(u64, 21_040), gas);
 }
 
 test "intrinsic gas — contract creation (pre-Shanghai, no EIP-3860)" {
     const init_code = [_]u8{0x60} ** 64; // 64 bytes of PUSH1
-    const gas = calculateIntrinsicGas(.{
+    const gas = calculate_intrinsic_gas(.{
         .data = &init_code,
         .is_create = true,
         .hardfork = .LONDON,
@@ -209,7 +209,7 @@ test "intrinsic gas — contract creation (pre-Shanghai, no EIP-3860)" {
 
 test "intrinsic gas — contract creation (Shanghai+, EIP-3860)" {
     const init_code = [_]u8{0x60} ** 64; // 64 bytes = 2 words
-    const gas = calculateIntrinsicGas(.{
+    const gas = calculate_intrinsic_gas(.{
         .data = &init_code,
         .is_create = true,
         .hardfork = .SHANGHAI,
@@ -220,7 +220,7 @@ test "intrinsic gas — contract creation (Shanghai+, EIP-3860)" {
 
 test "intrinsic gas — contract creation with non-word-aligned init code" {
     const init_code = [_]u8{0x60} ** 33; // 33 bytes = ceil(33/32) = 2 words
-    const gas = calculateIntrinsicGas(.{
+    const gas = calculate_intrinsic_gas(.{
         .data = &init_code,
         .is_create = true,
         .hardfork = .CANCUN,
@@ -230,7 +230,7 @@ test "intrinsic gas — contract creation with non-word-aligned init code" {
 }
 
 test "intrinsic gas — with access list" {
-    const gas = calculateIntrinsicGas(.{
+    const gas = calculate_intrinsic_gas(.{
         .access_list_address_count = 2,
         .access_list_storage_key_count = 3,
     });
@@ -240,7 +240,7 @@ test "intrinsic gas — with access list" {
 
 test "intrinsic gas — full transaction (create + data + access list, Cancun)" {
     const init_code = [_]u8{0x60} ** 32; // 32 bytes = 1 word
-    const gas = calculateIntrinsicGas(.{
+    const gas = calculate_intrinsic_gas(.{
         .data = &init_code,
         .is_create = true,
         .access_list_address_count = 1,
@@ -253,7 +253,7 @@ test "intrinsic gas — full transaction (create + data + access list, Cancun)" 
 }
 
 test "intrinsic gas — empty data contract creation (Cancun)" {
-    const gas = calculateIntrinsicGas(.{
+    const gas = calculate_intrinsic_gas(.{
         .data = &.{},
         .is_create = true,
         .hardfork = .CANCUN,
@@ -262,24 +262,24 @@ test "intrinsic gas — empty data contract creation (Cancun)" {
     try std.testing.expectEqual(@as(u64, 53_000), gas);
 }
 
-test "initCodeCost — exact word boundary" {
+test "init_code_cost — exact word boundary" {
     // 32 bytes = 1 word → 2 gas
-    try std.testing.expectEqual(@as(u64, 2), initCodeCost(32));
+    try std.testing.expectEqual(@as(u64, 2), init_code_cost(32));
     // 64 bytes = 2 words → 4 gas
-    try std.testing.expectEqual(@as(u64, 4), initCodeCost(64));
+    try std.testing.expectEqual(@as(u64, 4), init_code_cost(64));
 }
 
-test "initCodeCost — non-word-aligned" {
+test "init_code_cost — non-word-aligned" {
     // 1 byte → ceil(1/32) = 1 word → 2 gas
-    try std.testing.expectEqual(@as(u64, 2), initCodeCost(1));
+    try std.testing.expectEqual(@as(u64, 2), init_code_cost(1));
     // 33 bytes → ceil(33/32) = 2 words → 4 gas
-    try std.testing.expectEqual(@as(u64, 4), initCodeCost(33));
+    try std.testing.expectEqual(@as(u64, 4), init_code_cost(33));
     // 31 bytes → ceil(31/32) = 1 word → 2 gas
-    try std.testing.expectEqual(@as(u64, 2), initCodeCost(31));
+    try std.testing.expectEqual(@as(u64, 2), init_code_cost(31));
 }
 
 test "intrinsic gas — eip7702 authorization cost (Prague+)" {
-    const gas = calculateIntrinsicGas(.{
+    const gas = calculate_intrinsic_gas(.{
         .authorization_count = 2,
         .hardfork = .PRAGUE,
     });
@@ -289,21 +289,21 @@ test "intrinsic gas — eip7702 authorization cost (Prague+)" {
 
 test "calldata floor gas — prague applies floor" {
     const data = [_]u8{0x01}; // one non-zero byte => 4 tokens
-    const floor = calculateCalldataFloorGas(&data, .PRAGUE);
+    const floor = calculate_calldata_floor_gas(&data, .PRAGUE);
     // 21000 + 4*10 = 21040
     try std.testing.expectEqual(@as(u64, 21_040), floor);
 }
 
 test "calldata floor gas — pre-prague returns zero" {
     const data = [_]u8{0x01};
-    try std.testing.expectEqual(@as(u64, 0), calculateCalldataFloorGas(&data, .CANCUN));
+    try std.testing.expectEqual(@as(u64, 0), calculate_calldata_floor_gas(&data, .CANCUN));
 }
 
-test "initCodeCost — zero length" {
-    try std.testing.expectEqual(@as(u64, 0), initCodeCost(0));
+test "init_code_cost — zero length" {
+    try std.testing.expectEqual(@as(u64, 0), init_code_cost(0));
 }
 
-test "initCodeCost — max init code size" {
+test "init_code_cost — max init code size" {
     // 49152 bytes = 1536 words → 3072 gas
-    try std.testing.expectEqual(@as(u64, 3_072), initCodeCost(MAX_INIT_CODE_SIZE));
+    try std.testing.expectEqual(@as(u64, 3_072), init_code_cost(MAX_INIT_CODE_SIZE));
 }
