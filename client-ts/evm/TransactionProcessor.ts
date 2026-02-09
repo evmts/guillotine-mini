@@ -217,7 +217,7 @@ const makeTransactionProcessor = Effect.gen(function* () {
     baseFeePerGas: bigint,
   ) =>
     Effect.gen(function* () {
-      const parsedTx = yield* Schema.decode(TransactionSchema)(tx).pipe(
+      const parsedTx = yield* Schema.validate(TransactionSchema)(tx).pipe(
         Effect.mapError(
           (cause) =>
             new InvalidTransactionError({
@@ -306,7 +306,7 @@ const makeTransactionProcessor = Effect.gen(function* () {
     senderBalance: bigint,
   ) =>
     Effect.gen(function* () {
-      const parsedTx = yield* Schema.decode(TransactionSchema)(tx).pipe(
+      const parsedTx = yield* Schema.validate(TransactionSchema)(tx).pipe(
         Effect.mapError(
           (cause) =>
             new InvalidTransactionError({

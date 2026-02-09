@@ -41,7 +41,7 @@ const EMPTY_SIGNATURE = {
 };
 
 const makeLegacyTx = (gasPrice: bigint): Transaction.Legacy =>
-  Schema.decodeSync(LegacySchema)({
+  Schema.validateSync(LegacySchema)({
     type: Transaction.Type.Legacy,
     nonce: 0n,
     gasPrice,
@@ -58,7 +58,7 @@ const makeEip1559Tx = (
   maxFeePerGas: bigint,
   maxPriorityFeePerGas: bigint,
 ): Transaction.EIP1559 =>
-  Schema.decodeSync(Eip1559Schema)({
+  Schema.validateSync(Eip1559Schema)({
     type: Transaction.Type.EIP1559,
     chainId: 1n,
     nonce: 0n,
@@ -86,7 +86,7 @@ const makeEip4844Tx = (
   maxFeePerBlobGas: bigint,
   blobVersionedHashes: Uint8Array[],
 ): Transaction.EIP4844 =>
-  Schema.decodeSync(Eip4844Schema)({
+  Schema.validateSync(Eip4844Schema)({
     type: Transaction.Type.EIP4844,
     chainId: 1n,
     nonce: 0n,
