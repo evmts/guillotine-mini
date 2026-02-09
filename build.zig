@@ -134,16 +134,6 @@ pub fn build(b: *std.Build) void {
     const client_db_test_step = b.step("test-db", "Run database abstraction layer tests");
     client_db_test_step.dependOn(&run_client_db_tests.step);
 
-    // Voltaire trie primitives module (node types, nibble helpers, etc.)
-    const primitives_trie_mod = b.addModule("primitives_trie", .{
-        .root_source_file = primitives_dep.path("src/primitives/trie.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "crypto", .module = crypto_mod },
-        },
-    });
-
     // Client Trie module (Merkle Patricia Trie)
     const client_trie_mod = b.addModule("client_trie", .{
         .root_source_file = b.path("client/trie/root.zig"),
@@ -152,7 +142,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
-            .{ .name = "primitives_trie", .module = primitives_trie_mod },
         },
     });
 
