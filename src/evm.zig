@@ -312,6 +312,50 @@ pub fn Evm(comptime config: EvmConfig) type {
             }
         }
 
+        /// Restore storage and original_storage to pre-call state after a revert/exception.
+        fn restore_storage_on_revert(
+            self: *Self,
+            storage_snapshot: *const std.AutoHashMap(StorageKey, u256),
+            original_storage_snapshot: *const std.AutoHashMap(StorageKey, u256),
+        ) !void {
+            // Identify slots added during the call (exist in original_storage but not in snapshot)
+            var added_slots = std.ArrayList(StorageKey){};
+            try added_slots.ensureTotalCapacity(self.arena.allocator(), 10);
+            var orig_check_it = self.storage.original_storage.iterator();
+            while (orig_check_it.next()) |entry| {
+                if (!original_storage_snapshot.contains(entry.key_ptr.*)) {
+                    try added_slots.append(self.arena.allocator(), entry.key_ptr.*);
+                }
+            }
+
+            // Restore original_storage
+            self.storage.original_storage.clearRetainingCapacity();
+            var original_storage_restore_it = original_storage_snapshot.iterator();
+            while (original_storage_restore_it.next()) |entry| {
+                try self.storage.original_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+
+            // Restore storage values
+            var storage_restore_it = storage_snapshot.iterator();
+            while (storage_restore_it.next()) |entry| {
+                if (self.host) |h| {
+                    const addr = primitives.Address{ .bytes = entry.key_ptr.*.address };
+                    h.setStorage(addr, entry.key_ptr.*.slot, entry.value_ptr.*);
+                } else {
+                    try self.storage.storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                }
+            }
+
+            // Delete slots that were added during the call
+            for (added_slots.items) |slot_key| {
+                if (self.host) |h| {
+                    h.setStorage(Address{ .bytes = slot_key.address }, slot_key.slot, 0);
+                } else {
+                    _ = self.storage.storage.remove(slot_key);
+                }
+            }
+        }
+
         /// Pre-warm addresses for transaction initialization
         fn preWarmAddresses(self: *Self, addresses: []const primitives.Address) !void {
             self.access_list_manager.preWarmAddresses(addresses) catch {
@@ -1239,51 +1283,9 @@ pub fn Evm(comptime config: EvmConfig) type {
                 };
 
                 // Restore storage on failure
-                // IMPORTANT: Identify slots to delete BEFORE restoring original_storage
-                // First, identify slots that were added during the call (exist in original_storage but not in snapshot)
-                var added_slots = std.ArrayList(StorageKey){};
-                added_slots.ensureTotalCapacity(self.arena.allocator(), 10) catch {
+                self.restore_storage_on_revert(&storage_snapshot, &original_storage_snapshot) catch {
                     return makeFailure(self.arena.allocator(), 0);
                 };
-                var orig_check_it = self.storage.original_storage.iterator();
-                while (orig_check_it.next()) |entry| {
-                    if (!original_storage_snapshot.contains(entry.key_ptr.*)) {
-                        added_slots.append(self.arena.allocator(), entry.key_ptr.*) catch {
-                            return makeFailure(self.arena.allocator(), 0);
-                        };
-                    }
-                }
-
-                // Second, restore original_storage to remove entries added during the call
-                self.storage.original_storage.clearRetainingCapacity();
-                var original_storage_restore_it = original_storage_snapshot.iterator();
-                while (original_storage_restore_it.next()) |entry| {
-                    self.storage.original_storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                        return makeFailure(self.arena.allocator(), 0);
-                    };
-                }
-
-                // Third, restore storage values from snapshot
-                var storage_restore_it = storage_snapshot.iterator();
-                while (storage_restore_it.next()) |entry| {
-                    if (self.host) |h| {
-                        const addr = primitives.Address{ .bytes = entry.key_ptr.*.address };
-                        h.setStorage(addr, entry.key_ptr.*.slot, entry.value_ptr.*);
-                    } else {
-                        self.storage.storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                            return makeFailure(self.arena.allocator(), 0);
-                        };
-                    }
-                }
-
-                // Fourth, delete slots that were added during the call
-                for (added_slots.items) |slot_key| {
-                    if (self.host) |h| {
-                        h.setStorage(Address{ .bytes = slot_key.address }, slot_key.slot, 0);
-                    } else {
-                        _ = self.storage.storage.remove(slot_key);
-                    }
-                }
 
                 // Restore balances on failure (handles SELFDESTRUCT balance transfers)
                 var balance_restore_it = balance_snapshot.iterator();
@@ -1303,6 +1305,15 @@ pub fn Evm(comptime config: EvmConfig) type {
                 while (restore_it.next()) |entry| {
                     self.storage.transient.put(entry.key_ptr.*, entry.value_ptr.*) catch {
                         // Critical: cannot restore transient storage - return failure with remaining gas
+                        return makeFailure(self.arena.allocator(), 0);
+                    };
+                }
+
+                // Restore selfdestructed_accounts on failure (EIP-6780)
+                self.selfdestructed_accounts.clearRetainingCapacity();
+                var restore_selfdestruct_it = selfdestruct_snapshot.iterator();
+                while (restore_selfdestruct_it.next()) |entry| {
+                    self.selfdestructed_accounts.put(entry.key_ptr.*, {}) catch {
                         return makeFailure(self.arena.allocator(), 0);
                     };
                 }
@@ -1347,51 +1358,9 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // Restore storage on revert
             if (frame.reverted) {
-                // IMPORTANT: Identify slots to delete BEFORE restoring original_storage
-                // First, identify slots that were added during the call (exist in original_storage but not in snapshot)
-                var added_slots = std.ArrayList(StorageKey){};
-                added_slots.ensureTotalCapacity(self.arena.allocator(), 10) catch {
+                self.restore_storage_on_revert(&storage_snapshot, &original_storage_snapshot) catch {
                     return makeFailure(self.arena.allocator(), 0);
                 };
-                var orig_check_it = self.storage.original_storage.iterator();
-                while (orig_check_it.next()) |entry| {
-                    if (!original_storage_snapshot.contains(entry.key_ptr.*)) {
-                        added_slots.append(self.arena.allocator(), entry.key_ptr.*) catch {
-                            return makeFailure(self.arena.allocator(), 0);
-                        };
-                    }
-                }
-
-                // Second, restore original_storage to remove entries added during the call
-                self.storage.original_storage.clearRetainingCapacity();
-                var original_storage_restore_it = original_storage_snapshot.iterator();
-                while (original_storage_restore_it.next()) |entry| {
-                    self.storage.original_storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                        return makeFailure(self.arena.allocator(), 0);
-                    };
-                }
-
-                // Third, restore storage values from snapshot
-                var storage_restore_it = storage_snapshot.iterator();
-                while (storage_restore_it.next()) |entry| {
-                    if (self.host) |h| {
-                        const addr = primitives.Address{ .bytes = entry.key_ptr.*.address };
-                        h.setStorage(addr, entry.key_ptr.*.slot, entry.value_ptr.*);
-                    } else {
-                        self.storage.storage.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                            return makeFailure(self.arena.allocator(), 0);
-                        };
-                    }
-                }
-
-                // Fourth, delete slots that were added during the call
-                for (added_slots.items) |slot_key| {
-                    if (self.host) |h| {
-                        h.setStorage(Address{ .bytes = slot_key.address }, slot_key.slot, 0);
-                    } else {
-                        _ = self.storage.storage.remove(slot_key);
-                    }
-                }
             }
 
             // Restore transient storage on revert (EIP-1153)
