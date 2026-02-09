@@ -11,6 +11,8 @@ const NetworkId = primitives.NetworkId;
 const Hardfork = primitives.Hardfork;
 const TraceConfig = primitives.TraceConfig;
 const Chain = primitives.Chain;
+const FeeMarket = primitives.FeeMarket;
+const Blob = primitives.Blob;
 const RunnerConfig = config_mod.RunnerConfig;
 const Tracer = evm_mod.Tracer;
 
@@ -127,16 +129,35 @@ fn run(
     const network_id = config.effective_network_id();
     const chain = Chain.fromId(config.chain_id) orelse return error.UnknownChainId;
 
+    const gas_limit = Chain.getGasLimit(chain);
+    const block_number: u64 = 0;
+    const block_timestamp: u64 = 0;
+    const block_prevrandao: u256 = if (config.hardfork.isAtLeast(.MERGE)) blk: {
+        const chain_component: u256 = @as(u256, config.chain_id) << 192;
+        const number_component: u256 = @as(u256, block_number) << 128;
+        const gas_component: u256 = @as(u256, gas_limit) << 64;
+        break :blk chain_component | number_component | gas_component | 1;
+    } else 0;
+    const block_difficulty: u256 = if (config.hardfork.isAtLeast(.MERGE)) 0 else @as(u256, gas_limit);
+    const block_base_fee: u256 = if (config.hardfork.isAtLeast(.LONDON))
+        @as(u256, FeeMarket.initialBaseFee(0, gas_limit))
+    else
+        0;
+    const blob_base_fee: u256 = if (config.hardfork.isAtLeast(.CANCUN))
+        @as(u256, Blob.calculateBlobGasPrice(0))
+    else
+        0;
+
     const block_context = evm_mod.BlockContext{
         .chain_id = @as(u256, config.chain_id),
-        .block_number = 0,
-        .block_timestamp = 0,
-        .block_difficulty = 0,
-        .block_prevrandao = 0,
+        .block_number = block_number,
+        .block_timestamp = block_timestamp,
+        .block_difficulty = block_difficulty,
+        .block_prevrandao = block_prevrandao,
         .block_coinbase = primitives.ZERO_ADDRESS,
-        .block_gas_limit = Chain.getGasLimit(chain),
-        .block_base_fee = 0,
-        .blob_base_fee = 0,
+        .block_gas_limit = gas_limit,
+        .block_base_fee = block_base_fee,
+        .blob_base_fee = blob_base_fee,
     };
 
     var tracer_instance: Tracer = undefined;
