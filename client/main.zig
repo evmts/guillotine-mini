@@ -132,15 +132,16 @@ fn run(
     const chain = Chain.fromId(config.chain_id) orelse return error.UnknownChainId;
 
     const gas_limit = Chain.getGasLimit(chain);
+    const is_merge = config.hardfork.isAtLeast(.MERGE);
     const block_number: u64 = 0;
     const block_timestamp: u64 = 0;
-    const block_prevrandao: u256 = if (config.hardfork.isAtLeast(.MERGE)) blk: {
+    const block_prevrandao: u256 = if (is_merge) blk: {
         const chain_component: u256 = @as(u256, config.chain_id) << 192;
         const number_component: u256 = @as(u256, block_number) << 128;
         const gas_component: u256 = @as(u256, gas_limit) << 64;
         break :blk chain_component | number_component | gas_component | 1;
     } else 0;
-    const block_difficulty: u256 = if (config.hardfork.isAtLeast(.MERGE)) 0 else @as(u256, gas_limit);
+    const block_difficulty: u256 = if (is_merge) 0 else @as(u256, gas_limit);
     const block_base_fee: u256 = if (config.hardfork.isAtLeast(.LONDON))
         @as(u256, FeeMarket.initialBaseFee(0, gas_limit))
     else
@@ -180,7 +181,7 @@ fn run(
     try writer.writeAll("guillotine-mini runner configured\n");
     try writer.print(
         "chain_id={d} network_id={d} chain={s} hardfork={s} gas_limit={d}\n",
-        .{ config.chain_id, network_id, Chain.getName(chain), @tagName(config.hardfork), Chain.getGasLimit(chain) },
+        .{ config.chain_id, network_id, Chain.getName(chain), @tagName(config.hardfork), gas_limit },
     );
 
     if (trace_enabled) {
