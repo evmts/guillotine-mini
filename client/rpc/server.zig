@@ -13,6 +13,8 @@ pub const RpcServerConfig = struct {
     port: u16 = 8545,
     /// Optional WebSocket port override (defaults to HTTP port when null).
     websocket_port: ?u16 = null,
+    /// Optional UNIX domain socket path for IPC transport.
+    ipc_unix_domain_socket_path: ?[]const u8 = null,
     /// Per-request timeout in milliseconds.
     timeout_ms: u32 = 20_000,
     /// Maximum number of queued requests.
@@ -44,4 +46,9 @@ test "rpc server config defaults websocket port to http port" {
 test "rpc server config respects websocket port override" {
     const cfg = RpcServerConfig{ .websocket_port = 9546 };
     try std.testing.expectEqual(@as(u16, 9546), cfg.effective_websocket_port());
+}
+
+test "rpc server config defaults ipc socket path to null" {
+    const cfg = RpcServerConfig{};
+    try std.testing.expectEqual(@as(?[]const u8, null), cfg.ipc_unix_domain_socket_path);
 }
