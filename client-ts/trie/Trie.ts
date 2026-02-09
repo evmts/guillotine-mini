@@ -39,6 +39,22 @@ type TrieEntry = {
   readonly value: BytesType;
 };
 
+interface TrieStoreService {
+  readonly get: (
+    key: BytesType,
+  ) => Effect.Effect<TrieEntry | undefined, TrieError>;
+  readonly put: (entry: TrieEntry) => Effect.Effect<void, TrieError>;
+  readonly remove: (key: BytesType) => Effect.Effect<void, TrieError>;
+  readonly entries: () => Effect.Effect<ReadonlyArray<TrieEntry>, never>;
+  readonly persist: () => Effect.Effect<void, never>;
+  readonly prune: () => Effect.Effect<void, never>;
+}
+
+class TrieStore extends Context.Tag("TrieStore")<
+  TrieStore,
+  TrieStoreService
+>() {}
+
 const cloneBytes = (value: BytesType): BytesType =>
   (value as Uint8Array).slice() as BytesType;
 
@@ -77,11 +93,8 @@ const validateValue = (
     ? Effect.succeed(value)
     : Effect.fail(invalidValueError());
 
-const makeTrie = (config?: TrieConfig) =>
+const makeTrieStore = () =>
   Effect.gen(function* () {
-    const trieRoot = yield* TrieRoot;
-    const secured = config?.secured ?? false;
-    const configuredDefault = config?.defaultValue;
     const store = yield* Effect.acquireRelease(
       Effect.sync(() => new Map<string, TrieEntry>()),
       (map) =>
@@ -89,6 +102,70 @@ const makeTrie = (config?: TrieConfig) =>
           map.clear();
         }),
     );
+
+    const get = (key: BytesType) =>
+      Effect.gen(function* () {
+        const keyHex = yield* encodeKey(key);
+        const entry = store.get(keyHex);
+        return entry
+          ? {
+              key: cloneBytes(entry.key),
+              value: cloneBytes(entry.value),
+            }
+          : undefined;
+      });
+
+    const put = (entry: TrieEntry) =>
+      Effect.gen(function* () {
+        const keyHex = yield* encodeKey(entry.key);
+        store.set(keyHex, {
+          key: cloneBytes(entry.key),
+          value: cloneBytes(entry.value),
+        });
+      });
+
+    const remove = (key: BytesType) =>
+      Effect.gen(function* () {
+        const keyHex = yield* encodeKey(key);
+        store.delete(keyHex);
+      });
+
+    const entries = () =>
+      Effect.sync(() =>
+        Array.from(store.values(), (entry) => ({
+          key: cloneBytes(entry.key),
+          value: cloneBytes(entry.value),
+        })),
+      );
+
+    const persist = () =>
+      Effect.sync(() => {
+        // no-op for in-memory store
+      });
+
+    const prune = () =>
+      Effect.sync(() => {
+        // no-op for in-memory store
+      });
+
+    return {
+      get,
+      put,
+      remove,
+      entries,
+      persist,
+      prune,
+    } satisfies TrieStoreService;
+  });
+
+const TrieStoreMemoryLayer = Layer.scoped(TrieStore, makeTrieStore());
+
+const makeTrie = (config?: TrieConfig) =>
+  Effect.gen(function* () {
+    const trieRoot = yield* TrieRoot;
+    const trieStore = yield* TrieStore;
+    const secured = config?.secured ?? false;
+    const configuredDefault = config?.defaultValue;
 
     const resolveDefault = () =>
       configuredDefault === undefined
@@ -99,10 +176,9 @@ const makeTrie = (config?: TrieConfig) =>
 
     const get = (key: BytesType) =>
       Effect.gen(function* () {
-        const keyHex = yield* encodeKey(key);
-        const entry = store.get(keyHex);
+        const entry = yield* trieStore.get(key);
         if (entry) {
-          return cloneBytes(entry.value);
+          return entry.value;
         }
         const defaultValue = yield* resolveDefault();
         return cloneBytes(defaultValue);
@@ -110,45 +186,36 @@ const makeTrie = (config?: TrieConfig) =>
 
     const put = (key: BytesType, value: BytesType) =>
       Effect.gen(function* () {
-        const keyHex = yield* encodeKey(key);
         const validatedValue = yield* validateValue(value);
         const defaultValue = yield* resolveDefault();
         if (Bytes.equals(validatedValue, defaultValue)) {
-          store.delete(keyHex);
+          yield* trieStore.remove(key);
           return;
         }
-        store.set(keyHex, {
-          key: cloneBytes(key),
-          value: cloneBytes(validatedValue),
-        });
+        yield* trieStore.put({ key, value: validatedValue });
       });
 
     const remove = (key: BytesType) =>
       Effect.gen(function* () {
-        const keyHex = yield* encodeKey(key);
-        store.delete(keyHex);
+        yield* trieStore.remove(key);
       });
 
     const root = () =>
       Effect.gen(function* () {
-        const entries: Array<TrieRootEntry> = [];
-        for (const entry of store.values()) {
-          entries.push({
-            key: cloneBytes(entry.key),
-            value: cloneBytes(entry.value),
-          });
-        }
+        const entries = yield* trieStore.entries();
         return yield* trieRoot.root(entries, { secured });
       });
 
     return { get, put, remove, root } satisfies TrieService;
   });
 
-/** In-memory production trie layer. */
+const TrieLayer = (config?: TrieConfig) => Layer.effect(Trie, makeTrie(config));
+
+/** In-memory trie layer backed by a scoped store. */
 export const TrieMemoryLive = (
   config: TrieConfig = {},
 ): Layer.Layer<Trie, TrieError, TrieRoot> =>
-  Layer.scoped(Trie, makeTrie(config));
+  TrieLayer(config).pipe(Layer.provide(TrieStoreMemoryLayer));
 
 /** Deterministic in-memory trie layer for tests. */
 export const TrieMemoryTest = (
