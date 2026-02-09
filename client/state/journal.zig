@@ -131,7 +131,10 @@ pub fn Journal(comptime K: type, comptime V: type) type {
         // -----------------------------------------------------------------
 
         /// Append a change entry.  Returns the index of the new entry.
-        pub fn append(self: *Self, entry: E) error{OutOfMemory}!usize {
+        ///
+        /// Errors:
+        /// - `JournalError.OutOfMemory` when allocation fails.
+        pub fn append(self: *Self, entry: E) JournalError!usize {
             const idx = self.entries.items.len;
             try self.entries.append(self.allocator, entry);
             return idx;
@@ -272,12 +275,18 @@ pub fn Journal(comptime K: type, comptime V: type) type {
         /// (the journal is truncated to `snapshot`).
         ///
         /// If `snapshot` is `empty_snapshot`, all entries are committed.
+        ///
+        /// Returns `JournalError.InvalidSnapshot` if `snapshot` is ahead
+        /// of the current position (mirrors `restore()` behavior).
         pub fn commit(
             self: *Self,
             snapshot: usize,
             on_commit: ?*const fn (entry: *const E) void,
-        ) void {
+        ) JournalError!void {
             const target_len = snapshot_to_len(snapshot);
+            if (snapshot != empty_snapshot and target_len > self.entries.items.len) {
+                return JournalError.InvalidSnapshot;
+            }
             if (target_len >= self.entries.items.len) return;
 
             // Walk forward through committed entries.
@@ -664,6 +673,17 @@ test "Journal: restore with snapshot just past end returns error" {
     try std.testing.expectEqual(@as(usize, 2), j.len());
 }
 
+test "Journal: commit with snapshot beyond current position returns error" {
+    var j = Journal(u32, u64).init(std.testing.allocator);
+    defer j.deinit();
+
+    _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
+
+    const result = j.commit(5, null);
+    try std.testing.expectError(JournalError.InvalidSnapshot, result);
+    try std.testing.expectEqual(@as(usize, 1), j.len());
+}
+
 // =========================================================================
 // Commit API
 // =========================================================================
@@ -685,7 +705,7 @@ test "Journal: commit removes entries and calls callback" {
     };
     Counter.count = 0;
 
-    j.commit(snap, &Counter.cb);
+    try j.commit(snap, &Counter.cb);
 
     // Two entries committed (indices 1 and 2).
     try std.testing.expectEqual(@as(usize, 2), Counter.count);
@@ -701,7 +721,7 @@ test "Journal: commit with empty_snapshot commits all" {
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
     _ = try j.append(.{ .key = 2, .value = 20, .tag = .update });
 
-    j.commit(Journal(u32, u64).empty_snapshot, null);
+    try j.commit(Journal(u32, u64).empty_snapshot, null);
 
     try std.testing.expectEqual(@as(usize, 0), j.len());
 }
@@ -713,7 +733,7 @@ test "Journal: commit with no entries past snapshot is no-op" {
     _ = try j.append(.{ .key = 1, .value = 10, .tag = .create });
     const snap = j.take_snapshot(); // 0
 
-    j.commit(snap, null);
+    try j.commit(snap, null);
 
     // Nothing to commit — snap points at last entry.
     try std.testing.expectEqual(@as(usize, 1), j.len());
