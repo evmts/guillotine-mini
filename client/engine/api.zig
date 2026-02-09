@@ -80,9 +80,9 @@ pub const EngineApi = struct {
         self: EngineApi,
         params: ExchangeCapabilitiesParams,
     ) Error!ExchangeCapabilitiesResult {
-        try validateCapabilities(params.consensus_client_methods, Error.InvalidParams);
+        try validate_capabilities(params.consensus_client_methods, Error.InvalidParams);
         const result = try self.vtable.exchange_capabilities(self.ptr, params);
-        try validateCapabilities(result.value, Error.InternalError);
+        try validate_capabilities(result.value, Error.InternalError);
         return result;
     }
 
@@ -91,39 +91,39 @@ pub const EngineApi = struct {
         self: EngineApi,
         params: ClientVersionV1Params,
     ) Error!ClientVersionV1Result {
-        try validateClientVersionV1Params(params, Error.InvalidParams);
+        try validate_client_version_v1_params(params, Error.InvalidParams);
         const result = try self.vtable.get_client_version_v1(self.ptr, params);
-        try validateClientVersionV1Result(result, Error.InternalError);
+        try validate_client_version_v1_result(result, Error.InternalError);
         return result;
     }
 };
 
-fn validateCapabilities(list: anytype, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+fn validate_capabilities(list: anytype, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
     const ListType = @TypeOf(list);
     if (comptime @hasField(ListType, "value")) {
-        return validateCapabilities(list.value, invalid_err);
+        return validate_capabilities(list.value, invalid_err);
     }
 
-    if (comptime isSliceOfByteSlices(ListType)) {
+    if (comptime is_slice_of_byte_slices(ListType)) {
         for (list) |method| {
-            try validateMethodName(method, invalid_err);
+            try validate_method_name(method, invalid_err);
         }
         return;
     }
 
     if (comptime ListType == std.json.Value) {
-        return validateJsonCapabilities(list, invalid_err);
+        return validate_json_capabilities(list, invalid_err);
     }
 
     return invalid_err;
 }
 
-fn validateJsonCapabilities(value: std.json.Value, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+fn validate_json_capabilities(value: std.json.Value, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
     switch (value) {
         .array => |array| {
             for (array.items) |item| {
                 switch (item) {
-                    .string => |method| try validateMethodName(method, invalid_err),
+                    .string => |method| try validate_method_name(method, invalid_err),
                     else => return invalid_err,
                 }
             }
@@ -132,30 +132,30 @@ fn validateJsonCapabilities(value: std.json.Value, comptime invalid_err: EngineA
     }
 }
 
-fn validateMethodName(method: []const u8, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+fn validate_method_name(method: []const u8, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
     if (!std.mem.startsWith(u8, method, engine_method_prefix)) return invalid_err;
     if (std.mem.eql(u8, method, exchange_capabilities_method)) return invalid_err;
-    if (!isVersionedMethod(method)) return invalid_err;
+    if (!is_versioned_method(method)) return invalid_err;
     _ = jsonrpc.engine.EngineMethod.fromMethodName(method) catch return invalid_err;
 }
 
-fn validateClientVersionV1Params(params: ClientVersionV1Params, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
-    try validateClientVersionV1(params.consensus_client, invalid_err);
+fn validate_client_version_v1_params(params: ClientVersionV1Params, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+    try validate_client_version_v1(params.consensus_client, invalid_err);
 }
 
-fn validateClientVersionV1Result(result: ClientVersionV1Result, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+fn validate_client_version_v1_result(result: ClientVersionV1Result, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
     if (result.value.len == 0) return invalid_err;
     for (result.value) |client| {
-        try validateClientVersionV1(client, invalid_err);
+        try validate_client_version_v1(client, invalid_err);
     }
 }
 
-fn validateClientVersionV1(client: ClientVersionV1, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+fn validate_client_version_v1(client: ClientVersionV1, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
     if (client.code.len != 2) return invalid_err;
     _ = primitives.Hex.assertSize(client.commit, 4) catch return invalid_err;
 }
 
-fn isVersionedMethod(method: []const u8) bool {
+fn is_versioned_method(method: []const u8) bool {
     if (method.len < 2) return false;
 
     var idx: usize = method.len;
@@ -167,7 +167,7 @@ fn isVersionedMethod(method: []const u8) bool {
     return method[idx - 1] == 'V';
 }
 
-fn isSliceOfByteSlices(comptime T: type) bool {
+fn is_slice_of_byte_slices(comptime T: type) bool {
     const info = @typeInfo(T);
     if (info != .pointer or info.pointer.size != .slice) return false;
     const child_info = @typeInfo(info.pointer.child);
@@ -179,11 +179,11 @@ fn isSliceOfByteSlices(comptime T: type) bool {
 // Tests
 // ============================================================================
 
-fn makeMethodsPayload(comptime MethodsType: type, allocator: std.mem.Allocator, methods: []const []const u8) !struct {
+fn make_methods_payload(comptime MethodsType: type, allocator: std.mem.Allocator, methods: []const []const u8) !struct {
     array: ?std.json.Array,
     value: MethodsType,
 } {
-    if (comptime isSliceOfByteSlices(MethodsType)) {
+    if (comptime is_slice_of_byte_slices(MethodsType)) {
         return .{ .array = null, .value = methods };
     }
 
@@ -251,20 +251,20 @@ const dummy_vtable = EngineApi.VTable{
     .get_client_version_v1 = DummyEngine.get_client_version_v1,
 };
 
-fn makeApi(dummy: *DummyEngine) EngineApi {
+fn make_api(dummy: *DummyEngine) EngineApi {
     return EngineApi{ .ptr = dummy, .vtable = &dummy_vtable };
 }
 
 test "engine api dispatches capabilities exchange" {
     const allocator = std.testing.allocator;
 
-    var consensus_payload = try makeMethodsPayload(ConsensusType, allocator, &[_][]const u8{
+    var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
         "engine_forkchoiceUpdatedV1",
     });
     defer if (consensus_payload.array) |*array| array.deinit();
 
-    var result_payload = try makeMethodsPayload(ResultType, allocator, &[_][]const u8{
+    var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
     defer if (result_payload.array) |*array| array.deinit();
@@ -277,7 +277,7 @@ test "engine api dispatches capabilities exchange" {
     };
 
     var dummy = DummyEngine{ .result = result_value };
-    const api = makeApi(&dummy);
+    const api = make_api(&dummy);
 
     const result = try api.exchange_capabilities(params);
     try std.testing.expect(dummy.called);
@@ -287,12 +287,12 @@ test "engine api dispatches capabilities exchange" {
 test "engine api rejects unversioned consensus capabilities" {
     const allocator = std.testing.allocator;
 
-    var consensus_payload = try makeMethodsPayload(ConsensusType, allocator, &[_][]const u8{
+    var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
         "engine_newPayload",
     });
     defer if (consensus_payload.array) |*array| array.deinit();
 
-    var result_payload = try makeMethodsPayload(ResultType, allocator, &[_][]const u8{
+    var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
     defer if (result_payload.array) |*array| array.deinit();
@@ -305,7 +305,7 @@ test "engine api rejects unversioned consensus capabilities" {
     };
 
     var dummy = DummyEngine{ .result = result_value };
-    const api = makeApi(&dummy);
+    const api = make_api(&dummy);
 
     try std.testing.expectError(EngineApi.Error.InvalidParams, api.exchange_capabilities(params));
     try std.testing.expect(!dummy.called);
@@ -314,12 +314,12 @@ test "engine api rejects unversioned consensus capabilities" {
 test "engine api rejects non-engine consensus capabilities" {
     const allocator = std.testing.allocator;
 
-    var consensus_payload = try makeMethodsPayload(ConsensusType, allocator, &[_][]const u8{
+    var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
         "eth_getBlockByNumberV1",
     });
     defer if (consensus_payload.array) |*array| array.deinit();
 
-    var result_payload = try makeMethodsPayload(ResultType, allocator, &[_][]const u8{
+    var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
     defer if (result_payload.array) |*array| array.deinit();
@@ -332,7 +332,7 @@ test "engine api rejects non-engine consensus capabilities" {
     };
 
     var dummy = DummyEngine{ .result = result_value };
-    const api = makeApi(&dummy);
+    const api = make_api(&dummy);
 
     try std.testing.expectError(EngineApi.Error.InvalidParams, api.exchange_capabilities(params));
     try std.testing.expect(!dummy.called);
@@ -341,12 +341,12 @@ test "engine api rejects non-engine consensus capabilities" {
 test "engine api rejects unknown engine consensus capabilities" {
     const allocator = std.testing.allocator;
 
-    var consensus_payload = try makeMethodsPayload(ConsensusType, allocator, &[_][]const u8{
+    var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
         "engine_fooV1",
     });
     defer if (consensus_payload.array) |*array| array.deinit();
 
-    var result_payload = try makeMethodsPayload(ResultType, allocator, &[_][]const u8{
+    var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
     defer if (result_payload.array) |*array| array.deinit();
@@ -359,7 +359,7 @@ test "engine api rejects unknown engine consensus capabilities" {
     };
 
     var dummy = DummyEngine{ .result = result_value };
-    const api = makeApi(&dummy);
+    const api = make_api(&dummy);
 
     try std.testing.expectError(EngineApi.Error.InvalidParams, api.exchange_capabilities(params));
     try std.testing.expect(!dummy.called);
@@ -367,7 +367,7 @@ test "engine api rejects unknown engine consensus capabilities" {
 
 test "engine api rejects non-array consensus capabilities payload" {
     const allocator = std.testing.allocator;
-    var result_payload = try makeMethodsPayload(ResultType, allocator, &[_][]const u8{
+    var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
     defer if (result_payload.array) |*array| array.deinit();
@@ -377,7 +377,7 @@ test "engine api rejects non-array consensus capabilities payload" {
     };
 
     var dummy = DummyEngine{ .result = .{ .value = result_payload.value } };
-    const api = makeApi(&dummy);
+    const api = make_api(&dummy);
 
     try std.testing.expectError(EngineApi.Error.InvalidParams, api.exchange_capabilities(params));
     try std.testing.expect(!dummy.called);
@@ -395,13 +395,13 @@ test "engine api rejects non-string consensus capabilities entries" {
         .consensus_client_methods = jsonrpc.types.Quantity{ .value = .{ .array = invalid_array } },
     };
 
-    var result_payload = try makeMethodsPayload(ResultType, allocator, &[_][]const u8{
+    var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
     defer if (result_payload.array) |*array| array.deinit();
 
     var dummy = DummyEngine{ .result = .{ .value = result_payload.value } };
-    const api = makeApi(&dummy);
+    const api = make_api(&dummy);
 
     try std.testing.expectError(EngineApi.Error.InvalidParams, api.exchange_capabilities(params));
     try std.testing.expect(!dummy.called);
@@ -410,12 +410,12 @@ test "engine api rejects non-string consensus capabilities entries" {
 test "engine api rejects response containing exchangeCapabilities" {
     const allocator = std.testing.allocator;
 
-    var consensus_payload = try makeMethodsPayload(ConsensusType, allocator, &[_][]const u8{
+    var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
     defer if (consensus_payload.array) |*array| array.deinit();
 
-    var result_payload = try makeMethodsPayload(ResultType, allocator, &[_][]const u8{
+    var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_exchangeCapabilities",
     });
     defer if (result_payload.array) |*array| array.deinit();
@@ -428,7 +428,7 @@ test "engine api rejects response containing exchangeCapabilities" {
     };
 
     var dummy = DummyEngine{ .result = result_value };
-    const api = makeApi(&dummy);
+    const api = make_api(&dummy);
 
     try std.testing.expectError(EngineApi.Error.InternalError, api.exchange_capabilities(params));
     try std.testing.expect(dummy.called);
@@ -451,7 +451,7 @@ test "engine api dispatches client version exchange" {
         .result = exchange_result,
         .client_version_result = result_value,
     };
-    const api = makeApi(&dummy);
+    const api = make_api(&dummy);
 
     const result = try api.get_client_version_v1(params);
     try std.testing.expect(dummy.client_version_called);
@@ -472,7 +472,7 @@ test "engine api rejects invalid client version params" {
     };
 
     var dummy = DummyEngine{ .result = exchange_result };
-    const api = makeApi(&dummy);
+    const api = make_api(&dummy);
 
     try std.testing.expectError(EngineApi.Error.InvalidParams, api.get_client_version_v1(bad_params));
     try std.testing.expect(!dummy.client_version_called);
@@ -489,7 +489,7 @@ test "engine api rejects invalid client version response" {
         .result = exchange_result,
         .client_version_result = invalid_result,
     };
-    const api = makeApi(&dummy);
+    const api = make_api(&dummy);
 
     try std.testing.expectError(EngineApi.Error.InternalError, api.get_client_version_v1(params));
     try std.testing.expect(dummy.client_version_called);
