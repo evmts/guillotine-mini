@@ -217,7 +217,7 @@ test "HostAdapter — getStorage/setStorage round-trip" {
     try std.testing.expectEqual(@as(u256, 999), host.getStorage(addr, slot));
 }
 
-test "HostAdapter — getCode/setCode round-trip" {
+test "HostAdapter — getCode/setCode default empty" {
     const allocator = std.testing.allocator;
     var state = try StateManager.init(allocator, null);
     defer state.deinit();
