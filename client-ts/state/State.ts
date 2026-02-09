@@ -179,12 +179,12 @@ const makeWorldState = Effect.gen(function* () {
   >;
   const accounts = new Map<AccountKey, AccountStateType>();
   const storage = new Map<AccountKey, Map<StorageKey, StorageValueType>>();
-  const createdAccounts = new Set<AccountKey>();
+  const createdAccountFrames: Array<Set<AccountKey>> = [];
   const snapshotStack: Array<WorldStateSnapshot> = [];
 
   const clearCreatedIfNoSnapshots = () => {
     if (snapshotStack.length === 0) {
-      createdAccounts.clear();
+      createdAccountFrames.length = 0;
     }
   };
 
@@ -204,11 +204,15 @@ const makeWorldState = Effect.gen(function* () {
       if (snapshotStack.length === 0) {
         return;
       }
-      createdAccounts.add(addressKey(address));
+      createdAccountFrames[createdAccountFrames.length - 1]?.add(
+        addressKey(address),
+      );
     });
 
   const wasAccountCreated = (address: Address.AddressType) =>
-    Effect.sync(() => createdAccounts.has(addressKey(address)));
+    Effect.sync(() =>
+      createdAccountFrames.some((frame) => frame.has(addressKey(address))),
+    );
 
   const getStorage = (address: Address.AddressType, slot: StorageSlotType) =>
     Effect.sync(() => {
@@ -359,9 +363,10 @@ const makeWorldState = Effect.gen(function* () {
     Effect.gen(function* () {
       const snapshot = yield* journal.takeSnapshot();
       if (snapshotStack.length === 0) {
-        createdAccounts.clear();
+        createdAccountFrames.length = 0;
       }
       snapshotStack.push(snapshot);
+      createdAccountFrames.push(new Set<AccountKey>());
       return snapshot;
     });
 
@@ -422,30 +427,49 @@ const makeWorldState = Effect.gen(function* () {
       return index;
     });
 
-  const dropSnapshotsFrom = (index: number) => {
+  const dropSnapshotsFromRestore = (index: number) => {
     snapshotStack.splice(index);
+    createdAccountFrames.splice(index);
     clearCreatedIfNoSnapshots();
+  };
+
+  const dropSnapshotsFromCommit = (index: number) => {
+    const droppedFrames = createdAccountFrames.splice(index);
+    snapshotStack.splice(index);
+    if (createdAccountFrames.length === 0) {
+      createdAccountFrames.length = 0;
+      return;
+    }
+    const target = createdAccountFrames[createdAccountFrames.length - 1];
+    if (!target) {
+      return;
+    }
+    for (const frame of droppedFrames) {
+      for (const key of frame) {
+        target.add(key);
+      }
+    }
   };
 
   const restoreSnapshot = (snapshot: WorldStateSnapshot) =>
     Effect.gen(function* () {
       const index = yield* lookupSnapshotIndex(snapshot);
       yield* journal.restore(snapshot, applyRevert);
-      dropSnapshotsFrom(index);
+      dropSnapshotsFromRestore(index);
     });
 
   const commitSnapshot = (snapshot: WorldStateSnapshot) =>
     Effect.gen(function* () {
       const index = yield* lookupSnapshotIndex(snapshot);
       yield* journal.commit(snapshot);
-      dropSnapshotsFrom(index);
+      dropSnapshotsFromCommit(index);
     });
 
   const clear = () =>
     Effect.gen(function* () {
       accounts.clear();
       storage.clear();
-      createdAccounts.clear();
+      createdAccountFrames.length = 0;
       snapshotStack.length = 0;
       yield* journal.clear();
     });
