@@ -16,7 +16,8 @@ const U256 = EffectiveGasPrice.U256;
 /// For EIP-1559 style transactions this is:
 ///   min(max_priority_fee_per_gas, max_fee_per_gas - base_fee)
 /// Legacy transactions treat gas_price as both max fee and max priority fee.
-pub fn effective_priority_fee_per_gas(tx: anytype, base_fee: BaseFeePerGas) U256 {
+/// Returns an error when fee constraints are invalid per execution-specs.
+pub fn effective_priority_fee_per_gas(tx: anytype, base_fee: BaseFeePerGas) !U256 {
     const Tx = @TypeOf(tx);
     comptime {
         // NOTE: Voltaire Zig primitives do not yet expose EIP-2930 transactions.
@@ -36,11 +37,20 @@ pub fn effective_priority_fee_per_gas(tx: anytype, base_fee: BaseFeePerGas) U256
 
     if (comptime Tx == tx_mod.LegacyTransaction) {
         const gas_price = U256.from_u256(tx.gas_price);
+        if (gas_price.cmp(base_fee_wei) == .lt) {
+            return error.GasPriceBelowBaseFee;
+        }
         max_fee = gas_price;
         max_priority = gas_price;
     } else {
         max_fee = U256.from_u256(tx.max_fee_per_gas);
         max_priority = U256.from_u256(tx.max_priority_fee_per_gas);
+        if (max_fee.cmp(max_priority) == .lt) {
+            return error.PriorityFeeGreaterThanMaxFee;
+        }
+        if (max_fee.cmp(base_fee_wei) == .lt) {
+            return error.MaxFeePerGasBelowBaseFee;
+        }
     }
 
     const result = EffectiveGasPrice.calculate(base_fee_wei, max_fee, max_priority);
@@ -67,7 +77,7 @@ test "effective_priority_fee_per_gas - legacy uses gas_price minus base_fee" {
     };
 
     const base_fee = BaseFeePerGas.from(10);
-    const priority = effective_priority_fee_per_gas(tx, base_fee);
+    const priority = try effective_priority_fee_per_gas(tx, base_fee);
     try std.testing.expectEqual(U256.from_u64(40), priority);
 }
 
@@ -90,11 +100,11 @@ test "effective_priority_fee_per_gas - 1559 caps at max fee" {
     };
 
     const base_fee = BaseFeePerGas.from(100);
-    const priority = effective_priority_fee_per_gas(tx, base_fee);
+    const priority = try effective_priority_fee_per_gas(tx, base_fee);
     try std.testing.expectEqual(U256.from_u64(50), priority);
 }
 
-test "effective_priority_fee_per_gas - 1559 returns zero when base fee exceeds max fee" {
+test "effective_priority_fee_per_gas - 1559 rejects when base fee exceeds max fee" {
     const Address = primitives.Address;
 
     const tx = tx_mod.Eip1559Transaction{
@@ -113,6 +123,8 @@ test "effective_priority_fee_per_gas - 1559 returns zero when base fee exceeds m
     };
 
     const base_fee = BaseFeePerGas.from(200);
-    const priority = effective_priority_fee_per_gas(tx, base_fee);
-    try std.testing.expectEqual(U256.from_u64(0), priority);
+    try std.testing.expectError(
+        error.MaxFeePerGasBelowBaseFee,
+        effective_priority_fee_per_gas(tx, base_fee),
+    );
 }
