@@ -19,8 +19,10 @@ pub const RpcServerConfig = struct {
     request_queue_limit: usize = 500,
     /// Maximum JSON-RPC batch size.
     max_batch_size: usize = 1024,
-    /// Maximum request body size in bytes.
-    max_request_body_size: usize = 30_000_000,
+    /// Maximum request body size in bytes (null to disable the limit).
+    max_request_body_size: ?usize = 30_000_000,
+    /// Maximum batch response body size in bytes (null to disable the limit).
+    max_batch_response_body_size: ?usize = 33_554_432,
     /// Enforce strict hex encoding (EIP-1474 Quantity/Data rules).
     strict_hex_format: bool = true,
 
