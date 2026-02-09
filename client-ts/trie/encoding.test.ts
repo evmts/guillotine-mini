@@ -4,6 +4,7 @@ import * as Either from "effect/Either";
 import { Bytes, Hex } from "voltaire-effect/primitives";
 import {
   bytesToNibbleList,
+  compactToNibbleList,
   nibbleListToCompact,
   NibbleEncodingError,
 } from "./encoding";
@@ -91,6 +92,17 @@ describe("trie encoding", () => {
     Effect.gen(function* () {
       const nibbles = bytesFromUint8Array(new Uint8Array([0x10]));
       const result = yield* Effect.either(nibbleListToCompact(nibbles, false));
+      assert.isTrue(Either.isLeft(result));
+      if (Either.isLeft(result)) {
+        assert.isTrue(result.left instanceof NibbleEncodingError);
+      }
+    }),
+  );
+
+  it.effect("compactToNibbleList rejects invalid flag bits", () =>
+    Effect.gen(function* () {
+      const compact = bytesFromUint8Array(new Uint8Array([0x80]));
+      const result = yield* Effect.either(compactToNibbleList(compact));
       assert.isTrue(Either.isLeft(result));
       if (Either.isLeft(result)) {
         assert.isTrue(result.left instanceof NibbleEncodingError);

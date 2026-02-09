@@ -108,6 +108,13 @@ export const compactToNibbleList = (
     }
 
     const first = compact[0]!;
+    if ((first & 0xc0) !== 0) {
+      return yield* Effect.fail(
+        new NibbleEncodingError({
+          message: "Compact path has invalid hex-prefix flag bits",
+        }),
+      );
+    }
     const isEven = (first & 0x10) === 0;
     const isLeaf = (first & 0x20) !== 0;
     const nibbleCount = compact.length * 2 - (isEven ? 2 : 1);
