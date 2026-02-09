@@ -186,6 +186,11 @@ pub const Database = struct {
     pub fn contains(self: Database, key: []const u8) Error!bool {
         return self.vtable.contains(self.ptr, key);
     }
+
+    /// Create a new WriteBatch targeting this database.
+    pub fn start_write_batch(self: Database, allocator: std.mem.Allocator) WriteBatch {
+        return WriteBatch.init(allocator, self);
+    }
 };
 
 /// A single write operation for use with `Database.VTable.write_batch`.
@@ -419,6 +424,19 @@ test "Database vtable dispatches multiple operations" {
     _ = try db.contains("d");
 
     try std.testing.expectEqual(@as(usize, 4), mock.call_count);
+}
+
+test "Database: start_write_batch targets the database" {
+    var mock = MockDb{};
+    const db = mock.database();
+
+    var batch = db.start_write_batch(std.testing.allocator);
+    defer batch.deinit();
+
+    try batch.put("key", "value");
+    try batch.commit();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.call_count);
 }
 
 test "DbName to_string matches Nethermind constants" {
