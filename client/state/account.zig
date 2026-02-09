@@ -35,8 +35,9 @@ const primitives = @import("primitives");
 /// Re-export Voltaire's AccountState — the canonical account type.
 pub const AccountState = primitives.AccountState.AccountState;
 
-/// Re-export canonical constants from Voltaire.
+/// Canonical hash of empty EVM bytecode (keccak256 of empty bytes).
 pub const EMPTY_CODE_HASH = primitives.AccountState.EMPTY_CODE_HASH;
+/// Root hash of an empty Merkle Patricia Trie.
 pub const EMPTY_TRIE_ROOT = primitives.AccountState.EMPTY_TRIE_ROOT;
 
 /// The empty account — equivalent to Python's `EMPTY_ACCOUNT` constant.
