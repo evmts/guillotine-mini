@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Bytes, Hex } from "voltaire-effect/primitives";
 import type { BytesType, HashType } from "./Node";
-import { TrieRoot, type TrieRootError, type TrieRootEntry } from "./root";
+import { TrieRoot, type TrieRootError } from "./root";
 
 /** Error raised when trie operations fail. */
 export class TrieError extends Data.TaggedError("TrieError")<{
@@ -57,6 +57,11 @@ class TrieStore extends Context.Tag("TrieStore")<
 
 const cloneBytes = (value: BytesType): BytesType => Bytes.concat(value);
 
+const cloneEntry = (entry: TrieEntry): TrieEntry => ({
+  key: cloneBytes(entry.key),
+  value: cloneBytes(entry.value),
+});
+
 const EmptyBytes = Hex.toBytes("0x") as BytesType;
 
 const invalidKeyError = (cause?: unknown) =>
@@ -106,21 +111,13 @@ const makeTrieStore = () =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
         const entry = store.get(keyHex);
-        return entry
-          ? {
-              key: cloneBytes(entry.key),
-              value: cloneBytes(entry.value),
-            }
-          : undefined;
+        return entry ? cloneEntry(entry) : undefined;
       });
 
     const put = (entry: TrieEntry) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(entry.key);
-        store.set(keyHex, {
-          key: cloneBytes(entry.key),
-          value: cloneBytes(entry.value),
-        });
+        store.set(keyHex, cloneEntry(entry));
       });
 
     const remove = (key: BytesType) =>
@@ -130,12 +127,7 @@ const makeTrieStore = () =>
       });
 
     const entries = () =>
-      Effect.sync(() =>
-        Array.from(store.values(), (entry) => ({
-          key: cloneBytes(entry.key),
-          value: cloneBytes(entry.value),
-        })),
-      );
+      Effect.sync(() => Array.from(store.values(), cloneEntry));
 
     const persist = () =>
       Effect.sync(() => {
