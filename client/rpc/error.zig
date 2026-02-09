@@ -1,37 +1,8 @@
-/// JSON-RPC error codes per EIP-1474.
+/// JSON-RPC error codes per EIP-1474 (Voltaire primitive).
 const std = @import("std");
+const primitives = @import("primitives");
 
-pub const JsonRpcErrorCode = enum(i32) {
-    parse_error = -32700,
-    invalid_request = -32600,
-    method_not_found = -32601,
-    invalid_params = -32602,
-    internal_error = -32603,
-    invalid_input = -32000,
-    resource_not_found = -32001,
-    resource_unavailable = -32002,
-    transaction_rejected = -32003,
-    method_not_supported = -32004,
-    limit_exceeded = -32005,
-    jsonrpc_version_not_supported = -32006,
-
-    pub fn defaultMessage(self: JsonRpcErrorCode) []const u8 {
-        return switch (self) {
-            .parse_error => "Parse error",
-            .invalid_request => "Invalid request",
-            .method_not_found => "Method not found",
-            .invalid_params => "Invalid params",
-            .internal_error => "Internal error",
-            .invalid_input => "Invalid input",
-            .resource_not_found => "Resource not found",
-            .resource_unavailable => "Resource unavailable",
-            .transaction_rejected => "Transaction rejected",
-            .method_not_supported => "Method not supported",
-            .limit_exceeded => "Limit exceeded",
-            .jsonrpc_version_not_supported => "JSON-RPC version not supported",
-        };
-    }
-};
+pub const JsonRpcErrorCode = primitives.JsonRpcErrorCode;
 
 // ============================================================================
 // Tests
