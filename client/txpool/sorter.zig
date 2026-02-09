@@ -128,3 +128,105 @@ test "effective_priority_fee_per_gas - 1559 rejects when base fee exceeds max fe
         effective_priority_fee_per_gas(tx, base_fee),
     );
 }
+
+test "effective_priority_fee_per_gas - 1559 rejects when priority exceeds max fee" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = @as(u256, 200),
+        .max_fee_per_gas = @as(u256, 100),
+        .gas_limit = 21_000,
+        .to = Address{ .bytes = [_]u8{0x34} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const base_fee = BaseFeePerGas.from(1);
+    try std.testing.expectError(
+        error.PriorityFeeGreaterThanMaxFee,
+        effective_priority_fee_per_gas(tx, base_fee),
+    );
+}
+
+test "effective_priority_fee_per_gas - legacy rejects when gas price below base fee" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = @as(u256, 10),
+        .gas_limit = 21_000,
+        .to = Address{ .bytes = [_]u8{0x35} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const base_fee = BaseFeePerGas.from(11);
+    try std.testing.expectError(
+        error.GasPriceBelowBaseFee,
+        effective_priority_fee_per_gas(tx, base_fee),
+    );
+}
+
+test "effective_priority_fee_per_gas - 4844 uses fee market fields" {
+    const Address = primitives.Address;
+    const VersionedHash = primitives.Blob.VersionedHash;
+
+    const hashes = [_]VersionedHash{
+        VersionedHash{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 31 },
+    };
+
+    const tx = tx_mod.Eip4844Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = @as(u256, 50),
+        .max_fee_per_gas = @as(u256, 120),
+        .gas_limit = 21_000,
+        .to = Address{ .bytes = [_]u8{0x36} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .max_fee_per_blob_gas = @as(u256, 500),
+        .blob_versioned_hashes = &hashes,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const base_fee = BaseFeePerGas.from(100);
+    const priority = try effective_priority_fee_per_gas(tx, base_fee);
+    try std.testing.expectEqual(U256.from_u64(20), priority);
+}
+
+test "effective_priority_fee_per_gas - 7702 uses fee market fields" {
+    const Address = primitives.Address;
+    const Authorization = primitives.Authorization.Authorization;
+
+    const tx = tx_mod.Eip7702Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = @as(u256, 60),
+        .max_fee_per_gas = @as(u256, 140),
+        .gas_limit = 21_000,
+        .to = Address{ .bytes = [_]u8{0x37} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .authorization_list = &[_]Authorization{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const base_fee = BaseFeePerGas.from(100);
+    const priority = try effective_priority_fee_per_gas(tx, base_fee);
+    try std.testing.expectEqual(U256.from_u64(40), priority);
+}
