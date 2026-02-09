@@ -20,6 +20,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const TriePrimitives = @import("primitives");
+const TrieError = TriePrimitives.TrieError;
 
 /// RLP encoding from Voltaire primitives
 const Rlp = @import("primitives").Rlp;
@@ -88,7 +90,9 @@ pub fn trie_root(
     keys: []const []const u8,
     values: []const []const u8,
 ) !Hash32 {
-    std.debug.assert(keys.len == values.len);
+    if (keys.len != values.len) {
+        return TrieError.InvalidKey;
+    }
 
     if (keys.len == 0) {
         return EMPTY_TRIE_ROOT;
@@ -135,7 +139,9 @@ pub fn secure_trie_root(
     keys: []const []const u8,
     values: []const []const u8,
 ) !Hash32 {
-    std.debug.assert(keys.len == values.len);
+    if (keys.len != values.len) {
+        return TrieError.InvalidKey;
+    }
 
     if (keys.len == 0) {
         return EMPTY_TRIE_ROOT;
@@ -543,6 +549,14 @@ test "trie_root - empty trie returns EMPTY_TRIE_ROOT" {
     const allocator = testing.allocator;
     const root = try trie_root(allocator, &[_][]const u8{}, &[_][]const u8{});
     try testing.expectEqualSlices(u8, &EMPTY_TRIE_ROOT, &root);
+}
+
+test "trie_root - rejects mismatched key/value lengths" {
+    const allocator = testing.allocator;
+    const keys = [_][]const u8{"do"};
+    const values = [_][]const u8{ "verb", "extra" };
+
+    try testing.expectError(TrieError.InvalidKey, trie_root(allocator, &keys, &values));
 }
 
 test "trie_root - single entry" {
