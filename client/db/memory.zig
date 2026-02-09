@@ -174,8 +174,7 @@ pub const MemoryDatabase = struct {
         iter: Map.Iterator,
         allocator: std.mem.Allocator,
 
-        fn next_impl(ptr: *anyopaque) Error!?DbEntry {
-            const self: *MemoryIterator = @ptrCast(@alignCast(ptr));
+        fn next(self: *MemoryIterator) Error!?DbEntry {
             if (self.iter.next()) |entry| {
                 return DbEntry{
                     .key = DbValue.borrowed(entry.key_ptr.*),
@@ -185,15 +184,9 @@ pub const MemoryDatabase = struct {
             return null;
         }
 
-        fn deinit_impl(ptr: *anyopaque) void {
-            const self: *MemoryIterator = @ptrCast(@alignCast(ptr));
+        fn deinit(self: *MemoryIterator) void {
             self.allocator.destroy(self);
         }
-
-        const vtable = DbIterator.VTable{
-            .next = next_impl,
-            .deinit = deinit_impl,
-        };
     };
 
     const OrderedIterator = struct {
@@ -201,24 +194,17 @@ pub const MemoryDatabase = struct {
         index: usize = 0,
         allocator: std.mem.Allocator,
 
-        fn next_impl(ptr: *anyopaque) Error!?DbEntry {
-            const self: *OrderedIterator = @ptrCast(@alignCast(ptr));
+        fn next(self: *OrderedIterator) Error!?DbEntry {
             if (self.index >= self.entries.len) return null;
             const entry = self.entries[self.index];
             self.index += 1;
             return entry;
         }
 
-        fn deinit_impl(ptr: *anyopaque) void {
-            const self: *OrderedIterator = @ptrCast(@alignCast(ptr));
+        fn deinit(self: *OrderedIterator) void {
             self.allocator.free(self.entries);
             self.allocator.destroy(self);
         }
-
-        const vtable = DbIterator.VTable{
-            .next = next_impl,
-            .deinit = deinit_impl,
-        };
     };
 
     fn make_iterator(self: *MemoryDatabase, ordered: bool) Error!DbIterator {
@@ -247,10 +233,7 @@ pub const MemoryDatabase = struct {
                 .entries = entries,
                 .allocator = self.backing_allocator,
             };
-            return DbIterator{
-                .ptr = ordered_iter,
-                .vtable = &OrderedIterator.vtable,
-            };
+            return DbIterator.init(OrderedIterator, ordered_iter, OrderedIterator.next, OrderedIterator.deinit);
         }
 
         const iterator = self.map.iterator();
@@ -259,10 +242,7 @@ pub const MemoryDatabase = struct {
             .iter = iterator,
             .allocator = self.backing_allocator,
         };
-        return DbIterator{
-            .ptr = mem_iter,
-            .vtable = &MemoryIterator.vtable,
-        };
+        return DbIterator.init(MemoryIterator, mem_iter, MemoryIterator.next, MemoryIterator.deinit);
     }
 
     const MemorySnapshot = struct {
@@ -282,39 +262,32 @@ pub const MemoryDatabase = struct {
         }
 
         fn snapshot(self: *MemorySnapshot) DbSnapshot {
-            return .{
-                .ptr = @ptrCast(self),
-                .vtable = &snapshot_vtable,
-            };
+            return DbSnapshot.init(
+                MemorySnapshot,
+                self,
+                snapshot_get,
+                snapshot_contains,
+                snapshot_iterator,
+                snapshot_deinit,
+            );
         }
 
-        fn snapshot_get_impl(ptr: *anyopaque, key: []const u8, flags: ReadFlags) Error!?DbValue {
-            const self: *MemorySnapshot = @ptrCast(@alignCast(ptr));
+        fn snapshot_get(self: *MemorySnapshot, key: []const u8, flags: ReadFlags) Error!?DbValue {
             return self.db.get_with_flags(key, flags);
         }
 
-        fn snapshot_contains_impl(ptr: *anyopaque, key: []const u8) Error!bool {
-            const self: *MemorySnapshot = @ptrCast(@alignCast(ptr));
+        fn snapshot_contains(self: *MemorySnapshot, key: []const u8) Error!bool {
             return self.db.contains(key);
         }
 
-        fn snapshot_iterator_impl(ptr: *anyopaque, ordered: bool) Error!DbIterator {
-            const self: *MemorySnapshot = @ptrCast(@alignCast(ptr));
+        fn snapshot_iterator(self: *MemorySnapshot, ordered: bool) Error!DbIterator {
             return make_iterator(&self.db, ordered);
         }
 
-        fn snapshot_deinit_impl(ptr: *anyopaque) void {
-            const self: *MemorySnapshot = @ptrCast(@alignCast(ptr));
+        fn snapshot_deinit(self: *MemorySnapshot) void {
             self.db.deinit();
             self.allocator.destroy(self);
         }
-
-        const snapshot_vtable = DbSnapshot.VTable{
-            .get = snapshot_get_impl,
-            .contains = snapshot_contains_impl,
-            .iterator = snapshot_iterator_impl,
-            .deinit = snapshot_deinit_impl,
-        };
     };
 
     fn clone_database(source: *MemoryDatabase, allocator: std.mem.Allocator) Error!MemoryDatabase {

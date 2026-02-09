@@ -98,56 +98,52 @@ pub const NullDb = struct {
     }
 
     const EmptyIterator = struct {
-        fn next_impl(_: *anyopaque) Error!?adapter.DbEntry {
+        fn next(_: *EmptyIterator) Error!?adapter.DbEntry {
             return null;
         }
 
-        fn deinit_impl(_: *anyopaque) void {}
-
-        const vtable = adapter.DbIterator.VTable{
-            .next = next_impl,
-            .deinit = deinit_impl,
-        };
+        fn deinit(_: *EmptyIterator) void {}
     };
 
     fn iterator_impl(_: *anyopaque, _: bool) Error!adapter.DbIterator {
-        return .{
-            .ptr = @ptrCast(@constCast(&empty_iterator)),
-            .vtable = &EmptyIterator.vtable,
-        };
+        return adapter.DbIterator.init(
+            EmptyIterator,
+            @constCast(&empty_iterator),
+            EmptyIterator.next,
+            EmptyIterator.deinit,
+        );
     }
 
     const NullSnapshot = struct {
-        fn snapshot_get_impl(_: *anyopaque, _: []const u8, _: ReadFlags) Error!?DbValue {
+        fn snapshot_get(_: *NullSnapshot, _: []const u8, _: ReadFlags) Error!?DbValue {
             return null;
         }
 
-        fn snapshot_contains_impl(_: *anyopaque, _: []const u8) Error!bool {
+        fn snapshot_contains(_: *NullSnapshot, _: []const u8) Error!bool {
             return false;
         }
 
-        fn snapshot_iterator_impl(_: *anyopaque, _: bool) Error!adapter.DbIterator {
-            return .{
-                .ptr = @ptrCast(@constCast(&empty_iterator)),
-                .vtable = &EmptyIterator.vtable,
-            };
+        fn snapshot_iterator(_: *NullSnapshot, _: bool) Error!adapter.DbIterator {
+            return adapter.DbIterator.init(
+                EmptyIterator,
+                @constCast(&empty_iterator),
+                EmptyIterator.next,
+                EmptyIterator.deinit,
+            );
         }
 
-        fn snapshot_deinit_impl(_: *anyopaque) void {}
-
-        const snapshot_vtable = DbSnapshot.VTable{
-            .get = snapshot_get_impl,
-            .contains = snapshot_contains_impl,
-            .iterator = snapshot_iterator_impl,
-            .deinit = snapshot_deinit_impl,
-        };
+        fn snapshot_deinit(_: *NullSnapshot) void {}
     };
 
     fn snapshot_impl(_: *anyopaque) Error!DbSnapshot {
-        return .{
-            .ptr = @ptrCast(@constCast(&null_snapshot)),
-            .vtable = &NullSnapshot.snapshot_vtable,
-        };
+        return DbSnapshot.init(
+            NullSnapshot,
+            @constCast(&null_snapshot),
+            NullSnapshot.snapshot_get,
+            NullSnapshot.snapshot_contains,
+            NullSnapshot.snapshot_iterator,
+            NullSnapshot.snapshot_deinit,
+        );
     }
 
     fn flush_impl(_: *anyopaque, _: bool) Error!void {}

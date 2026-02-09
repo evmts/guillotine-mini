@@ -202,8 +202,7 @@ pub const ReadOnlyDb = struct {
 
         const Phase = enum { overlay, wrapped };
 
-        fn next_impl(ptr: *anyopaque) Error!?DbEntry {
-            const self: *ReadOnlyIterator = @ptrCast(@alignCast(ptr));
+        fn next(self: *ReadOnlyIterator) Error!?DbEntry {
             while (true) {
                 switch (self.phase) {
                     .overlay => {
@@ -232,18 +231,12 @@ pub const ReadOnlyDb = struct {
             }
         }
 
-        fn deinit_impl(ptr: *anyopaque) void {
-            const self: *ReadOnlyIterator = @ptrCast(@alignCast(ptr));
+        fn deinit(self: *ReadOnlyIterator) void {
             self.overlay_iter.deinit();
             self.wrapped_iter.deinit();
             self.seen.deinit(self.allocator);
             self.allocator.destroy(self);
         }
-
-        const vtable = DbIterator.VTable{
-            .next = next_impl,
-            .deinit = deinit_impl,
-        };
     };
 
     const ReadOnlySnapshot = struct {
@@ -262,14 +255,17 @@ pub const ReadOnlyDb = struct {
         }
 
         fn snapshot(self: *ReadOnlySnapshot) DbSnapshot {
-            return .{
-                .ptr = @ptrCast(self),
-                .vtable = &snapshot_vtable,
-            };
+            return DbSnapshot.init(
+                ReadOnlySnapshot,
+                self,
+                snapshot_get,
+                snapshot_contains,
+                null,
+                snapshot_deinit,
+            );
         }
 
-        fn snapshot_get_impl(ptr: *anyopaque, key: []const u8, flags: ReadFlags) Error!?DbValue {
-            const self: *ReadOnlySnapshot = @ptrCast(@alignCast(ptr));
+        fn snapshot_get(self: *ReadOnlySnapshot, key: []const u8, flags: ReadFlags) Error!?DbValue {
             if (self.overlay) |ov| {
                 if (try ov.get(key, flags)) |val| {
                     return val;
@@ -278,8 +274,7 @@ pub const ReadOnlyDb = struct {
             return self.wrapped.get(key, flags);
         }
 
-        fn snapshot_contains_impl(ptr: *anyopaque, key: []const u8) Error!bool {
-            const self: *ReadOnlySnapshot = @ptrCast(@alignCast(ptr));
+        fn snapshot_contains(self: *ReadOnlySnapshot, key: []const u8) Error!bool {
             if (self.overlay) |ov| {
                 if (try ov.contains(key)) {
                     return true;
@@ -288,20 +283,13 @@ pub const ReadOnlyDb = struct {
             return self.wrapped.contains(key);
         }
 
-        fn snapshot_deinit_impl(ptr: *anyopaque) void {
-            const self: *ReadOnlySnapshot = @ptrCast(@alignCast(ptr));
+        fn snapshot_deinit(self: *ReadOnlySnapshot) void {
             if (self.overlay) |*ov| {
                 ov.deinit();
             }
             self.wrapped.deinit();
             self.allocator.destroy(self);
         }
-
-        const snapshot_vtable = DbSnapshot.VTable{
-            .get = snapshot_get_impl,
-            .contains = snapshot_contains_impl,
-            .deinit = snapshot_deinit_impl,
-        };
     };
 
     // -- VTable implementation ------------------------------------------------
@@ -372,10 +360,7 @@ pub const ReadOnlyDb = struct {
                 .wrapped_iter = wrapped_iter,
                 .allocator = allocator,
             };
-            return .{
-                .ptr = @ptrCast(ro_iter),
-                .vtable = &ReadOnlyIterator.vtable,
-            };
+            return DbIterator.init(ReadOnlyIterator, ro_iter, ReadOnlyIterator.next, ReadOnlyIterator.deinit);
         }
         return self.wrapped.iterator(ordered);
     }
