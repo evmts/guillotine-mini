@@ -13,6 +13,7 @@ import {
   InvalidBlobVersionedHashError,
   NoBlobDataError,
   PriorityFeeGreaterThanMaxFeeError,
+  TransactionTypeContractCreationError,
   TransactionProcessorTest,
 } from "./TransactionProcessor";
 
@@ -85,6 +86,7 @@ const makeEip4844Tx = (
   maxPriorityFeePerGas: bigint,
   maxFeePerBlobGas: bigint,
   blobVersionedHashes: Uint8Array[],
+  to: Transaction.EIP4844["to"] | null = Address.zero(),
 ): Transaction.EIP4844 =>
   Schema.validateSync(Eip4844Schema)({
     type: Transaction.Type.EIP4844,
@@ -93,7 +95,7 @@ const makeEip4844Tx = (
     maxPriorityFeePerGas,
     maxFeePerGas,
     gasLimit: 100_000n,
-    to: Address.zero(),
+    to,
     value: 0n,
     data: new Uint8Array(0),
     accessList: [],
@@ -226,6 +228,24 @@ describe("TransactionProcessor.checkMaxGasFeeAndBalance", () => {
         assert.isTrue(Either.isLeft(outcome));
         if (Either.isLeft(outcome)) {
           assert.isTrue(outcome.left instanceof NoBlobDataError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when blob transaction creates a contract", () =>
+    provideProcessor(
+      Effect.gen(function* () {
+        const blobHash = makeBlobHash(0x01);
+        const tx = makeEip4844Tx(10n, 1n, 2n, [blobHash], null);
+        const outcome = yield* Effect.either(
+          checkMaxGasFeeAndBalance(tx, 1n, 1n, 10_000_000n),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(
+            outcome.left instanceof TransactionTypeContractCreationError,
+          );
         }
       }),
     ),

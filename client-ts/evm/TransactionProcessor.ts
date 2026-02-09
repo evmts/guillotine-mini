@@ -135,6 +135,13 @@ export class InvalidBlobVersionedHashError extends Data.TaggedError(
   readonly index: number;
 }> {}
 
+/** Error raised when transaction type forbids contract creation. */
+export class TransactionTypeContractCreationError extends Data.TaggedError(
+  "TransactionTypeContractCreationError",
+)<{
+  readonly type: Transaction.Any["type"];
+}> {}
+
 /** Union of transaction fee calculation errors. */
 export type TransactionFeeError =
   | InvalidTransactionError
@@ -152,7 +159,8 @@ export type MaxGasFeeCheckError =
   | InsufficientSenderBalanceError
   | InsufficientMaxFeePerBlobGasError
   | NoBlobDataError
-  | InvalidBlobVersionedHashError;
+  | InvalidBlobVersionedHashError
+  | TransactionTypeContractCreationError;
 
 /** Transaction processor service interface (fee calculations). */
 export interface TransactionProcessorService {
@@ -365,6 +373,12 @@ const makeTransactionProcessor = Effect.gen(function* () {
       let blobGasFeeValue = 0n;
 
       if (Transaction.isEIP4844(parsedTx)) {
+        if (parsedTx.to == null) {
+          return yield* Effect.fail(
+            new TransactionTypeContractCreationError({ type: parsedTx.type }),
+          );
+        }
+
         if (parsedTx.blobVersionedHashes.length === 0) {
           return yield* Effect.fail(
             new NoBlobDataError({ message: "no blob data in transaction" }),
