@@ -196,7 +196,8 @@ fn parseLllAtom(code: []const u8, pos: *usize) !LllExpr {
         while (pos.* < code.len and
             !std.ascii.isWhitespace(code[pos.*]) and
             code[pos.*] != '(' and
-            code[pos.*] != ')') : (pos.* += 1) {}
+            code[pos.*] != ')') : (pos.* += 1)
+        {}
 
         const atom = code[start..pos.*];
         if (atom.len == 0) return error.InvalidFormat;
@@ -214,7 +215,8 @@ fn parseLllAtom(code: []const u8, pos: *usize) !LllExpr {
     while (pos.* < code.len and
         !std.ascii.isWhitespace(code[pos.*]) and
         code[pos.*] != '(' and
-        code[pos.*] != ')') : (pos.* += 1) {}
+        code[pos.*] != ')') : (pos.* += 1)
+    {}
 
     const atom = code[start..pos.*];
     if (atom.len == 0) return error.InvalidFormat;
@@ -252,8 +254,8 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
             defer bytecode.deinit(allocator);
             const push_bytes = try compilePushValue(allocator, index);
             defer allocator.free(push_bytes);
-            try bytecode.appendSlice(allocator,push_bytes);
-            try bytecode.append(allocator,0x51); // MLOAD
+            try bytecode.appendSlice(allocator, push_bytes);
+            try bytecode.append(allocator, 0x51); // MLOAD
             return bytecode.toOwnedSlice(allocator);
         },
         .list => |items| {
@@ -309,7 +311,7 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                     // Push the bytecode length
                     const len_bytes = try compilePushValue(allocator, inner_bytecode.len);
                     defer allocator.free(len_bytes);
-                    try bytecode.appendSlice(allocator,len_bytes);
+                    try bytecode.appendSlice(allocator, len_bytes);
 
                     // DUP1 - duplicate length for later
                     try bytecode.append(allocator, 0x80); // DUP1
@@ -325,7 +327,7 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                     }
                     const offset_bytecode = try compileLllExpr(allocator, items[2], &labels_map2, bytecode.items.len);
                     defer allocator.free(offset_bytecode);
-                    try bytecode.appendSlice(allocator,offset_bytecode);
+                    try bytecode.appendSlice(allocator, offset_bytecode);
 
                     // CODECOPY to copy the init code into memory
                     // Stack: [length, length, offset]
@@ -334,7 +336,7 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
 
                     // For now, just push the compiled bytecode as data
                     // This is a simplified version - full LLL would embed the code
-                    try bytecode.appendSlice(allocator,inner_bytecode);
+                    try bytecode.appendSlice(allocator, inner_bytecode);
 
                     return bytecode.toOwnedSlice(allocator);
                 }
@@ -357,7 +359,7 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                     }
                     const arg_bytecode = try compileLllExpr(allocator, items[i], &labels_map, bytecode.items.len);
                     defer allocator.free(arg_bytecode);
-                    try bytecode.appendSlice(allocator,arg_bytecode);
+                    try bytecode.appendSlice(allocator, arg_bytecode);
                 }
 
                 // Then execute the opcode
@@ -381,39 +383,39 @@ fn compilePushValue(allocator: std.mem.Allocator, value: u256) ![]u8 {
     if (value > 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF and
         value <= 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
     {
-        try bytecode.append(allocator,0x73); // PUSH20
+        try bytecode.append(allocator, 0x73); // PUSH20
         var j: u8 = 19;
         while (true) : (j -%= 1) {
-            try bytecode.append(allocator,@intCast((value >> @intCast(j * 8)) & 0xFF));
+            try bytecode.append(allocator, @intCast((value >> @intCast(j * 8)) & 0xFF));
             if (j == 0) break;
         }
     } else if (value == 0) {
-        try bytecode.append(allocator,0x60); // PUSH1
-        try bytecode.append(allocator,0);
+        try bytecode.append(allocator, 0x60); // PUSH1
+        try bytecode.append(allocator, 0);
     } else if (value <= 0xFF) {
-        try bytecode.append(allocator,0x60); // PUSH1
-        try bytecode.append(allocator,@intCast(value));
+        try bytecode.append(allocator, 0x60); // PUSH1
+        try bytecode.append(allocator, @intCast(value));
     } else if (value <= 0xFFFF) {
-        try bytecode.append(allocator,0x61); // PUSH2
-        try bytecode.append(allocator,@intCast(value >> 8));
-        try bytecode.append(allocator,@intCast(value & 0xFF));
+        try bytecode.append(allocator, 0x61); // PUSH2
+        try bytecode.append(allocator, @intCast(value >> 8));
+        try bytecode.append(allocator, @intCast(value & 0xFF));
     } else if (value <= 0xFFFFFF) {
-        try bytecode.append(allocator,0x62); // PUSH3
-        try bytecode.append(allocator,@intCast(value >> 16));
-        try bytecode.append(allocator,@intCast((value >> 8) & 0xFF));
-        try bytecode.append(allocator,@intCast(value & 0xFF));
+        try bytecode.append(allocator, 0x62); // PUSH3
+        try bytecode.append(allocator, @intCast(value >> 16));
+        try bytecode.append(allocator, @intCast((value >> 8) & 0xFF));
+        try bytecode.append(allocator, @intCast(value & 0xFF));
     } else if (value <= 0xFFFFFFFF) {
-        try bytecode.append(allocator,0x63); // PUSH4
-        try bytecode.append(allocator,@intCast(value >> 24));
-        try bytecode.append(allocator,@intCast((value >> 16) & 0xFF));
-        try bytecode.append(allocator,@intCast((value >> 8) & 0xFF));
-        try bytecode.append(allocator,@intCast(value & 0xFF));
+        try bytecode.append(allocator, 0x63); // PUSH4
+        try bytecode.append(allocator, @intCast(value >> 24));
+        try bytecode.append(allocator, @intCast((value >> 16) & 0xFF));
+        try bytecode.append(allocator, @intCast((value >> 8) & 0xFF));
+        try bytecode.append(allocator, @intCast(value & 0xFF));
     } else {
         // For larger values, use PUSH32
-        try bytecode.append(allocator,0x7f); // PUSH32
+        try bytecode.append(allocator, 0x7f); // PUSH32
         var j: u8 = 31;
         while (true) : (j -%= 1) {
-            try bytecode.append(allocator,@intCast((value >> @intCast(j * 8)) & 0xFF));
+            try bytecode.append(allocator, @intCast((value >> @intCast(j * 8)) & 0xFF));
             if (j == 0) break;
         }
     }
@@ -559,18 +561,18 @@ fn compileComplexExpression(allocator: std.mem.Allocator, code: []const u8) ![]u
             // Compile: value_expr, push index, MSTORE/SSTORE
             const value_bytecode = try compileLllExpr(allocator, value_expr, &labels, bytecode.items.len);
             defer allocator.free(value_bytecode);
-            try bytecode.appendSlice(allocator,value_bytecode);
+            try bytecode.appendSlice(allocator, value_bytecode);
 
             // Push index
             const index_bytecode = try compilePushValue(allocator, index);
             defer allocator.free(index_bytecode);
-            try bytecode.appendSlice(allocator,index_bytecode);
+            try bytecode.appendSlice(allocator, index_bytecode);
 
             // MSTORE or SSTORE
             if (is_storage) {
-                try bytecode.append(allocator,0x55); // SSTORE
+                try bytecode.append(allocator, 0x55); // SSTORE
             } else {
-                try bytecode.append(allocator,0x52); // MSTORE
+                try bytecode.append(allocator, 0x52); // MSTORE
             }
         }
         // Check for LLL expression ( ... )
@@ -592,7 +594,7 @@ fn compileComplexExpression(allocator: std.mem.Allocator, code: []const u8) ![]u
             // Compile the LLL expression
             const expr_bytecode = try compileLllExpr(allocator, lll_expr, &labels, bytecode.items.len);
             defer allocator.free(expr_bytecode);
-            try bytecode.appendSlice(allocator,expr_bytecode);
+            try bytecode.appendSlice(allocator, expr_bytecode);
 
             pos = end;
         }
@@ -688,26 +690,26 @@ fn compileSingleExpression(allocator: std.mem.Allocator, code: []const u8) ![]u8
             // It's a standalone number (auto-select PUSH size)
             const value = try parseNumber(token);
             if (value <= 0xFF) {
-                try bytecode.append(allocator,0x60); // PUSH1
-                try bytecode.append(allocator,@intCast(value));
+                try bytecode.append(allocator, 0x60); // PUSH1
+                try bytecode.append(allocator, @intCast(value));
             } else if (value <= 0xFFFF) {
-                try bytecode.append(allocator,0x61); // PUSH2
-                try bytecode.append(allocator,@intCast(value >> 8));
-                try bytecode.append(allocator,@intCast(value & 0xFF));
+                try bytecode.append(allocator, 0x61); // PUSH2
+                try bytecode.append(allocator, @intCast(value >> 8));
+                try bytecode.append(allocator, @intCast(value & 0xFF));
             } else if (value <= 0xFFFFFF) {
-                try bytecode.append(allocator,0x62); // PUSH3
-                try bytecode.append(allocator,@intCast(value >> 16));
-                try bytecode.append(allocator,@intCast((value >> 8) & 0xFF));
-                try bytecode.append(allocator,@intCast(value & 0xFF));
+                try bytecode.append(allocator, 0x62); // PUSH3
+                try bytecode.append(allocator, @intCast(value >> 16));
+                try bytecode.append(allocator, @intCast((value >> 8) & 0xFF));
+                try bytecode.append(allocator, @intCast(value & 0xFF));
             } else if (value <= 0xFFFFFFFF) {
-                try bytecode.append(allocator,0x63); // PUSH4
-                try bytecode.append(allocator,@intCast(value >> 24));
-                try bytecode.append(allocator,@intCast((value >> 16) & 0xFF));
-                try bytecode.append(allocator,@intCast((value >> 8) & 0xFF));
-                try bytecode.append(allocator,@intCast(value & 0xFF));
+                try bytecode.append(allocator, 0x63); // PUSH4
+                try bytecode.append(allocator, @intCast(value >> 24));
+                try bytecode.append(allocator, @intCast((value >> 16) & 0xFF));
+                try bytecode.append(allocator, @intCast((value >> 8) & 0xFF));
+                try bytecode.append(allocator, @intCast(value & 0xFF));
             } else {
                 // For larger values, use PUSH32
-                try bytecode.append(allocator,0x7f); // PUSH32
+                try bytecode.append(allocator, 0x7f); // PUSH32
                 var j: u8 = 31;
                 while (true) : (j -%= 1) {
                     try bytecode.append(allocator, @intCast((value >> @intCast(j * 8)) & 0xFF));
