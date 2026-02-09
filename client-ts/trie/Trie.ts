@@ -55,8 +55,7 @@ class TrieStore extends Context.Tag("TrieStore")<
   TrieStoreService
 >() {}
 
-const cloneBytes = (value: BytesType): BytesType =>
-  (value as Uint8Array).slice() as BytesType;
+const cloneBytes = (value: BytesType): BytesType => Bytes.concat(value);
 
 const EmptyBytes = Hex.toBytes("0x") as BytesType;
 
