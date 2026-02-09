@@ -30,6 +30,7 @@ pub fn validateTransaction(
     const Tx = @TypeOf(tx);
     comptime {
         if (Tx != tx_mod.LegacyTransaction and
+            Tx != tx_mod.Eip2930Transaction and
             Tx != tx_mod.Eip1559Transaction and
             Tx != tx_mod.Eip4844Transaction and
             Tx != tx_mod.Eip7702Transaction)
@@ -39,6 +40,7 @@ pub fn validateTransaction(
     }
 
     const required_fork: ?Hardfork = comptime blk: {
+        if (Tx == tx_mod.Eip2930Transaction) break :blk .BERLIN;
         if (Tx == tx_mod.Eip1559Transaction) break :blk .LONDON;
         if (Tx == tx_mod.Eip4844Transaction) break :blk .CANCUN;
         if (Tx == tx_mod.Eip7702Transaction) break :blk .PRAGUE;
@@ -52,7 +54,8 @@ pub fn validateTransaction(
 
     var access_list_address_count: u64 = 0;
     var access_list_storage_key_count: u64 = 0;
-    if (comptime Tx == tx_mod.Eip1559Transaction or
+    if (comptime Tx == tx_mod.Eip2930Transaction or
+        Tx == tx_mod.Eip1559Transaction or
         Tx == tx_mod.Eip4844Transaction or
         Tx == tx_mod.Eip7702Transaction)
     {
@@ -209,6 +212,39 @@ test "validateTransaction — eip1559 access list intrinsic gas" {
     try std.testing.expectEqual(@as(u64, expected_gas), intrinsic);
 }
 
+test "validateTransaction — eip2930 access list intrinsic gas" {
+    const Address = primitives.Address;
+
+    const key1 = [_]u8{0x0A} ** 32;
+    const key2 = [_]u8{0x0B} ** 32;
+    const keys = [_][32]u8{ key1, key2 };
+
+    const access_list = [_]tx_mod.AccessListItem{
+        .{ .address = Address{ .bytes = [_]u8{0x5A} ++ [_]u8{0} ** 19 }, .storage_keys = &keys },
+    };
+
+    const expected_gas = intrinsic_gas.TX_BASE_COST +
+        intrinsic_gas.TX_ACCESS_LIST_ADDRESS_COST +
+        (2 * intrinsic_gas.TX_ACCESS_LIST_STORAGE_KEY_COST);
+
+    const tx = tx_mod.Eip2930Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .gas_price = 0,
+        .gas_limit = expected_gas,
+        .to = Address{ .bytes = [_]u8{0x5B} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &access_list,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const intrinsic = try validateTransaction(tx, .BERLIN);
+    try std.testing.expectEqual(@as(u64, expected_gas), intrinsic);
+}
+
 test "validateTransaction — eip1559 rejected before London" {
     const Address = primitives.Address;
 
@@ -228,6 +264,26 @@ test "validateTransaction — eip1559 rejected before London" {
     };
 
     try std.testing.expectError(error.UnsupportedTransactionType, validateTransaction(tx, .BERLIN));
+}
+
+test "validateTransaction — eip2930 rejected before Berlin" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip2930Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .gas_price = 0,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x6A} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.UnsupportedTransactionType, validateTransaction(tx, .ISTANBUL));
 }
 
 test "validateTransaction — eip4844 rejected before Cancun" {
