@@ -1,3 +1,4 @@
+import { Bytes } from "@tevm/voltaire/Bytes";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -65,14 +66,16 @@ const validateLevel = (
 const validateNibbleList = (
   nibbles: NibbleList,
 ): Effect.Effect<NibbleList, PatricializeError> =>
-  Effect.try({
-    try: () => Schema.decodeSync(NibbleListSchema)(nibbles) as NibbleList,
-    catch: (cause) =>
-      new PatricializeError({
-        message: "Invalid nibble list",
-        cause,
-      }),
-  });
+  Schema.decode(NibbleListSchema)(nibbles).pipe(
+    Effect.map((validated) => Bytes.from(validated)),
+    Effect.mapError(
+      (cause) =>
+        new PatricializeError({
+          message: "Invalid nibble list",
+          cause,
+        }),
+    ),
+  );
 
 const validateKeyMap = (
   obj: NibbleKeyMap,

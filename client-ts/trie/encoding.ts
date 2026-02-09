@@ -48,14 +48,16 @@ const TripleNibbleCache = Array.from({ length: 4096 }, (_, value) =>
 const validateNibbleList = (
   nibbles: BytesType,
 ): Effect.Effect<NibbleList, NibbleEncodingError> =>
-  Effect.try({
-    try: () => Schema.decodeSync(NibbleListSchema)(nibbles) as BytesType,
-    catch: (cause) =>
-      new NibbleEncodingError({
-        message: "Invalid nibble list",
-        cause,
-      }),
-  });
+  Schema.decode(NibbleListSchema)(nibbles).pipe(
+    Effect.map((validated) => Bytes.from(validated)),
+    Effect.mapError(
+      (cause) =>
+        new NibbleEncodingError({
+          message: "Invalid nibble list",
+          cause,
+        }),
+    ),
+  );
 
 export const bytesToNibbleList = (
   bytes: BytesType,
