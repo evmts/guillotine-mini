@@ -45,6 +45,18 @@ pub const trie_root = hash.trie_root;
 pub const EMPTY_TRIE_ROOT = hash.EMPTY_TRIE_ROOT;
 /// 32-byte hash type used for root hashes.
 pub const Hash32 = node.Hash32;
+/// Branch child mask helper.
+pub const TrieMask = node.TrieMask;
+/// Trie node type discriminator.
+pub const NodeType = node.NodeType;
+/// Trie node union.
+pub const Node = node.Node;
+/// Trie leaf node.
+pub const LeafNode = node.LeafNode;
+/// Trie extension node.
+pub const ExtensionNode = node.ExtensionNode;
+/// Trie branch node.
+pub const BranchNode = node.BranchNode;
 /// Trie implementation (Voltaire primitive).
 pub const Trie = trie.Trie;
 
