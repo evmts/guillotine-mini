@@ -50,6 +50,10 @@ pub const HostAdapter = struct {
 
     const Self = @This();
 
+    fn self_from(ptr: *anyopaque) *Self {
+        return @ptrCast(@alignCast(ptr));
+    }
+
     /// Create a new HostAdapter wrapping the given StateManager.
     pub fn init(state: *StateManager) Self {
         return .{
@@ -58,6 +62,7 @@ pub const HostAdapter = struct {
         };
     }
 
+    /// Release resources owned by the adapter.
     pub fn deinit(self: *Self) void {
         self.deleted_storage.deinit();
     }
@@ -88,7 +93,7 @@ pub const HostAdapter = struct {
     //   Setters → @panic. A failed state write is consensus-critical.
 
     fn get_balance(ptr: *anyopaque, address: Address) u256 {
-        const self: *Self = @ptrCast(@alignCast(ptr));
+        const self = self_from(ptr);
         return self.get_balance_fallible(address) catch |err| {
             std.debug.panic("getBalance failed for {any}: {any}", .{ address, err });
         };
@@ -99,28 +104,28 @@ pub const HostAdapter = struct {
     }
 
     fn set_balance(ptr: *anyopaque, address: Address, balance: u256) void {
-        const self: *Self = @ptrCast(@alignCast(ptr));
+        const self = self_from(ptr);
         self.state.setBalance(address, balance) catch |err| {
             std.debug.panic("setBalance failed for {any}: {any}", .{ address, err });
         };
     }
 
     fn get_code(ptr: *anyopaque, address: Address) []const u8 {
-        const self: *Self = @ptrCast(@alignCast(ptr));
+        const self = self_from(ptr);
         return self.state.getCode(address) catch |err| {
             std.debug.panic("getCode failed for {any}: {any}", .{ address, err });
         };
     }
 
     fn set_code(ptr: *anyopaque, address: Address, code: []const u8) void {
-        const self: *Self = @ptrCast(@alignCast(ptr));
+        const self = self_from(ptr);
         self.state.setCode(address, code) catch |err| {
             std.debug.panic("setCode failed for {any}: {any}", .{ address, err });
         };
     }
 
     fn get_storage(ptr: *anyopaque, address: Address, slot: u256) u256 {
-        const self: *Self = @ptrCast(@alignCast(ptr));
+        const self = self_from(ptr);
         const key = StorageKey{ .address = address.bytes, .slot = slot };
         if (self.deleted_storage.contains(key)) return 0;
         return self.state.getStorage(address, slot) catch |err| {
@@ -129,7 +134,7 @@ pub const HostAdapter = struct {
     }
 
     fn set_storage(ptr: *anyopaque, address: Address, slot: u256, value: u256) void {
-        const self: *Self = @ptrCast(@alignCast(ptr));
+        const self = self_from(ptr);
         const key = StorageKey{ .address = address.bytes, .slot = slot };
         if (value == 0) {
             self.deleted_storage.put(key, {}) catch |err| {
@@ -146,14 +151,14 @@ pub const HostAdapter = struct {
     }
 
     fn get_nonce(ptr: *anyopaque, address: Address) u64 {
-        const self: *Self = @ptrCast(@alignCast(ptr));
+        const self = self_from(ptr);
         return self.state.getNonce(address) catch |err| {
             std.debug.panic("getNonce failed for {any}: {any}", .{ address, err });
         };
     }
 
     fn set_nonce(ptr: *anyopaque, address: Address, nonce: u64) void {
-        const self: *Self = @ptrCast(@alignCast(ptr));
+        const self = self_from(ptr);
         self.state.setNonce(address, nonce) catch |err| {
             std.debug.panic("setNonce failed for {any} nonce {}: {any}", .{ address, nonce, err });
         };
@@ -338,6 +343,7 @@ test "HostAdapter — multiple accounts isolated" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
+    defer adapter.deinit();
     const host = adapter.host_interface();
 
     const alice = Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
@@ -356,6 +362,7 @@ test "HostAdapter — getters return safe defaults for non-existent accounts" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
+    defer adapter.deinit();
     const host = adapter.host_interface();
 
     // Use an address that was never written to.
@@ -380,6 +387,7 @@ test "HostAdapter — setters panic on failure (policy check)" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
+    defer adapter.deinit();
     const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0x42} ++ [_]u8{0} ** 19 };
