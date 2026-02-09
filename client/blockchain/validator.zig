@@ -21,6 +21,7 @@ pub const ValidationError = error{
     InvalidBlockNumber,
     MissingParentHeader,
     BaseFeeOverflow,
+    OutOfMemory,
 };
 
 /// Context for validating a block header.
