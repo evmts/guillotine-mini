@@ -33,7 +33,7 @@ pub fn build(b: *std.Build) void {
     const precompiles_mod = primitives_dep.module("precompiles");
     const blockchain_mod = primitives_dep.module("blockchain");
     const jsonrpc_mod = b.addModule("jsonrpc", .{
-        .root_source_file = primitives_dep.path("packages/voltaire-zig/src/jsonrpc/root.zig"),
+        .root_source_file = primitives_dep.path("src/jsonrpc/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
