@@ -29,6 +29,22 @@ export const NibbleListSchema: Schema.Schema<Uint8Array, Uint8Array> =
 
 export type NibbleList = BytesType;
 
+export interface HexPrefixDecoded {
+  readonly nibbles: NibbleList;
+  readonly isLeaf: boolean;
+}
+
+const EmptyNibbles = Bytes.from([]);
+const SingleNibbleCache = Array.from({ length: 16 }, (_, nibble) =>
+  Bytes.from([nibble]),
+);
+const DoubleNibbleCache = Array.from({ length: 256 }, (_, value) =>
+  Bytes.from([(value >> 4) & 0x0f, value & 0x0f]),
+);
+const TripleNibbleCache = Array.from({ length: 4096 }, (_, value) =>
+  Bytes.from([(value >> 8) & 0x0f, (value >> 4) & 0x0f, value & 0x0f]),
+);
+
 const validateNibbleList = (
   nibbles: BytesType,
 ): Effect.Effect<NibbleList, NibbleEncodingError> =>
@@ -45,6 +61,12 @@ export const bytesToNibbleList = (
   bytes: BytesType,
 ): Effect.Effect<NibbleList> =>
   Effect.sync(() => {
+    if (bytes.length === 0) {
+      return EmptyNibbles;
+    }
+    if (bytes.length === 1) {
+      return DoubleNibbleCache[bytes[0]!]!;
+    }
     const nibbles = new Uint8Array(bytes.length * 2);
     for (let i = 0; i < bytes.length; i += 1) {
       const byte = bytes[i]!;
@@ -52,6 +74,68 @@ export const bytesToNibbleList = (
       nibbles[i * 2 + 1] = byte & 0x0f;
     }
     return Bytes.from(nibbles);
+  });
+
+export const compactToNibbleList = (
+  compact: BytesType,
+): Effect.Effect<HexPrefixDecoded, NibbleEncodingError> =>
+  Effect.gen(function* () {
+    if (compact.length === 0) {
+      return yield* Effect.fail(
+        new NibbleEncodingError({ message: "Compact path cannot be empty" }),
+      );
+    }
+
+    const first = compact[0]!;
+    const isEven = (first & 0x10) === 0;
+    const isLeaf = (first & 0x20) !== 0;
+    const nibbleCount = compact.length * 2 - (isEven ? 2 : 1);
+
+    switch (nibbleCount) {
+      case 0:
+        return { nibbles: EmptyNibbles, isLeaf };
+      case 1:
+        return { nibbles: SingleNibbleCache[first & 0x0f]!, isLeaf };
+      case 2: {
+        const second = compact[1];
+        if (second === undefined) {
+          return yield* Effect.fail(
+            new NibbleEncodingError({ message: "Compact path is truncated" }),
+          );
+        }
+        return { nibbles: DoubleNibbleCache[second]!, isLeaf };
+      }
+      case 3: {
+        const second = compact[1];
+        if (second === undefined) {
+          return yield* Effect.fail(
+            new NibbleEncodingError({ message: "Compact path is truncated" }),
+          );
+        }
+        const index = ((first & 0x0f) << 8) | second;
+        return { nibbles: TripleNibbleCache[index]!, isLeaf };
+      }
+      default:
+        break;
+    }
+
+    const nibbles = new Uint8Array(nibbleCount);
+    let offset = 0;
+    if (!isEven) {
+      nibbles[offset] = first & 0x0f;
+      offset += 1;
+    }
+    for (let i = 1; i < compact.length; i += 1) {
+      const byte = compact[i]!;
+      nibbles[offset] = (byte & 0xf0) >> 4;
+      offset += 1;
+      if (offset < nibbleCount) {
+        nibbles[offset] = byte & 0x0f;
+        offset += 1;
+      }
+    }
+
+    return { nibbles: Bytes.from(nibbles), isLeaf };
   });
 
 export const nibbleListToCompact = (
