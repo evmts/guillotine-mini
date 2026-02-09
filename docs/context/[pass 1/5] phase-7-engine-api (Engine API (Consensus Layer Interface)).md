@@ -70,11 +70,14 @@ Key files (for cross-module reference):
 
 ## 3. Voltaire JSON-RPC Primitives (Must Use)
 
-Location: `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/`
+Expected path from instructions: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`  
+Status: **not present** in this environment. The available Voltaire Zig root is `/Users/williamcory/voltaire/src/`.
+
+Location used: `/Users/williamcory/voltaire/src/jsonrpc/`
 
 Relevant API surface:
-- `root.zig` - re-exports `JsonRpcMethod`, `eth`, `engine`, `types`
-- `JsonRpc.zig` - `JsonRpcMethod` union + `methodName()` helper
+- `root.zig` - re-exports JSON-RPC modules
+- `JsonRpc.zig` - core JSON-RPC method union + method helpers
 - `types.zig` - JSON-RPC base types (Address/Hash/Quantity/BlockTag/etc.)
 - `engine/methods.zig` - Engine method union mapping Params/Result per method
 - `engine/*/` method folders (must reuse):
@@ -83,9 +86,10 @@ Relevant API surface:
   - `getBlobsV1`, `getBlobsV2`
 
 Other relevant Voltaire modules (type sources, do not reimplement):
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/` - core Address/Hash/U256/Bytes primitives
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/` - chain headers/blocks helpers
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/evm/` - EVM core types and helpers
+- `/Users/williamcory/voltaire/src/primitives/` - core Address/Hash/U256/Bytes primitives
+  - Notable modules for Engine API: `Block`, `BlockHeader`, `BlockHash`, `BlockNumber`, `ChainId`, `Withdrawal`, `Blob`, `BeaconBlockRoot`, `Bytes`, `U256`
+- `/Users/williamcory/voltaire/src/blockchain/` - chain headers/blocks helpers
+- `/Users/williamcory/voltaire/src/evm/` - EVM core types and helpers
 
 ---
 
@@ -103,8 +107,8 @@ File: `src/host.zig`
 ## 5. Test Fixtures and Engine API Suites
 
 Engine API suites:
-- `hive/` - Engine API integration tests
-- `execution-spec-tests/fixtures/blockchain_tests_engine/` - Engine API blockchain fixtures
+- `hive/` - Engine API integration tests (**directory is empty in this checkout; submodule likely not initialized**)
+- `execution-spec-tests/fixtures/blockchain_tests_engine/` - Engine API blockchain fixtures (**execution-spec-tests is empty in this checkout**)
 
 ethereum-tests inventory (requested listing):
 - `ethereum-tests/ABITests/`
@@ -129,4 +133,4 @@ Fixture tarballs:
 
 ## Summary
 
-Collected phase-7 Engine API goals and core Zig module targets, verified Engine API specs (common/auth/identification and fork-scoped Paris/Shanghai/Cancun+), and captured Merge-related EIPs (EIP-3675, EIP-4399). Mapped Nethermind’s Merge Plugin structure (RPC modules, handlers, validators, and sync/finalization pieces), inventoried Voltaire JSON-RPC engine primitives that must be reused, noted the existing `HostInterface` vtable DI pattern in `src/host.zig`, and recorded Engine API-oriented test fixture locations plus the requested `ethereum-tests` inventory.
+Collected phase-7 Engine API goals and core Zig module targets, verified Engine API specs (common/auth/identification and fork-scoped Paris/Shanghai/Cancun+), and captured Merge-related EIPs (EIP-3675, EIP-4399). Mapped Nethermind’s Merge Plugin structure (RPC modules, handlers, validators, and sync/finalization pieces), inventoried Voltaire JSON-RPC engine primitives that must be reused (noting the expected `voltaire-zig` path is missing and `/Users/williamcory/voltaire/src/` is available), noted the existing `HostInterface` vtable DI pattern in `src/host.zig`, and recorded Engine API-oriented test fixture locations plus the requested `ethereum-tests` inventory (with `hive/` and `execution-spec-tests/` currently empty).
