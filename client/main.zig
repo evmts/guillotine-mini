@@ -26,6 +26,7 @@ const usage =
     \\
 ;
 
+/// Process entry point for the runner CLI.
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
