@@ -64,13 +64,13 @@ pub const BlocksRequest = struct {
     }
 
     /// True if there are no body or receipt requests.
-    pub fn is_empty(self: BlocksRequest) bool {
+    pub fn is_empty(self: *const BlocksRequest) bool {
         return self.body_headers.len == 0 and self.receipt_headers.len == 0;
     }
 
     /// Compute block hashes for the body request headers.
     /// Caller owns the returned slice.
-    pub fn body_hashes(self: BlocksRequest, allocator: std.mem.Allocator) ![]const Hash.Hash {
+    pub fn body_hashes(self: *const BlocksRequest, allocator: std.mem.Allocator) ![]const Hash.Hash {
         return headers_to_hashes(self.body_headers, allocator);
     }
 
@@ -114,8 +114,8 @@ pub const BlocksRequest = struct {
 
     fn headers_to_hashes(headers: []const BlockHeader.BlockHeader, allocator: std.mem.Allocator) ![]const Hash.Hash {
         var hashes = try allocator.alloc(Hash.Hash, headers.len);
-        for (headers, 0..) |_, index| {
-            hashes[index] = try BlockHeader.hash(&headers[index], allocator);
+        for (headers, 0..) |*header, index| {
+            hashes[index] = try BlockHeader.hash(header, allocator);
         }
         return hashes;
     }
