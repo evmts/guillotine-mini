@@ -104,7 +104,7 @@ export interface WriteBatch {
 
 /** Key-value DB abstraction. */
 export interface DbService {
-  readonly name: string;
+  readonly name: DbName;
   readonly get: (
     key: BytesType,
   ) => Effect.Effect<Option.Option<BytesType>, DbError>;
