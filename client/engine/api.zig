@@ -5,6 +5,11 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const crypto = @import("crypto");
+const jsonrpc = @import("jsonrpc");
+
+const ExchangeCapabilitiesMethod = @FieldType(jsonrpc.engine.EngineMethod, "engine_exchangeCapabilities");
+pub const ExchangeCapabilitiesParams = @FieldType(ExchangeCapabilitiesMethod, "params");
+pub const ExchangeCapabilitiesResult = @FieldType(ExchangeCapabilitiesMethod, "result");
 
 /// Vtable-based Engine API interface.
 ///
@@ -21,14 +26,28 @@ pub const EngineApi = struct {
     ///
     /// These map to Engine API JSON-RPC error responses at the RPC layer.
     pub const Error = error{
-        /// Number of requested entities is too large.
-        TooLargeRequest,
-        /// Invalid or inconsistent parameters provided by the caller.
+        /// -32700: Invalid JSON was received by the server.
+        ParseError,
+        /// -32600: The JSON sent is not a valid Request object.
+        InvalidRequest,
+        /// -32601: The method does not exist / is not available.
+        MethodNotFound,
+        /// -32602: Invalid method parameter(s).
         InvalidParams,
-        /// Internal execution layer failure.
+        /// -32603: Internal JSON-RPC error.
         InternalError,
-        /// Allocation failure.
-        OutOfMemory,
+        /// -32000: Generic client error while processing request.
+        ServerError,
+        /// -38001: Payload does not exist / is not available.
+        UnknownPayload,
+        /// -38002: Forkchoice state is invalid / inconsistent.
+        InvalidForkchoiceState,
+        /// -38003: Payload attributes are invalid / inconsistent.
+        InvalidPayloadAttributes,
+        /// -38004: Number of requested entities is too large.
+        TooLargeRequest,
+        /// -38005: Payload belongs to a fork that is not supported.
+        UnsupportedFork,
     };
 
     /// Virtual function table for Engine API operations.
@@ -36,16 +55,16 @@ pub const EngineApi = struct {
         /// Exchange list of supported Engine API methods.
         exchange_capabilities: *const fn (
             ptr: *anyopaque,
-            consensus_methods: []const []const u8,
-        ) Error![]const []const u8,
+            params: ExchangeCapabilitiesParams,
+        ) Error!ExchangeCapabilitiesResult,
     };
 
     /// Exchange list of supported Engine API methods.
     pub fn exchange_capabilities(
         self: EngineApi,
-        consensus_methods: []const []const u8,
-    ) Error![]const []const u8 {
-        return self.vtable.exchange_capabilities(self.ptr, consensus_methods);
+        params: ExchangeCapabilitiesParams,
+    ) Error!ExchangeCapabilitiesResult {
+        return self.vtable.exchange_capabilities(self.ptr, params);
     }
 };
 
@@ -56,28 +75,33 @@ pub const EngineApi = struct {
 test "engine api dispatches capabilities exchange" {
     const DummyEngine = struct {
         const Self = @This();
-        result: []const []const u8,
-        seen_len: usize = 0,
+        result: ExchangeCapabilitiesResult,
+        called: bool = false,
 
         fn exchange_capabilities(
             ptr: *anyopaque,
-            consensus_methods: []const []const u8,
-        ) EngineApi.Error![]const []const u8 {
+            params: ExchangeCapabilitiesParams,
+        ) EngineApi.Error!ExchangeCapabilitiesResult {
             const self: *Self = @ptrCast(@alignCast(ptr));
-            self.seen_len = consensus_methods.len;
+            _ = params;
+            self.called = true;
             return self.result;
         }
     };
 
-    const consensus = [_][]const u8{ "engine_newPayloadV1", "engine_forkchoiceUpdatedV1" };
-    const execution = [_][]const u8{"engine_newPayloadV1"};
+    const null_value = std.json.Value{ .null = {} };
+    const params = ExchangeCapabilitiesParams{
+        .consensus_client_methods = .{ .value = null_value },
+    };
+    const result_value = ExchangeCapabilitiesResult{
+        .value = .{ .value = null_value },
+    };
 
-    var dummy = DummyEngine{ .result = execution[0..] };
+    var dummy = DummyEngine{ .result = result_value };
     const vtable = EngineApi.VTable{ .exchange_capabilities = DummyEngine.exchange_capabilities };
     const api = EngineApi{ .ptr = &dummy, .vtable = &vtable };
 
-    const result = try api.exchange_capabilities(consensus[0..]);
-    try std.testing.expectEqual(@as(usize, 2), dummy.seen_len);
-    try std.testing.expectEqual(@as(usize, 1), result.len);
-    try std.testing.expectEqualStrings("engine_newPayloadV1", result[0]);
+    const result = try api.exchange_capabilities(params);
+    try std.testing.expect(dummy.called);
+    try std.testing.expectEqualDeep(result_value, result);
 }
