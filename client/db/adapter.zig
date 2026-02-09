@@ -25,6 +25,12 @@
 /// The `Database` / `WriteBatch` / `DbName` types defined here are
 /// intentionally backend-agnostic — Voltaire does not provide a raw KV
 /// persistence interface, so this abstraction fills that gap.
+///
+/// NOTE: Voltaire's `Bytes` primitive is a helper module (operations on slices),
+/// not a distinct byte-slice type. This layer therefore accepts `[]const u8`
+/// to support variable-length keys/values across all column families. Callers
+/// should use Voltaire fixed-size primitives (e.g. `Bytes32`, `Hash`, `Address`)
+/// and serialize them into byte slices before hitting this interface.
 const std = @import("std");
 
 /// Errors that database operations can produce.
