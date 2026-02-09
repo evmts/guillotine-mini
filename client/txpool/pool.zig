@@ -1,7 +1,7 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const GasLimit = primitives.Gas.GasLimit;
-const MaxPriorityFeePerGas = primitives.MaxPriorityFeePerGas;
+const U256 = primitives.Denomination.U256;
 
 /// Transaction pool configuration defaults, modeled after Nethermind's
 /// `ITxPoolConfig` / `TxPoolConfig`.
@@ -32,7 +32,7 @@ pub const TxPoolConfig = struct {
     accept_tx_when_not_synced: bool = false,
     persistent_broadcast_enabled: bool = true,
     current_blob_base_fee_required: bool = true,
-    min_blob_tx_priority_fee: MaxPriorityFeePerGas = MaxPriorityFeePerGas.from(0),
+    min_blob_tx_priority_fee: U256 = U256.ZERO,
 };
 
 /// Transaction pool interface (minimal vtable surface).
