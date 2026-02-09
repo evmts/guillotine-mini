@@ -164,6 +164,25 @@ describe("Journal", () => {
     ),
   );
 
+  it.effect("commit fails for invalid snapshots", () =>
+    provideJournal(
+      Effect.gen(function* () {
+        const addr = Address.zero();
+        yield* append(
+          makeEntry(addr, makeAccount({ nonce: 1n }), ChangeTag.Create),
+        );
+
+        const outcome = yield* Effect.either(commit(5));
+        assert.isTrue(Either.isLeft(outcome));
+
+        if (Either.isLeft(outcome)) {
+          const error = outcome.left;
+          assert.isTrue(error instanceof InvalidSnapshotError);
+        }
+      }),
+    ),
+  );
+
   it.effect("commit invokes callback and truncates entries", () =>
     provideJournal(
       Effect.gen(function* () {

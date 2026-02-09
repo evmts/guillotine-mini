@@ -159,7 +159,13 @@ const makeJournal = <K, V>(): JournalService<K, V> => {
 
       const currentLength = entries.length;
       const targetLength = snapshotToLength(snapshot);
-      if (targetLength >= currentLength) {
+      if (snapshot !== EMPTY_SNAPSHOT && targetLength > currentLength) {
+        return yield* Effect.fail(
+          invalidSnapshotError(snapshot, currentLength),
+        );
+      }
+
+      if (targetLength === currentLength) {
         return;
       }
 
