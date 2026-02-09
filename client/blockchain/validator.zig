@@ -5,6 +5,7 @@ const BlockHeader = primitives.BlockHeader;
 const Hash = primitives.Hash;
 const Hardfork = primitives.Hardfork;
 
+/// Errors returned by PoS header constant validation.
 pub const ValidationError = error{
     InvalidDifficulty,
     InvalidNonce,
