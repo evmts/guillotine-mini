@@ -136,6 +136,7 @@ fn validateMethodName(method: []const u8, comptime invalid_err: EngineApi.Error)
     if (!std.mem.startsWith(u8, method, engine_method_prefix)) return invalid_err;
     if (std.mem.eql(u8, method, exchange_capabilities_method)) return invalid_err;
     if (!isVersionedMethod(method)) return invalid_err;
+    _ = jsonrpc.engine.EngineMethod.fromMethodName(method) catch return invalid_err;
 }
 
 fn validateClientVersionV1Params(params: ClientVersionV1Params, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
@@ -315,6 +316,33 @@ test "engine api rejects non-engine consensus capabilities" {
 
     var consensus_payload = try makeMethodsPayload(ConsensusType, allocator, &[_][]const u8{
         "eth_getBlockByNumberV1",
+    });
+    defer if (consensus_payload.array) |*array| array.deinit();
+
+    var result_payload = try makeMethodsPayload(ResultType, allocator, &[_][]const u8{
+        "engine_newPayloadV1",
+    });
+    defer if (result_payload.array) |*array| array.deinit();
+
+    const params = ExchangeCapabilitiesParams{
+        .consensus_client_methods = consensus_payload.value,
+    };
+    const result_value = ExchangeCapabilitiesResult{
+        .value = result_payload.value,
+    };
+
+    var dummy = DummyEngine{ .result = result_value };
+    const api = makeApi(&dummy);
+
+    try std.testing.expectError(EngineApi.Error.InvalidParams, api.exchange_capabilities(params));
+    try std.testing.expect(!dummy.called);
+}
+
+test "engine api rejects unknown engine consensus capabilities" {
+    const allocator = std.testing.allocator;
+
+    var consensus_payload = try makeMethodsPayload(ConsensusType, allocator, &[_][]const u8{
+        "engine_fooV1",
     });
     defer if (consensus_payload.array) |*array| array.deinit();
 
