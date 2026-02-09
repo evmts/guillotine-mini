@@ -45,6 +45,22 @@ fn make_result(name: []const u8, ops: usize, elapsed_ns: u64) BenchResult {
     };
 }
 
+fn init_chain_with_blocks(
+    n: usize,
+    allocator: std.mem.Allocator,
+    chain: *Chain,
+) ![]Block.Block {
+    chain.* = try Chain.init(allocator, null);
+    return build_blocks(n, allocator);
+}
+
+fn process_blocks(chain: *Chain, blocks: []Block.Block) !void {
+    for (blocks) |block| {
+        try chain.putBlock(block);
+        try chain.setCanonicalHead(block.hash);
+    }
+}
+
 fn build_blocks(n: usize, allocator: std.mem.Allocator) ![]Block.Block {
     const blocks = try allocator.alloc(Block.Block, n);
     if (n == 0) return blocks;
@@ -69,21 +85,18 @@ fn build_blocks(n: usize, allocator: std.mem.Allocator) ![]Block.Block {
 }
 
 /// Benchmark: process N blocks through Chain (putBlock + setCanonicalHead).
-fn bench_block_processing(n: usize) u64 {
+fn bench_block_processing(n: usize) !u64 {
     // Warmup
     for (0..WARMUP_ITERS) |_| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
 
-        var chain = Chain.init(allocator, null) catch unreachable;
+        var chain: Chain = undefined;
+        const blocks = try init_chain_with_blocks(n, allocator, &chain);
         defer chain.deinit();
 
-        const blocks = build_blocks(n, allocator) catch unreachable;
-        for (blocks) |block| {
-            chain.putBlock(block) catch unreachable;
-            chain.setCanonicalHead(block.hash) catch unreachable;
-        }
+        try process_blocks(&chain, blocks);
     }
 
     // Timed
@@ -93,16 +106,12 @@ fn bench_block_processing(n: usize) u64 {
         defer arena.deinit();
         const allocator = arena.allocator();
 
-        var chain = Chain.init(allocator, null) catch unreachable;
+        var chain: Chain = undefined;
+        const blocks = try init_chain_with_blocks(n, allocator, &chain);
         defer chain.deinit();
 
-        const blocks = build_blocks(n, allocator) catch unreachable;
-
-        var timer = std.time.Timer.start() catch unreachable;
-        for (blocks) |block| {
-            chain.putBlock(block) catch unreachable;
-            chain.setCanonicalHead(block.hash) catch unreachable;
-        }
+        var timer = try std.time.Timer.start();
+        try process_blocks(&chain, blocks);
         total_ns += timer.read();
     }
     return total_ns / BENCH_ITERS;
@@ -130,7 +139,7 @@ pub fn main() !void {
         .{ .n = LARGE_N, .name = "block processing (20K blocks)" },
     };
     for (sizes) |s| {
-        const elapsed = bench_block_processing(s.n);
+        const elapsed = try bench_block_processing(s.n);
         const result = make_result(s.name, s.n, elapsed);
         print_result(result);
         if (s.n == LARGE_N) {
