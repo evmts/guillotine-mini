@@ -89,6 +89,10 @@ pub const JournalError = error{
     OutOfMemory,
 };
 
+/// Shared sentinel value representing an empty journal snapshot.
+/// Matches Nethermind's `Resettable.EmptyPosition` (= -1 as int).
+pub const empty_snapshot_sentinel: usize = std.math.maxInt(usize);
+
 /// Generic change-list journal.
 ///
 /// `K` is the key type (e.g. `Address` for accounts, `StorageCell` for slots).
@@ -139,7 +143,7 @@ pub fn Journal(comptime K: type, comptime V: type) type {
 
         /// Sentinel value representing "no entries" (empty journal).
         /// Mirrors Nethermind's `Resettable.EmptyPosition` (= -1 as int).
-        pub const empty_snapshot: usize = std.math.maxInt(usize);
+        pub const empty_snapshot: usize = empty_snapshot_sentinel;
 
         /// Convert a snapshot value to the corresponding entry count
         /// (target length after restore/commit).
