@@ -3,9 +3,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
-import * as VoltaireHash from "@tevm/voltaire/Hash";
-import * as VoltaireRlp from "@tevm/voltaire/Rlp";
-import { Hex } from "voltaire-effect/primitives";
+import { Bytes, Hash, Hex, Rlp } from "voltaire-effect/primitives";
 import type { BytesType, EncodedNode, HashType, NibbleList } from "./Node";
 import { bytesToNibbleList } from "./encoding";
 import { encodeInternalNode, TrieHashError, TrieHashLive } from "./hash";
@@ -33,14 +31,36 @@ class TrieBenchError extends Data.TaggedError("TrieBenchError")<{
   readonly cause?: unknown;
 }> {}
 
-const EmptyTrieRoot = VoltaireHash.fromHex(
+const isBytesType = (value: Uint8Array): value is BytesType =>
+  Bytes.isBytes(value);
+const bytesFromUint8Array = (value: Uint8Array): BytesType => {
+  if (!isBytesType(value)) {
+    throw new TrieBenchError({ message: "Invalid bytes input" });
+  }
+  return value;
+};
+const bytesFromHex = (hex: string): BytesType =>
+  bytesFromUint8Array(Hex.toBytes(hex));
+const isHashType = (value: Uint8Array): value is HashType => Hash.isHash(value);
+const hashFromHex = (hex: string): HashType => {
+  const bytes = Hex.toBytes(hex);
+  if (!isHashType(bytes)) {
+    throw new TrieBenchError({ message: "Invalid hash input" });
+  }
+  return bytes;
+};
+const coerceEffect = <A, E>(effect: unknown): Effect.Effect<A, E> =>
+  effect as Effect.Effect<A, E>;
+const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
+  coerceEffect<Uint8Array, unknown>(Rlp.encode(data));
+const keccak256 = (data: Uint8Array) =>
+  coerceEffect<HashType, never>(Hash.keccak256(data));
+const EmptyTrieRoot = hashFromHex(
   "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
 );
 
 const makeBytes = (value: number, byteLength = 32): BytesType =>
-  Hex.toBytes(
-    `0x${value.toString(16).padStart(byteLength * 2, "0")}`,
-  ) as BytesType;
+  bytesFromHex(`0x${value.toString(16).padStart(byteLength * 2, "0")}`);
 
 const makeDataset = (count: number) => {
   const entries: BenchEntry[] = [];
@@ -67,14 +87,16 @@ const encodedNodeToRoot = (
     case "hash":
       return Effect.succeed(encoded.value);
     case "raw":
-      return Effect.try({
-        try: () => VoltaireHash.keccak256(VoltaireRlp.encode(encoded.value)),
-        catch: (cause) =>
-          new TrieBenchError({
-            message: "Failed to encode root node",
-            cause,
-          }),
-      });
+      return encodeRlp(encoded.value).pipe(
+        Effect.flatMap((encodedNode) => keccak256(encodedNode)),
+        Effect.mapError(
+          (cause) =>
+            new TrieBenchError({
+              message: "Failed to encode root node",
+              cause,
+            }),
+        ),
+      );
     case "empty":
       return Effect.succeed(EmptyTrieRoot);
   }

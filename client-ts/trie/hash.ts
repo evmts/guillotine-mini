@@ -3,15 +3,30 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
-import * as VoltaireHash from "@tevm/voltaire/Hash";
-import * as VoltaireRlp from "@tevm/voltaire/Rlp";
-import type { EncodedNode, RlpType, TrieNode } from "./Node";
+import { Bytes, Hash, Hex, Rlp } from "voltaire-effect/primitives";
+import type {
+  BytesType,
+  EncodedNode,
+  HashType,
+  RlpType,
+  TrieNode,
+} from "./Node";
 import { BranchChildrenCount } from "./Node";
 import { NibbleEncodingError, nibbleListToCompact } from "./encoding";
 
 type RlpItem = Uint8Array | RlpType;
 
-const EmptyBytes = new Uint8Array(0);
+const isBytesType = (value: Uint8Array): value is BytesType =>
+  Bytes.isBytes(value);
+const bytesFromUint8Array = (value: Uint8Array): BytesType => {
+  if (!isBytesType(value)) {
+    throw new TrieHashError({ message: "Invalid bytes input" });
+  }
+  return value;
+};
+const bytesFromHex = (hex: string): BytesType =>
+  bytesFromUint8Array(Hex.toBytes(hex));
+const EmptyBytes = bytesFromHex("0x");
 
 /** Error raised when trie hashing fails. */
 export class TrieHashError extends Data.TaggedError("TrieHashError")<{
@@ -55,14 +70,16 @@ const wrapRlpError = (cause: unknown) =>
     cause,
   });
 
-const encodeRlp = (data: VoltaireRlp.Encodable) =>
-  Effect.try({
-    try: () => VoltaireRlp.encode(data),
-    catch: (cause) => wrapRlpError(cause),
-  });
+const coerceEffect = <A, E>(effect: unknown): Effect.Effect<A, E> =>
+  effect as Effect.Effect<A, E>;
+
+const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
+  coerceEffect<Uint8Array, unknown>(Rlp.encode(data)).pipe(
+    Effect.mapError(wrapRlpError),
+  );
 
 const keccak256 = (data: Uint8Array) =>
-  Effect.sync(() => VoltaireHash.keccak256(data));
+  coerceEffect<HashType, never>(Hash.keccak256(data));
 
 const nodeToItems = (
   node: TrieNode,

@@ -1,19 +1,30 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
-import * as VoltaireHash from "@tevm/voltaire/Hash";
-import * as VoltaireRlp from "@tevm/voltaire/Rlp";
-import { Bytes, Hex } from "voltaire-effect/primitives";
-import type { BranchNode, BytesType, LeafNode } from "./Node";
+import { Bytes, Hash, Hex, Rlp } from "voltaire-effect/primitives";
+import type { BranchNode, BytesType, HashType, LeafNode } from "./Node";
 import { encodeInternalNode, TrieHashError, TrieHashTest } from "./hash";
 import { nibbleListToCompact } from "./encoding";
 
-const toBytes = (hex: string): BytesType => Hex.toBytes(hex) as BytesType;
-const asBytes = (value: Uint8Array): BytesType => value as BytesType;
-const encodeRlp = (data: VoltaireRlp.Encodable) =>
-  Effect.sync(() => VoltaireRlp.encode(data));
+const isBytesType = (value: Uint8Array): value is BytesType =>
+  Bytes.isBytes(value);
+const bytesFromUint8Array = (value: Uint8Array): BytesType => {
+  if (!isBytesType(value)) {
+    throw new Error("Invalid bytes input");
+  }
+  return value;
+};
+const bytesFromHex = (hex: string): BytesType =>
+  bytesFromUint8Array(Hex.toBytes(hex));
+const toBytes = (hex: string): BytesType => bytesFromHex(hex);
+const coerceEffect = <A, E>(effect: unknown): Effect.Effect<A, E> =>
+  effect as Effect.Effect<A, E>;
+const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
+  coerceEffect<Uint8Array, unknown>(Rlp.encode(data));
 const keccak256 = (data: Uint8Array) =>
-  Effect.sync(() => VoltaireHash.keccak256(data));
+  coerceEffect<HashType, never>(Hash.keccak256(data));
+const hashEquals = (left: HashType, right: HashType) =>
+  coerceEffect<boolean, never>(Hash.equals(left, right));
 
 describe("trie hashing", () => {
   it.effect("encodeInternalNode returns empty for null nodes", () =>
@@ -25,7 +36,7 @@ describe("trie hashing", () => {
 
   it.effect("encodeInternalNode inlines small leaf nodes", () =>
     Effect.gen(function* () {
-      const restOfKey = new Uint8Array([0x1, 0x2, 0x3]) as BytesType;
+      const restOfKey = bytesFromUint8Array(new Uint8Array([0x1, 0x2, 0x3]));
       const value = toBytes("0x01");
       const node: LeafNode = { _tag: "leaf", restOfKey, value };
 
@@ -40,14 +51,19 @@ describe("trie hashing", () => {
       const encoded = yield* encodeRlp(result.value);
 
       assert.isTrue(encoded.length < 32);
-      assert.isTrue(Bytes.equals(asBytes(encoded), asBytes(expected)));
+      assert.isTrue(
+        Bytes.equals(
+          bytesFromUint8Array(encoded),
+          bytesFromUint8Array(expected),
+        ),
+      );
     }).pipe(Effect.provide(TrieHashTest)),
   );
 
   it.effect("encodeInternalNode hashes large leaf nodes", () =>
     Effect.gen(function* () {
-      const restOfKey = new Uint8Array(0) as BytesType;
-      const value = new Uint8Array(64).fill(0xab) as BytesType;
+      const restOfKey = bytesFromUint8Array(new Uint8Array(0));
+      const value = bytesFromUint8Array(new Uint8Array(64).fill(0xab));
       const node: LeafNode = { _tag: "leaf", restOfKey, value };
 
       const result = yield* encodeInternalNode(node);
@@ -61,7 +77,7 @@ describe("trie hashing", () => {
       const expected = yield* keccak256(encoded);
 
       assert.isTrue(encoded.length >= 32);
-      assert.isTrue(VoltaireHash.equals(result.value, expected));
+      assert.isTrue(yield* hashEquals(result.value, expected));
     }).pipe(Effect.provide(TrieHashTest)),
   );
 

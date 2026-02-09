@@ -5,9 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as VoltaireHash from "@tevm/voltaire/Hash";
-import * as VoltaireRlp from "@tevm/voltaire/Rlp";
-import { Bytes, Hex } from "voltaire-effect/primitives";
+import { Bytes, Hash, Hex, Rlp } from "voltaire-effect/primitives";
 import type { BytesType, EncodedNode, HashType, NibbleList } from "./Node";
 import {
   encodeInternalNode,
@@ -32,11 +30,34 @@ class FixtureError extends Data.TaggedError("FixtureError")<{
   readonly cause?: unknown;
 }> {}
 
-const EmptyBytes: BytesType = new Uint8Array(0) as BytesType;
-const EmptyTrieRoot = VoltaireHash.fromHex(
+const isBytesType = (value: Uint8Array): value is BytesType =>
+  Bytes.isBytes(value);
+const bytesFromUint8Array = (value: Uint8Array): BytesType => {
+  if (!isBytesType(value)) {
+    throw new Error("Invalid bytes input");
+  }
+  return value;
+};
+const bytesFromHex = (hex: string): BytesType =>
+  bytesFromUint8Array(Hex.toBytes(hex));
+const isHashType = (value: Uint8Array): value is HashType => Hash.isHash(value);
+const hashFromHex = (hex: string): HashType => {
+  const bytes = Hex.toBytes(hex);
+  if (!isHashType(bytes)) {
+    throw new Error("Invalid hash input");
+  }
+  return bytes;
+};
+const coerceEffect = <A, E>(effect: unknown): Effect.Effect<A, E> =>
+  effect as Effect.Effect<A, E>;
+const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
+  coerceEffect<Uint8Array, unknown>(Rlp.encode(data));
+const keccak256 = (data: Uint8Array) =>
+  coerceEffect<HashType, never>(Hash.keccak256(data));
+const EmptyBytes = bytesFromHex("0x");
+const EmptyTrieRoot = hashFromHex(
   "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
 );
-const asBytes = (value: Uint8Array): BytesType => value as BytesType;
 
 const TestLayer = Layer.merge(
   TrieHashTest,
@@ -125,9 +146,9 @@ const toBytes = (
         return EmptyBytes;
       }
       if (value.startsWith("0x")) {
-        return Hex.toBytes(value) as BytesType;
+        return bytesFromHex(value);
       }
-      return new TextEncoder().encode(value) as BytesType;
+      return bytesFromUint8Array(new TextEncoder().encode(value));
     },
     catch: (cause) =>
       new FixtureError({ message: "Invalid bytes in fixture", cause }),
@@ -166,14 +187,16 @@ const encodedNodeToRoot = (
     case "hash":
       return Effect.succeed(encoded.value);
     case "raw":
-      return Effect.try({
-        try: () => VoltaireHash.keccak256(VoltaireRlp.encode(encoded.value)),
-        catch: (cause) =>
-          new FixtureError({
-            message: "Failed to encode root node",
-            cause,
-          }),
-      });
+      return encodeRlp(encoded.value).pipe(
+        Effect.flatMap((encodedNode) => keccak256(encodedNode)),
+        Effect.mapError(
+          (cause) =>
+            new FixtureError({
+              message: "Failed to encode root node",
+              cause,
+            }),
+        ),
+      );
     case "empty":
       return Effect.succeed(EmptyTrieRoot);
   }
@@ -191,7 +214,9 @@ const computeRoot = (
     const finalEntries = yield* collectEntries(entries);
     const nibbleMap = new Map<NibbleList, BytesType>();
     for (const { key, value } of finalEntries.values()) {
-      const hashedKey = secured ? asBytes(VoltaireHash.keccak256(key)) : key;
+      const hashedKey = secured
+        ? bytesFromUint8Array(yield* keccak256(key))
+        : key;
       const nibbleKey = yield* bytesToNibbleList(hashedKey);
       nibbleMap.set(nibbleKey, value);
     }
@@ -214,12 +239,12 @@ describe("trie fixture harness", () => {
       const fixtures = yield* loadFixture(fixturePath, HexPrefixFixtureSchema);
 
       for (const [name, fixture] of Object.entries(fixtures)) {
-        const sequence = new Uint8Array(fixture.seq) as BytesType;
+        const sequence = bytesFromUint8Array(new Uint8Array(fixture.seq));
         const encoded = yield* nibbleListToCompact(sequence, fixture.term);
         const encodedHex = Hex.fromBytes(encoded).slice(2);
         assert.strictEqual(encodedHex, fixture.out, name);
 
-        const compact = Hex.toBytes(`0x${fixture.out}`) as BytesType;
+        const compact = bytesFromHex(`0x${fixture.out}`);
         const decoded = yield* compactToNibbleList(compact);
         assert.isTrue(Bytes.equals(decoded.nibbles, sequence), name);
         assert.strictEqual(decoded.isLeaf, fixture.term, name);

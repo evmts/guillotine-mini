@@ -12,9 +12,19 @@ import {
   patricialize,
 } from "./patricialize";
 
-const toBytes = (hex: string): BytesType => Hex.toBytes(hex) as BytesType;
+const isBytesType = (value: Uint8Array): value is BytesType =>
+  Bytes.isBytes(value);
+const bytesFromUint8Array = (value: Uint8Array): BytesType => {
+  if (!isBytesType(value)) {
+    throw new Error("Invalid bytes input");
+  }
+  return value;
+};
+const bytesFromHex = (hex: string): BytesType =>
+  bytesFromUint8Array(Hex.toBytes(hex));
+const toBytes = (hex: string): BytesType => bytesFromHex(hex);
 const nibbles = (...values: number[]): BytesType =>
-  new Uint8Array(values) as BytesType;
+  bytesFromUint8Array(new Uint8Array(values));
 
 const TestLayer = TriePatricializeTest.pipe(Layer.provide(TrieHashTest));
 

@@ -4,14 +4,25 @@ import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { Hex } from "voltaire-effect/primitives";
+import { Bytes, Hex } from "voltaire-effect/primitives";
 import type { BytesType, EncodedNode, NibbleList, TrieNode } from "./Node";
 import { BranchChildrenCount } from "./Node";
 import { NibbleListSchema } from "./encoding";
 import type { TrieHashError } from "./hash";
 import { TrieHash } from "./hash";
 
-const EmptyBytes: BytesType = new Uint8Array(0) as BytesType;
+const isBytesType = (value: Uint8Array): value is BytesType =>
+  Bytes.isBytes(value);
+const bytesFromUint8Array = (value: Uint8Array): BytesType => {
+  if (!isBytesType(value)) {
+    throw new PatricializeError({ message: "Invalid bytes input" });
+  }
+  return value;
+};
+const bytesFromHex = (hex: string): BytesType =>
+  bytesFromUint8Array(Hex.toBytes(hex));
+
+const EmptyBytes = bytesFromHex("0x");
 
 /** Map of nibble-encoded keys to raw values. */
 export type NibbleKeyMap = ReadonlyMap<NibbleList, BytesType>;
@@ -23,7 +34,7 @@ export class PatricializeError extends Data.TaggedError("PatricializeError")<{
 }> {}
 
 /** Compute the shared prefix length for two nibble lists. */
-export const commonPrefixLength = (a: NibbleList, b: NibbleList): number => {
+export const commonPrefixLength = (a: Uint8Array, b: Uint8Array): number => {
   const limit = Math.min(a.length, b.length);
   for (let i = 0; i < limit; i += 1) {
     if (a[i] !== b[i]) {
@@ -70,7 +81,7 @@ const validateNibbleList = (
   nibbles: NibbleList,
 ): Effect.Effect<NibbleList, PatricializeError> =>
   Schema.decode(NibbleListSchema)(nibbles).pipe(
-    Effect.map((validated) => validated as NibbleList),
+    Effect.map((validated) => bytesFromUint8Array(validated)),
     Effect.mapError(
       (cause) =>
         new PatricializeError({
@@ -124,21 +135,18 @@ const patricializeImpl = (
     if (obj.size === 1) {
       return {
         _tag: "leaf",
-        restOfKey: arbitraryKey.subarray(level) as NibbleList,
+        restOfKey: bytesFromUint8Array(arbitraryKey.subarray(level)),
         value: arbitraryValue,
       };
     }
 
-    const substring = arbitraryKey.subarray(level) as NibbleList;
+    const substring = arbitraryKey.subarray(level);
     let prefixLength = substring.length;
     for (const [key] of obj) {
       if (key.length < level) {
         return yield* Effect.fail(invalidKeyLengthError(key.length, level));
       }
-      const candidate = commonPrefixLength(
-        substring,
-        key.subarray(level) as NibbleList,
-      );
+      const candidate = commonPrefixLength(substring, key.subarray(level));
       if (candidate < prefixLength) {
         prefixLength = candidate;
       }
@@ -151,10 +159,9 @@ const patricializeImpl = (
       pipe(encodeInternalNode(node), Effect.mapError(wrapHashError));
 
     if (prefixLength > 0) {
-      const prefix = arbitraryKey.subarray(
-        level,
-        level + prefixLength,
-      ) as NibbleList;
+      const prefix = bytesFromUint8Array(
+        arbitraryKey.subarray(level, level + prefixLength),
+      );
       const subnode = yield* pipe(
         patricializeImpl(obj, level + prefixLength, encodeInternalNode),
         Effect.flatMap(encodeSubnode),

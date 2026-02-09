@@ -1,15 +1,13 @@
-import type { BytesType as VoltaireBytesType } from "@tevm/voltaire/Bytes";
-import type { HashType as VoltaireHashType } from "@tevm/voltaire/Hash";
-import type { BrandedRlp as VoltaireRlpType } from "@tevm/voltaire/Rlp";
+import { Bytes, Hash, Rlp } from "voltaire-effect/primitives";
 
 /** Byte array type used by trie nodes. */
-export type BytesType = VoltaireBytesType;
+export type BytesType = Parameters<typeof Bytes.equals>[0];
 
 /** 32-byte hash type used by trie nodes. */
-export type HashType = VoltaireHashType;
+export type HashType = Parameters<typeof Hash.equals>[0];
 
 /** Branded RLP type used for encoded trie nodes. */
-export type RlpType = VoltaireRlpType;
+export type RlpType = Parameters<typeof Rlp.equals>[0];
 
 /** Nibble list represented as bytes (values 0x0-0xf). */
 export type NibbleList = BytesType;
