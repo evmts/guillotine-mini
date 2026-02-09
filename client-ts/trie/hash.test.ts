@@ -16,6 +16,8 @@ const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
   coerceEffect<Uint8Array, unknown>(Rlp.encode(data));
 const keccak256 = (data: Uint8Array) =>
   coerceEffect<HashType, never>(Hash.keccak256(data));
+const hashEquals = (left: HashType, right: HashType) =>
+  coerceEffect<boolean, never>(Hash.equals(left, right));
 
 describe("trie hashing", () => {
   it.effect("encodeInternalNode returns empty for null nodes", () =>
@@ -68,7 +70,7 @@ describe("trie hashing", () => {
       const expected = yield* keccak256(encoded);
 
       assert.isTrue(encoded.length >= 32);
-      assert.isTrue(Hash.equals(result.value, expected));
+      assert.isTrue(yield* hashEquals(result.value, expected));
     }).pipe(Effect.provide(TrieHashTest)),
   );
 
