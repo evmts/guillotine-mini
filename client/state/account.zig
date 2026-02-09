@@ -156,7 +156,7 @@ test "is_account_alive: true for non-zero nonce" {
 }
 
 test "is_account_alive: false when only storage root is non-empty" {
-    var custom_root: [32]u8 = undefined;
+    var custom_root: primitives.StateRoot.StateRoot = undefined;
     @memset(&custom_root, 0xAB);
 
     const account = AccountState.from(.{
@@ -203,7 +203,7 @@ test "is_empty: false when balance is non-zero" {
 }
 
 test "is_empty: false when code hash is non-empty" {
-    var custom_hash: [32]u8 = undefined;
+    var custom_hash: primitives.Hash.Hash = undefined;
     @memset(&custom_hash, 0xAB);
 
     const acct = AccountState.from(.{
@@ -216,7 +216,7 @@ test "is_empty: false when code hash is non-empty" {
 
 test "is_empty: true even with non-empty storage root" {
     // Per EIP-161, is_empty does NOT check storage_root.
-    var custom_root: [32]u8 = undefined;
+    var custom_root: primitives.StateRoot.StateRoot = undefined;
     @memset(&custom_root, 0xFF);
 
     const acct = AccountState.from(.{
@@ -234,7 +234,7 @@ test "is_totally_empty: true for default empty account" {
 }
 
 test "is_totally_empty: false when storage root is non-empty" {
-    var custom_root: [32]u8 = undefined;
+    var custom_root: primitives.StateRoot.StateRoot = undefined;
     @memset(&custom_root, 0xFF);
 
     const acct = AccountState.from(.{
@@ -259,7 +259,7 @@ test "has_code_or_nonce: true when nonce is non-zero" {
 }
 
 test "has_code_or_nonce: true when code is non-empty" {
-    var custom_hash: [32]u8 = undefined;
+    var custom_hash: primitives.Hash.Hash = undefined;
     @memset(&custom_hash, 0xCD);
 
     const acct = AccountState.from(.{
@@ -270,7 +270,7 @@ test "has_code_or_nonce: true when code is non-empty" {
 }
 
 test "has_code_or_nonce: true when both nonce and code are non-empty" {
-    var custom_hash: [32]u8 = undefined;
+    var custom_hash: primitives.Hash.Hash = undefined;
     @memset(&custom_hash, 0xEF);
 
     const acct = AccountState.from(.{
