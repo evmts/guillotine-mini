@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { Bytes } from "voltaire-effect/primitives";
-import { DbMemoryTest, get, has, put, remove } from "./Db";
+import { DbMemoryTest, get, getAllKeys, has, put, remove } from "./Db";
 import { toBytes } from "./testUtils";
 
 describe("Db", () => {
@@ -49,6 +49,21 @@ describe("Db", () => {
       yield* remove(key);
       const result = yield* get(key);
       assert.isTrue(Option.isNone(result));
+    }).pipe(Effect.provide(DbMemoryTest())),
+  );
+
+  it.effect("getAllKeys(ordered) uses Nethermind byte ordering", () =>
+    Effect.gen(function* () {
+      const shortKey = toBytes("0x01");
+      const longKey = toBytes("0x0100");
+
+      yield* put(shortKey, toBytes("0x11"));
+      yield* put(longKey, toBytes("0x22"));
+
+      const keys = yield* getAllKeys(true);
+      assert.strictEqual(keys.length, 2);
+      assert.isTrue(Bytes.equals(keys[0]!, longKey));
+      assert.isTrue(Bytes.equals(keys[1]!, shortKey));
     }).pipe(Effect.provide(DbMemoryTest())),
   );
 });

@@ -162,6 +162,32 @@ const encodeKey = (key: BytesType): Effect.Effect<string, DbError> =>
 const decodeKey = (keyHex: string): BytesType =>
   Hex.toBytes(keyHex) as BytesType;
 
+const compareBytes = (left: BytesType, right: BytesType): number => {
+  const leftBytes = left as Uint8Array;
+  const rightBytes = right as Uint8Array;
+
+  if (leftBytes === rightBytes) {
+    return 0;
+  }
+
+  if (leftBytes.length === 0) {
+    return rightBytes.length === 0 ? 0 : 1;
+  }
+
+  for (let index = 0; index < leftBytes.length; index += 1) {
+    if (rightBytes.length <= index) {
+      return -1;
+    }
+
+    const result = leftBytes[index]! - rightBytes[index]!;
+    if (result !== 0) {
+      return result < 0 ? -1 : 1;
+    }
+  }
+
+  return rightBytes.length > leftBytes.length ? 1 : 0;
+};
+
 const cloneBytes = (value: BytesType): BytesType =>
   Hex.toBytes(Hex.fromBytes(value)) as BytesType;
 
@@ -182,7 +208,7 @@ const listEntries = (
   const entries = Array.from(store.entries());
   if (ordered) {
     entries.sort(([left], [right]) =>
-      left < right ? -1 : left > right ? 1 : 0,
+      compareBytes(decodeKey(left), decodeKey(right)),
     );
   }
   return entries.map(([keyHex, value]) => ({
