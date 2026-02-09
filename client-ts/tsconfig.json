@@ -17,6 +17,6 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["db/**/*.ts", "trie/**/*.ts"],
+  "include": ["db/**/*.ts", "trie/**/*.ts", "state/**/*.ts"],
   "exclude": ["node_modules"]
 }
