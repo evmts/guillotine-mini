@@ -143,7 +143,7 @@ test "is_account_alive: true for non-zero nonce" {
     try std.testing.expect(is_account_alive(account));
 }
 
-test "is_account_alive: true when storage root is non-empty" {
+test "is_account_alive: false when only storage root is non-empty" {
     var custom_root: [32]u8 = undefined;
     @memset(&custom_root, 0xAB);
 
@@ -154,8 +154,8 @@ test "is_account_alive: true when storage root is non-empty" {
         .storage_root = custom_root,
     });
 
-    // Not totally empty because storage_root != EMPTY_TRIE_ROOT.
-    try std.testing.expect(is_account_alive(account));
+    // Per execution-specs, storage root does not affect liveness.
+    try std.testing.expect(!is_account_alive(account));
     try std.testing.expect(!is_totally_empty(&account));
 }
 
