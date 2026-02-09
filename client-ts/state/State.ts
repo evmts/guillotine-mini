@@ -311,7 +311,6 @@ const makeWorldState = Effect.gen(function* () {
       const previous = accounts.get(key) ?? null;
 
       if (account === null) {
-        yield* clearStorageForKey(key);
         if (previous === null) {
           return;
         }
@@ -350,7 +349,11 @@ const makeWorldState = Effect.gen(function* () {
     });
 
   const destroyAccount = (address: Address.AddressType) =>
-    setAccount(address, null);
+    Effect.gen(function* () {
+      const key = addressKey(address);
+      yield* clearStorageForKey(key);
+      yield* setAccount(address, null);
+    });
 
   const takeSnapshot = () =>
     Effect.gen(function* () {
