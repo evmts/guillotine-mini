@@ -10,6 +10,7 @@ import {
   type ReleaseSpecService,
 } from "./ReleaseSpec";
 
+/** Intrinsic gas result including calldata floor (when enabled). */
 export type IntrinsicGas = {
   readonly intrinsicGas: Gas.GasType;
   readonly calldataFloorGas: Gas.GasType;
@@ -24,6 +25,7 @@ const GasBigIntSchema = Gas.BigInt as unknown as Schema.Schema<
   bigint
 >;
 
+/** Error raised when the transaction fails intrinsic-gas validation. */
 export class InvalidTransactionError extends Data.TaggedError(
   "InvalidTransactionError",
 )<{
@@ -31,6 +33,7 @@ export class InvalidTransactionError extends Data.TaggedError(
   readonly cause?: unknown;
 }> {}
 
+/** Error raised when required hardfork features are unavailable. */
 export class UnsupportedIntrinsicGasFeatureError extends Data.TaggedError(
   "UnsupportedIntrinsicGasFeatureError",
 )<{
@@ -38,22 +41,26 @@ export class UnsupportedIntrinsicGasFeatureError extends Data.TaggedError(
   readonly hardfork: ReleaseSpecService["hardfork"];
 }> {}
 
+/** Error raised when computed gas values violate schema constraints. */
 export class InvalidGasError extends Data.TaggedError("InvalidGasError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
 
+/** Union of intrinsic gas calculation errors. */
 export type IntrinsicGasError =
   | InvalidTransactionError
   | UnsupportedIntrinsicGasFeatureError
   | InvalidGasError;
 
+/** Intrinsic gas calculator service interface. */
 export interface IntrinsicGasCalculatorService {
   readonly calculateIntrinsicGas: (
     tx: Transaction.Any,
   ) => Effect.Effect<IntrinsicGas, IntrinsicGasError>;
 }
 
+/** Context tag for the intrinsic gas calculator service. */
 export class IntrinsicGasCalculator extends Context.Tag(
   "IntrinsicGasCalculator",
 )<IntrinsicGasCalculator, IntrinsicGasCalculatorService>() {}
@@ -244,15 +251,18 @@ const makeIntrinsicGasCalculator = Effect.gen(function* () {
   } satisfies IntrinsicGasCalculatorService;
 });
 
+/** Production intrinsic gas calculator layer. */
 export const IntrinsicGasCalculatorLive: Layer.Layer<
   IntrinsicGasCalculator,
   never,
   ReleaseSpec
 > = Layer.effect(IntrinsicGasCalculator, makeIntrinsicGasCalculator);
 
+/** Deterministic intrinsic gas calculator layer for tests. */
 export const IntrinsicGasCalculatorTest: Layer.Layer<IntrinsicGasCalculator> =
   IntrinsicGasCalculatorLive.pipe(Layer.provide(ReleaseSpecPrague));
 
+/** Calculate intrinsic gas for a transaction via the service. */
 export const calculateIntrinsicGas = (tx: Transaction.Any) =>
   Effect.gen(function* () {
     const calculator = yield* IntrinsicGasCalculator;
