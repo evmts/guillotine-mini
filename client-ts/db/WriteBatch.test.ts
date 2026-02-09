@@ -1,6 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Scope from "effect/Scope";
 import { Bytes, Hex } from "voltaire-effect/primitives";
 import { DbMemoryTest, get, put, startWriteBatch } from "./Db";
 import type { BytesType } from "./Db";
@@ -21,6 +23,27 @@ describe("Db WriteBatch", () => {
           assert.isTrue(Option.isNone(interim));
         }),
       );
+
+      const result = yield* get(key);
+      const stored = Option.getOrThrow(result);
+      assert.isTrue(Bytes.equals(stored, value));
+    }).pipe(Effect.provide(DbMemoryTest())),
+  );
+
+  it.effect("commits when scope closes explicitly", () =>
+    Effect.gen(function* () {
+      const key = toBytes("0x14");
+      const value = toBytes("0xbbbb");
+      const scope = yield* Scope.make();
+      const batch = yield* startWriteBatch().pipe(
+        Effect.provideService(Scope.Scope, scope),
+      );
+
+      yield* batch.put(key, value);
+      const interim = yield* get(key);
+      assert.isTrue(Option.isNone(interim));
+
+      yield* Scope.close(scope, Exit.succeed(undefined));
 
       const result = yield* get(key);
       const stored = Option.getOrThrow(result);
@@ -61,6 +84,31 @@ describe("Db WriteBatch", () => {
 
       const result = yield* get(key);
       assert.isTrue(Option.isNone(result));
+    }).pipe(Effect.provide(DbMemoryTest())),
+  );
+
+  it.effect("clear resets pending writes but keeps later ones", () =>
+    Effect.gen(function* () {
+      const clearedKey = toBytes("0x15");
+      const clearedValue = toBytes("0x9999");
+      const committedKey = toBytes("0x16");
+      const committedValue = toBytes("0x7777");
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const batch = yield* startWriteBatch();
+          yield* batch.put(clearedKey, clearedValue);
+          yield* batch.clear();
+          yield* batch.put(committedKey, committedValue);
+        }),
+      );
+
+      const clearedResult = yield* get(clearedKey);
+      assert.isTrue(Option.isNone(clearedResult));
+
+      const committedResult = yield* get(committedKey);
+      const stored = Option.getOrThrow(committedResult);
+      assert.isTrue(Bytes.equals(stored, committedValue));
     }).pipe(Effect.provide(DbMemoryTest())),
   );
 
