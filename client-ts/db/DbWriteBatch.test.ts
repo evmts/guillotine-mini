@@ -1,11 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { Bytes, Hex } from "voltaire-effect/primitives";
+import { Bytes } from "voltaire-effect/primitives";
 import { DbMemoryTest, get, writeBatch } from "./Db";
-import type { BytesType, DbWriteOp } from "./Db";
-
-const toBytes = (hex: string): BytesType => Hex.toBytes(hex) as BytesType;
+import type { DbWriteOp } from "./Db";
+import { toBytes } from "./testUtils";
 
 describe("Db writeBatch", () => {
   it.effect("applies put and delete operations in order", () =>
