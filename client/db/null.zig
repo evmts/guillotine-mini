@@ -38,6 +38,7 @@ const WriteFlags = adapter.WriteFlags;
 pub const NullDb = struct {
     name: DbName,
 
+    /// Create a NullDb for the given logical database name.
     pub fn init(name: DbName) NullDb {
         return .{ .name = name };
     }

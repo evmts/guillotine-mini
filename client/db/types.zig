@@ -89,17 +89,25 @@ pub const DbName = enum {
 pub const ReadFlags = struct {
     bits: u8 = 0,
 
+    /// No read flags set.
     pub const none = ReadFlags{ .bits = 0 };
+    /// Hint that the read is a cache miss.
     pub const hint_cache_miss = ReadFlags{ .bits = 1 << 0 };
+    /// Hint that sequential read-ahead is likely.
     pub const hint_read_ahead = ReadFlags{ .bits = 1 << 1 };
+    /// Stronger read-ahead hint (level 2).
     pub const hint_read_ahead2 = ReadFlags{ .bits = 1 << 2 };
+    /// Stronger read-ahead hint (level 3).
     pub const hint_read_ahead3 = ReadFlags{ .bits = 1 << 3 };
+    /// Skip duplicate read if possible.
     pub const skip_duplicate_read = ReadFlags{ .bits = 1 << 4 };
 
+    /// Return true if `flag` is set on this ReadFlags value.
     pub fn has(self: ReadFlags, flag: ReadFlags) bool {
         return (self.bits & flag.bits) != 0;
     }
 
+    /// Return a new ReadFlags with `flag` merged in.
     pub fn merge(self: ReadFlags, flag: ReadFlags) ReadFlags {
         return .{ .bits = self.bits | flag.bits };
     }
@@ -109,15 +117,21 @@ pub const ReadFlags = struct {
 pub const WriteFlags = struct {
     bits: u8 = 0,
 
+    /// No write flags set.
     pub const none = WriteFlags{ .bits = 0 };
+    /// Hint that the write is low priority.
     pub const low_priority = WriteFlags{ .bits = 1 << 0 };
+    /// Disable the write-ahead log (WAL) for this write.
     pub const disable_wal = WriteFlags{ .bits = 1 << 1 };
+    /// Convenience flag for low priority + no WAL.
     pub const low_priority_and_no_wal = WriteFlags{ .bits = (1 << 0) | (1 << 1) };
 
+    /// Return true if `flag` is set on this WriteFlags value.
     pub fn has(self: WriteFlags, flag: WriteFlags) bool {
         return (self.bits & flag.bits) != 0;
     }
 
+    /// Return a new WriteFlags with `flag` merged in.
     pub fn merge(self: WriteFlags, flag: WriteFlags) WriteFlags {
         return .{ .bits = self.bits | flag.bits };
     }
@@ -145,10 +159,12 @@ pub const DbValue = struct {
     release_ctx: ?*anyopaque = null,
     release_fn: ?ReleaseFn = null,
 
+    /// Create a borrowed DbValue that does not require release.
     pub fn borrowed(bytes: []const u8) DbValue {
         return .{ .bytes = bytes };
     }
 
+    /// Release this DbValue if it carries a release callback.
     pub fn release(self: DbValue) void {
         if (self.release_fn) |func| {
             if (self.release_ctx) |ctx| {
@@ -163,6 +179,7 @@ pub const DbEntry = struct {
     key: DbValue,
     value: DbValue,
 
+    /// Release both key and value, if they carry release callbacks.
     pub fn release(self: DbEntry) void {
         self.key.release();
         self.value.release();
@@ -179,10 +196,12 @@ pub const DbIterator = struct {
         deinit: *const fn (ptr: *anyopaque) void,
     };
 
+    /// Advance the iterator and return the next entry, or null at end.
     pub fn next(self: *DbIterator) Error!?DbEntry {
         return self.vtable.next(self.ptr);
     }
 
+    /// Release resources held by this iterator.
     pub fn deinit(self: *DbIterator) void {
         self.vtable.deinit(self.ptr);
     }
@@ -200,14 +219,17 @@ pub const DbSnapshot = struct {
         deinit: *const fn (ptr: *anyopaque) void,
     };
 
+    /// Retrieve a value from the snapshot with explicit read flags.
     pub fn get(self: DbSnapshot, key: []const u8, flags: ReadFlags) Error!?DbValue {
         return self.vtable.get(self.ptr, key, flags);
     }
 
+    /// Check whether `key` exists in the snapshot.
     pub fn contains(self: DbSnapshot, key: []const u8) Error!bool {
         return self.vtable.contains(self.ptr, key);
     }
 
+    /// Return an iterator over snapshot entries (if supported).
     pub fn iterator(self: DbSnapshot, ordered: bool) Error!DbIterator {
         if (self.vtable.iterator) |iter_fn| {
             return iter_fn(self.ptr, ordered);
@@ -215,6 +237,7 @@ pub const DbSnapshot = struct {
         return error.UnsupportedOperation;
     }
 
+    /// Release resources held by this snapshot.
     pub fn deinit(self: *DbSnapshot) void {
         self.vtable.deinit(self.ptr);
     }
