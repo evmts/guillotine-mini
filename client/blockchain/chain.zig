@@ -3,9 +3,10 @@ const std = @import("std");
 const blockchain = @import("blockchain");
 const primitives = @import("primitives");
 
+/// Chain management handle backed by Voltaire's `Blockchain` primitive.
 pub const Chain = blockchain.Blockchain;
-pub const ForkBlockCache = blockchain.ForkBlockCache;
-pub const BlockStore = blockchain.BlockStore;
+
+const ForkBlockCache = blockchain.ForkBlockCache;
 
 test {
     @import("std").testing.refAllDecls(@This());
