@@ -21,9 +21,11 @@ pub const BlocksRequest = struct {
     receipt_headers: []const BlockHeader.BlockHeader,
     /// Optional block bodies, aligned with `body_headers`.
     /// Missing bodies are represented as null entries.
+    /// Responses may be shorter than the request; missing tail entries are treated as unavailable.
     bodies: ?[]const ?BlockBody.BlockBody = null,
     /// Optional receipts per block, aligned with `receipt_headers`.
     /// Missing receipts are represented as null entries.
+    /// Responses may be shorter than the request; missing tail entries are treated as unavailable.
     receipts: ?[]const ?[]const Receipt.Receipt = null,
     /// Optional arena owning response buffers. Must be deinit'd by caller.
     response_arena: ?std.heap.ArenaAllocator = null,
@@ -90,20 +92,22 @@ pub const BlocksRequest = struct {
         self.receipts = null;
     }
 
-    /// Set bodies response, enforcing alignment with `body_headers`.
+    /// Set bodies response, allowing truncated responses.
+    /// Responses must not exceed the requested length; use nulls to represent missing middle entries.
     pub fn set_bodies(self: *BlocksRequest, bodies: []const ?BlockBody.BlockBody) ResponseAlignmentError!void {
         try ensure_alignment(self.body_headers.len, bodies.len, ResponseAlignmentError.BodyAlignmentMismatch);
         self.bodies = bodies;
     }
 
-    /// Set receipts response, enforcing alignment with `receipt_headers`.
+    /// Set receipts response, allowing truncated responses.
+    /// Responses must not exceed the requested length; use nulls to represent missing middle entries.
     pub fn set_receipts(self: *BlocksRequest, receipts: []const ?[]const Receipt.Receipt) ResponseAlignmentError!void {
         try ensure_alignment(self.receipt_headers.len, receipts.len, ResponseAlignmentError.ReceiptAlignmentMismatch);
         self.receipts = receipts;
     }
 
     fn ensure_alignment(expected_len: usize, actual_len: usize, err: ResponseAlignmentError) ResponseAlignmentError!void {
-        if (actual_len != expected_len) {
+        if (actual_len > expected_len) {
             return err;
         }
     }
@@ -184,7 +188,7 @@ test "BlocksRequest.body_hashes returns owned empty slice" {
     allocator.free(hashes);
 }
 
-test "BlocksRequest.set_bodies enforces alignment and allows missing entries" {
+test "BlocksRequest.set_bodies allows truncated responses and missing entries" {
     const headers = &[_]BlockHeader.BlockHeader{ BlockHeader.init(), BlockHeader.init() };
     var req = BlocksRequest{
         .body_headers = headers,
@@ -193,8 +197,13 @@ test "BlocksRequest.set_bodies enforces alignment and allows missing entries" {
         .receipts = null,
     };
 
-    const misaligned = &[_]?BlockBody.BlockBody{BlockBody.init()};
-    try std.testing.expectError(BlocksRequest.ResponseAlignmentError.BodyAlignmentMismatch, req.set_bodies(misaligned));
+    const oversized = &[_]?BlockBody.BlockBody{ null, null, BlockBody.init() };
+    try std.testing.expectError(BlocksRequest.ResponseAlignmentError.BodyAlignmentMismatch, req.set_bodies(oversized));
+
+    const truncated = &[_]?BlockBody.BlockBody{BlockBody.init()};
+    try req.set_bodies(truncated);
+    try std.testing.expect(req.bodies != null);
+    try std.testing.expect(req.bodies.?.len == 1);
 
     const aligned = &[_]?BlockBody.BlockBody{ null, BlockBody.init() };
     try req.set_bodies(aligned);
@@ -203,7 +212,7 @@ test "BlocksRequest.set_bodies enforces alignment and allows missing entries" {
     try std.testing.expect(req.bodies.?[0] == null);
 }
 
-test "BlocksRequest.set_receipts enforces alignment and allows missing entries" {
+test "BlocksRequest.set_receipts allows truncated responses and missing entries" {
     const headers = &[_]BlockHeader.BlockHeader{ BlockHeader.init(), BlockHeader.init() };
     var req = BlocksRequest{
         .body_headers = &[_]BlockHeader.BlockHeader{},
@@ -212,8 +221,13 @@ test "BlocksRequest.set_receipts enforces alignment and allows missing entries" 
         .receipts = null,
     };
 
-    const misaligned = &[_]?[]const Receipt.Receipt{null};
-    try std.testing.expectError(BlocksRequest.ResponseAlignmentError.ReceiptAlignmentMismatch, req.set_receipts(misaligned));
+    const oversized = &[_]?[]const Receipt.Receipt{ null, null, &[_]Receipt.Receipt{} };
+    try std.testing.expectError(BlocksRequest.ResponseAlignmentError.ReceiptAlignmentMismatch, req.set_receipts(oversized));
+
+    const truncated = &[_]?[]const Receipt.Receipt{null};
+    try req.set_receipts(truncated);
+    try std.testing.expect(req.receipts != null);
+    try std.testing.expect(req.receipts.?.len == 1);
 
     const empty_receipts = &[_]Receipt.Receipt{};
     const aligned = &[_]?[]const Receipt.Receipt{ null, empty_receipts };
