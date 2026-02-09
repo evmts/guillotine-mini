@@ -32,6 +32,15 @@ pub fn build(b: *std.Build) void {
     const crypto_mod = primitives_dep.module("crypto");
     const precompiles_mod = primitives_dep.module("precompiles");
     const blockchain_mod = primitives_dep.module("blockchain");
+    const jsonrpc_mod = b.addModule("jsonrpc", .{
+        .root_source_file = primitives_dep.path("packages/voltaire-zig/src/jsonrpc/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+        },
+    });
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -195,6 +204,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "jsonrpc", .module = jsonrpc_mod },
         },
     });
 
