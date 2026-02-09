@@ -294,39 +294,23 @@ const makeMemoryDb = (config: DbConfig) =>
       });
 
     const startWriteBatch = () =>
-      pipe(
-        Effect.acquireRelease(
-          Effect.sync(() => new Map<string, BytesType | null>()),
-          (pending) =>
-            Effect.sync(() => {
-              for (const [keyHex, value] of pending.entries()) {
-                if (value === null) {
-                  store.delete(keyHex);
-                } else {
-                  store.set(keyHex, cloneBytes(value));
-                }
-              }
-              pending.clear();
-            }),
-        ),
-        Effect.map((pending) => {
+      Effect.acquireRelease(
+        Effect.sync(() => {
           const put = (key: BytesType, value: BytesType) =>
             Effect.gen(function* () {
               const keyHex = yield* encodeKey(key);
-              pending.set(keyHex, cloneBytes(value));
+              store.set(keyHex, cloneBytes(value));
             });
 
           const remove = (key: BytesType) =>
             Effect.gen(function* () {
               const keyHex = yield* encodeKey(key);
-              pending.set(keyHex, null);
+              store.delete(keyHex);
             });
 
           const clear = () =>
-            Effect.try({
-              try: () => pending.clear(),
-              catch: (cause) =>
-                new DbError({ message: "Failed to clear write batch", cause }),
+            Effect.sync(() => {
+              // no-op for write-through batch
             });
 
           return {
@@ -335,6 +319,10 @@ const makeMemoryDb = (config: DbConfig) =>
             clear,
           } satisfies WriteBatch;
         }),
+        () =>
+          Effect.sync(() => {
+            // no-op for in-memory batch disposal
+          }),
       );
 
     return {
