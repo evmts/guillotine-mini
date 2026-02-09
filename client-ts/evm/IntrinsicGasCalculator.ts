@@ -1,6 +1,8 @@
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import { Gas, Transaction } from "voltaire-effect/primitives";
 import {
   ReleaseSpec,
@@ -13,10 +15,33 @@ export type IntrinsicGas = {
   readonly calldataFloorGas: Gas.GasType;
 };
 
+const TransactionSchema = Transaction.Schema as unknown as Schema.Schema<
+  Transaction.Any,
+  unknown
+>;
+
+export class InvalidTransactionError extends Data.TaggedError(
+  "InvalidTransactionError",
+)<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
+
+export class UnsupportedIntrinsicGasFeatureError extends Data.TaggedError(
+  "UnsupportedIntrinsicGasFeatureError",
+)<{
+  readonly feature: string;
+  readonly hardfork: ReleaseSpecService["hardfork"];
+}> {}
+
+export type IntrinsicGasError =
+  | InvalidTransactionError
+  | UnsupportedIntrinsicGasFeatureError;
+
 export interface IntrinsicGasCalculatorService {
   readonly calculateIntrinsicGas: (
     tx: Transaction.Any,
-  ) => Effect.Effect<IntrinsicGas>;
+  ) => Effect.Effect<IntrinsicGas, IntrinsicGasError>;
 }
 
 export class IntrinsicGasCalculator extends Context.Tag(
@@ -99,6 +124,51 @@ const authorizationCost = (
     ? BigInt(tx.authorizationList.length) * PER_EMPTY_ACCOUNT_COST
     : 0n;
 
+const validateTransaction = (
+  tx: Transaction.Any,
+): Effect.Effect<Transaction.Any, InvalidTransactionError> =>
+  Schema.decode(TransactionSchema)(tx).pipe(
+    Effect.mapError(
+      (cause) =>
+        new InvalidTransactionError({
+          message: "Invalid transaction shape for intrinsic gas calculation",
+          cause,
+        }),
+    ),
+  );
+
+const requiresAccessListSupport = (tx: Transaction.Any): boolean =>
+  tx.type === Transaction.Type.EIP2930 ||
+  tx.type === Transaction.Type.EIP1559 ||
+  tx.type === Transaction.Type.EIP4844 ||
+  tx.type === Transaction.Type.EIP7702;
+
+const ensureAccessListSupport = (
+  tx: Transaction.Any,
+  spec: ReleaseSpecService,
+): Effect.Effect<void, UnsupportedIntrinsicGasFeatureError> =>
+  requiresAccessListSupport(tx) && !spec.isEip2930Enabled
+    ? Effect.fail(
+        new UnsupportedIntrinsicGasFeatureError({
+          feature: "EIP-2930 access lists",
+          hardfork: spec.hardfork,
+        }),
+      )
+    : Effect.succeed(undefined);
+
+const ensureAuthorizationSupport = (
+  tx: Transaction.Any,
+  spec: ReleaseSpecService,
+): Effect.Effect<void, UnsupportedIntrinsicGasFeatureError> =>
+  tx.type === Transaction.Type.EIP7702 && !spec.isEip7702Enabled
+    ? Effect.fail(
+        new UnsupportedIntrinsicGasFeatureError({
+          feature: "EIP-7702 authorization lists",
+          hardfork: spec.hardfork,
+        }),
+      )
+    : Effect.succeed(undefined);
+
 const calculateIntrinsicGasValue = (
   tx: Transaction.Any,
   spec: ReleaseSpecService,
@@ -132,7 +202,12 @@ const makeIntrinsicGasCalculator = Effect.gen(function* () {
   const spec = yield* ReleaseSpec;
   return {
     calculateIntrinsicGas: (tx: Transaction.Any) =>
-      Effect.sync(() => calculateIntrinsicGasValue(tx, spec)),
+      Effect.gen(function* () {
+        const validated = yield* validateTransaction(tx);
+        yield* ensureAccessListSupport(validated, spec);
+        yield* ensureAuthorizationSupport(validated, spec);
+        return calculateIntrinsicGasValue(validated, spec);
+      }),
   } satisfies IntrinsicGasCalculatorService;
 });
 
