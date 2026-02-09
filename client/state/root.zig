@@ -40,6 +40,7 @@
 /// ```
 const journal = @import("journal.zig");
 const account = @import("account.zig");
+const state = @import("state.zig");
 
 // -- Public API: flat re-exports -------------------------------------------
 
@@ -80,6 +81,10 @@ pub const has_code_or_nonce = account.has_code_or_nonce;
 
 /// Check whether an account exists and is not empty.
 pub const is_account_alive = account.is_account_alive;
+
+// State utilities
+/// Tracks accounts created during the current transaction.
+pub const CreatedAccounts = state.CreatedAccounts;
 
 test {
     // Ensure all sub-modules compile and their tests run.
