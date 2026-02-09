@@ -301,22 +301,22 @@ pub fn Journal(comptime K: type, comptime V: type) type {
         // -----------------------------------------------------------------
 
         /// Number of entries currently in the journal.
-        pub fn len(self: *const Self) usize {
+        fn len(self: *const Self) usize {
             return self.entries.items.len;
         }
 
         /// Get a reference to an entry by index.
-        pub fn get(self: *const Self, index: usize) *const E {
+        fn get(self: *const Self, index: usize) *const E {
             return &self.entries.items[index];
         }
 
         /// Get a mutable reference to an entry by index.
-        pub fn get_mut(self: *Self, index: usize) *E {
+        fn get_mut(self: *Self, index: usize) *E {
             return &self.entries.items[index];
         }
 
         /// Return a slice of all entries.
-        pub fn items(self: *const Self) []const E {
+        fn items(self: *const Self) []const E {
             return self.entries.items;
         }
     };
