@@ -217,10 +217,8 @@ pub fn Journal(comptime K: type, comptime V: type) type {
                 self.entries.shrinkRetainingCapacity(target_len);
             } else {
                 // Slow path: collect just_cache entries, truncate, re-append.
-                // We reuse the existing capacity in the entry list to
-                // temporarily buffer the kept entries.  Since we're about
-                // to truncate anyway, we copy them to a stack-allocated
-                // or heap-allocated scratch buffer.
+                // We allocate a scratch buffer for the kept entries and
+                // re-append them after truncation.
 
                 // Allocate scratch for kept entries.
                 const kept = self.allocator.alloc(E, kept_count) catch
@@ -290,7 +288,10 @@ pub fn Journal(comptime K: type, comptime V: type) type {
             self.entries.shrinkRetainingCapacity(target_len);
         }
 
-        /// Discard all entries (equivalent to restoring to `empty_snapshot`).
+        /// Discard all entries.
+        ///
+        /// Note: unlike `restore(empty_snapshot)`, this does NOT preserve
+        /// `just_cache` entries.
         pub fn clear(self: *Self) void {
             self.entries.shrinkRetainingCapacity(0);
         }
