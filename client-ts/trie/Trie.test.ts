@@ -1,15 +1,32 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { Bytes, Hash } from "voltaire-effect/primitives";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { Bytes, Hash, Hex } from "voltaire-effect/primitives";
+import type { BytesType } from "./Node";
 import { TrieHashTest } from "./hash";
 import { makeBytesHelpers } from "./internal/primitives";
 import { TriePatricializeTest } from "./patricialize";
 import { EMPTY_TRIE_ROOT, TrieRootTest } from "./root";
-import { TrieMemoryLive, TrieMemoryTest, get, put, remove, root } from "./Trie";
+import {
+  TrieError,
+  TrieMemoryLive,
+  TrieMemoryTest,
+  get,
+  put,
+  remove,
+  root,
+} from "./Trie";
 
-const { bytesFromHex } = makeBytesHelpers((message) => new Error(message));
+const { bytesFromHex, bytesFromUint8Array } = makeBytesHelpers(
+  (message) => new Error(message),
+);
 const EmptyBytes = bytesFromHex("0x");
+const encodeFixtureBytes = (value: string): BytesType =>
+  value.startsWith("0x")
+    ? bytesFromHex(value)
+    : bytesFromUint8Array(new TextEncoder().encode(value));
 
 const BaseLayer = Layer.merge(
   TrieHashTest,
@@ -38,11 +55,43 @@ describe("Trie", () => {
     }).pipe(Effect.provide(trieLayerLive())),
   );
 
+  it.effect("rejects invalid key input", () =>
+    Effect.gen(function* () {
+      const invalidKey = new Uint8Array([1, 2, 3]) as BytesType;
+      const result = yield* get(invalidKey).pipe(Effect.either);
+      if (result._tag === "Left") {
+        assert.isTrue(result.left instanceof TrieError);
+        return;
+      }
+      assert.fail("Expected TrieError for invalid key");
+    }).pipe(Effect.provide(trieLayer())),
+  );
+
+  it.effect("rejects invalid value input", () =>
+    Effect.gen(function* () {
+      const key = bytesFromHex("0x07");
+      const invalidValue = new Uint8Array([4, 5, 6]) as BytesType;
+      const result = yield* put(key, invalidValue).pipe(Effect.either);
+      if (result._tag === "Left") {
+        assert.isTrue(result.left instanceof TrieError);
+        return;
+      }
+      assert.fail("Expected TrieError for invalid value");
+    }).pipe(Effect.provide(trieLayer())),
+  );
+
   it.effect("get returns default for missing keys", () =>
     Effect.gen(function* () {
       const key = bytesFromHex("0x02");
       const result = yield* get(key);
       assert.isTrue(Bytes.equals(result, EmptyBytes));
+    }).pipe(Effect.provide(trieLayer())),
+  );
+
+  it.effect("empty trie root matches the canonical empty hash", () =>
+    Effect.gen(function* () {
+      const hash = yield* root();
+      assert.isTrue(Hash.equals(hash, EMPTY_TRIE_ROOT));
     }).pipe(Effect.provide(trieLayer())),
   );
 
@@ -91,5 +140,38 @@ describe("Trie", () => {
 
       assert.isFalse(Hash.equals(plainRoot, securedRoot));
     }),
+  );
+
+  it.effect("matches Ethereum trie fixture (emptyValues)", () =>
+    Effect.gen(function* () {
+      const repoRoot = path.resolve(process.cwd(), "..");
+      const fixturePath = path.join(
+        repoRoot,
+        "ethereum-tests",
+        "TrieTests",
+        "trietest.json",
+      );
+      const raw = JSON.parse(fs.readFileSync(fixturePath, "utf8")) as Record<
+        string,
+        {
+          readonly in: ReadonlyArray<readonly [string, string | null]>;
+          root: string;
+        }
+      >;
+      const fixture = raw.emptyValues;
+      if (!fixture) {
+        throw new Error("Missing emptyValues fixture");
+      }
+
+      for (const [rawKey, rawValue] of fixture.in) {
+        const key = encodeFixtureBytes(rawKey);
+        const value =
+          rawValue === null ? EmptyBytes : encodeFixtureBytes(rawValue);
+        yield* put(key, value);
+      }
+
+      const hash = yield* root();
+      assert.strictEqual(Hex.fromBytes(hash), fixture.root);
+    }).pipe(Effect.provide(trieLayer(false))),
   );
 });
