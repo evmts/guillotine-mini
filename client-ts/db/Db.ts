@@ -191,6 +191,14 @@ const compareBytes = (left: BytesType, right: BytesType): number => {
 const cloneBytes = (value: BytesType): BytesType =>
   Hex.toBytes(Hex.fromBytes(value)) as BytesType;
 
+const cloneBytesEffect = (
+  value: BytesType,
+): Effect.Effect<BytesType, DbError> =>
+  Effect.try({
+    try: () => cloneBytes(value),
+    catch: (cause) => new DbError({ message: "Invalid DB value", cause }),
+  });
+
 const mergeUnsupportedError = () =>
   new DbError({ message: "Merge is not supported by the memory DB" });
 
@@ -326,7 +334,8 @@ const makeMemoryDb = (config: DbConfig) =>
     const put = (key: BytesType, value: BytesType, _flags?: WriteFlags) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
-        store.set(keyHex, cloneBytes(value));
+        const storedValue = yield* cloneBytesEffect(value);
+        store.set(keyHex, storedValue);
       });
 
     const merge = (_key: BytesType, _value: BytesType, _flags?: WriteFlags) =>
@@ -394,10 +403,11 @@ const makeMemoryDb = (config: DbConfig) =>
           switch (op._tag) {
             case "put": {
               const keyHex = yield* encodeKey(op.key);
+              const value = yield* cloneBytesEffect(op.value);
               prepared.push({
                 _tag: "put",
                 keyHex,
-                value: cloneBytes(op.value),
+                value,
               });
               break;
             }
@@ -427,7 +437,8 @@ const makeMemoryDb = (config: DbConfig) =>
           const put = (key: BytesType, value: BytesType, _flags?: WriteFlags) =>
             Effect.gen(function* () {
               const keyHex = yield* encodeKey(key);
-              store.set(keyHex, cloneBytes(value));
+              const storedValue = yield* cloneBytesEffect(value);
+              store.set(keyHex, storedValue);
             });
 
           const merge = (
