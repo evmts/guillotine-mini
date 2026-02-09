@@ -82,9 +82,22 @@ export class HostAdapter extends Context.Tag("HostAdapter")<
   HostAdapterService
 >() {}
 
+const withHostAdapter = <A, E>(
+  f: (host: HostAdapterService) => Effect.Effect<A, E>,
+) => Effect.flatMap(HostAdapter, f);
+
 const makeHostAdapter = Effect.gen(function* () {
   const worldState = yield* WorldState;
   const codes = new Map<AccountKey, RuntimeCode.RuntimeCodeType>();
+
+  const updateAccount = (
+    address: Address.AddressType,
+    update: (account: AccountStateType) => AccountStateType,
+  ) =>
+    Effect.gen(function* () {
+      const account = yield* worldState.getAccount(address);
+      yield* worldState.setAccount(address, update(account));
+    });
 
   const getBalance = (address: Address.AddressType) =>
     Effect.map(worldState.getAccount(address), (account) => account.balance);
@@ -92,11 +105,7 @@ const makeHostAdapter = Effect.gen(function* () {
   const setBalance = (
     address: Address.AddressType,
     balance: AccountStateType["balance"],
-  ) =>
-    Effect.gen(function* () {
-      const account = yield* worldState.getAccount(address);
-      yield* worldState.setAccount(address, { ...account, balance });
-    });
+  ) => updateAccount(address, (account) => ({ ...account, balance }));
 
   const getNonce = (address: Address.AddressType) =>
     Effect.map(worldState.getAccount(address), (account) => account.nonce);
@@ -104,11 +113,7 @@ const makeHostAdapter = Effect.gen(function* () {
   const setNonce = (
     address: Address.AddressType,
     nonce: AccountStateType["nonce"],
-  ) =>
-    Effect.gen(function* () {
-      const account = yield* worldState.getAccount(address);
-      yield* worldState.setAccount(address, { ...account, nonce });
-    });
+  ) => updateAccount(address, (account) => ({ ...account, nonce }));
 
   const getCode = (address: Address.AddressType) =>
     Effect.sync(() => codes.get(addressKey(address)) ?? EMPTY_CODE);
@@ -124,9 +129,8 @@ const makeHostAdapter = Effect.gen(function* () {
       } else {
         codes.set(key, code);
       }
-      const account = yield* worldState.getAccount(address);
       const codeHash = yield* codeHashFor(code);
-      yield* worldState.setAccount(address, { ...account, codeHash });
+      yield* updateAccount(address, (account) => ({ ...account, codeHash }));
     });
 
   const getStorage = (address: Address.AddressType, slot: StorageSlotType) =>
@@ -161,72 +165,43 @@ export const HostAdapterTest: Layer.Layer<HostAdapter> = HostAdapterLive.pipe(
 
 /** Read account balance from the host adapter. */
 export const getBalance = (address: Address.AddressType) =>
-  Effect.gen(function* () {
-    const host = yield* HostAdapter;
-    return yield* host.getBalance(address);
-  });
+  withHostAdapter((host) => host.getBalance(address));
 
 /** Set account balance via the host adapter. */
 export const setBalance = (
   address: Address.AddressType,
   balance: AccountStateType["balance"],
-) =>
-  Effect.gen(function* () {
-    const host = yield* HostAdapter;
-    return yield* host.setBalance(address, balance);
-  });
+) => withHostAdapter((host) => host.setBalance(address, balance));
 
 /** Read account nonce from the host adapter. */
 export const getNonce = (address: Address.AddressType) =>
-  Effect.gen(function* () {
-    const host = yield* HostAdapter;
-    return yield* host.getNonce(address);
-  });
+  withHostAdapter((host) => host.getNonce(address));
 
 /** Set account nonce via the host adapter. */
 export const setNonce = (
   address: Address.AddressType,
   nonce: AccountStateType["nonce"],
-) =>
-  Effect.gen(function* () {
-    const host = yield* HostAdapter;
-    return yield* host.setNonce(address, nonce);
-  });
+) => withHostAdapter((host) => host.setNonce(address, nonce));
 
 /** Read contract code via the host adapter. */
 export const getCode = (address: Address.AddressType) =>
-  Effect.gen(function* () {
-    const host = yield* HostAdapter;
-    return yield* host.getCode(address);
-  });
+  withHostAdapter((host) => host.getCode(address));
 
 /** Store contract code via the host adapter. */
 export const setCode = (
   address: Address.AddressType,
   code: RuntimeCode.RuntimeCodeType,
-) =>
-  Effect.gen(function* () {
-    const host = yield* HostAdapter;
-    return yield* host.setCode(address, code);
-  });
+) => withHostAdapter((host) => host.setCode(address, code));
 
 /** Read storage slot value via the host adapter. */
 export const getStorage = (
   address: Address.AddressType,
   slot: StorageSlotType,
-) =>
-  Effect.gen(function* () {
-    const host = yield* HostAdapter;
-    return yield* host.getStorage(address, slot);
-  });
+) => withHostAdapter((host) => host.getStorage(address, slot));
 
 /** Write storage slot value via the host adapter. */
 export const setStorage = (
   address: Address.AddressType,
   slot: StorageSlotType,
   value: StorageValueType,
-) =>
-  Effect.gen(function* () {
-    const host = yield* HostAdapter;
-    return yield* host.setStorage(address, slot, value);
-  });
+) => withHostAdapter((host) => host.setStorage(address, slot, value));
