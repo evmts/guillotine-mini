@@ -151,6 +151,8 @@ pub const Database = struct {
 
         /// Store a key-value pair. If `value` is `null`, this is equivalent
         /// to calling `delete`. Overwrites any existing value for the key.
+        /// Input slices are caller-owned and only valid for the duration
+        /// of the call; implementations must copy if they need to retain them.
         put: *const fn (ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void,
 
         /// Remove the entry for `key`. No-op if the key does not exist.
@@ -168,6 +170,9 @@ pub const Database = struct {
         ///
         /// On success, all operations in `ops` are applied. On error, the
         /// backend must guarantee that NO operations were applied (rollback).
+        /// The `ops` slice and embedded key/value slices are caller-owned and
+        /// only valid for the duration of the call; implementations must
+        /// consume/copy synchronously and must not retain references.
         write_batch: ?*const fn (ptr: *anyopaque, ops: []const WriteBatchOp) Error!void = null,
     };
 
@@ -302,6 +307,10 @@ pub const WriteBatch = struct {
     ///
     /// On success, pending ops are cleared. `deinit()` must still be
     /// called to release arena memory back to the allocator.
+    ///
+    /// Input lifetimes: keys/values passed to the backend are owned by the
+    /// batch arena and are only valid during `commit()`. Backends must copy
+    /// if they need to retain them beyond the call.
     pub fn commit(self: *WriteBatch) Error!void {
         if (self.ops.items.len == 0) return;
 
