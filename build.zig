@@ -285,6 +285,28 @@ pub fn build(b: *std.Build) void {
     const client_engine_test_step = b.step("test-engine", "Run Engine API tests");
     client_engine_test_step.dependOn(&run_client_engine_tests.step);
 
+    // Runner CLI (entry point)
+    const client_runner_mod = b.addModule("client_runner", .{
+        .root_source_file = b.path("client/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "evm", .module = evm_mod },
+        },
+    });
+
+    const client_runner_tests = b.addTest(.{
+        .root_module = client_runner_mod,
+    });
+
+    const run_client_runner_tests = b.addRunArtifact(client_runner_tests);
+    test_step.dependOn(&run_client_runner_tests.step);
+    unit_test_step.dependOn(&run_client_runner_tests.step);
+
+    const client_runner_test_step = b.step("test-runner", "Run runner CLI tests");
+    client_runner_test_step.dependOn(&run_client_runner_tests.step);
+
     // Client EVM module (EVM ↔ WorldState integration)
     const state_manager_mod = primitives_dep.module("state-manager");
 
