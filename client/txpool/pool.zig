@@ -10,22 +10,27 @@ const std = @import("std");
 /// This mirrors the HostInterface pattern used by the EVM and allows
 /// compile-time wiring of concrete pool implementations.
 pub const TxPool = struct {
+    /// Type-erased pointer to the concrete txpool implementation.
     ptr: *anyopaque,
+    /// Pointer to the static vtable for the concrete txpool implementation.
     vtable: *const VTable,
 
+    /// Virtual function table for txpool operations.
     pub const VTable = struct {
-        pendingCount: *const fn (ptr: *anyopaque) u64,
-        pendingBlobCount: *const fn (ptr: *anyopaque) u64,
+        /// Total number of pending transactions in the pool.
+        pending_count: *const fn (ptr: *anyopaque) usize,
+        /// Total number of pending blob transactions in the pool.
+        pending_blob_count: *const fn (ptr: *anyopaque) usize,
     };
 
     /// Total number of pending transactions in the pool.
-    pub fn pendingCount(self: TxPool) u64 {
-        return self.vtable.pendingCount(self.ptr);
+    pub fn pending_count(self: TxPool) usize {
+        return self.vtable.pending_count(self.ptr);
     }
 
     /// Total number of pending blob transactions in the pool.
-    pub fn pendingBlobCount(self: TxPool) u64 {
-        return self.vtable.pendingBlobCount(self.ptr);
+    pub fn pending_blob_count(self: TxPool) usize {
+        return self.vtable.pending_blob_count(self.ptr);
     }
 };
 
@@ -35,15 +40,15 @@ pub const TxPool = struct {
 
 test "txpool interface dispatches pending counts" {
     const DummyPool = struct {
-        pending: u64,
-        pending_blobs: u64,
+        pending: usize,
+        pending_blobs: usize,
 
-        fn pendingCount(ptr: *anyopaque) u64 {
+        fn pending_count(ptr: *anyopaque) usize {
             const self: *DummyPool = @ptrCast(@alignCast(ptr));
             return self.pending;
         }
 
-        fn pendingBlobCount(ptr: *anyopaque) u64 {
+        fn pending_blob_count(ptr: *anyopaque) usize {
             const self: *DummyPool = @ptrCast(@alignCast(ptr));
             return self.pending_blobs;
         }
@@ -51,11 +56,11 @@ test "txpool interface dispatches pending counts" {
 
     var dummy = DummyPool{ .pending = 42, .pending_blobs = 7 };
     const vtable = TxPool.VTable{
-        .pendingCount = DummyPool.pendingCount,
-        .pendingBlobCount = DummyPool.pendingBlobCount,
+        .pending_count = DummyPool.pending_count,
+        .pending_blob_count = DummyPool.pending_blob_count,
     };
 
     const pool = TxPool{ .ptr = &dummy, .vtable = &vtable };
-    try std.testing.expectEqual(@as(u64, 42), pool.pendingCount());
-    try std.testing.expectEqual(@as(u64, 7), pool.pendingBlobCount());
+    try std.testing.expectEqual(@as(usize, 42), pool.pending_count());
+    try std.testing.expectEqual(@as(usize, 7), pool.pending_blob_count());
 }
