@@ -83,7 +83,7 @@ pub const HostAdapter = struct {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getBalance(address) catch |err| {
             log.err("getBalance failed for {any}: {any}", .{ address, err });
-            return 0;
+            std.debug.panic("getBalance failed for {any}: {any}", .{ address, err });
         };
     }
 
@@ -98,7 +98,7 @@ pub const HostAdapter = struct {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getCode(address) catch |err| {
             log.err("getCode failed for {any}: {any}", .{ address, err });
-            return &[_]u8{};
+            std.debug.panic("getCode failed for {any}: {any}", .{ address, err });
         };
     }
 
@@ -113,7 +113,7 @@ pub const HostAdapter = struct {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getStorage(address, slot) catch |err| {
             log.err("getStorage failed for {any} slot {}: {any}", .{ address, slot, err });
-            return 0;
+            std.debug.panic("getStorage failed for {any} slot {}: {any}", .{ address, slot, err });
         };
     }
 
@@ -128,7 +128,7 @@ pub const HostAdapter = struct {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getNonce(address) catch |err| {
             log.err("getNonce failed for {any}: {any}", .{ address, err });
-            return 0;
+            std.debug.panic("getNonce failed for {any}: {any}", .{ address, err });
         };
     }
 
