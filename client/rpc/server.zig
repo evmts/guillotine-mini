@@ -26,7 +26,8 @@ pub const RpcServerConfig = struct {
     /// Enforce strict hex encoding (EIP-1474 Quantity/Data rules).
     strict_hex_format: bool = true,
 
-    pub fn effective_websocket_port(self: RpcServerConfig) u16 {
+    /// Returns the WebSocket port, defaulting to the HTTP port when unset.
+    fn effective_websocket_port(self: RpcServerConfig) u16 {
         return self.websocket_port orelse self.port;
     }
 };
