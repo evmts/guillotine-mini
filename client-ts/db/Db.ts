@@ -1,40 +1,56 @@
-import * as Context from "effect/Context"
-import * as Data from "effect/Data"
-import * as Effect from "effect/Effect"
-import { pipe } from "effect/Function"
-import * as Layer from "effect/Layer"
-import * as Option from "effect/Option"
-import * as Schema from "effect/Schema"
-import * as Bytes from "voltaire-effect/primitives/Bytes"
+import * as Context from "effect/Context";
+import * as Data from "effect/Data";
+import * as Effect from "effect/Effect";
+import { pipe } from "effect/Function";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
+import * as Bytes from "voltaire-effect/primitives/Bytes";
 
 /** Configuration for a DB layer. */
 export interface DbConfig {
-  readonly name: string
+  readonly name: string;
 }
 
 /** Schema for validating DB configuration at boundaries. */
 export const DbConfigSchema = Schema.Struct({
-  name: Schema.NonEmptyString
-})
+  name: Schema.NonEmptyString,
+});
 
 /** Error raised by DB operations. */
 export class DbError extends Data.TaggedError("DbError")<{
-  readonly message: string
-  readonly cause?: unknown
+  readonly message: string;
+  readonly cause?: unknown;
 }> {}
+
+/** Batched write operations. */
+export interface WriteBatch {
+  readonly put: (
+    key: Bytes.BytesType,
+    value: Bytes.BytesType,
+  ) => Effect.Effect<void, DbError>;
+  readonly remove: (key: Bytes.BytesType) => Effect.Effect<void, DbError>;
+  readonly clear: () => Effect.Effect<void, DbError>;
+}
 
 /** Key-value DB abstraction. */
 export interface DbService {
-  readonly name: string
+  readonly name: string;
   readonly get: (
-    key: Bytes.BytesType
-  ) => Effect.Effect<Option.Option<Bytes.BytesType>, DbError>
+    key: Bytes.BytesType,
+  ) => Effect.Effect<Option.Option<Bytes.BytesType>, DbError>;
   readonly put: (
     key: Bytes.BytesType,
-    value: Bytes.BytesType
-  ) => Effect.Effect<void, DbError>
-  readonly remove: (key: Bytes.BytesType) => Effect.Effect<void, DbError>
-  readonly has: (key: Bytes.BytesType) => Effect.Effect<boolean, DbError>
+    value: Bytes.BytesType,
+  ) => Effect.Effect<void, DbError>;
+  readonly remove: (key: Bytes.BytesType) => Effect.Effect<void, DbError>;
+  readonly has: (key: Bytes.BytesType) => Effect.Effect<boolean, DbError>;
+  readonly startWriteBatch: () => Effect.Effect<
+    WriteBatch,
+    DbError,
+    Scope.Scope
+  >;
 }
 
 /** Context tag for the DB service. */
@@ -43,92 +59,144 @@ export class Db extends Context.Tag("Db")<Db, DbService>() {}
 const validateConfig = (config: DbConfig): Effect.Effect<DbConfig, DbError> =>
   Effect.try({
     try: () => Schema.decodeSync(DbConfigSchema)(config),
-    catch: (cause) => new DbError({ message: "Invalid DbConfig", cause })
-  })
+    catch: (cause) => new DbError({ message: "Invalid DbConfig", cause }),
+  });
 
 const encodeKey = (key: Bytes.BytesType): Effect.Effect<string, DbError> =>
   Effect.try({
     try: () => Schema.encodeSync(Bytes.Hex)(key),
-    catch: (cause) => new DbError({ message: "Invalid DB key", cause })
-  })
+    catch: (cause) => new DbError({ message: "Invalid DB key", cause }),
+  });
 
-const cloneBytes = (value: Bytes.BytesType): Bytes.BytesType => value.slice()
+const cloneBytes = (value: Bytes.BytesType): Bytes.BytesType => value.slice();
 
 const makeMemoryDb = (config: DbConfig) =>
   Effect.gen(function* () {
-    const validated = yield* validateConfig(config)
+    const validated = yield* validateConfig(config);
     const store = yield* Effect.acquireRelease(
       Effect.sync(() => new Map<string, Bytes.BytesType>()),
-      (map) => Effect.sync(() => map.clear())
-    )
+      (map) => Effect.sync(() => map.clear()),
+    );
 
     const get = (key: Bytes.BytesType) =>
       Effect.gen(function* () {
-        const keyHex = yield* encodeKey(key)
-        const value = store.get(keyHex)
-        return pipe(Option.fromNullable(value), Option.map(cloneBytes))
-      })
+        const keyHex = yield* encodeKey(key);
+        const value = store.get(keyHex);
+        return pipe(Option.fromNullable(value), Option.map(cloneBytes));
+      });
 
     const put = (key: Bytes.BytesType, value: Bytes.BytesType) =>
       Effect.gen(function* () {
-        const keyHex = yield* encodeKey(key)
-        store.set(keyHex, cloneBytes(value))
-      })
+        const keyHex = yield* encodeKey(key);
+        store.set(keyHex, cloneBytes(value));
+      });
 
     const remove = (key: Bytes.BytesType) =>
       Effect.gen(function* () {
-        const keyHex = yield* encodeKey(key)
-        store.delete(keyHex)
-      })
+        const keyHex = yield* encodeKey(key);
+        store.delete(keyHex);
+      });
 
     const has = (key: Bytes.BytesType) =>
       Effect.gen(function* () {
-        const keyHex = yield* encodeKey(key)
-        return store.has(keyHex)
-      })
+        const keyHex = yield* encodeKey(key);
+        return store.has(keyHex);
+      });
+
+    const startWriteBatch = () =>
+      pipe(
+        Effect.acquireRelease(
+          Effect.sync(() => new Map<string, Bytes.BytesType | null>()),
+          (pending) =>
+            Effect.sync(() => {
+              for (const [keyHex, value] of pending.entries()) {
+                if (value === null) {
+                  store.delete(keyHex);
+                } else {
+                  store.set(keyHex, cloneBytes(value));
+                }
+              }
+              pending.clear();
+            }),
+        ),
+        Effect.map((pending) => {
+          const put = (key: Bytes.BytesType, value: Bytes.BytesType) =>
+            Effect.gen(function* () {
+              const keyHex = yield* encodeKey(key);
+              pending.set(keyHex, cloneBytes(value));
+            });
+
+          const remove = (key: Bytes.BytesType) =>
+            Effect.gen(function* () {
+              const keyHex = yield* encodeKey(key);
+              pending.set(keyHex, null);
+            });
+
+          const clear = () =>
+            Effect.try({
+              try: () => pending.clear(),
+              catch: (cause) =>
+                new DbError({ message: "Failed to clear write batch", cause }),
+            });
+
+          return {
+            put,
+            remove,
+            clear,
+          } satisfies WriteBatch;
+        }),
+      );
 
     return {
       name: validated.name,
       get,
       put,
       remove,
-      has
-    } satisfies DbService
-  })
+      has,
+      startWriteBatch,
+    } satisfies DbService;
+  });
 
 /** In-memory production DB layer. */
 export const DbMemoryLive = (config: DbConfig): Layer.Layer<Db, DbError> =>
-  Layer.scoped(Db, makeMemoryDb(config))
+  Layer.scoped(Db, makeMemoryDb(config));
 
 /** In-memory deterministic DB layer for tests. */
 export const DbMemoryTest = (
-  config: DbConfig = { name: "test" }
-): Layer.Layer<Db, DbError> => Layer.scoped(Db, makeMemoryDb(config))
+  config: DbConfig = { name: "test" },
+): Layer.Layer<Db, DbError> => Layer.scoped(Db, makeMemoryDb(config));
 
 /** Retrieve a value by key. */
 export const get = (key: Bytes.BytesType) =>
   Effect.gen(function* () {
-    const db = yield* Db
-    return yield* db.get(key)
-  })
+    const db = yield* Db;
+    return yield* db.get(key);
+  });
 
 /** Store a value by key. */
 export const put = (key: Bytes.BytesType, value: Bytes.BytesType) =>
   Effect.gen(function* () {
-    const db = yield* Db
-    yield* db.put(key, value)
-  })
+    const db = yield* Db;
+    yield* db.put(key, value);
+  });
 
 /** Remove a value by key. */
 export const remove = (key: Bytes.BytesType) =>
   Effect.gen(function* () {
-    const db = yield* Db
-    yield* db.remove(key)
-  })
+    const db = yield* Db;
+    yield* db.remove(key);
+  });
 
 /** Check whether a key exists. */
 export const has = (key: Bytes.BytesType) =>
   Effect.gen(function* () {
-    const db = yield* Db
-    return yield* db.has(key)
-  })
+    const db = yield* Db;
+    return yield* db.has(key);
+  });
+
+/** Start a write batch scope. */
+export const startWriteBatch = () =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.startWriteBatch();
+  });
