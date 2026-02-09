@@ -69,6 +69,53 @@ export class DbError extends Data.TaggedError("DbError")<{
   readonly cause?: unknown;
 }> {}
 
+const readFlagsMask = 1 | 2 | 4 | 8 | 16;
+const writeFlagsMask = 1 | 2;
+
+/** Schema for validating read flags at boundaries. */
+export const ReadFlagsSchema = Schema.Int.pipe(
+  Schema.filter((value) => (value & ~readFlagsMask) === 0, {
+    message: () => "Invalid ReadFlags value",
+  }),
+  Schema.brand("ReadFlags"),
+);
+
+/** Read flag bitset (Nethermind ReadFlags parity). */
+export type ReadFlags = Schema.Schema.Type<typeof ReadFlagsSchema>;
+
+/** Read flag constants. */
+export const ReadFlags = {
+  None: ReadFlagsSchema.make(0),
+  HintCacheMiss: ReadFlagsSchema.make(1),
+  HintReadAhead: ReadFlagsSchema.make(2),
+  HintReadAhead2: ReadFlagsSchema.make(4),
+  HintReadAhead3: ReadFlagsSchema.make(8),
+  SkipDuplicateRead: ReadFlagsSchema.make(16),
+  combine: (...flags: ReadFlags[]): ReadFlags =>
+    ReadFlagsSchema.make(flags.reduce((acc, flag) => acc | flag, 0)),
+} as const;
+
+/** Schema for validating write flags at boundaries. */
+export const WriteFlagsSchema = Schema.Int.pipe(
+  Schema.filter((value) => (value & ~writeFlagsMask) === 0, {
+    message: () => "Invalid WriteFlags value",
+  }),
+  Schema.brand("WriteFlags"),
+);
+
+/** Write flag bitset (Nethermind WriteFlags parity). */
+export type WriteFlags = Schema.Schema.Type<typeof WriteFlagsSchema>;
+
+/** Write flag constants. */
+export const WriteFlags = {
+  None: WriteFlagsSchema.make(0),
+  LowPriority: WriteFlagsSchema.make(1),
+  DisableWAL: WriteFlagsSchema.make(2),
+  LowPriorityAndNoWAL: WriteFlagsSchema.make(3),
+  combine: (...flags: WriteFlags[]): WriteFlags =>
+    WriteFlagsSchema.make(flags.reduce((acc, flag) => acc | flag, 0)),
+} as const;
+
 /** DB metrics for maintenance/telemetry. */
 export interface DbMetric {
   readonly size: number;
@@ -85,16 +132,41 @@ export interface DbEntry {
   readonly value: BytesType;
 }
 
+/** Read-only snapshot view of a DB. */
+export interface DbSnapshot {
+  readonly get: (
+    key: BytesType,
+    flags?: ReadFlags,
+  ) => Effect.Effect<Option.Option<BytesType>, DbError>;
+  readonly getAll: (
+    ordered?: boolean,
+  ) => Effect.Effect<ReadonlyArray<DbEntry>, DbError>;
+  readonly getAllKeys: (
+    ordered?: boolean,
+  ) => Effect.Effect<ReadonlyArray<BytesType>, DbError>;
+  readonly getAllValues: (
+    ordered?: boolean,
+  ) => Effect.Effect<ReadonlyArray<BytesType>, DbError>;
+  readonly has: (key: BytesType) => Effect.Effect<boolean, DbError>;
+}
+
 /** Single write operation for batched commits. */
 export type DbWriteOp =
   | {
       readonly _tag: "put";
       readonly key: BytesType;
       readonly value: BytesType;
+      readonly flags?: WriteFlags;
     }
   | {
       readonly _tag: "del";
       readonly key: BytesType;
+    }
+  | {
+      readonly _tag: "merge";
+      readonly key: BytesType;
+      readonly value: BytesType;
+      readonly flags?: WriteFlags;
     };
 
 /** Batched write operations. */
@@ -102,6 +174,12 @@ export interface WriteBatch {
   readonly put: (
     key: BytesType,
     value: BytesType,
+    flags?: WriteFlags,
+  ) => Effect.Effect<void, DbError>;
+  readonly merge: (
+    key: BytesType,
+    value: BytesType,
+    flags?: WriteFlags,
   ) => Effect.Effect<void, DbError>;
   readonly remove: (key: BytesType) => Effect.Effect<void, DbError>;
   readonly clear: () => Effect.Effect<void, DbError>;
@@ -112,6 +190,7 @@ export interface DbService {
   readonly name: DbName;
   readonly get: (
     key: BytesType,
+    flags?: ReadFlags,
   ) => Effect.Effect<Option.Option<BytesType>, DbError>;
   readonly getAll: (
     ordered?: boolean,
@@ -125,9 +204,20 @@ export interface DbService {
   readonly put: (
     key: BytesType,
     value: BytesType,
+    flags?: WriteFlags,
+  ) => Effect.Effect<void, DbError>;
+  readonly merge: (
+    key: BytesType,
+    value: BytesType,
+    flags?: WriteFlags,
   ) => Effect.Effect<void, DbError>;
   readonly remove: (key: BytesType) => Effect.Effect<void, DbError>;
   readonly has: (key: BytesType) => Effect.Effect<boolean, DbError>;
+  readonly createSnapshot: () => Effect.Effect<
+    DbSnapshot,
+    DbError,
+    Scope.Scope
+  >;
   readonly flush: (onlyWal?: boolean) => Effect.Effect<void, DbError>;
   readonly clear: () => Effect.Effect<void, DbError>;
   readonly compact: () => Effect.Effect<void, DbError>;
@@ -160,7 +250,8 @@ const encodeKey = (key: BytesType): Effect.Effect<string, DbError> =>
 const decodeKey = (keyHex: string): BytesType =>
   Hex.toBytes(keyHex) as BytesType;
 
-const cloneBytes = (value: BytesType): BytesType => value.slice() as BytesType;
+const cloneBytes = (value: BytesType): BytesType =>
+  Hex.toBytes(Hex.fromBytes(value)) as BytesType;
 
 type PreparedWriteOp =
   | {
@@ -205,18 +296,23 @@ const makeMemoryDb = (config: DbConfig) =>
         getEntries(Boolean(ordered)).map((entry) => entry.value),
       );
 
-    const get = (key: BytesType) =>
+    const get = (key: BytesType, _flags?: ReadFlags) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
         const value = store.get(keyHex);
         return pipe(Option.fromNullable(value), Option.map(cloneBytes));
       });
 
-    const put = (key: BytesType, value: BytesType) =>
+    const put = (key: BytesType, value: BytesType, _flags?: WriteFlags) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
         store.set(keyHex, cloneBytes(value));
       });
+
+    const merge = (_key: BytesType, _value: BytesType, _flags?: WriteFlags) =>
+      Effect.fail(
+        new DbError({ message: "Merge is not supported by the memory DB" }),
+      );
 
     const remove = (key: BytesType) =>
       Effect.gen(function* () {
@@ -229,6 +325,70 @@ const makeMemoryDb = (config: DbConfig) =>
         const keyHex = yield* encodeKey(key);
         return store.has(keyHex);
       });
+
+    const createSnapshot = () =>
+      pipe(
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            const snapshotStore = new Map<string, BytesType>();
+            for (const [keyHex, value] of store.entries()) {
+              snapshotStore.set(keyHex, cloneBytes(value));
+            }
+            return snapshotStore;
+          }),
+          (snapshotStore) => Effect.sync(() => snapshotStore.clear()),
+        ),
+        Effect.map((snapshotStore) => {
+          const getSnapshotEntries = (
+            ordered = false,
+          ): ReadonlyArray<DbEntry> => {
+            const entries = Array.from(snapshotStore.entries());
+            if (ordered) {
+              entries.sort(([left], [right]) =>
+                left < right ? -1 : left > right ? 1 : 0,
+              );
+            }
+            return entries.map(([keyHex, value]) => ({
+              key: decodeKey(keyHex),
+              value: cloneBytes(value),
+            }));
+          };
+
+          const get = (key: BytesType, _flags?: ReadFlags) =>
+            Effect.gen(function* () {
+              const keyHex = yield* encodeKey(key);
+              const value = snapshotStore.get(keyHex);
+              return pipe(Option.fromNullable(value), Option.map(cloneBytes));
+            });
+
+          const getAll = (ordered?: boolean) =>
+            Effect.sync(() => getSnapshotEntries(Boolean(ordered)));
+
+          const getAllKeys = (ordered?: boolean) =>
+            Effect.sync(() =>
+              getSnapshotEntries(Boolean(ordered)).map((entry) => entry.key),
+            );
+
+          const getAllValues = (ordered?: boolean) =>
+            Effect.sync(() =>
+              getSnapshotEntries(Boolean(ordered)).map((entry) => entry.value),
+            );
+
+          const has = (key: BytesType) =>
+            Effect.gen(function* () {
+              const keyHex = yield* encodeKey(key);
+              return snapshotStore.has(keyHex);
+            });
+
+          return {
+            get,
+            getAll,
+            getAllKeys,
+            getAllValues,
+            has,
+          } satisfies DbSnapshot;
+        }),
+      );
 
     const flush = (_onlyWal?: boolean) =>
       Effect.sync(() => {
@@ -281,6 +441,13 @@ const makeMemoryDb = (config: DbConfig) =>
               prepared.push({ _tag: "del", keyHex });
               break;
             }
+            case "merge": {
+              return yield* Effect.fail(
+                new DbError({
+                  message: "Merge is not supported by the memory DB",
+                }),
+              );
+            }
           }
         }
 
@@ -296,11 +463,22 @@ const makeMemoryDb = (config: DbConfig) =>
     const startWriteBatch = () =>
       Effect.acquireRelease(
         Effect.sync(() => {
-          const put = (key: BytesType, value: BytesType) =>
+          const put = (key: BytesType, value: BytesType, _flags?: WriteFlags) =>
             Effect.gen(function* () {
               const keyHex = yield* encodeKey(key);
               store.set(keyHex, cloneBytes(value));
             });
+
+          const merge = (
+            _key: BytesType,
+            _value: BytesType,
+            _flags?: WriteFlags,
+          ) =>
+            Effect.fail(
+              new DbError({
+                message: "Merge is not supported by the memory DB",
+              }),
+            );
 
           const remove = (key: BytesType) =>
             Effect.gen(function* () {
@@ -315,6 +493,7 @@ const makeMemoryDb = (config: DbConfig) =>
 
           return {
             put,
+            merge,
             remove,
             clear,
           } satisfies WriteBatch;
@@ -332,8 +511,10 @@ const makeMemoryDb = (config: DbConfig) =>
       getAllKeys,
       getAllValues,
       put,
+      merge,
       remove,
       has,
+      createSnapshot,
       flush,
       clear,
       compact,
@@ -353,10 +534,10 @@ export const DbMemoryTest = (
 ): Layer.Layer<Db, DbError> => Layer.scoped(Db, makeMemoryDb(config));
 
 /** Retrieve a value by key. */
-export const get = (key: BytesType) =>
+export const get = (key: BytesType, flags?: ReadFlags) =>
   Effect.gen(function* () {
     const db = yield* Db;
-    return yield* db.get(key);
+    return yield* db.get(key, flags);
   });
 
 /** Return all entries. */
@@ -381,10 +562,17 @@ export const getAllValues = (ordered?: boolean) =>
   });
 
 /** Store a value by key. */
-export const put = (key: BytesType, value: BytesType) =>
+export const put = (key: BytesType, value: BytesType, flags?: WriteFlags) =>
   Effect.gen(function* () {
     const db = yield* Db;
-    yield* db.put(key, value);
+    yield* db.put(key, value, flags);
+  });
+
+/** Merge a value by key. */
+export const merge = (key: BytesType, value: BytesType, flags?: WriteFlags) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db.merge(key, value, flags);
   });
 
 /** Remove a value by key. */
@@ -399,6 +587,13 @@ export const has = (key: BytesType) =>
   Effect.gen(function* () {
     const db = yield* Db;
     return yield* db.has(key);
+  });
+
+/** Create a read-only snapshot of the DB. */
+export const createSnapshot = () =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.createSnapshot();
   });
 
 /** Flush underlying storage buffers. */
