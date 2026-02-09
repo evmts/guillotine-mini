@@ -12,7 +12,7 @@ pub const ValidationError = error{
 };
 
 /// Validate PoS header constants: difficulty=0, nonce=0, ommers=empty list hash.
-pub fn validatePosHeaderConstants(header: *const BlockHeader.BlockHeader) ValidationError!void {
+fn validate_pos_header_constants(header: *const BlockHeader.BlockHeader) ValidationError!void {
     if (header.difficulty != 0) return ValidationError.InvalidDifficulty;
     if (!std.mem.allEqual(u8, header.nonce[0..], 0)) return ValidationError.InvalidNonce;
     if (!Hash.equals(&header.ommers_hash, &BlockHeader.EMPTY_OMMERS_HASH)) {
@@ -27,42 +27,42 @@ pub fn MergeHeaderValidator(comptime PreMergeValidator: type) type {
         /// Validate a header under the given hardfork.
         pub fn validate(header: *const BlockHeader.BlockHeader, hardfork: Hardfork) ValidationError!void {
             if (hardfork.isAtLeast(.MERGE)) {
-                return validatePosHeaderConstants(header);
+                return validate_pos_header_constants(header);
             }
             return PreMergeValidator.validate(header, hardfork);
         }
     };
 }
 
-test "validatePosHeaderConstants - accepts valid PoS constants" {
+test "validate_pos_header_constants - accepts valid PoS constants" {
     var header = BlockHeader.init();
     header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
 
-    try validatePosHeaderConstants(&header);
+    try validate_pos_header_constants(&header);
 }
 
-test "validatePosHeaderConstants - rejects non-zero difficulty" {
+test "validate_pos_header_constants - rejects non-zero difficulty" {
     var header = BlockHeader.init();
     header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
     header.difficulty = 1;
 
-    try std.testing.expectError(ValidationError.InvalidDifficulty, validatePosHeaderConstants(&header));
+    try std.testing.expectError(ValidationError.InvalidDifficulty, validate_pos_header_constants(&header));
 }
 
-test "validatePosHeaderConstants - rejects non-zero nonce" {
+test "validate_pos_header_constants - rejects non-zero nonce" {
     var header = BlockHeader.init();
     header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
     header.nonce = [_]u8{0} ** BlockHeader.NONCE_SIZE;
     header.nonce[BlockHeader.NONCE_SIZE - 1] = 1;
 
-    try std.testing.expectError(ValidationError.InvalidNonce, validatePosHeaderConstants(&header));
+    try std.testing.expectError(ValidationError.InvalidNonce, validate_pos_header_constants(&header));
 }
 
-test "validatePosHeaderConstants - rejects non-empty ommers hash" {
+test "validate_pos_header_constants - rejects non-empty ommers hash" {
     var header = BlockHeader.init();
     header.ommers_hash = Hash.ZERO;
 
-    try std.testing.expectError(ValidationError.InvalidOmmersHash, validatePosHeaderConstants(&header));
+    try std.testing.expectError(ValidationError.InvalidOmmersHash, validate_pos_header_constants(&header));
 }
 
 test "MergeHeaderValidator - delegates to pre-merge validator" {
