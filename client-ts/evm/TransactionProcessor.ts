@@ -4,7 +4,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import {
+  Balance,
   BaseFeePerGas,
+  Blob,
   GasPrice,
   Transaction,
 } from "voltaire-effect/primitives";
@@ -13,6 +15,13 @@ import {
 export type EffectiveGasPrice = {
   readonly effectiveGasPrice: GasPrice.GasPriceType;
   readonly priorityFeePerGas: GasPrice.GasPriceType;
+};
+
+/** Max gas fee and blob fee breakdown for transaction validation. */
+export type MaxGasFeeCheck = {
+  readonly maxGasFee: Balance.BalanceType;
+  readonly blobGasFee: Balance.BalanceType;
+  readonly blobGasUsed: bigint;
 };
 
 const TransactionSchema = Transaction.Schema as unknown as Schema.Schema<
@@ -27,6 +36,13 @@ const GasPriceSchema = GasPrice.BigInt as unknown as Schema.Schema<
   GasPrice.GasPriceType,
   bigint
 >;
+const BalanceSchema = Balance.BigInt as unknown as Schema.Schema<
+  Balance.BalanceType,
+  bigint
+>;
+const toBigInt = (value: bigint | number): bigint =>
+  typeof value === "bigint" ? value : BigInt(value);
+const BLOB_GAS_PER_BLOB = toBigInt(Blob.GAS_PER_BLOB);
 
 /** Error raised when transaction decoding fails. */
 export class InvalidTransactionError extends Data.TaggedError(
@@ -83,6 +99,42 @@ export class UnsupportedTransactionTypeError extends Data.TaggedError(
   readonly type: Transaction.Any["type"];
 }> {}
 
+/** Error raised when sender balance is invalid. */
+export class InvalidBalanceError extends Data.TaggedError(
+  "InvalidBalanceError",
+)<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
+
+/** Error raised when sender balance cannot cover max fees + value. */
+export class InsufficientSenderBalanceError extends Data.TaggedError(
+  "InsufficientSenderBalanceError",
+)<{
+  readonly balance: bigint;
+  readonly requiredBalance: bigint;
+}> {}
+
+/** Error raised when max fee per blob gas is insufficient. */
+export class InsufficientMaxFeePerBlobGasError extends Data.TaggedError(
+  "InsufficientMaxFeePerBlobGasError",
+)<{
+  readonly maxFeePerBlobGas: bigint;
+  readonly blobGasPrice: bigint;
+}> {}
+
+/** Error raised when blob transaction has no blob hashes. */
+export class NoBlobDataError extends Data.TaggedError("NoBlobDataError")<{
+  readonly message: string;
+}> {}
+
+/** Error raised when a blob versioned hash is invalid. */
+export class InvalidBlobVersionedHashError extends Data.TaggedError(
+  "InvalidBlobVersionedHashError",
+)<{
+  readonly index: number;
+}> {}
+
 /** Union of transaction fee calculation errors. */
 export type TransactionFeeError =
   | InvalidTransactionError
@@ -93,12 +145,27 @@ export type TransactionFeeError =
   | GasPriceBelowBaseFeeError
   | UnsupportedTransactionTypeError;
 
+/** Union of max fee and balance validation errors. */
+export type MaxGasFeeCheckError =
+  | TransactionFeeError
+  | InvalidBalanceError
+  | InsufficientSenderBalanceError
+  | InsufficientMaxFeePerBlobGasError
+  | NoBlobDataError
+  | InvalidBlobVersionedHashError;
+
 /** Transaction processor service interface (fee calculations). */
 export interface TransactionProcessorService {
   readonly calculateEffectiveGasPrice: (
     tx: Transaction.Any,
     baseFeePerGas: bigint,
   ) => Effect.Effect<EffectiveGasPrice, TransactionFeeError>;
+  readonly checkMaxGasFeeAndBalance: (
+    tx: Transaction.Any,
+    baseFeePerGas: bigint,
+    blobGasPrice: bigint,
+    senderBalance: bigint,
+  ) => Effect.Effect<MaxGasFeeCheck, MaxGasFeeCheckError>;
 }
 
 /** Context tag for transaction processor service. */
@@ -133,6 +200,17 @@ const decodeGasPrice = (value: bigint, label: string) =>
     ),
   );
 
+const decodeBalance = (value: bigint, label: string) =>
+  Schema.decode(BalanceSchema)(value).pipe(
+    Effect.mapError(
+      (cause) =>
+        new InvalidBalanceError({
+          message: `Invalid ${label} balance`,
+          cause,
+        }),
+    ),
+  );
+
 const makeTransactionProcessor = Effect.gen(function* () {
   const calculateEffectiveGasPrice = (
     tx: Transaction.Any,
@@ -149,7 +227,6 @@ const makeTransactionProcessor = Effect.gen(function* () {
         ),
       );
       const baseFee = yield* decodeBaseFee(baseFeePerGas);
-
       const txType = parsedTx.type;
 
       if (Transaction.isLegacy(parsedTx) || Transaction.isEIP2930(parsedTx)) {
@@ -222,8 +299,133 @@ const makeTransactionProcessor = Effect.gen(function* () {
       );
     });
 
+  const checkMaxGasFeeAndBalance = (
+    tx: Transaction.Any,
+    baseFeePerGas: bigint,
+    blobGasPrice: bigint,
+    senderBalance: bigint,
+  ) =>
+    Effect.gen(function* () {
+      const parsedTx = yield* Schema.decode(TransactionSchema)(tx).pipe(
+        Effect.mapError(
+          (cause) =>
+            new InvalidTransactionError({
+              message: "Invalid transaction",
+              cause,
+            }),
+        ),
+      );
+      const baseFee = yield* decodeBaseFee(baseFeePerGas);
+      const txType = parsedTx.type;
+
+      let maxGasFeeValue: bigint;
+
+      if (Transaction.isLegacy(parsedTx) || Transaction.isEIP2930(parsedTx)) {
+        if (parsedTx.gasPrice < baseFee) {
+          return yield* Effect.fail(
+            new GasPriceBelowBaseFeeError({
+              gasPrice: parsedTx.gasPrice,
+              baseFeePerGas: baseFee,
+            }),
+          );
+        }
+
+        maxGasFeeValue = parsedTx.gasLimit * parsedTx.gasPrice;
+      } else if (
+        Transaction.isEIP1559(parsedTx) ||
+        Transaction.isEIP4844(parsedTx) ||
+        Transaction.isEIP7702(parsedTx)
+      ) {
+        if (parsedTx.maxFeePerGas < parsedTx.maxPriorityFeePerGas) {
+          return yield* Effect.fail(
+            new PriorityFeeGreaterThanMaxFeeError({
+              maxFeePerGas: parsedTx.maxFeePerGas,
+              maxPriorityFeePerGas: parsedTx.maxPriorityFeePerGas,
+            }),
+          );
+        }
+
+        if (parsedTx.maxFeePerGas < baseFee) {
+          return yield* Effect.fail(
+            new InsufficientMaxFeePerGasError({
+              maxFeePerGas: parsedTx.maxFeePerGas,
+              baseFeePerGas: baseFee,
+            }),
+          );
+        }
+
+        maxGasFeeValue = parsedTx.gasLimit * parsedTx.maxFeePerGas;
+      } else {
+        return yield* Effect.fail(
+          new UnsupportedTransactionTypeError({ type: txType }),
+        );
+      }
+
+      let blobGasUsed = 0n;
+      let blobGasFeeValue = 0n;
+
+      if (Transaction.isEIP4844(parsedTx)) {
+        if (parsedTx.blobVersionedHashes.length === 0) {
+          return yield* Effect.fail(
+            new NoBlobDataError({ message: "no blob data in transaction" }),
+          );
+        }
+
+        for (const [
+          index,
+          blobHash,
+        ] of parsedTx.blobVersionedHashes.entries()) {
+          if (!Blob.isValidVersion(blobHash as unknown as Blob.VersionedHash)) {
+            return yield* Effect.fail(
+              new InvalidBlobVersionedHashError({ index }),
+            );
+          }
+        }
+
+        const normalizedBlobGasPrice = yield* decodeGasPrice(
+          blobGasPrice,
+          "blob",
+        );
+
+        if (parsedTx.maxFeePerBlobGas < normalizedBlobGasPrice) {
+          return yield* Effect.fail(
+            new InsufficientMaxFeePerBlobGasError({
+              maxFeePerBlobGas: parsedTx.maxFeePerBlobGas,
+              blobGasPrice: normalizedBlobGasPrice,
+            }),
+          );
+        }
+
+        blobGasUsed =
+          BigInt(parsedTx.blobVersionedHashes.length) * BLOB_GAS_PER_BLOB;
+        blobGasFeeValue = blobGasUsed * parsedTx.maxFeePerBlobGas;
+        maxGasFeeValue += blobGasFeeValue;
+      }
+
+      const maxGasFee = yield* decodeBalance(maxGasFeeValue, "max gas fee");
+      const blobGasFee = yield* decodeBalance(blobGasFeeValue, "blob gas fee");
+      const balance = yield* decodeBalance(senderBalance, "sender");
+      const requiredBalanceValue = maxGasFeeValue + parsedTx.value;
+      const requiredBalance = yield* decodeBalance(
+        requiredBalanceValue,
+        "required",
+      );
+
+      if (balance < requiredBalance) {
+        return yield* Effect.fail(
+          new InsufficientSenderBalanceError({
+            balance,
+            requiredBalance,
+          }),
+        );
+      }
+
+      return { maxGasFee, blobGasFee, blobGasUsed };
+    });
+
   return {
     calculateEffectiveGasPrice,
+    checkMaxGasFeeAndBalance,
   } satisfies TransactionProcessorService;
 });
 
@@ -241,4 +443,20 @@ export const calculateEffectiveGasPrice = (
 ) =>
   withTransactionProcessor((service) =>
     service.calculateEffectiveGasPrice(tx, baseFeePerGas),
+  );
+
+/** Check max gas fee, blob fee constraints, and sender balance. */
+export const checkMaxGasFeeAndBalance = (
+  tx: Transaction.Any,
+  baseFeePerGas: bigint,
+  blobGasPrice: bigint,
+  senderBalance: bigint,
+) =>
+  withTransactionProcessor((service) =>
+    service.checkMaxGasFeeAndBalance(
+      tx,
+      baseFeePerGas,
+      blobGasPrice,
+      senderBalance,
+    ),
   );

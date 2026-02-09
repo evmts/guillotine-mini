@@ -2,11 +2,16 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
 import * as Schema from "effect/Schema";
-import { Address, Transaction } from "voltaire-effect/primitives";
+import { Address, Blob, Transaction } from "voltaire-effect/primitives";
 import {
   calculateEffectiveGasPrice,
+  checkMaxGasFeeAndBalance,
   GasPriceBelowBaseFeeError,
+  InsufficientMaxFeePerBlobGasError,
   InsufficientMaxFeePerGasError,
+  InsufficientSenderBalanceError,
+  InvalidBlobVersionedHashError,
+  NoBlobDataError,
   PriorityFeeGreaterThanMaxFeeError,
   TransactionProcessorTest,
 } from "./TransactionProcessor";
@@ -14,12 +19,19 @@ import {
 const provideProcessor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(TransactionProcessorTest));
 
+const toBigInt = (value: bigint | number): bigint =>
+  typeof value === "bigint" ? value : BigInt(value);
+
 const LegacySchema = Transaction.LegacySchema as unknown as Schema.Schema<
   Transaction.Legacy,
   unknown
 >;
 const Eip1559Schema = Transaction.EIP1559Schema as unknown as Schema.Schema<
   Transaction.EIP1559,
+  unknown
+>;
+const Eip4844Schema = Transaction.EIP4844Schema as unknown as Schema.Schema<
+  Transaction.EIP4844,
   unknown
 >;
 
@@ -57,6 +69,36 @@ const makeEip1559Tx = (
     value: 0n,
     data: new Uint8Array(0),
     accessList: [],
+    yParity: 0,
+    r: EMPTY_SIGNATURE.r,
+    s: EMPTY_SIGNATURE.s,
+  });
+
+const makeBlobHash = (versionByte: number): Uint8Array => {
+  const hash = new Uint8Array(32);
+  hash[0] = versionByte;
+  return hash;
+};
+
+const makeEip4844Tx = (
+  maxFeePerGas: bigint,
+  maxPriorityFeePerGas: bigint,
+  maxFeePerBlobGas: bigint,
+  blobVersionedHashes: Uint8Array[],
+): Transaction.EIP4844 =>
+  Schema.decodeSync(Eip4844Schema)({
+    type: Transaction.Type.EIP4844,
+    chainId: 1n,
+    nonce: 0n,
+    maxPriorityFeePerGas,
+    maxFeePerGas,
+    gasLimit: 100_000n,
+    to: Address.zero(),
+    value: 0n,
+    data: new Uint8Array(0),
+    accessList: [],
+    maxFeePerBlobGas,
+    blobVersionedHashes,
     yParity: 0,
     r: EMPTY_SIGNATURE.r,
     s: EMPTY_SIGNATURE.s,
@@ -128,6 +170,97 @@ describe("TransactionProcessor.calculateEffectiveGasPrice", () => {
         const result = yield* calculateEffectiveGasPrice(tx, 30n);
         assert.strictEqual(result.priorityFeePerGas, 5n);
         assert.strictEqual(result.effectiveGasPrice, 35n);
+      }),
+    ),
+  );
+});
+
+describe("TransactionProcessor.checkMaxGasFeeAndBalance", () => {
+  it.effect("returns max gas fee including blob fees for blob tx", () =>
+    provideProcessor(
+      Effect.gen(function* () {
+        const blobHash = makeBlobHash(0x01);
+        const tx = makeEip4844Tx(10n, 1n, 2n, [blobHash, blobHash]);
+        const senderBalance = 10_000_000_000n;
+        const result = yield* checkMaxGasFeeAndBalance(
+          tx,
+          1n,
+          1n,
+          senderBalance,
+        );
+        const gasPerBlob = toBigInt(Blob.GAS_PER_BLOB);
+        const expectedBlobGasUsed = gasPerBlob * 2n;
+        const expectedBlobGasFee = expectedBlobGasUsed * tx.maxFeePerBlobGas;
+        const expectedMaxGasFee =
+          tx.gasLimit * tx.maxFeePerGas + expectedBlobGasFee;
+
+        assert.strictEqual(result.blobGasUsed, expectedBlobGasUsed);
+        assert.strictEqual(result.blobGasFee, expectedBlobGasFee);
+        assert.strictEqual(result.maxGasFee, expectedMaxGasFee);
+      }),
+    ),
+  );
+
+  it.effect("fails when sender balance is insufficient", () =>
+    provideProcessor(
+      Effect.gen(function* () {
+        const tx = makeLegacyTx(10n);
+        const outcome = yield* Effect.either(
+          checkMaxGasFeeAndBalance(tx, 1n, 0n, 1n),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof InsufficientSenderBalanceError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when blob transaction has no blob hashes", () =>
+    provideProcessor(
+      Effect.gen(function* () {
+        const tx = makeEip4844Tx(10n, 1n, 2n, []);
+        const outcome = yield* Effect.either(
+          checkMaxGasFeeAndBalance(tx, 1n, 1n, 10_000_000n),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof NoBlobDataError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when blob versioned hash is invalid", () =>
+    provideProcessor(
+      Effect.gen(function* () {
+        const invalidHash = makeBlobHash(0x02);
+        const tx = makeEip4844Tx(10n, 1n, 2n, [invalidHash]);
+        const outcome = yield* Effect.either(
+          checkMaxGasFeeAndBalance(tx, 1n, 1n, 10_000_000n),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof InvalidBlobVersionedHashError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when max fee per blob gas is below blob gas price", () =>
+    provideProcessor(
+      Effect.gen(function* () {
+        const blobHash = makeBlobHash(0x01);
+        const tx = makeEip4844Tx(10n, 1n, 1n, [blobHash]);
+        const outcome = yield* Effect.either(
+          checkMaxGasFeeAndBalance(tx, 1n, 2n, 10_000_000n),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(
+            outcome.left instanceof InsufficientMaxFeePerBlobGasError,
+          );
+        }
       }),
     ),
   );
