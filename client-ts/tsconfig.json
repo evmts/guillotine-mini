@@ -17,6 +17,12 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["db/**/*.ts", "trie/**/*.ts", "state/**/*.ts", "evm/**/*.ts"],
+  "include": [
+    "db/**/*.ts",
+    "trie/**/*.ts",
+    "state/**/*.ts",
+    "evm/**/*.ts",
+    "blockchain/**/*.ts"
+  ],
   "exclude": ["node_modules"]
 }
