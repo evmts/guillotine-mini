@@ -2,7 +2,6 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import { Bytes, Hex } from "voltaire-effect/primitives";
 import type { BytesType, HashType } from "./Node";
 import { TrieRoot, type TrieRootError, type TrieRootEntry } from "./root";
@@ -17,13 +16,13 @@ export class TrieError extends Data.TaggedError("TrieError")<{
 export interface TrieConfig {
   /** When true, hash keys with keccak256 before nibble expansion. */
   readonly secured?: boolean;
+  /** Default value omitted from the trie (e.g. 0 for storage, null for accounts). */
+  readonly defaultValue?: BytesType;
 }
 
 /** In-memory trie service interface. */
 export interface TrieService {
-  readonly get: (
-    key: BytesType,
-  ) => Effect.Effect<Option.Option<BytesType>, TrieError>;
+  readonly get: (key: BytesType) => Effect.Effect<BytesType, TrieError>;
   readonly put: (
     key: BytesType,
     value: BytesType,
@@ -43,6 +42,8 @@ type TrieEntry = {
 const cloneBytes = (value: BytesType): BytesType =>
   (value as Uint8Array).slice() as BytesType;
 
+const EmptyBytes = Hex.toBytes("0x") as BytesType;
+
 const invalidKeyError = (cause?: unknown) =>
   new TrieError({
     message: "Invalid trie key",
@@ -52,6 +53,12 @@ const invalidKeyError = (cause?: unknown) =>
 const invalidValueError = (cause?: unknown) =>
   new TrieError({
     message: "Invalid trie value",
+    cause,
+  });
+
+const invalidDefaultError = (cause?: unknown) =>
+  new TrieError({
+    message: "Invalid trie default value",
     cause,
   });
 
@@ -74,6 +81,7 @@ const makeTrie = (config?: TrieConfig) =>
   Effect.gen(function* () {
     const trieRoot = yield* TrieRoot;
     const secured = config?.secured ?? false;
+    const configuredDefault = config?.defaultValue;
     const store = yield* Effect.acquireRelease(
       Effect.sync(() => new Map<string, TrieEntry>()),
       (map) =>
@@ -82,18 +90,30 @@ const makeTrie = (config?: TrieConfig) =>
         }),
     );
 
+    const resolveDefault = () =>
+      configuredDefault === undefined
+        ? Effect.succeed(EmptyBytes)
+        : Bytes.isBytes(configuredDefault)
+          ? Effect.succeed(configuredDefault)
+          : Effect.fail(invalidDefaultError());
+
     const get = (key: BytesType) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
         const entry = store.get(keyHex);
-        return entry ? Option.some(cloneBytes(entry.value)) : Option.none();
+        if (entry) {
+          return cloneBytes(entry.value);
+        }
+        const defaultValue = yield* resolveDefault();
+        return cloneBytes(defaultValue);
       });
 
     const put = (key: BytesType, value: BytesType) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
         const validatedValue = yield* validateValue(value);
-        if (validatedValue.length === 0) {
+        const defaultValue = yield* resolveDefault();
+        if (Bytes.equals(validatedValue, defaultValue)) {
           store.delete(keyHex);
           return;
         }
@@ -142,7 +162,7 @@ export const get = (key: BytesType) =>
     return yield* trie.get(key);
   });
 
-/** Store a value by key (empty values delete the key). */
+/** Store a value by key (default values delete the key). */
 export const put = (key: BytesType, value: BytesType) =>
   Effect.gen(function* () {
     const trie = yield* Trie;

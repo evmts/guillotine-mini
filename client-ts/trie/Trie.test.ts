@@ -1,7 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import { Bytes, Hash } from "voltaire-effect/primitives";
 import { TrieHashTest } from "./hash";
 import { makeBytesHelpers } from "./internal/primitives";
@@ -18,9 +17,13 @@ const BaseLayer = Layer.merge(
 );
 const RootLayer = TrieRootTest.pipe(Layer.provide(BaseLayer));
 const trieLayer = (secured = false) =>
-  TrieMemoryTest({ secured }).pipe(Layer.provide(RootLayer));
+  TrieMemoryTest({ secured, defaultValue: EmptyBytes }).pipe(
+    Layer.provide(RootLayer),
+  );
 const trieLayerLive = (secured = false) =>
-  TrieMemoryLive({ secured }).pipe(Layer.provide(RootLayer));
+  TrieMemoryLive({ secured, defaultValue: EmptyBytes }).pipe(
+    Layer.provide(RootLayer),
+  );
 
 describe("Trie", () => {
   it.effect("put/get round-trips bytes", () =>
@@ -31,16 +34,15 @@ describe("Trie", () => {
       yield* put(key, value);
       const result = yield* get(key);
 
-      const stored = Option.getOrThrow(result);
-      assert.isTrue(Bytes.equals(stored, value));
+      assert.isTrue(Bytes.equals(result, value));
     }).pipe(Effect.provide(trieLayerLive())),
   );
 
-  it.effect("get returns none for missing keys", () =>
+  it.effect("get returns default for missing keys", () =>
     Effect.gen(function* () {
       const key = bytesFromHex("0x02");
       const result = yield* get(key);
-      assert.isTrue(Option.isNone(result));
+      assert.isTrue(Bytes.equals(result, EmptyBytes));
     }).pipe(Effect.provide(trieLayer())),
   );
 
@@ -53,7 +55,7 @@ describe("Trie", () => {
       yield* remove(key);
       const result = yield* get(key);
 
-      assert.isTrue(Option.isNone(result));
+      assert.isTrue(Bytes.equals(result, EmptyBytes));
     }).pipe(Effect.provide(trieLayer())),
   );
 
@@ -66,7 +68,7 @@ describe("Trie", () => {
       yield* put(key, EmptyBytes);
 
       const result = yield* get(key);
-      assert.isTrue(Option.isNone(result));
+      assert.isTrue(Bytes.equals(result, EmptyBytes));
       const hash = yield* root();
       assert.isTrue(Hash.equals(hash, EMPTY_TRIE_ROOT));
     }).pipe(Effect.provide(trieLayer())),
