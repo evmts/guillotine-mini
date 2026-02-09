@@ -61,7 +61,11 @@ fn run(
         }
 
         if (std.mem.eql(u8, arg, "--trace")) {
+            const tracer = config.trace_config.tracer;
+            const timeout = config.trace_config.timeout;
             config.trace_config = TraceConfig.enableAll();
+            config.trace_config.tracer = tracer;
+            config.trace_config.timeout = timeout;
             trace_enabled = true;
             continue;
         }
