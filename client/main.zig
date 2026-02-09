@@ -200,3 +200,13 @@ test "runner parses CLI flags and emits config" {
     const help_output = help_stream.getWritten();
     try std.testing.expect(std.mem.containsAtLeast(u8, help_output, 1, "Usage:"));
 }
+
+test "runner main accepts default args" {
+    const allocator = std.testing.allocator;
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    if (args.len > 1) return error.SkipZigTest;
+
+    try main();
+}
