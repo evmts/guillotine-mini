@@ -256,6 +256,8 @@ pub const WriteBatchOp = union(enum) {
 pub const WriteBatch = struct {
     /// Pending operations, in order of insertion.
     ops: std.ArrayListUnmanaged(WriteBatchOp) = .{},
+    /// Allocator used for the ops list to avoid arena reallocation bloat.
+    ops_allocator: std.mem.Allocator,
     /// Arena for owned copies of keys/values within this batch.
     arena: std.heap.ArenaAllocator,
     /// The target database to apply operations to on `commit()`.
@@ -264,6 +266,7 @@ pub const WriteBatch = struct {
     /// Create a new empty WriteBatch targeting the given database.
     pub fn init(backing_allocator: std.mem.Allocator, target: Database) WriteBatch {
         return .{
+            .ops_allocator = backing_allocator,
             .arena = std.heap.ArenaAllocator.init(backing_allocator),
             .target = target,
         };
@@ -271,7 +274,7 @@ pub const WriteBatch = struct {
 
     /// Release all memory owned by this batch (pending ops, copied keys/values).
     pub fn deinit(self: *WriteBatch) void {
-        // ops list memory is in the arena, so no separate deinit needed.
+        self.ops.deinit(self.ops_allocator);
         self.arena.deinit();
     }
 
@@ -280,14 +283,14 @@ pub const WriteBatch = struct {
         const alloc = self.arena.allocator();
         const owned_key = alloc.dupe(u8, key) catch return error.OutOfMemory;
         const owned_val = alloc.dupe(u8, value) catch return error.OutOfMemory;
-        self.ops.append(alloc, .{ .put = .{ .key = owned_key, .value = owned_val } }) catch return error.OutOfMemory;
+        self.ops.append(self.ops_allocator, .{ .put = .{ .key = owned_key, .value = owned_val } }) catch return error.OutOfMemory;
     }
 
     /// Queue a delete operation. The key is copied into the batch arena.
     pub fn delete(self: *WriteBatch, key: []const u8) Error!void {
         const alloc = self.arena.allocator();
         const owned_key = alloc.dupe(u8, key) catch return error.OutOfMemory;
-        self.ops.append(alloc, .{ .del = .{ .key = owned_key } }) catch return error.OutOfMemory;
+        self.ops.append(self.ops_allocator, .{ .del = .{ .key = owned_key } }) catch return error.OutOfMemory;
     }
 
     /// Apply all pending operations to the target database.
@@ -328,9 +331,6 @@ pub const WriteBatch = struct {
         // This prevents unbounded memory growth for long-lived batches
         // that repeatedly accumulate and clear operations.
         _ = self.arena.reset(.retain_capacity);
-        // After reset, the ops ArrayList's buffer is invalidated,
-        // so reset it to empty state.
-        self.ops = .{};
     }
 
     /// Return the number of pending operations.
