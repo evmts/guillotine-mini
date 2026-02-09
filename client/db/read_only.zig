@@ -20,21 +20,25 @@
 /// ## Usage (strict read-only)
 ///
 /// ```zig
-/// var mem = MemoryDatabase.init(allocator);
+/// var mem = MemoryDatabase.init(allocator, .state);
 /// defer mem.deinit();
 /// try mem.database().put("key", "value");
 ///
 /// var ro = ReadOnlyDb.init(mem.database());
 /// const iface = ro.database();
 ///
-/// const val = try iface.get("key");     // returns "value"
+/// const view = try iface.get("key");
+/// if (view) |val| {
+///     defer val.release();
+///     _ = val.bytes; // "value"
+/// }
 /// try iface.put("key", "new");          // error.StorageError
 /// ```
 ///
 /// ## Usage (write overlay for snapshot execution)
 ///
 /// ```zig
-/// var mem = MemoryDatabase.init(allocator);
+/// var mem = MemoryDatabase.init(allocator, .state);
 /// defer mem.deinit();
 /// try mem.put("key", "original");
 ///
@@ -43,15 +47,32 @@
 /// const iface = ro.database();
 ///
 /// try iface.put("key", "temp");          // writes to overlay only
-/// const val = try iface.get("key");      // returns "temp" (overlay wins)
+/// const view = try iface.get("key");
+/// if (view) |val| {
+///     defer val.release();
+///     _ = val.bytes; // "temp" (overlay wins)
+/// }
 /// ro.clear_temp_changes();               // discard overlay writes
-/// const val2 = try iface.get("key");     // returns "original" (wrapped db)
+/// const view2 = try iface.get("key");
+/// if (view2) |val| {
+///     defer val.release();
+///     _ = val.bytes; // "original" (wrapped db)
+/// }
 /// ```
 const std = @import("std");
+const primitives = @import("primitives");
 const adapter = @import("adapter.zig");
 const Database = adapter.Database;
+const DbEntry = adapter.DbEntry;
+const DbIterator = adapter.DbIterator;
+const DbMetric = adapter.DbMetric;
+const DbSnapshot = adapter.DbSnapshot;
+const DbValue = adapter.DbValue;
 const Error = adapter.Error;
+const ReadFlags = adapter.ReadFlags;
+const WriteFlags = adapter.WriteFlags;
 const MemoryDatabase = @import("memory.zig").MemoryDatabase;
+const Bytes = primitives.Bytes;
 
 /// Read-only wrapper around any `Database` with optional in-memory write overlay.
 ///
@@ -93,7 +114,7 @@ pub const ReadOnlyDb = struct {
     /// Equivalent to Nethermind's `ReadOnlyDb(wrappedDb, createInMemWriteStore: true)`.
     pub fn init_with_write_store(wrapped: Database, allocator: std.mem.Allocator) Error!ReadOnlyDb {
         const overlay = allocator.create(MemoryDatabase) catch return error.OutOfMemory;
-        overlay.* = MemoryDatabase.init(allocator);
+        overlay.* = MemoryDatabase.init(allocator, wrapped.name());
         return .{
             .wrapped = wrapped,
             .overlay = overlay,
@@ -127,13 +148,18 @@ pub const ReadOnlyDb = struct {
     /// If a write overlay is present, checks it first (overlay values take
     /// precedence). Falls back to the wrapped database if not found in overlay.
     /// Mirrors Nethermind's `_memDb.Get(key) ?? wrappedDb.Get(key)`.
-    pub fn get(self: *ReadOnlyDb, key: []const u8) Error!?[]const u8 {
+    pub fn get(self: *ReadOnlyDb, key: []const u8) Error!?DbValue {
+        return self.get_with_flags(key, .none);
+    }
+
+    /// Retrieve the value for `key` with explicit read flags.
+    pub fn get_with_flags(self: *ReadOnlyDb, key: []const u8, flags: ReadFlags) Error!?DbValue {
         if (self.overlay) |ov| {
-            if (ov.get(key)) |val| {
+            if (ov.get_with_flags(key, flags)) |val| {
                 return val;
             }
         }
-        return self.wrapped.get(key);
+        return self.wrapped.get_with_flags(key, flags);
     }
 
     /// Check whether `key` exists in the overlay or wrapped database.
@@ -164,37 +190,171 @@ pub const ReadOnlyDb = struct {
         return self.overlay != null;
     }
 
+    // -- Iterators and snapshots ----------------------------------------------
+
+    const ByteSliceContext = struct {
+        pub fn hash(_: ByteSliceContext, key: []const u8) u64 {
+            return std.hash.Wyhash.hash(0, key);
+        }
+
+        pub fn eql(_: ByteSliceContext, a: []const u8, b: []const u8) bool {
+            return Bytes.equals(a, b);
+        }
+    };
+
+    const ReadOnlyIterator = struct {
+        overlay_iter: DbIterator,
+        wrapped_iter: DbIterator,
+        seen: std.HashMapUnmanaged([]const u8, void, ByteSliceContext, 80) = .{},
+        allocator: std.mem.Allocator,
+        phase: Phase = .overlay,
+
+        const Phase = enum { overlay, wrapped };
+
+        fn next_impl(ptr: *anyopaque) Error!?DbEntry {
+            const self: *ReadOnlyIterator = @ptrCast(@alignCast(ptr));
+            while (true) {
+                switch (self.phase) {
+                    .overlay => {
+                        const entry_opt = try self.overlay_iter.next();
+                        if (entry_opt) |entry| {
+                            self.seen.put(self.allocator, entry.key.bytes, {}) catch {
+                                entry.release();
+                                return error.OutOfMemory;
+                            };
+                            return entry;
+                        }
+                        self.phase = .wrapped;
+                    },
+                    .wrapped => {
+                        const entry_opt = try self.wrapped_iter.next();
+                        if (entry_opt) |entry| {
+                            if (self.seen.contains(entry.key.bytes)) {
+                                entry.release();
+                                continue;
+                            }
+                            return entry;
+                        }
+                        return null;
+                    },
+                }
+            }
+        }
+
+        fn deinit_impl(ptr: *anyopaque) void {
+            const self: *ReadOnlyIterator = @ptrCast(@alignCast(ptr));
+            self.overlay_iter.deinit();
+            self.wrapped_iter.deinit();
+            self.seen.deinit(self.allocator);
+            self.allocator.destroy(self);
+        }
+
+        const vtable = DbIterator.VTable{
+            .next = next_impl,
+            .deinit = deinit_impl,
+        };
+    };
+
+    const ReadOnlySnapshot = struct {
+        wrapped: DbSnapshot,
+        overlay: ?DbSnapshot,
+        allocator: std.mem.Allocator,
+
+        fn init(wrapped: DbSnapshot, overlay: ?DbSnapshot, allocator: std.mem.Allocator) Error!*ReadOnlySnapshot {
+            const snapshot_ptr = allocator.create(ReadOnlySnapshot) catch return error.OutOfMemory;
+            snapshot_ptr.* = .{
+                .wrapped = wrapped,
+                .overlay = overlay,
+                .allocator = allocator,
+            };
+            return snapshot_ptr;
+        }
+
+        fn snapshot(self: *ReadOnlySnapshot) DbSnapshot {
+            return .{
+                .ptr = @ptrCast(self),
+                .vtable = &snapshot_vtable,
+            };
+        }
+
+        fn snapshot_get_impl(ptr: *anyopaque, key: []const u8, flags: ReadFlags) Error!?DbValue {
+            const self: *ReadOnlySnapshot = @ptrCast(@alignCast(ptr));
+            if (self.overlay) |ov| {
+                if (try ov.get(key, flags)) |val| {
+                    return val;
+                }
+            }
+            return self.wrapped.get(key, flags);
+        }
+
+        fn snapshot_contains_impl(ptr: *anyopaque, key: []const u8) Error!bool {
+            const self: *ReadOnlySnapshot = @ptrCast(@alignCast(ptr));
+            if (self.overlay) |ov| {
+                if (try ov.contains(key)) {
+                    return true;
+                }
+            }
+            return self.wrapped.contains(key);
+        }
+
+        fn snapshot_deinit_impl(ptr: *anyopaque) void {
+            const self: *ReadOnlySnapshot = @ptrCast(@alignCast(ptr));
+            if (self.overlay) |*ov| {
+                ov.deinit();
+            }
+            self.wrapped.deinit();
+            self.allocator.destroy(self);
+        }
+
+        const snapshot_vtable = DbSnapshot.VTable{
+            .get = snapshot_get_impl,
+            .contains = snapshot_contains_impl,
+            .deinit = snapshot_deinit_impl,
+        };
+    };
+
     // -- VTable implementation ------------------------------------------------
 
     const vtable = Database.VTable{
+        .name = name_impl,
         .get = get_impl,
         .put = put_impl,
         .delete = delete_impl,
         .contains = contains_impl,
+        .iterator = iterator_impl,
+        .snapshot = snapshot_impl,
+        .flush = flush_impl,
+        .clear = clear_impl,
+        .compact = compact_impl,
+        .gather_metric = gather_metric_impl,
     };
 
-    fn get_impl(ptr: *anyopaque, key: []const u8) Error!?[]const u8 {
+    fn name_impl(ptr: *anyopaque) adapter.DbName {
         const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
-        return self.get(key);
+        return self.wrapped.name();
     }
 
-    fn put_impl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
+    fn get_impl(ptr: *anyopaque, key: []const u8, flags: ReadFlags) Error!?DbValue {
+        const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
+        return self.get_with_flags(key, flags);
+    }
+
+    fn put_impl(ptr: *anyopaque, key: []const u8, value: ?[]const u8, flags: WriteFlags) Error!void {
         const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
         if (self.overlay) |ov| {
             // Write to overlay only — never touches the wrapped database.
             // Mirrors Nethermind's `_memDb.Set(key, value, flags)`.
-            return ov.put(key, value);
+            return ov.put_with_flags(key, value, flags);
         }
         // No overlay — strict read-only mode, writes are not permitted.
         return error.StorageError;
     }
 
-    fn delete_impl(ptr: *anyopaque, key: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, key: []const u8, flags: WriteFlags) Error!void {
         const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
         if (self.overlay) |ov| {
             // Delete from overlay only.
-            ov.delete(key);
-            return;
+            return ov.delete_with_flags(key, flags);
         }
         // No overlay — strict read-only mode, deletes are not permitted.
         return error.StorageError;
@@ -204,6 +364,59 @@ pub const ReadOnlyDb = struct {
         const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
         return self.contains(key);
     }
+
+    fn iterator_impl(ptr: *anyopaque, ordered: bool) Error!DbIterator {
+        const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
+        if (self.overlay) |ov| {
+            if (ordered) return error.UnsupportedOperation;
+            const allocator = self.overlay_allocator orelse return error.OutOfMemory;
+            var overlay_iter = try ov.database().iterator(false);
+            errdefer overlay_iter.deinit();
+            var wrapped_iter = try self.wrapped.iterator(false);
+            errdefer wrapped_iter.deinit();
+
+            const ro_iter = allocator.create(ReadOnlyIterator) catch return error.OutOfMemory;
+            ro_iter.* = .{
+                .overlay_iter = overlay_iter,
+                .wrapped_iter = wrapped_iter,
+                .allocator = allocator,
+            };
+            return .{
+                .ptr = @ptrCast(ro_iter),
+                .vtable = &ReadOnlyIterator.vtable,
+            };
+        }
+        return self.wrapped.iterator(ordered);
+    }
+
+    fn snapshot_impl(ptr: *anyopaque) Error!DbSnapshot {
+        const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
+        var wrapped_snapshot = try self.wrapped.snapshot();
+        if (self.overlay) |ov| {
+            errdefer wrapped_snapshot.deinit();
+            var overlay_snapshot = try ov.database().snapshot();
+            errdefer overlay_snapshot.deinit();
+            const allocator = self.overlay_allocator orelse return error.OutOfMemory;
+            const ro_snapshot = try ReadOnlySnapshot.init(wrapped_snapshot, overlay_snapshot, allocator);
+            return ro_snapshot.snapshot();
+        }
+        return wrapped_snapshot;
+    }
+
+    fn flush_impl(_: *anyopaque, _: bool) Error!void {}
+
+    fn clear_impl(_: *anyopaque) Error!void {
+        return error.UnsupportedOperation;
+    }
+
+    fn compact_impl(_: *anyopaque) Error!void {
+        return error.UnsupportedOperation;
+    }
+
+    fn gather_metric_impl(ptr: *anyopaque) Error!DbMetric {
+        const self: *ReadOnlyDb = @ptrCast(@alignCast(ptr));
+        return self.wrapped.gather_metric();
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -211,7 +424,7 @@ pub const ReadOnlyDb = struct {
 // ---------------------------------------------------------------------------
 
 test "ReadOnlyDb: get delegates to wrapped database" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     try mem.put("hello", "world");
@@ -221,22 +434,38 @@ test "ReadOnlyDb: get delegates to wrapped database" {
 
     const val = try ro.get("hello");
     try std.testing.expect(val != null);
-    try std.testing.expectEqualStrings("world", val.?);
+    defer val.?.release();
+    try std.testing.expectEqualStrings("world", val.?.bytes);
+}
+
+test "ReadOnlyDb: get_with_flags delegates to wrapped database" {
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
+    defer mem.deinit();
+
+    try mem.put("hello", "world");
+
+    var ro = ReadOnlyDb.init(mem.database());
+    defer ro.deinit();
+
+    const val = try ro.get_with_flags("hello", .none);
+    try std.testing.expect(val != null);
+    defer val.?.release();
+    try std.testing.expectEqualStrings("world", val.?.bytes);
 }
 
 test "ReadOnlyDb: get missing key returns null" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     var ro = ReadOnlyDb.init(mem.database());
     defer ro.deinit();
 
     const val = try ro.get("nonexistent");
-    try std.testing.expectEqual(null, val);
+    try std.testing.expect(val == null);
 }
 
 test "ReadOnlyDb: contains delegates to wrapped database" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     try mem.put("key", "val");
@@ -249,7 +478,7 @@ test "ReadOnlyDb: contains delegates to wrapped database" {
 }
 
 test "ReadOnlyDb: put returns StorageError (no overlay)" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     var ro = ReadOnlyDb.init(mem.database());
@@ -260,7 +489,7 @@ test "ReadOnlyDb: put returns StorageError (no overlay)" {
 }
 
 test "ReadOnlyDb: put with null returns StorageError (no overlay)" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     var ro = ReadOnlyDb.init(mem.database());
@@ -271,7 +500,7 @@ test "ReadOnlyDb: put with null returns StorageError (no overlay)" {
 }
 
 test "ReadOnlyDb: delete returns StorageError (no overlay)" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     var ro = ReadOnlyDb.init(mem.database());
@@ -282,7 +511,7 @@ test "ReadOnlyDb: delete returns StorageError (no overlay)" {
 }
 
 test "ReadOnlyDb: vtable get dispatches correctly" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     try mem.put("key", "value");
@@ -293,11 +522,12 @@ test "ReadOnlyDb: vtable get dispatches correctly" {
     const iface = ro.database();
     const val = try iface.get("key");
     try std.testing.expect(val != null);
-    try std.testing.expectEqualStrings("value", val.?);
+    defer val.?.release();
+    try std.testing.expectEqualStrings("value", val.?.bytes);
 }
 
 test "ReadOnlyDb: vtable contains dispatches correctly" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     try mem.put("key", "val");
@@ -311,14 +541,14 @@ test "ReadOnlyDb: vtable contains dispatches correctly" {
 }
 
 test "ReadOnlyDb: reflects changes in underlying database" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     var ro = ReadOnlyDb.init(mem.database());
     defer ro.deinit();
 
     // Initially empty
-    try std.testing.expectEqual(null, try ro.get("key"));
+    try std.testing.expect((try ro.get("key")) == null);
 
     // Write to underlying database directly
     try mem.put("key", "value");
@@ -326,11 +556,12 @@ test "ReadOnlyDb: reflects changes in underlying database" {
     // Read-only view should see the new data
     const val = try ro.get("key");
     try std.testing.expect(val != null);
-    try std.testing.expectEqualStrings("value", val.?);
+    defer val.?.release();
+    try std.testing.expectEqualStrings("value", val.?.bytes);
 }
 
 test "ReadOnlyDb: does not modify underlying database on write attempts" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     try mem.put("key", "original");
@@ -344,17 +575,21 @@ test "ReadOnlyDb: does not modify underlying database on write attempts" {
     try std.testing.expectError(error.StorageError, iface.put("key", "modified"));
 
     // Original value should be unchanged
-    try std.testing.expectEqualStrings("original", mem.get("key").?);
+    const original = mem.get("key").?;
+    defer original.release();
+    try std.testing.expectEqualStrings("original", original.bytes);
 
     // Attempt to delete — should fail
     try std.testing.expectError(error.StorageError, iface.delete("key"));
 
     // Original value still intact
-    try std.testing.expectEqualStrings("original", mem.get("key").?);
+    const still_original = mem.get("key").?;
+    defer still_original.release();
+    try std.testing.expectEqualStrings("original", still_original.bytes);
 }
 
 test "ReadOnlyDb: has_write_overlay is false without overlay" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     var ro = ReadOnlyDb.init(mem.database());
@@ -364,7 +599,7 @@ test "ReadOnlyDb: has_write_overlay is false without overlay" {
 }
 
 test "ReadOnlyDb: clear_temp_changes is no-op without overlay" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     var ro = ReadOnlyDb.init(mem.database());
@@ -379,7 +614,7 @@ test "ReadOnlyDb: clear_temp_changes is no-op without overlay" {
 // ---------------------------------------------------------------------------
 
 test "ReadOnlyDb: init_with_write_store enables overlay" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
@@ -389,7 +624,7 @@ test "ReadOnlyDb: init_with_write_store enables overlay" {
 }
 
 test "ReadOnlyDb: overlay put succeeds and get returns overlay value" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     try mem.put("base_key", "base_val");
@@ -405,16 +640,18 @@ test "ReadOnlyDb: overlay put succeeds and get returns overlay value" {
     // Should find overlay value
     const val = try iface.get("new_key");
     try std.testing.expect(val != null);
-    try std.testing.expectEqualStrings("new_val", val.?);
+    defer val.?.release();
+    try std.testing.expectEqualStrings("new_val", val.?.bytes);
 
     // Should still find base value
     const base_val = try iface.get("base_key");
     try std.testing.expect(base_val != null);
-    try std.testing.expectEqualStrings("base_val", base_val.?);
+    defer base_val.?.release();
+    try std.testing.expectEqualStrings("base_val", base_val.?.bytes);
 }
 
 test "ReadOnlyDb: overlay value takes precedence over wrapped" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     try mem.put("key", "original");
@@ -430,14 +667,17 @@ test "ReadOnlyDb: overlay value takes precedence over wrapped" {
     // Overlay wins
     const val = try iface.get("key");
     try std.testing.expect(val != null);
-    try std.testing.expectEqualStrings("overlay_value", val.?);
+    defer val.?.release();
+    try std.testing.expectEqualStrings("overlay_value", val.?.bytes);
 
     // Wrapped database is untouched
-    try std.testing.expectEqualStrings("original", mem.get("key").?);
+    const original = mem.get("key").?;
+    defer original.release();
+    try std.testing.expectEqualStrings("original", original.bytes);
 }
 
 test "ReadOnlyDb: clear_temp_changes discards overlay writes" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     try mem.put("key", "original");
@@ -452,20 +692,24 @@ test "ReadOnlyDb: clear_temp_changes discards overlay writes" {
     try iface.put("extra", "extra_val");
 
     // Verify overlay values are visible
-    try std.testing.expectEqualStrings("temp_value", (try iface.get("key")).?);
+    const temp_val = (try iface.get("key")).?;
+    defer temp_val.release();
+    try std.testing.expectEqualStrings("temp_value", temp_val.bytes);
     try std.testing.expect(try iface.contains("extra"));
 
     // Clear overlay
     ro.clear_temp_changes();
 
     // Overlay values are gone — falls back to wrapped
-    try std.testing.expectEqualStrings("original", (try iface.get("key")).?);
-    try std.testing.expectEqual(null, try iface.get("extra"));
+    const orig = (try iface.get("key")).?;
+    defer orig.release();
+    try std.testing.expectEqualStrings("original", orig.bytes);
+    try std.testing.expect((try iface.get("extra")) == null);
     try std.testing.expect(!try iface.contains("extra"));
 }
 
 test "ReadOnlyDb: overlay delete does not affect wrapped database" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     try mem.put("key", "value");
@@ -480,14 +724,16 @@ test "ReadOnlyDb: overlay delete does not affect wrapped database" {
     try iface.delete("overlay_key");
 
     // Overlay key is gone
-    try std.testing.expectEqual(null, try iface.get("overlay_key"));
+    try std.testing.expect((try iface.get("overlay_key")) == null);
 
     // Wrapped database is untouched
-    try std.testing.expectEqualStrings("value", mem.get("key").?);
+    const wrapped_val = mem.get("key").?;
+    defer wrapped_val.release();
+    try std.testing.expectEqualStrings("value", wrapped_val.bytes);
 }
 
 test "ReadOnlyDb: contains checks overlay then wrapped" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     try mem.put("wrapped_key", "val");
@@ -509,7 +755,7 @@ test "ReadOnlyDb: contains checks overlay then wrapped" {
 }
 
 test "ReadOnlyDb: overlay reusable after clear_temp_changes" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
@@ -519,23 +765,108 @@ test "ReadOnlyDb: overlay reusable after clear_temp_changes" {
 
     // First round of writes
     try iface.put("key1", "val1");
-    try std.testing.expectEqualStrings("val1", (try iface.get("key1")).?);
+    const first = (try iface.get("key1")).?;
+    defer first.release();
+    try std.testing.expectEqualStrings("val1", first.bytes);
 
     // Clear
     ro.clear_temp_changes();
-    try std.testing.expectEqual(null, try iface.get("key1"));
+    try std.testing.expect((try iface.get("key1")) == null);
 
     // Second round of writes — overlay should work again
     try iface.put("key2", "val2");
-    try std.testing.expectEqualStrings("val2", (try iface.get("key2")).?);
+    const second = (try iface.get("key2")).?;
+    defer second.release();
+    try std.testing.expectEqualStrings("val2", second.bytes);
 
     // Clear again
     ro.clear_temp_changes();
-    try std.testing.expectEqual(null, try iface.get("key2"));
+    try std.testing.expect((try iface.get("key2")) == null);
+}
+
+test "ReadOnlyDb: iterator merges overlay and wrapped without duplicates" {
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
+    defer mem.deinit();
+
+    try mem.put("a", "base_a");
+    try mem.put("b", "base_b");
+
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
+    defer ro.deinit();
+
+    const iface = ro.database();
+    try iface.put("b", "overlay_b");
+    try iface.put("c", "overlay_c");
+
+    var it = try iface.iterator(false);
+    defer it.deinit();
+
+    var seen_a = false;
+    var seen_b = false;
+    var seen_c = false;
+    while (try it.next()) |entry| {
+        defer entry.release();
+        if (std.mem.eql(u8, entry.key.bytes, "a")) {
+            seen_a = true;
+            try std.testing.expectEqualStrings("base_a", entry.value.bytes);
+        } else if (std.mem.eql(u8, entry.key.bytes, "b")) {
+            seen_b = true;
+            try std.testing.expectEqualStrings("overlay_b", entry.value.bytes);
+        } else if (std.mem.eql(u8, entry.key.bytes, "c")) {
+            seen_c = true;
+            try std.testing.expectEqualStrings("overlay_c", entry.value.bytes);
+        }
+    }
+
+    try std.testing.expect(seen_a);
+    try std.testing.expect(seen_b);
+    try std.testing.expect(seen_c);
+}
+
+test "ReadOnlyDb: iterator ordered is unsupported with overlay" {
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
+    defer mem.deinit();
+
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
+    defer ro.deinit();
+
+    const iface = ro.database();
+    try std.testing.expectError(error.UnsupportedOperation, iface.iterator(true));
+}
+
+test "ReadOnlyDb: snapshot captures overlay and wrapped state" {
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
+    defer mem.deinit();
+
+    try mem.put("base", "old");
+
+    var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);
+    defer ro.deinit();
+
+    const iface = ro.database();
+    try iface.put("overlay", "ov1");
+
+    var snap = try iface.snapshot();
+    defer snap.deinit();
+
+    try mem.put("base", "new");
+    try iface.put("overlay", "ov2");
+
+    const base_val = (try snap.get("base", .none)).?;
+    defer base_val.release();
+    try std.testing.expectEqualStrings("old", base_val.bytes);
+
+    const overlay_val = (try snap.get("overlay", .none)).?;
+    defer overlay_val.release();
+    try std.testing.expectEqualStrings("ov1", overlay_val.bytes);
+
+    try std.testing.expect(try snap.contains("overlay"));
+    try std.testing.expect(!try snap.contains("missing"));
+    try std.testing.expectError(error.UnsupportedOperation, snap.iterator(false));
 }
 
 test "ReadOnlyDb: wrapped database never modified by overlay writes" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     try mem.put("existing", "original");
@@ -551,17 +882,21 @@ test "ReadOnlyDb: wrapped database never modified by overlay writes" {
     try iface.put("new_key", "new_val");
 
     // Wrapped database should have NO changes
-    try std.testing.expectEqualStrings("original", mem.get("existing").?);
-    try std.testing.expectEqual(null, mem.get("new_key"));
+    const existing = mem.get("existing").?;
+    defer existing.release();
+    try std.testing.expectEqualStrings("original", existing.bytes);
+    try std.testing.expect(mem.get("new_key") == null);
 
     // Even after clearing overlay, wrapped database is still pristine
     ro.clear_temp_changes();
-    try std.testing.expectEqualStrings("original", mem.get("existing").?);
-    try std.testing.expectEqual(null, mem.get("new_key"));
+    const existing_after = mem.get("existing").?;
+    defer existing_after.release();
+    try std.testing.expectEqualStrings("original", existing_after.bytes);
+    try std.testing.expect(mem.get("new_key") == null);
 }
 
 test "ReadOnlyDb: deinit frees overlay memory (leak check)" {
-    var mem = MemoryDatabase.init(std.testing.allocator);
+    var mem = MemoryDatabase.init(std.testing.allocator, .state);
     defer mem.deinit();
 
     var ro = try ReadOnlyDb.init_with_write_store(mem.database(), std.testing.allocator);

@@ -28,7 +28,7 @@
 /// ```zig
 /// const db = @import("client/db/root.zig");
 ///
-/// var mem = db.MemoryDatabase.init(allocator);
+/// var mem = db.MemoryDatabase.init(allocator, .state);
 /// defer mem.deinit();
 ///
 /// const iface = mem.database();
@@ -54,6 +54,20 @@ pub const WriteBatchOp = adapter.WriteBatchOp;
 pub const DbName = adapter.DbName;
 /// Database error set for backend operations.
 pub const Error = adapter.Error;
+/// Read flags (Nethermind ReadFlags).
+pub const ReadFlags = adapter.ReadFlags;
+/// Write flags (Nethermind WriteFlags).
+pub const WriteFlags = adapter.WriteFlags;
+/// Database metrics (Nethermind DbMetric).
+pub const DbMetric = adapter.DbMetric;
+/// Borrowed DB value with release semantics.
+pub const DbValue = adapter.DbValue;
+/// Key/value entry used by iterators.
+pub const DbEntry = adapter.DbEntry;
+/// Type-erased DB iterator.
+pub const DbIterator = adapter.DbIterator;
+/// Type-erased DB snapshot.
+pub const DbSnapshot = adapter.DbSnapshot;
 /// In-memory backend (for tests and ephemeral state).
 pub const MemoryDatabase = memory.MemoryDatabase;
 /// Null object backend (reads return null, writes error).

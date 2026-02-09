@@ -22,89 +22,20 @@
 ///
 ///   Voltaire StateManager → (typed state ops) → DB adapter → (raw KV) → backend
 ///
-/// The `Database` / `WriteBatch` / `DbName` types defined here are
+/// The `Database` / `WriteBatch` types (and shared types in `types.zig`) are
 /// intentionally backend-agnostic — Voltaire does not provide a raw KV
 /// persistence interface, so this abstraction fills that gap.
 const std = @import("std");
-
-/// Errors that database operations can produce.
-///
-/// `OutOfMemory` is kept separate (via Zig's error union mechanism) so that
-/// callers can distinguish allocation failures from backend I/O errors.
-pub const Error = error{
-    /// The underlying storage backend encountered an I/O or corruption error.
-    StorageError,
-    /// The key was too large for the backend to handle.
-    KeyTooLarge,
-    /// The value was too large for the backend to handle.
-    ValueTooLarge,
-    /// The database has been closed or is in an invalid state.
-    DatabaseClosed,
-    /// Allocation failure — propagated directly, never masked as StorageError.
-    OutOfMemory,
-};
-
-/// Standard database column/partition names, mirroring Nethermind's `DbNames`.
-///
-/// Each name identifies a logical partition of the database. Backends may
-/// implement these as separate column families (RocksDB) or separate
-/// HashMap instances (MemoryDatabase).
-///
-/// Matches Nethermind's `DbNames` constants from
-/// `Nethermind.Db/DbNames.cs` — all 15 database names are included.
-pub const DbName = enum {
-    /// World state (account trie nodes)
-    state,
-    /// Contract storage (storage trie nodes)
-    storage,
-    /// Contract bytecode
-    code,
-    /// Block bodies (transactions + ommers)
-    blocks,
-    /// Block headers
-    headers,
-    /// Block number → block hash mapping
-    block_numbers,
-    /// Transaction receipts
-    receipts,
-    /// Block metadata (total difficulty, etc.)
-    block_infos,
-    /// Invalid / rejected blocks
-    bad_blocks,
-    /// Bloom filter index
-    bloom,
-    /// Client metadata (sync state, etc.)
-    metadata,
-    /// EIP-4844 blob transactions
-    blob_transactions,
-    /// Discovery Protocol v4 node cache (devp2p)
-    discovery_nodes,
-    /// Discovery Protocol v5 node cache (devp2p, UDP-based)
-    discovery_v5_nodes,
-    /// RLPx peer database (P2P networking)
-    peers,
-
-    /// Returns the string representation matching Nethermind's DbNames constants.
-    pub fn to_string(self: DbName) []const u8 {
-        return switch (self) {
-            .state => "state",
-            .storage => "storage",
-            .code => "code",
-            .blocks => "blocks",
-            .headers => "headers",
-            .block_numbers => "blockNumbers",
-            .block_infos => "blockInfos",
-            .receipts => "receipts",
-            .bad_blocks => "badBlocks",
-            .bloom => "bloom",
-            .metadata => "metadata",
-            .blob_transactions => "blobTransactions",
-            .discovery_nodes => "discoveryNodes",
-            .discovery_v5_nodes => "discoveryV5Nodes",
-            .peers => "peers",
-        };
-    }
-};
+const types = @import("types.zig");
+pub const DbEntry = types.DbEntry;
+pub const DbIterator = types.DbIterator;
+pub const DbMetric = types.DbMetric;
+pub const DbName = types.DbName;
+pub const DbSnapshot = types.DbSnapshot;
+pub const DbValue = types.DbValue;
+pub const Error = types.Error;
+pub const ReadFlags = types.ReadFlags;
+pub const WriteFlags = types.WriteFlags;
 
 /// Generic key-value database interface using type-erased vtable dispatch.
 ///
@@ -116,7 +47,7 @@ pub const DbName = enum {
 ///
 /// ```zig
 /// // Create a concrete backend (e.g. MemoryDatabase)
-/// var mem_db = try MemoryDatabase.init(allocator);
+/// var mem_db = MemoryDatabase.init(allocator, .state);
 /// defer mem_db.deinit();
 ///
 /// // Get the type-erased Database interface
@@ -124,7 +55,11 @@ pub const DbName = enum {
 ///
 /// // Use the interface
 /// try db.put("key", "value");
-/// const val = try db.get("key"); // returns ?[]const u8
+/// const view = try db.get("key"); // returns ?DbValue
+/// if (view) |val| {
+///     defer val.release();
+///     _ = val.bytes;
+/// }
 /// ```
 pub const Database = struct {
     /// Type-erased pointer to the concrete backend implementation.
@@ -137,21 +72,29 @@ pub const Database = struct {
     /// Mirrors Nethermind's IReadOnlyKeyValueStore + IWriteOnlyKeyValueStore,
     /// combined into a single vtable for simplicity.
     pub const VTable = struct {
+        /// Logical database name (Nethermind IDb.Name).
+        name: *const fn (ptr: *anyopaque) DbName,
+
         /// Retrieve the value associated with `key`.
         /// Returns `null` if the key does not exist.
-        /// The returned slice is owned by the database and valid until
-        /// the next mutation or database destruction.
-        get: *const fn (ptr: *anyopaque, key: []const u8) Error!?[]const u8,
+        /// The returned value may require an explicit release.
+        get: *const fn (ptr: *anyopaque, key: []const u8, flags: ReadFlags) Error!?DbValue,
 
         /// Store a key-value pair. If `value` is `null`, this is equivalent
         /// to calling `delete`. Overwrites any existing value for the key.
-        put: *const fn (ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void,
+        put: *const fn (ptr: *anyopaque, key: []const u8, value: ?[]const u8, flags: WriteFlags) Error!void,
 
         /// Remove the entry for `key`. No-op if the key does not exist.
-        delete: *const fn (ptr: *anyopaque, key: []const u8) Error!void,
+        delete: *const fn (ptr: *anyopaque, key: []const u8, flags: WriteFlags) Error!void,
 
         /// Check whether `key` exists in the database.
         contains: *const fn (ptr: *anyopaque, key: []const u8) Error!bool,
+
+        /// Return an iterator over all key/value pairs.
+        iterator: ?*const fn (ptr: *anyopaque, ordered: bool) Error!DbIterator = null,
+
+        /// Create a read-only snapshot of the database.
+        snapshot: ?*const fn (ptr: *anyopaque) Error!DbSnapshot = null,
 
         /// Apply a batch of write operations atomically.
         ///
@@ -163,28 +106,122 @@ pub const Database = struct {
         /// On success, all operations in `ops` are applied. On error, the
         /// backend must guarantee that NO operations were applied (rollback).
         write_batch: ?*const fn (ptr: *anyopaque, ops: []const WriteBatchOp) Error!void = null,
+
+        /// Flush pending writes to disk (optional).
+        flush: ?*const fn (ptr: *anyopaque, only_wal: bool) Error!void = null,
+
+        /// Clear all stored entries (optional).
+        clear: ?*const fn (ptr: *anyopaque) Error!void = null,
+
+        /// Compact the database storage (optional).
+        compact: ?*const fn (ptr: *anyopaque) Error!void = null,
+
+        /// Gather database metrics (optional).
+        gather_metric: ?*const fn (ptr: *anyopaque) Error!DbMetric = null,
     };
+
+    /// Return the logical database name.
+    pub fn name(self: Database) DbName {
+        return self.vtable.name(self.ptr);
+    }
 
     /// Retrieve the value associated with `key`.
     /// Returns `null` if the key does not exist.
-    pub fn get(self: Database, key: []const u8) Error!?[]const u8 {
-        return self.vtable.get(self.ptr, key);
+    ///
+    /// Call `DbValue.release()` on any non-null return before dropping it.
+    pub fn get(self: Database, key: []const u8) Error!?DbValue {
+        return self.vtable.get(self.ptr, key, .none);
+    }
+
+    /// Retrieve the value associated with `key` with explicit read flags.
+    pub fn get_with_flags(self: Database, key: []const u8, flags: ReadFlags) Error!?DbValue {
+        return self.vtable.get(self.ptr, key, flags);
+    }
+
+    /// Retrieve a value and copy it into caller-owned memory.
+    pub fn get_copy(self: Database, allocator: std.mem.Allocator, key: []const u8) Error!?[]u8 {
+        return self.get_copy_with_flags(allocator, key, .none);
+    }
+
+    /// Retrieve a value and copy it into caller-owned memory with explicit flags.
+    pub fn get_copy_with_flags(self: Database, allocator: std.mem.Allocator, key: []const u8, flags: ReadFlags) Error!?[]u8 {
+        const view = try self.get_with_flags(key, flags) orelse return null;
+        defer view.release();
+
+        const out = allocator.alloc(u8, view.bytes.len) catch return error.OutOfMemory;
+        @memcpy(out, view.bytes);
+        return out;
     }
 
     /// Store a key-value pair. If `value` is `null`, this is equivalent
     /// to calling `delete`.
     pub fn put(self: Database, key: []const u8, value: ?[]const u8) Error!void {
-        return self.vtable.put(self.ptr, key, value);
+        return self.vtable.put(self.ptr, key, value, .none);
+    }
+
+    /// Store a key-value pair with explicit write flags.
+    pub fn put_with_flags(self: Database, key: []const u8, value: ?[]const u8, flags: WriteFlags) Error!void {
+        return self.vtable.put(self.ptr, key, value, flags);
     }
 
     /// Remove the entry for `key`. No-op if the key does not exist.
     pub fn delete(self: Database, key: []const u8) Error!void {
-        return self.vtable.delete(self.ptr, key);
+        return self.vtable.delete(self.ptr, key, .none);
+    }
+
+    /// Remove the entry for `key` with explicit write flags.
+    pub fn delete_with_flags(self: Database, key: []const u8, flags: WriteFlags) Error!void {
+        return self.vtable.delete(self.ptr, key, flags);
     }
 
     /// Check whether `key` exists in the database.
     pub fn contains(self: Database, key: []const u8) Error!bool {
         return self.vtable.contains(self.ptr, key);
+    }
+
+    /// Return an iterator over all key/value pairs.
+    pub fn iterator(self: Database, ordered: bool) Error!DbIterator {
+        if (self.vtable.iterator) |iter_fn| {
+            return iter_fn(self.ptr, ordered);
+        }
+        return error.UnsupportedOperation;
+    }
+
+    /// Create a read-only snapshot of the database.
+    pub fn snapshot(self: Database) Error!DbSnapshot {
+        if (self.vtable.snapshot) |snap_fn| {
+            return snap_fn(self.ptr);
+        }
+        return error.UnsupportedOperation;
+    }
+
+    /// Flush pending writes to disk (optional).
+    pub fn flush(self: Database, only_wal: bool) Error!void {
+        if (self.vtable.flush) |flush_fn| {
+            return flush_fn(self.ptr, only_wal);
+        }
+    }
+
+    /// Clear all stored entries (optional).
+    pub fn clear(self: Database) Error!void {
+        if (self.vtable.clear) |clear_fn| {
+            return clear_fn(self.ptr);
+        }
+    }
+
+    /// Compact the database storage (optional).
+    pub fn compact(self: Database) Error!void {
+        if (self.vtable.compact) |compact_fn| {
+            return compact_fn(self.ptr);
+        }
+    }
+
+    /// Gather database metrics (optional).
+    pub fn gather_metric(self: Database) Error!DbMetric {
+        if (self.vtable.gather_metric) |metric_fn| {
+            return metric_fn(self.ptr);
+        }
+        return DbMetric{};
     }
 
     /// Create a new WriteBatch targeting this database.
@@ -205,11 +242,15 @@ pub const WriteBatchOp = union(enum) {
         key: []const u8,
         /// The value to associate with the key. Owned by the `WriteBatch` arena.
         value: []const u8,
+        /// Per-write flags (Nethermind WriteFlags).
+        flags: WriteFlags,
     },
     /// Remove the entry for a key. No-op if the key does not exist.
     del: struct {
         /// The key to remove. Owned by the `WriteBatch` arena.
         key: []const u8,
+        /// Per-write flags (Nethermind WriteFlags).
+        flags: WriteFlags,
     },
 };
 
@@ -264,17 +305,27 @@ pub const WriteBatch = struct {
 
     /// Queue a put operation. Both key and value are copied into the batch arena.
     pub fn put(self: *WriteBatch, key: []const u8, value: []const u8) Error!void {
+        return self.put_with_flags(key, value, .none);
+    }
+
+    /// Queue a put operation with explicit write flags.
+    pub fn put_with_flags(self: *WriteBatch, key: []const u8, value: []const u8, flags: WriteFlags) Error!void {
         const alloc = self.arena.allocator();
         const owned_key = alloc.dupe(u8, key) catch return error.OutOfMemory;
         const owned_val = alloc.dupe(u8, value) catch return error.OutOfMemory;
-        self.ops.append(alloc, .{ .put = .{ .key = owned_key, .value = owned_val } }) catch return error.OutOfMemory;
+        self.ops.append(alloc, .{ .put = .{ .key = owned_key, .value = owned_val, .flags = flags } }) catch return error.OutOfMemory;
     }
 
     /// Queue a delete operation. The key is copied into the batch arena.
     pub fn delete(self: *WriteBatch, key: []const u8) Error!void {
+        return self.delete_with_flags(key, .none);
+    }
+
+    /// Queue a delete operation with explicit write flags.
+    pub fn delete_with_flags(self: *WriteBatch, key: []const u8, flags: WriteFlags) Error!void {
         const alloc = self.arena.allocator();
         const owned_key = alloc.dupe(u8, key) catch return error.OutOfMemory;
-        self.ops.append(alloc, .{ .del = .{ .key = owned_key } }) catch return error.OutOfMemory;
+        self.ops.append(alloc, .{ .del = .{ .key = owned_key, .flags = flags } }) catch return error.OutOfMemory;
     }
 
     /// Apply all pending operations to the target database.
@@ -297,8 +348,8 @@ pub const WriteBatch = struct {
             // On error, ops are NOT cleared so caller can inspect/retry.
             for (self.ops.items) |op| {
                 switch (op) {
-                    .put => |p| try self.target.put(p.key, p.value),
-                    .del => |d| try self.target.delete(d.key),
+                    .put => |p| try self.target.put_with_flags(p.key, p.value, p.flags),
+                    .del => |d| try self.target.delete_with_flags(d.key, d.flags),
                 }
             }
         }
@@ -334,19 +385,26 @@ pub const WriteBatch = struct {
 /// This is NOT the full MemoryDatabase (that goes in memory.zig).
 const MockDb = struct {
     call_count: usize = 0,
+    name: DbName = .state,
 
-    fn get_impl(ptr: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn name_impl(ptr: *anyopaque) DbName {
+        const self: *MockDb = @ptrCast(@alignCast(ptr));
+        self.call_count += 1;
+        return self.name;
+    }
+
+    fn get_impl(ptr: *anyopaque, _: []const u8, _: ReadFlags) Error!?DbValue {
         const self: *MockDb = @ptrCast(@alignCast(ptr));
         self.call_count += 1;
         return null;
     }
 
-    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8, _: WriteFlags) Error!void {
         const self: *MockDb = @ptrCast(@alignCast(ptr));
         self.call_count += 1;
     }
 
-    fn delete_impl(ptr: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, _: []const u8, _: WriteFlags) Error!void {
         const self: *MockDb = @ptrCast(@alignCast(ptr));
         self.call_count += 1;
     }
@@ -358,6 +416,7 @@ const MockDb = struct {
     }
 
     const vtable = Database.VTable{
+        .name = name_impl,
         .get = get_impl,
         .put = put_impl,
         .delete = delete_impl,
@@ -372,13 +431,126 @@ const MockDb = struct {
     }
 };
 
+/// Mock database that returns a value with a release callback.
+const ValueDb = struct {
+    released: bool = false,
+    value: []const u8,
+
+    fn name_impl(_: *anyopaque) DbName {
+        return .state;
+    }
+
+    fn get_impl(ptr: *anyopaque, _: []const u8, _: ReadFlags) Error!?DbValue {
+        const self: *ValueDb = @ptrCast(@alignCast(ptr));
+        return DbValue{
+            .bytes = self.value,
+            .release_ctx = self,
+            .release_fn = release_impl,
+        };
+    }
+
+    fn release_impl(ctx: *anyopaque, _: []const u8) void {
+        const self: *ValueDb = @ptrCast(@alignCast(ctx));
+        self.released = true;
+    }
+
+    fn put_impl(_: *anyopaque, _: []const u8, _: ?[]const u8, _: WriteFlags) Error!void {}
+
+    fn delete_impl(_: *anyopaque, _: []const u8, _: WriteFlags) Error!void {}
+
+    fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
+        return true;
+    }
+
+    const vtable = Database.VTable{
+        .name = name_impl,
+        .get = get_impl,
+        .put = put_impl,
+        .delete = delete_impl,
+        .contains = contains_impl,
+    };
+
+    fn database(self: *ValueDb) Database {
+        return .{
+            .ptr = @ptrCast(self),
+            .vtable = &vtable,
+        };
+    }
+};
+
 test "Database vtable dispatches get" {
     var mock = MockDb{};
     const db = mock.database();
 
     const result = try db.get("test_key");
-    try std.testing.expectEqual(null, result);
+    try std.testing.expect(result == null);
     try std.testing.expectEqual(@as(usize, 1), mock.call_count);
+}
+
+test "Database vtable dispatches get_with_flags" {
+    var mock = MockDb{};
+    const db = mock.database();
+
+    _ = try db.get_with_flags("test_key", .none);
+    try std.testing.expectEqual(@as(usize, 1), mock.call_count);
+}
+
+test "Database vtable dispatches name" {
+    var mock = MockDb{};
+    const db = mock.database();
+
+    const name = db.name();
+    try std.testing.expectEqual(DbName.state, name);
+    try std.testing.expectEqual(@as(usize, 1), mock.call_count);
+}
+
+test "Database get_copy releases view and copies bytes" {
+    var value_db = ValueDb{ .value = "value" };
+    const db = value_db.database();
+
+    const copy = try db.get_copy(std.testing.allocator, "key");
+    defer if (copy) |bytes| std.testing.allocator.free(bytes);
+
+    try std.testing.expect(copy != null);
+    try std.testing.expectEqualStrings("value", copy.?);
+    try std.testing.expect(value_db.released);
+}
+
+test "Database get_copy_with_flags releases view and copies bytes" {
+    var value_db = ValueDb{ .value = "value" };
+    const db = value_db.database();
+
+    const copy = try db.get_copy_with_flags(std.testing.allocator, "key", .none);
+    defer if (copy) |bytes| std.testing.allocator.free(bytes);
+
+    try std.testing.expect(copy != null);
+    try std.testing.expectEqualStrings("value", copy.?);
+    try std.testing.expect(value_db.released);
+}
+
+test "Database iterator returns UnsupportedOperation when missing" {
+    var mock = MockDb{};
+    const db = mock.database();
+
+    try std.testing.expectError(error.UnsupportedOperation, db.iterator(false));
+}
+
+test "Database snapshot returns UnsupportedOperation when missing" {
+    var mock = MockDb{};
+    const db = mock.database();
+
+    try std.testing.expectError(error.UnsupportedOperation, db.snapshot());
+}
+
+test "Database meta methods are no-ops when not implemented" {
+    var mock = MockDb{};
+    const db = mock.database();
+
+    try db.flush(false);
+    try db.clear();
+    try db.compact();
+    const metric = try db.gather_metric();
+    try std.testing.expectEqual(@as(u64, 0), metric.size);
 }
 
 test "Database vtable dispatches put" {
@@ -386,6 +558,14 @@ test "Database vtable dispatches put" {
     const db = mock.database();
 
     try db.put("key", "value");
+    try std.testing.expectEqual(@as(usize, 1), mock.call_count);
+}
+
+test "Database vtable dispatches put_with_flags" {
+    var mock = MockDb{};
+    const db = mock.database();
+
+    try db.put_with_flags("key", "value", .none);
     try std.testing.expectEqual(@as(usize, 1), mock.call_count);
 }
 
@@ -405,6 +585,13 @@ test "Database vtable dispatches delete" {
     try std.testing.expectEqual(@as(usize, 1), mock.call_count);
 }
 
+test "Database vtable dispatches delete_with_flags" {
+    var mock = MockDb{};
+    const db = mock.database();
+
+    try db.delete_with_flags("key", .none);
+    try std.testing.expectEqual(@as(usize, 1), mock.call_count);
+}
 test "Database vtable dispatches contains" {
     var mock = MockDb{};
     const db = mock.database();
@@ -439,39 +626,15 @@ test "Database: start_write_batch targets the database" {
     try std.testing.expectEqual(@as(usize, 1), mock.call_count);
 }
 
-test "DbName to_string matches Nethermind constants" {
-    try std.testing.expectEqualStrings("state", DbName.state.to_string());
-    try std.testing.expectEqualStrings("storage", DbName.storage.to_string());
-    try std.testing.expectEqualStrings("code", DbName.code.to_string());
-    try std.testing.expectEqualStrings("blocks", DbName.blocks.to_string());
-    try std.testing.expectEqualStrings("headers", DbName.headers.to_string());
-    try std.testing.expectEqualStrings("blockNumbers", DbName.block_numbers.to_string());
-    try std.testing.expectEqualStrings("receipts", DbName.receipts.to_string());
-    try std.testing.expectEqualStrings("blockInfos", DbName.block_infos.to_string());
-    try std.testing.expectEqualStrings("badBlocks", DbName.bad_blocks.to_string());
-    try std.testing.expectEqualStrings("bloom", DbName.bloom.to_string());
-    try std.testing.expectEqualStrings("metadata", DbName.metadata.to_string());
-    try std.testing.expectEqualStrings("blobTransactions", DbName.blob_transactions.to_string());
-    try std.testing.expectEqualStrings("discoveryNodes", DbName.discovery_nodes.to_string());
-    try std.testing.expectEqualStrings("discoveryV5Nodes", DbName.discovery_v5_nodes.to_string());
-    try std.testing.expectEqualStrings("peers", DbName.peers.to_string());
-}
-
-test "DbName enum has all expected variants" {
-    // Verify we can iterate all variants (compile-time check).
-    // 15 = 12 original + 3 networking (discovery_nodes, discovery_v5_nodes, peers)
-    const fields = std.meta.fields(DbName);
-    try std.testing.expectEqual(@as(usize, 15), fields.len);
-}
-
 // -- WriteBatch tests -------------------------------------------------------
 
 /// A tracking mock database for WriteBatch tests.
 /// Records every put/delete so we can verify commit behavior.
 const TrackingDb = struct {
-    puts: std.ArrayListUnmanaged(struct { key: []const u8, value: ?[]const u8 }) = .{},
-    deletes: std.ArrayListUnmanaged([]const u8) = .{},
+    puts: std.ArrayListUnmanaged(struct { key: []const u8, value: ?[]const u8, flags: WriteFlags }) = .{},
+    deletes: std.ArrayListUnmanaged(struct { key: []const u8, flags: WriteFlags }) = .{},
     alloc: std.mem.Allocator,
+    name: DbName = .state,
 
     fn init(allocator: std.mem.Allocator) TrackingDb {
         return .{ .alloc = allocator };
@@ -482,18 +645,23 @@ const TrackingDb = struct {
         self.deletes.deinit(self.alloc);
     }
 
-    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn name_impl(ptr: *anyopaque) DbName {
+        const self: *TrackingDb = @ptrCast(@alignCast(ptr));
+        return self.name;
+    }
+
+    fn get_impl(_: *anyopaque, _: []const u8, _: ReadFlags) Error!?DbValue {
         return null;
     }
 
-    fn put_impl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, key: []const u8, value: ?[]const u8, flags: WriteFlags) Error!void {
         const self: *TrackingDb = @ptrCast(@alignCast(ptr));
-        self.puts.append(self.alloc, .{ .key = key, .value = value }) catch return error.OutOfMemory;
+        self.puts.append(self.alloc, .{ .key = key, .value = value, .flags = flags }) catch return error.OutOfMemory;
     }
 
-    fn delete_impl(ptr: *anyopaque, key: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, key: []const u8, flags: WriteFlags) Error!void {
         const self: *TrackingDb = @ptrCast(@alignCast(ptr));
-        self.deletes.append(self.alloc, key) catch return error.OutOfMemory;
+        self.deletes.append(self.alloc, .{ .key = key, .flags = flags }) catch return error.OutOfMemory;
     }
 
     fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
@@ -501,6 +669,7 @@ const TrackingDb = struct {
     }
 
     const vtable = Database.VTable{
+        .name = name_impl,
         .get = get_impl,
         .put = put_impl,
         .delete = delete_impl,
@@ -547,7 +716,7 @@ test "WriteBatch: commit applies delete operations" {
 
     try batch.commit();
     try std.testing.expectEqual(@as(usize, 1), tracker.deletes.items.len);
-    try std.testing.expectEqualStrings("gone", tracker.deletes.items[0]);
+    try std.testing.expectEqualStrings("gone", tracker.deletes.items[0].key);
 }
 
 test "WriteBatch: commit applies mixed operations in order" {
@@ -566,6 +735,23 @@ test "WriteBatch: commit applies mixed operations in order" {
     // 2 puts, 1 delete
     try std.testing.expectEqual(@as(usize, 2), tracker.puts.items.len);
     try std.testing.expectEqual(@as(usize, 1), tracker.deletes.items.len);
+}
+
+test "WriteBatch: preserves per-op flags" {
+    var tracker = TrackingDb.init(std.testing.allocator);
+    defer tracker.deinit();
+
+    var batch = WriteBatch.init(std.testing.allocator, tracker.database());
+    defer batch.deinit();
+
+    try batch.put_with_flags("key", "value", WriteFlags.low_priority);
+    try batch.delete_with_flags("gone", WriteFlags.disable_wal);
+    try batch.commit();
+
+    try std.testing.expectEqual(@as(usize, 1), tracker.puts.items.len);
+    try std.testing.expect(tracker.puts.items[0].flags.has(WriteFlags.low_priority));
+    try std.testing.expectEqual(@as(usize, 1), tracker.deletes.items.len);
+    try std.testing.expect(tracker.deletes.items[0].flags.has(WriteFlags.disable_wal));
 }
 
 test "WriteBatch: clear discards pending operations" {
@@ -623,12 +809,18 @@ const FailingDb = struct {
     succeed_count: usize,
     /// Tracks how many writes have been applied.
     applied: usize = 0,
+    name: DbName = .state,
 
-    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn name_impl(ptr: *anyopaque) DbName {
+        const self: *FailingDb = @ptrCast(@alignCast(ptr));
+        return self.name;
+    }
+
+    fn get_impl(_: *anyopaque, _: []const u8, _: ReadFlags) Error!?DbValue {
         return null;
     }
 
-    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8, _: WriteFlags) Error!void {
         const self: *FailingDb = @ptrCast(@alignCast(ptr));
         if (self.applied >= self.succeed_count) {
             return Error.StorageError;
@@ -636,7 +828,7 @@ const FailingDb = struct {
         self.applied += 1;
     }
 
-    fn delete_impl(ptr: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, _: []const u8, _: WriteFlags) Error!void {
         const self: *FailingDb = @ptrCast(@alignCast(ptr));
         if (self.applied >= self.succeed_count) {
             return Error.StorageError;
@@ -649,6 +841,7 @@ const FailingDb = struct {
     }
 
     const vtable = Database.VTable{
+        .name = name_impl,
         .get = get_impl,
         .put = put_impl,
         .delete = delete_impl,
@@ -689,17 +882,23 @@ const AtomicDb = struct {
     committed_count: usize = 0,
     /// When true, write_batch will fail (to test rollback).
     should_fail: bool = false,
+    name: DbName = .state,
 
-    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn name_impl(ptr: *anyopaque) DbName {
+        const self: *AtomicDb = @ptrCast(@alignCast(ptr));
+        return self.name;
+    }
+
+    fn get_impl(_: *anyopaque, _: []const u8, _: ReadFlags) Error!?DbValue {
         return null;
     }
 
-    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8, _: WriteFlags) Error!void {
         const self: *AtomicDb = @ptrCast(@alignCast(ptr));
         self.committed_count += 1;
     }
 
-    fn delete_impl(ptr: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, _: []const u8, _: WriteFlags) Error!void {
         const self: *AtomicDb = @ptrCast(@alignCast(ptr));
         self.committed_count += 1;
     }
@@ -718,6 +917,7 @@ const AtomicDb = struct {
     }
 
     const vtable = Database.VTable{
+        .name = name_impl,
         .get = get_impl,
         .put = put_impl,
         .delete = delete_impl,
