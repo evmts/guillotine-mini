@@ -157,6 +157,10 @@ pub const HostAdapter = struct {
 // Tests
 // =============================================================================
 
+fn make_address(byte: u8) Address {
+    return .{ .bytes = [_]u8{byte} ++ [_]u8{0} ** 19 };
+}
+
 test "HostAdapter — getBalance/setBalance round-trip" {
     const allocator = std.testing.allocator;
     var state = try StateManager.init(allocator, null);
@@ -165,7 +169,7 @@ test "HostAdapter — getBalance/setBalance round-trip" {
     var adapter = HostAdapter.init(&state);
     const host = adapter.host_interface();
 
-    const addr = Address{ .bytes = [_]u8{0xAA} ++ [_]u8{0} ** 19 };
+    const addr = make_address(0xAA);
 
     // Default balance is 0
     try std.testing.expectEqual(@as(u256, 0), host.getBalance(addr));
@@ -187,7 +191,7 @@ test "HostAdapter — getNonce/setNonce round-trip" {
     var adapter = HostAdapter.init(&state);
     const host = adapter.host_interface();
 
-    const addr = Address{ .bytes = [_]u8{0xBB} ++ [_]u8{0} ** 19 };
+    const addr = make_address(0xBB);
 
     try std.testing.expectEqual(@as(u64, 0), host.getNonce(addr));
 
@@ -203,7 +207,7 @@ test "HostAdapter — getStorage/setStorage round-trip" {
     var adapter = HostAdapter.init(&state);
     const host = adapter.host_interface();
 
-    const addr = Address{ .bytes = [_]u8{0xCC} ++ [_]u8{0} ** 19 };
+    const addr = make_address(0xCC);
     const slot: u256 = 5;
 
     try std.testing.expectEqual(@as(u256, 0), host.getStorage(addr, slot));
@@ -220,7 +224,7 @@ test "HostAdapter — getCode/setCode round-trip (bytecode)" {
     var adapter = HostAdapter.init(&state);
     const host = adapter.host_interface();
 
-    const addr = Address{ .bytes = [_]u8{0xDD} ++ [_]u8{0} ** 19 };
+    const addr = make_address(0xDD);
 
     try std.testing.expectEqual(@as(usize, 0), host.getCode(addr).len);
 
@@ -237,7 +241,7 @@ test "HostAdapter — StateManager checkpoint/revert propagates through adapter"
     var adapter = HostAdapter.init(&state);
     const host = adapter.host_interface();
 
-    const addr = Address{ .bytes = [_]u8{0xEE} ++ [_]u8{0} ** 19 };
+    const addr = make_address(0xEE);
 
     // Set initial balance
     host.setBalance(addr, 1000);
@@ -260,8 +264,8 @@ test "HostAdapter — multiple accounts isolated" {
     var adapter = HostAdapter.init(&state);
     const host = adapter.host_interface();
 
-    const alice = Address{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 19 };
-    const bob = Address{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 19 };
+    const alice = make_address(0x01);
+    const bob = make_address(0x02);
 
     host.setBalance(alice, 100);
     host.setBalance(bob, 200);
@@ -279,7 +283,7 @@ test "HostAdapter — getters return safe defaults for non-existent accounts" {
     const host = adapter.host_interface();
 
     // Use an address that was never written to.
-    const unknown = Address{ .bytes = [_]u8{0xFF} ++ [_]u8{0} ** 19 };
+    const unknown = make_address(0xFF);
 
     // Getters must return safe defaults, not error out.
     try std.testing.expectEqual(@as(u256, 0), host.getBalance(unknown));
@@ -297,7 +301,7 @@ test "HostAdapter — storage read surfaces backend errors" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
-    const addr = Address{ .bytes = [_]u8{0xAB} ++ [_]u8{0} ** 19 };
+    const addr = make_address(0xAB);
 
     const result = adapter.get_storage_checked(addr, 1);
     try std.testing.expectError(error.RpcPending, result);
@@ -317,7 +321,7 @@ test "HostAdapter — setters panic on failure (policy check)" {
     var adapter = HostAdapter.init(&state);
     const host = adapter.host_interface();
 
-    const addr = Address{ .bytes = [_]u8{0x42} ++ [_]u8{0} ** 19 };
+    const addr = make_address(0x42);
 
     // Write through vtable — must not silently drop.
     host.setBalance(addr, 999);
