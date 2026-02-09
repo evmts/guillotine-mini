@@ -59,48 +59,59 @@ pub fn run(
             return;
         }
 
-        if (std.mem.eql(u8, arg, "--chain-id")) {
-            idx += 1;
-            if (idx >= args.len) return error.MissingChainId;
-            const parsed = std.fmt.parseInt(u64, args[idx], 10) catch return error.InvalidChainId;
-            chain_id = ChainId.from(parsed);
-            continue;
-        }
-
-        if (std.mem.eql(u8, arg, "--network-id")) {
-            idx += 1;
-            if (idx >= args.len) return error.MissingNetworkId;
-            const parsed = std.fmt.parseInt(u64, args[idx], 10) catch return error.InvalidNetworkId;
-            network_id = NetworkId.from(parsed);
-            network_set = true;
-            continue;
-        }
-
-        if (std.mem.eql(u8, arg, "--hardfork")) {
-            idx += 1;
-            if (idx >= args.len) return error.MissingHardfork;
-            hardfork = Hardfork.fromString(args[idx]) orelse return error.InvalidHardfork;
-            continue;
-        }
-
         if (std.mem.eql(u8, arg, "--trace")) {
             trace_config = TraceConfig.enableAll();
             trace_enabled = true;
             continue;
         }
 
-        if (std.mem.eql(u8, arg, "--trace-tracer")) {
-            idx += 1;
-            if (idx >= args.len) return error.MissingTraceTracer;
-            trace_config.tracer = args[idx];
-            trace_enabled = true;
-            continue;
-        }
+        const is_chain_id = std.mem.eql(u8, arg, "--chain-id");
+        const is_network_id = std.mem.eql(u8, arg, "--network-id");
+        const is_hardfork = std.mem.eql(u8, arg, "--hardfork");
+        const is_trace_tracer = std.mem.eql(u8, arg, "--trace-tracer");
+        const is_trace_timeout = std.mem.eql(u8, arg, "--trace-timeout");
 
-        if (std.mem.eql(u8, arg, "--trace-timeout")) {
+        if (is_chain_id or is_network_id or is_hardfork or is_trace_tracer or is_trace_timeout) {
+            const missing_err = if (is_chain_id)
+                error.MissingChainId
+            else if (is_network_id)
+                error.MissingNetworkId
+            else if (is_hardfork)
+                error.MissingHardfork
+            else if (is_trace_tracer)
+                error.MissingTraceTracer
+            else
+                error.MissingTraceTimeout;
+
             idx += 1;
-            if (idx >= args.len) return error.MissingTraceTimeout;
-            trace_config.timeout = args[idx];
+            if (idx >= args.len) return missing_err;
+            const value = args[idx];
+
+            if (is_chain_id) {
+                const parsed = std.fmt.parseInt(u64, value, 10) catch return error.InvalidChainId;
+                chain_id = ChainId.from(parsed);
+                continue;
+            }
+
+            if (is_network_id) {
+                const parsed = std.fmt.parseInt(u64, value, 10) catch return error.InvalidNetworkId;
+                network_id = NetworkId.from(parsed);
+                network_set = true;
+                continue;
+            }
+
+            if (is_hardfork) {
+                hardfork = Hardfork.fromString(value) orelse return error.InvalidHardfork;
+                continue;
+            }
+
+            if (is_trace_tracer) {
+                trace_config.tracer = value;
+                trace_enabled = true;
+                continue;
+            }
+
+            trace_config.timeout = value;
             trace_enabled = true;
             continue;
         }
