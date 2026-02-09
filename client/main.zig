@@ -12,6 +12,7 @@ const Hardfork = primitives.Hardfork;
 const TraceConfig = primitives.TraceConfig;
 const Chain = primitives.Chain;
 const RunnerConfig = config_mod.RunnerConfig;
+const Tracer = evm_mod.Tracer;
 
 const usage =
     \\guillotine-mini runner
@@ -138,9 +139,20 @@ fn run(
         .blob_base_fee = 0,
     };
 
+    var tracer_instance: Tracer = undefined;
+    if (trace_enabled) {
+        tracer_instance = Tracer.init(allocator);
+        tracer_instance.enable();
+        defer tracer_instance.deinit();
+    }
+
     var evm_instance: EvmType = undefined;
     try evm_instance.init(allocator, null, config.hardfork, block_context, null);
     defer evm_instance.deinit();
+
+    if (trace_enabled) {
+        evm_instance.setTracer(&tracer_instance);
+    }
 
     try writer.writeAll("guillotine-mini runner configured\n");
     try writer.print(
