@@ -7,6 +7,7 @@
 //!
 //! - `hash` — Root hash computation via `patricialize()` algorithm
 //! - `node` — Trie node types (Leaf, Extension, Branch, Node union)
+//! - `trie` — Trie API re-export (Voltaire primitive)
 //!
 //! ## Architecture
 //!
@@ -32,6 +33,8 @@
 pub const hash = @import("hash.zig");
 /// Voltaire trie node types re-export module.
 pub const node = @import("node.zig");
+/// Voltaire trie implementation re-export module.
+pub const trie = @import("trie.zig");
 
 // Re-export primary API
 /// Compute the Merkle Patricia Trie root hash for key-value pairs.
@@ -40,6 +43,8 @@ pub const trie_root = hash.trie_root;
 pub const EMPTY_TRIE_ROOT = hash.EMPTY_TRIE_ROOT;
 /// 32-byte hash type used for root hashes.
 pub const Hash32 = node.Hash32;
+/// Trie implementation (Voltaire primitive).
+pub const Trie = trie.Trie;
 
 test {
     // Ensure all sub-modules compile and their tests run.
