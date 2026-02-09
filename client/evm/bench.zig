@@ -363,6 +363,7 @@ fn bench_vtable_overhead(n: usize) struct { direct_ns: u64, vtable_ns: u64 } {
 
 /// Benchmark entry point.
 pub fn main() !void {
+    if (@import("builtin").is_test) return;
     std.debug.print("\n", .{});
     std.debug.print("=" ** 100 ++ "\n", .{});
     std.debug.print("  Guillotine Phase-3 EVM ↔ WorldState Benchmarks (HostAdapter)\n", .{});
@@ -500,4 +501,8 @@ pub fn main() !void {
     std.debug.print("  - Error handling: getters return defaults, setters panic on failure\n", .{});
     std.debug.print("  - Arena allocator is used by StateManager internally\n", .{});
     std.debug.print("=" ** 100 ++ "\n\n", .{});
+}
+
+test "bench main entrypoint" {
+    try main();
 }

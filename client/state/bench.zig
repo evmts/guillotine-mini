@@ -373,6 +373,7 @@ fn bench_restore_with_callback(n: usize) u64 {
 
 /// Benchmark entry point.
 pub fn main() !void {
+    if (@import("builtin").is_test) return;
     std.debug.print("\n", .{});
     std.debug.print("=" ** 100 ++ "\n", .{});
     std.debug.print("  Guillotine Phase-2 World State Benchmarks (Journal + Snapshot/Restore)\n", .{});
@@ -652,4 +653,8 @@ pub fn main() !void {
     std.debug.print("  - In production, journal key types will be Address (20 bytes) and\n", .{});
     std.debug.print("    StorageSlotKey (20+32 bytes) — slightly larger but same perf characteristics\n", .{});
     std.debug.print("=" ** 100 ++ "\n\n", .{});
+}
+
+test "bench main entrypoint" {
+    try main();
 }
