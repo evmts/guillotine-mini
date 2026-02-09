@@ -6,7 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
-import { Bytes, Hex } from "voltaire-effect/primitives";
+import { Hex } from "voltaire-effect/primitives";
 import type { BytesType as VoltaireBytesType } from "@tevm/voltaire/Bytes";
 
 /** Byte array type used for DB keys and values. */
