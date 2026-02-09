@@ -4,16 +4,19 @@
 /// follows the vtable-based dependency injection pattern used in src/host.zig.
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
+const primitives = @import("primitives");
 
 const ExchangeCapabilitiesMethod = @FieldType(jsonrpc.engine.EngineMethod, "engine_exchangeCapabilities");
+const ClientVersionV1Method = @FieldType(jsonrpc.engine.EngineMethod, "engine_getClientVersionV1");
 /// Parameters for `engine_exchangeCapabilities` requests.
 pub const ExchangeCapabilitiesParams = @FieldType(ExchangeCapabilitiesMethod, "params");
 /// Result payload for `engine_exchangeCapabilities` responses.
 pub const ExchangeCapabilitiesResult = @FieldType(ExchangeCapabilitiesMethod, "result");
 /// Parameters for `engine_getClientVersionV1` requests.
-pub const ClientVersionV1Params = jsonrpc.types.Quantity;
+pub const ClientVersionV1Params = @FieldType(ClientVersionV1Method, "params");
 /// Result payload for `engine_getClientVersionV1` responses.
-pub const ClientVersionV1Result = jsonrpc.types.Quantity;
+pub const ClientVersionV1Result = @FieldType(ClientVersionV1Method, "result");
+const ClientVersionV1 = @FieldType(ClientVersionV1Params, "consensus_client");
 
 const exchange_capabilities_method = "engine_exchangeCapabilities";
 const engine_method_prefix = "engine_";
@@ -88,7 +91,10 @@ pub const EngineApi = struct {
         self: EngineApi,
         params: ClientVersionV1Params,
     ) Error!ClientVersionV1Result {
-        return self.vtable.get_client_version_v1(self.ptr, params);
+        try validateClientVersionV1Params(params, Error.InvalidParams);
+        const result = try self.vtable.get_client_version_v1(self.ptr, params);
+        try validateClientVersionV1Result(result, Error.InternalError);
+        return result;
     }
 };
 
@@ -130,6 +136,22 @@ fn validateMethodName(method: []const u8, comptime invalid_err: EngineApi.Error)
     if (!std.mem.startsWith(u8, method, engine_method_prefix)) return invalid_err;
     if (std.mem.eql(u8, method, exchange_capabilities_method)) return invalid_err;
     if (!isVersionedMethod(method)) return invalid_err;
+}
+
+fn validateClientVersionV1Params(params: ClientVersionV1Params, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+    try validateClientVersionV1(params.consensus_client, invalid_err);
+}
+
+fn validateClientVersionV1Result(result: ClientVersionV1Result, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+    if (result.value.len == 0) return invalid_err;
+    for (result.value) |client| {
+        try validateClientVersionV1(client, invalid_err);
+    }
+}
+
+fn validateClientVersionV1(client: ClientVersionV1, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+    if (client.code.len != 2) return invalid_err;
+    _ = primitives.Hex.assertSize(client.commit, 4) catch return invalid_err;
 }
 
 fn isVersionedMethod(method: []const u8) bool {
@@ -188,11 +210,17 @@ fn makeMethodsPayload(comptime MethodsType: type, allocator: std.mem.Allocator, 
 
 const ConsensusType = @FieldType(ExchangeCapabilitiesParams, "consensus_client_methods");
 const ResultType = @FieldType(ExchangeCapabilitiesResult, "value");
+const dummy_client_version = ClientVersionV1{
+    .code = "GM",
+    .name = "guillotine-mini",
+    .version = "0.0.0",
+    .commit = "0x00000000",
+};
 
 const DummyEngine = struct {
     const Self = @This();
     result: ExchangeCapabilitiesResult,
-    client_version_result: ClientVersionV1Result = ClientVersionV1Result{ .value = .{ .null = {} } },
+    client_version_result: ClientVersionV1Result = ClientVersionV1Result{ .value = &[_]ClientVersionV1{dummy_client_version} },
     called: bool = false,
     client_version_called: bool = false,
 
@@ -337,8 +365,14 @@ test "engine api rejects response containing exchangeCapabilities" {
 }
 
 test "engine api dispatches client version exchange" {
-    const params = ClientVersionV1Params{ .value = .{ .null = {} } };
-    const result_value = ClientVersionV1Result{ .value = .{ .null = {} } };
+    const consensus_client = ClientVersionV1{
+        .code = "LS",
+        .name = "Lodestar",
+        .version = "v1.2.3",
+        .commit = "0x01020304",
+    };
+    const params = ClientVersionV1Params{ .consensus_client = consensus_client };
+    const result_value = ClientVersionV1Result{ .value = &[_]ClientVersionV1{dummy_client_version} };
     const exchange_result = ExchangeCapabilitiesResult{
         .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } },
     };
@@ -352,4 +386,41 @@ test "engine api dispatches client version exchange" {
     const result = try api.get_client_version_v1(params);
     try std.testing.expect(dummy.client_version_called);
     try std.testing.expectEqualDeep(result_value, result);
+}
+
+test "engine api rejects invalid client version params" {
+    const bad_params = ClientVersionV1Params{
+        .consensus_client = ClientVersionV1{
+            .code = "BAD",
+            .name = "Lodestar",
+            .version = "v1.2.3",
+            .commit = "0x01020304",
+        },
+    };
+    const exchange_result = ExchangeCapabilitiesResult{
+        .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } },
+    };
+
+    var dummy = DummyEngine{ .result = exchange_result };
+    const api = makeApi(&dummy);
+
+    try std.testing.expectError(EngineApi.Error.InvalidParams, api.get_client_version_v1(bad_params));
+    try std.testing.expect(!dummy.client_version_called);
+}
+
+test "engine api rejects invalid client version response" {
+    const params = ClientVersionV1Params{ .consensus_client = dummy_client_version };
+    const invalid_result = ClientVersionV1Result{ .value = &[_]ClientVersionV1{} };
+    const exchange_result = ExchangeCapabilitiesResult{
+        .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } },
+    };
+
+    var dummy = DummyEngine{
+        .result = exchange_result,
+        .client_version_result = invalid_result,
+    };
+    const api = makeApi(&dummy);
+
+    try std.testing.expectError(EngineApi.Error.InternalError, api.get_client_version_v1(params));
+    try std.testing.expect(dummy.client_version_called);
 }
