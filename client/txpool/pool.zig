@@ -8,46 +8,69 @@ const U256 = primitives.Denomination.U256;
 pub const TxPoolConfig = struct {
     /// Blob transaction storage policy.
     pub const BlobsSupportMode = enum(u8) {
+        /// Do not accept or store blob transactions.
         disabled,
+        /// Keep blob transactions only in memory.
         in_memory,
+        /// Persist blob transactions without reorg handling.
         storage,
+        /// Persist blob transactions and retain reorg metadata.
         storage_with_reorgs,
 
-        pub fn isPersistentStorage(self: BlobsSupportMode) bool {
+        fn is_persistent_storage(self: BlobsSupportMode) bool {
             return self == .storage or self == .storage_with_reorgs;
         }
 
-        pub fn isEnabled(self: BlobsSupportMode) bool {
+        fn is_enabled(self: BlobsSupportMode) bool {
             return self != .disabled;
         }
 
-        pub fn isDisabled(self: BlobsSupportMode) bool {
+        fn is_disabled(self: BlobsSupportMode) bool {
             return self == .disabled;
         }
 
-        pub fn supportsReorgs(self: BlobsSupportMode) bool {
+        fn supports_reorgs(self: BlobsSupportMode) bool {
             return self == .storage_with_reorgs;
         }
     };
 
+    /// Percent of persistent transactions announced per block (0 disables).
     peer_notification_threshold: u32 = 5,
+    /// Base fee multiplier threshold (percent) used for broadcast filtering.
     min_base_fee_threshold: u32 = 70,
+    /// Maximum number of pending non-blob transactions in the pool.
     size: u32 = 2048,
+    /// Blob transaction storage mode.
     blobs_support: BlobsSupportMode = .storage_with_reorgs,
+    /// Persistent blob storage capacity (transaction count).
     persistent_blob_storage_size: u32 = 16 * 1024,
+    /// LRU cache size for full blob transactions.
     blob_cache_size: u32 = 256,
+    /// In-memory blob pool capacity when persistence is disabled.
     in_memory_blob_pool_size: u32 = 512,
+    /// Max pending non-blob txs per sender (0 disables limit).
     max_pending_txs_per_sender: u32 = 0,
+    /// Max pending blob txs per sender (0 disables limit).
     max_pending_blob_txs_per_sender: u32 = 16,
+    /// Hash cache size for duplicate transaction suppression.
     hash_cache_size: u32 = 512 * 1024,
+    /// Optional gas limit cap for incoming transactions.
     gas_limit: ?GasLimit = null,
+    /// Maximum non-blob transaction size in bytes (null disables limit).
     max_tx_size: ?u64 = 128 * 1024,
+    /// Maximum blob transaction size in bytes (null disables limit).
     max_blob_tx_size: ?u64 = 1024 * 1024,
+    /// Enable translation of blob proof versions on intake.
     proofs_translation_enabled: bool = false,
+    /// Optional reporting interval in minutes (null disables reporting).
     report_minutes: ?u32 = null,
+    /// Accept transactions while the node is syncing.
     accept_tx_when_not_synced: bool = false,
+    /// Enable persistent broadcast for locally submitted transactions.
     persistent_broadcast_enabled: bool = true,
+    /// Require max fee per blob gas to meet current blob base fee.
     current_blob_base_fee_required: bool = true,
+    /// Minimum priority fee required for blob transactions.
     min_blob_tx_priority_fee: U256 = U256.ZERO,
 };
 
@@ -119,25 +142,25 @@ test "txpool interface dispatches pending counts" {
 test "blobs support mode helpers mirror nethermind semantics" {
     const Mode = TxPoolConfig.BlobsSupportMode;
 
-    try std.testing.expect(Mode.disabled.isDisabled());
-    try std.testing.expect(!Mode.disabled.isEnabled());
-    try std.testing.expect(!Mode.disabled.isPersistentStorage());
-    try std.testing.expect(!Mode.disabled.supportsReorgs());
+    try std.testing.expect(Mode.disabled.is_disabled());
+    try std.testing.expect(!Mode.disabled.is_enabled());
+    try std.testing.expect(!Mode.disabled.is_persistent_storage());
+    try std.testing.expect(!Mode.disabled.supports_reorgs());
 
-    try std.testing.expect(Mode.in_memory.isEnabled());
-    try std.testing.expect(!Mode.in_memory.isDisabled());
-    try std.testing.expect(!Mode.in_memory.isPersistentStorage());
-    try std.testing.expect(!Mode.in_memory.supportsReorgs());
+    try std.testing.expect(Mode.in_memory.is_enabled());
+    try std.testing.expect(!Mode.in_memory.is_disabled());
+    try std.testing.expect(!Mode.in_memory.is_persistent_storage());
+    try std.testing.expect(!Mode.in_memory.supports_reorgs());
 
-    try std.testing.expect(Mode.storage.isEnabled());
-    try std.testing.expect(!Mode.storage.isDisabled());
-    try std.testing.expect(Mode.storage.isPersistentStorage());
-    try std.testing.expect(!Mode.storage.supportsReorgs());
+    try std.testing.expect(Mode.storage.is_enabled());
+    try std.testing.expect(!Mode.storage.is_disabled());
+    try std.testing.expect(Mode.storage.is_persistent_storage());
+    try std.testing.expect(!Mode.storage.supports_reorgs());
 
-    try std.testing.expect(Mode.storage_with_reorgs.isEnabled());
-    try std.testing.expect(!Mode.storage_with_reorgs.isDisabled());
-    try std.testing.expect(Mode.storage_with_reorgs.isPersistentStorage());
-    try std.testing.expect(Mode.storage_with_reorgs.supportsReorgs());
+    try std.testing.expect(Mode.storage_with_reorgs.is_enabled());
+    try std.testing.expect(!Mode.storage_with_reorgs.is_disabled());
+    try std.testing.expect(Mode.storage_with_reorgs.is_persistent_storage());
+    try std.testing.expect(Mode.storage_with_reorgs.supports_reorgs());
 }
 
 test "txpool config defaults match nethermind" {
