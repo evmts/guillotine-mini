@@ -33,6 +33,11 @@ pub const CreatedAccounts = struct {
         self.set.clearRetainingCapacity();
     }
 
+    /// Remove all tracked accounts and release capacity.
+    pub fn clearAndFree(self: *Self) void {
+        self.set.clearAndFree(self.allocator);
+    }
+
     /// Check whether an address is tracked as created.
     pub fn contains(self: *const Self, address: Address) bool {
         return self.set.contains(address);
@@ -83,6 +88,16 @@ test "CreatedAccounts: add/contains/len/clear" {
     try std.testing.expectEqual(@as(usize, 2), tracker.len());
 
     tracker.clear();
+    try std.testing.expectEqual(@as(usize, 0), tracker.len());
+    try std.testing.expect(!tracker.contains(addr1));
+    try std.testing.expect(!tracker.contains(addr2));
+
+    const inserted1_after_clear = try tracker.add(addr1);
+    const inserted2_after_clear = try tracker.add(addr2);
+    try std.testing.expect(inserted1_after_clear);
+    try std.testing.expect(inserted2_after_clear);
+
+    tracker.clearAndFree();
     try std.testing.expectEqual(@as(usize, 0), tracker.len());
     try std.testing.expect(!tracker.contains(addr1));
     try std.testing.expect(!tracker.contains(addr2));
