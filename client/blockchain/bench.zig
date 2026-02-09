@@ -69,20 +69,20 @@ fn build_blocks(n: usize, allocator: std.mem.Allocator) ![]Block.Block {
 }
 
 /// Benchmark: process N blocks through Chain (putBlock + setCanonicalHead).
-fn bench_block_processing(n: usize) u64 {
+fn bench_block_processing(n: usize) !u64 {
     // Warmup
     for (0..WARMUP_ITERS) |_| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
 
-        var chain = Chain.init(allocator, null) catch unreachable;
+        var chain = try Chain.init(allocator, null);
         defer chain.deinit();
 
-        const blocks = build_blocks(n, allocator) catch unreachable;
+        const blocks = try build_blocks(n, allocator);
         for (blocks) |block| {
-            chain.putBlock(block) catch unreachable;
-            chain.setCanonicalHead(block.hash) catch unreachable;
+            try chain.putBlock(block);
+            try chain.setCanonicalHead(block.hash);
         }
     }
 
@@ -93,15 +93,15 @@ fn bench_block_processing(n: usize) u64 {
         defer arena.deinit();
         const allocator = arena.allocator();
 
-        var chain = Chain.init(allocator, null) catch unreachable;
+        var chain = try Chain.init(allocator, null);
         defer chain.deinit();
 
-        const blocks = build_blocks(n, allocator) catch unreachable;
+        const blocks = try build_blocks(n, allocator);
 
-        var timer = std.time.Timer.start() catch unreachable;
+        var timer = try std.time.Timer.start();
         for (blocks) |block| {
-            chain.putBlock(block) catch unreachable;
-            chain.setCanonicalHead(block.hash) catch unreachable;
+            try chain.putBlock(block);
+            try chain.setCanonicalHead(block.hash);
         }
         total_ns += timer.read();
     }
@@ -130,7 +130,7 @@ pub fn main() !void {
         .{ .n = LARGE_N, .name = "block processing (20K blocks)" },
     };
     for (sizes) |s| {
-        const elapsed = bench_block_processing(s.n);
+        const elapsed = try bench_block_processing(s.n);
         const result = make_result(s.name, s.n, elapsed);
         print_result(result);
         if (s.n == LARGE_N) {
