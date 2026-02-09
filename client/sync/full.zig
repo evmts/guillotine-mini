@@ -24,6 +24,8 @@ pub const BlocksRequest = struct {
     /// Optional receipts per block, aligned with `receipt_headers`.
     /// Missing receipts are represented as null entries.
     receipts: ?[]const ?[]const Receipt.Receipt = null,
+    /// Optional arena owning response buffers. Must be deinit'd by caller.
+    response_arena: ?std.heap.ArenaAllocator = null,
 
     pub const ResponseAlignmentError = error{
         BodyAlignmentMismatch,
@@ -37,12 +39,47 @@ pub const BlocksRequest = struct {
             .receipt_headers = &[_]BlockHeader.BlockHeader{},
             .bodies = null,
             .receipts = null,
+            .response_arena = null,
+        };
+    }
+
+    /// Initialize a request that owns response buffers via an arena allocator.
+    /// Call `deinit` when the response data is no longer needed.
+    pub fn initOwned(
+        body_headers: []const BlockHeader.BlockHeader,
+        receipt_headers: []const BlockHeader.BlockHeader,
+        allocator: std.mem.Allocator,
+    ) BlocksRequest {
+        return .{
+            .body_headers = body_headers,
+            .receipt_headers = receipt_headers,
+            .bodies = null,
+            .receipts = null,
+            .response_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
 
     /// True if there are no body or receipt requests.
     pub fn isEmpty(self: BlocksRequest) bool {
         return self.body_headers.len == 0 and self.receipt_headers.len == 0;
+    }
+
+    /// Return the allocator backing the owned response arena, if present.
+    pub fn responseAllocator(self: *BlocksRequest) ?std.mem.Allocator {
+        if (self.response_arena) |*arena| {
+            return arena.allocator();
+        }
+        return null;
+    }
+
+    /// Release owned response buffers and clear response slices.
+    pub fn deinit(self: *BlocksRequest) void {
+        if (self.response_arena) |*arena| {
+            arena.deinit();
+        }
+        self.response_arena = null;
+        self.bodies = null;
+        self.receipts = null;
     }
 
     /// Set bodies response, enforcing alignment with `body_headers`.
@@ -132,4 +169,22 @@ test "BlocksRequest.setReceipts enforces alignment and allows missing entries" {
     try std.testing.expect(req.receipts != null);
     try std.testing.expect(req.receipts.?.len == headers.len);
     try std.testing.expect(req.receipts.?[0] == null);
+}
+
+test "BlocksRequest.responseAllocator is null for unowned requests" {
+    var req = BlocksRequest.empty();
+    try std.testing.expect(req.responseAllocator() == null);
+}
+
+test "BlocksRequest.initOwned provisions response arena and deinit clears it" {
+    const headers = &[_]BlockHeader.BlockHeader{BlockHeader.init()};
+    var req = BlocksRequest.initOwned(headers, &[_]BlockHeader.BlockHeader{}, std.testing.allocator);
+    const arena_alloc = req.responseAllocator().?;
+    const buffer = try arena_alloc.alloc(u8, 4);
+    buffer[0] = 1;
+
+    req.deinit();
+    try std.testing.expect(req.responseAllocator() == null);
+    try std.testing.expect(req.bodies == null);
+    try std.testing.expect(req.receipts == null);
 }
