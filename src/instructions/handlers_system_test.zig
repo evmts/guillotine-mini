@@ -318,6 +318,7 @@ test "CREATE2: deterministic address with salt" {
 
     // Get first address
     const addr1 = frame.stack.items[0];
+    try testing.expect(addr1 != 0);
     frame.stack.items.len = 0;
 
     // Execute again with same parameters
@@ -330,8 +331,8 @@ test "CREATE2: deterministic address with salt" {
     try SystemHandlers.create2(&frame);
     const addr2 = frame.stack.items[0];
 
-    // Should get same address (deterministic)
-    try testing.expectEqual(addr1, addr2);
+    // Second create2 to same address should fail (returns 0)
+    try testing.expectEqual(@as(u256, 0), addr2);
 }
 
 // ============================================================================
