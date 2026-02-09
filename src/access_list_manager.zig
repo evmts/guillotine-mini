@@ -7,19 +7,8 @@ const primitives = @import("primitives");
 const Address = primitives.Address.Address;
 const StorageKey = primitives.State.StorageKey;
 const AccessList = primitives.AccessList.AccessList;
-const Hash = primitives.Hash.Hash;
 const gas_constants = primitives.GasConstants;
 const Allocator = std.mem.Allocator;
-
-/// Context for hashing Address in hash maps
-const AddressContext = struct {
-    pub fn hash(_: @This(), addr: Address) u32 {
-        return @truncate(std.hash.Wyhash.hash(0, &addr.bytes));
-    }
-    pub fn eql(_: @This(), a: Address, b: Address, _: usize) bool {
-        return a.eql(b);
-    }
-};
 
 /// Context for hashing StorageKey in hash maps
 const StorageKeyContext = struct {
@@ -124,12 +113,14 @@ pub const AccessListManager = struct {
     /// Create snapshot for nested call revert handling
     pub fn snapshot(self: *const AccessListManager) !AccessListSnapshot {
         var addr_snapshot = std.AutoHashMap(Address, void).init(self.allocator);
+        errdefer addr_snapshot.deinit();
         var addr_it = self.warm_addresses.iterator();
         while (addr_it.next()) |entry| {
             try addr_snapshot.put(entry.key_ptr.*, {});
         }
 
         var slot_snapshot = std.ArrayHashMap(StorageKey, void, StorageKeyContext, false).init(self.allocator);
+        errdefer slot_snapshot.deinit();
         var slot_it = self.warm_storage_slots.iterator();
         while (slot_it.next()) |entry| {
             _ = try slot_snapshot.put(entry.key_ptr.*, {});
@@ -143,17 +134,24 @@ pub const AccessListManager = struct {
 
     /// Restore from snapshot (for nested call reverts)
     pub fn restore(self: *AccessListManager, snap: AccessListSnapshot) !void {
-        self.warm_addresses.clearRetainingCapacity();
+        var new_addresses = std.AutoHashMap(Address, void).init(self.allocator);
+        errdefer new_addresses.deinit();
         var addr_it = snap.addresses.iterator();
         while (addr_it.next()) |entry| {
-            try self.warm_addresses.put(entry.key_ptr.*, {});
+            try new_addresses.put(entry.key_ptr.*, {});
         }
 
-        self.warm_storage_slots.clearRetainingCapacity();
+        var new_slots = std.ArrayHashMap(StorageKey, void, StorageKeyContext, false).init(self.allocator);
+        errdefer new_slots.deinit();
         var slot_it = snap.slots.iterator();
         while (slot_it.next()) |entry| {
-            _ = try self.warm_storage_slots.put(entry.key_ptr.*, {});
+            _ = try new_slots.put(entry.key_ptr.*, {});
         }
+
+        self.warm_addresses.deinit();
+        self.warm_storage_slots.deinit();
+        self.warm_addresses = new_addresses;
+        self.warm_storage_slots = new_slots;
     }
 };
 
@@ -162,6 +160,7 @@ pub const AccessListSnapshot = struct {
     addresses: std.AutoHashMap(Address, void),
     slots: std.ArrayHashMap(StorageKey, void, StorageKeyContext, false),
 
+    /// Free snapshot resources
     pub fn deinit(self: *AccessListSnapshot) void {
         self.addresses.deinit();
         self.slots.deinit();
