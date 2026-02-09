@@ -2,6 +2,11 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Gas, Transaction } from "voltaire-effect/primitives";
+import {
+  ReleaseSpec,
+  ReleaseSpecPrague,
+  type ReleaseSpecService,
+} from "./ReleaseSpec";
 
 export type IntrinsicGas = {
   readonly intrinsicGas: Gas.GasType;
@@ -26,7 +31,8 @@ const TX_ACCESS_LIST_ADDRESS_COST = 2_400n;
 const TX_ACCESS_LIST_STORAGE_KEY_COST = 1_900n;
 const PER_EMPTY_ACCOUNT_COST = 25_000n;
 const INIT_CODE_WORD_COST = 2n;
-const CALLDATA_NONZERO_MULTIPLIER = 4n;
+const CALLDATA_NONZERO_MULTIPLIER_EIP2028 = 4n;
+const CALLDATA_NONZERO_MULTIPLIER_LEGACY = 17n;
 
 const toGas = (value: bigint): Gas.GasType => value as Gas.GasType;
 
@@ -40,10 +46,13 @@ const countZeroBytes = (data: Uint8Array): number => {
   return zeros;
 };
 
-const tokensInCalldata = (data: Uint8Array): bigint => {
+const tokensInCalldata = (
+  data: Uint8Array,
+  nonZeroMultiplier: bigint,
+): bigint => {
   const zeroBytes = BigInt(countZeroBytes(data));
   const nonZeroBytes = BigInt(data.length) - zeroBytes;
-  return zeroBytes + nonZeroBytes * CALLDATA_NONZERO_MULTIPLIER;
+  return zeroBytes + nonZeroBytes * nonZeroMultiplier;
 };
 
 const ceilDiv = (value: bigint, divisor: bigint): bigint =>
@@ -57,7 +66,13 @@ const initCodeCost = (length: number): bigint => {
   return words * INIT_CODE_WORD_COST;
 };
 
-const accessListCost = (tx: Transaction.Any): bigint => {
+const accessListCost = (
+  tx: Transaction.Any,
+  isEip2930Enabled: boolean,
+): bigint => {
+  if (!isEip2930Enabled) {
+    return 0n;
+  }
   switch (tx.type) {
     case Transaction.Type.EIP2930:
     case Transaction.Type.EIP1559:
@@ -76,24 +91,36 @@ const accessListCost = (tx: Transaction.Any): bigint => {
   }
 };
 
-const authorizationCost = (tx: Transaction.Any): bigint =>
-  tx.type === Transaction.Type.EIP7702
+const authorizationCost = (
+  tx: Transaction.Any,
+  isEip7702Enabled: boolean,
+): bigint =>
+  isEip7702Enabled && tx.type === Transaction.Type.EIP7702
     ? BigInt(tx.authorizationList.length) * PER_EMPTY_ACCOUNT_COST
     : 0n;
 
-const calculateIntrinsicGasValue = (tx: Transaction.Any): IntrinsicGas => {
-  const tokens = tokensInCalldata(tx.data);
-  const calldataFloorGas = TX_BASE_COST + tokens * FLOOR_CALLDATA_COST;
+const calculateIntrinsicGasValue = (
+  tx: Transaction.Any,
+  spec: ReleaseSpecService,
+): IntrinsicGas => {
+  const nonZeroMultiplier = spec.isEip2028Enabled
+    ? CALLDATA_NONZERO_MULTIPLIER_EIP2028
+    : CALLDATA_NONZERO_MULTIPLIER_LEGACY;
+  const tokens = tokensInCalldata(tx.data, nonZeroMultiplier);
+  const calldataFloorGas = spec.isEip7623Enabled
+    ? TX_BASE_COST + tokens * FLOOR_CALLDATA_COST
+    : 0n;
   const dataCost = tokens * STANDARD_CALLDATA_TOKEN_COST;
   const createCost = Transaction.isContractCreation(tx)
-    ? TX_CREATE_COST + initCodeCost(tx.data.length)
+    ? TX_CREATE_COST +
+      (spec.isEip3860Enabled ? initCodeCost(tx.data.length) : 0n)
     : 0n;
   const intrinsicGas =
     TX_BASE_COST +
     dataCost +
     createCost +
-    accessListCost(tx) +
-    authorizationCost(tx);
+    accessListCost(tx, spec.isEip2930Enabled) +
+    authorizationCost(tx, spec.isEip7702Enabled);
 
   return {
     intrinsicGas: toGas(intrinsicGas),
@@ -101,17 +128,22 @@ const calculateIntrinsicGasValue = (tx: Transaction.Any): IntrinsicGas => {
   };
 };
 
+const makeIntrinsicGasCalculator = Effect.gen(function* () {
+  const spec = yield* ReleaseSpec;
+  return {
+    calculateIntrinsicGas: (tx: Transaction.Any) =>
+      Effect.sync(() => calculateIntrinsicGasValue(tx, spec)),
+  } satisfies IntrinsicGasCalculatorService;
+});
+
 export const IntrinsicGasCalculatorLive: Layer.Layer<
   IntrinsicGasCalculator,
   never,
-  never
-> = Layer.succeed(IntrinsicGasCalculator, {
-  calculateIntrinsicGas: (tx) =>
-    Effect.sync(() => calculateIntrinsicGasValue(tx)),
-});
+  ReleaseSpec
+> = Layer.effect(IntrinsicGasCalculator, makeIntrinsicGasCalculator);
 
 export const IntrinsicGasCalculatorTest: Layer.Layer<IntrinsicGasCalculator> =
-  IntrinsicGasCalculatorLive;
+  IntrinsicGasCalculatorLive.pipe(Layer.provide(ReleaseSpecPrague));
 
 export const calculateIntrinsicGas = (tx: Transaction.Any) =>
   Effect.gen(function* () {
