@@ -106,25 +106,15 @@ const benchApply = (entries: ReadonlyArray<BenchEntry>) =>
     }
   });
 
-const benchSnapshotRestore = (
-  entries: ReadonlyArray<BenchEntry>,
-  updates: ReadonlyArray<BenchEntry>,
-) =>
+const benchSnapshotRestore = (updates: ReadonlyArray<BenchEntry>) =>
   Effect.gen(function* () {
-    yield* clear();
-    yield* benchApply(entries);
     const snapshot = yield* takeSnapshot();
     yield* benchApply(updates);
     yield* restoreSnapshot(snapshot);
   });
 
-const benchSnapshotCommit = (
-  entries: ReadonlyArray<BenchEntry>,
-  updates: ReadonlyArray<BenchEntry>,
-) =>
+const benchSnapshotCommit = (updates: ReadonlyArray<BenchEntry>) =>
   Effect.gen(function* () {
-    yield* clear();
-    yield* benchApply(entries);
     const snapshot = yield* takeSnapshot();
     yield* benchApply(updates);
     yield* commitSnapshot(snapshot);
@@ -136,29 +126,35 @@ const runBenchmarks = (count: number) =>
     const updates = makeDataset(count, count + 5);
     const results: BenchResult[] = [];
 
-    yield* clear();
     const createOps = count * 2;
+    yield* clear();
     results.push(yield* measure("apply-create", createOps, benchApply(base)));
 
     const updateOps = count * 2;
+    yield* clear();
+    yield* benchApply(base);
     results.push(
       yield* measure("apply-update", updateOps, benchApply(updates)),
     );
 
     const snapshotOps = count * 2;
+    yield* clear();
+    yield* benchApply(base);
     results.push(
       yield* measure(
         "snapshot-restore",
         snapshotOps,
-        benchSnapshotRestore(base, updates),
+        benchSnapshotRestore(updates),
       ),
     );
 
+    yield* clear();
+    yield* benchApply(base);
     results.push(
       yield* measure(
         "snapshot-commit",
         snapshotOps,
-        benchSnapshotCommit(base, updates),
+        benchSnapshotCommit(updates),
       ),
     );
 
