@@ -5,6 +5,8 @@ const rlpx = @import("rlpx/root.zig");
 
 /// RLPx handshake role (initiator/recipient).
 pub const HandshakeRole = rlpx.HandshakeRole;
+/// Snappy framing limits for RLPx compressed payloads.
+pub const SnappyParameters = rlpx.SnappyParameters;
 
 test {
     std.testing.refAllDecls(@This());
