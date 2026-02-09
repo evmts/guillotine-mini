@@ -21,6 +21,9 @@ const journal_mod = @import("journal.zig");
 const Journal = journal_mod.Journal;
 const ChangeTag = journal_mod.ChangeTag;
 const Entry = journal_mod.Entry;
+const bench_utils = @import("../bench_utils.zig");
+const format_ns = bench_utils.format_ns;
+const print_result = bench_utils.print_result;
 
 /// Number of iterations for each benchmark tier.
 const TINY_N: usize = 100;
@@ -33,59 +36,6 @@ const XLARGE_N: usize = 1_000_000;
 const WARMUP_ITERS: usize = 3;
 /// Number of timed iterations to average.
 const BENCH_ITERS: usize = 10;
-
-/// Format nanoseconds into a human-readable string.
-fn formatNs(ns: u64) [32]u8 {
-    var buf: [32]u8 = [_]u8{0} ** 32;
-    if (ns < 1_000) {
-        _ = std.fmt.bufPrint(&buf, "{d} ns", .{ns}) catch unreachable;
-    } else if (ns < 1_000_000) {
-        _ = std.fmt.bufPrint(&buf, "{d:.1} us", .{@as(f64, @floatFromInt(ns)) / 1_000.0}) catch unreachable;
-    } else if (ns < 1_000_000_000) {
-        _ = std.fmt.bufPrint(&buf, "{d:.2} ms", .{@as(f64, @floatFromInt(ns)) / 1_000_000.0}) catch unreachable;
-    } else {
-        _ = std.fmt.bufPrint(&buf, "{d:.3} s", .{@as(f64, @floatFromInt(ns)) / 1_000_000_000.0}) catch unreachable;
-    }
-    return buf;
-}
-
-fn formatOpsPerSec(ops: usize, elapsed_ns: u64) [32]u8 {
-    var buf: [32]u8 = [_]u8{0} ** 32;
-    if (elapsed_ns == 0) {
-        _ = std.fmt.bufPrint(&buf, "inf ops/s", .{}) catch unreachable;
-        return buf;
-    }
-    const ops_per_sec = @as(f64, @floatFromInt(ops)) / (@as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0);
-    if (ops_per_sec >= 1_000_000) {
-        _ = std.fmt.bufPrint(&buf, "{d:.2} M ops/s", .{ops_per_sec / 1_000_000.0}) catch unreachable;
-    } else if (ops_per_sec >= 1_000) {
-        _ = std.fmt.bufPrint(&buf, "{d:.1} K ops/s", .{ops_per_sec / 1_000.0}) catch unreachable;
-    } else {
-        _ = std.fmt.bufPrint(&buf, "{d:.0} ops/s", .{ops_per_sec}) catch unreachable;
-    }
-    return buf;
-}
-
-const BenchResult = struct {
-    name: []const u8,
-    ops: usize,
-    elapsed_ns: u64,
-    per_op_ns: u64,
-    ops_per_sec: f64,
-};
-
-fn printResult(r: BenchResult) void {
-    const total_str = formatNs(r.elapsed_ns);
-    const per_op_str = formatNs(r.per_op_ns);
-    const ops_str = formatOpsPerSec(r.ops, r.elapsed_ns);
-    std.debug.print("  {s:<55} {d:>8} ops  total={s}  per-op={s}  {s}\n", .{
-        r.name,
-        r.ops,
-        &total_str,
-        &per_op_str,
-        &ops_str,
-    });
-}
 
 /// We use u128 as a value stand-in (same perf characteristics as a larger struct for copy).
 /// In practice, journal values are AccountState or u256 storage values.
@@ -102,7 +52,7 @@ const EntryU64 = Entry(u64, ValueType);
 // ============================================================================
 
 /// Benchmark 1: Sequential append (simulating state changes during block processing)
-fn benchAppend(n: usize) u64 {
+fn bench_append(n: usize) u64 {
     // Warmup
     for (0..WARMUP_ITERS) |_| {
         var j = JournalU64.init(std.heap.page_allocator);
@@ -127,7 +77,7 @@ fn benchAppend(n: usize) u64 {
 }
 
 /// Benchmark 2: Snapshot creation (should be O(1))
-fn benchSnapshot(n: usize) u64 {
+fn bench_snapshot(n: usize) u64 {
     var j = JournalU64.init(std.heap.page_allocator);
     defer j.deinit();
 
@@ -150,7 +100,7 @@ fn benchSnapshot(n: usize) u64 {
 }
 
 /// Benchmark 3: Restore (fast path, no just_cache entries)
-fn benchRestoreFastPath(n: usize) u64 {
+fn bench_restore_fast_path(n: usize) u64 {
     // Warmup
     for (0..WARMUP_ITERS) |_| {
         var j = JournalU64.init(std.heap.page_allocator);
@@ -192,7 +142,7 @@ fn benchRestoreFastPath(n: usize) u64 {
 }
 
 /// Benchmark 4: Restore (slow path, with just_cache entries to preserve)
-fn benchRestoreSlowPath(n: usize) u64 {
+fn bench_restore_slow_path(n: usize) u64 {
     var total_ns: u64 = 0;
     for (0..BENCH_ITERS) |_| {
         var j = JournalU64.init(std.heap.page_allocator);
@@ -219,7 +169,7 @@ fn benchRestoreSlowPath(n: usize) u64 {
 }
 
 /// Benchmark 5: Commit with callback
-fn benchCommit(n: usize) u64 {
+fn bench_commit(n: usize) u64 {
     const Counter = struct {
         var count: usize = 0;
         fn cb(_: *const EntryU64) void {
@@ -246,7 +196,7 @@ fn benchCommit(n: usize) u64 {
 
 /// Benchmark 6: Nested snapshot/restore cycles (simulating EVM nested CALL stack)
 /// Each "call" takes a snapshot, does some state changes, then either commits or reverts.
-fn benchNestedCalls(depth: usize) u64 {
+fn bench_nested_calls(depth: usize) u64 {
     var total_ns: u64 = 0;
     for (0..BENCH_ITERS) |_| {
         var j = JournalU64.init(std.heap.page_allocator);
@@ -288,7 +238,7 @@ fn benchNestedCalls(depth: usize) u64 {
 ///   - ~5 storage writes
 ///   - ~2 nested calls (some revert)
 ///   - Snapshot at tx start, commit at tx end
-fn benchBlockProcessing(_: usize) u64 {
+fn bench_block_processing(_: usize) u64 {
     const txs_per_block: usize = 200;
     const storage_writes_per_tx: usize = 5;
     const nested_calls_per_tx: usize = 2;
@@ -343,7 +293,7 @@ fn benchBlockProcessing(_: usize) u64 {
 
 /// Benchmark 8: Arena allocator pattern — measure overhead of allocating
 /// journal within an arena vs page_allocator directly.
-fn benchArenaPattern(n: usize) u64 {
+fn bench_arena_pattern(n: usize) u64 {
     var total_ns: u64 = 0;
     for (0..BENCH_ITERS) |_| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -361,7 +311,7 @@ fn benchArenaPattern(n: usize) u64 {
 }
 
 /// Benchmark 9: Memory usage measurement
-fn benchMemoryUsage(n: usize) struct { elapsed_ns: u64, peak_bytes: usize } {
+fn bench_memory_usage(n: usize) struct { elapsed_ns: u64, peak_bytes: usize } {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .enable_memory_limit = true }){};
     defer _ = gpa.deinit();
 
@@ -384,7 +334,7 @@ fn benchMemoryUsage(n: usize) struct { elapsed_ns: u64, peak_bytes: usize } {
 }
 
 /// Benchmark 10: Restore with on_revert callback (simulating undo side-effects)
-fn benchRestoreWithCallback(n: usize) u64 {
+fn bench_restore_with_callback(n: usize) u64 {
     const Counter = struct {
         var count: usize = 0;
         fn cb(_: *const EntryU64) void {
@@ -421,6 +371,7 @@ fn benchRestoreWithCallback(n: usize) u64 {
 // Main benchmark entry point
 // ============================================================================
 
+/// Benchmark entry point.
 pub fn main() !void {
     std.debug.print("\n", .{});
     std.debug.print("=" ** 100 ++ "\n", .{});
@@ -439,9 +390,9 @@ pub fn main() !void {
             .{ .n = XLARGE_N, .name = "append (1M entries)" },
         };
         for (sizes) |s| {
-            const elapsed = benchAppend(s.n);
+            const elapsed = bench_append(s.n);
             const per_op = if (s.n > 0) elapsed / s.n else 0;
-            printResult(.{
+            print_result(.{
                 .name = s.name,
                 .ops = s.n,
                 .elapsed_ns = elapsed,
@@ -462,9 +413,9 @@ pub fn main() !void {
             .{ .n = XLARGE_N, .name = "take_snapshot (1M calls, 1M entries)" },
         };
         for (sizes) |s| {
-            const elapsed = benchSnapshot(s.n);
+            const elapsed = bench_snapshot(s.n);
             const per_op = if (s.n > 0) elapsed / s.n else 0;
-            printResult(.{
+            print_result(.{
                 .name = s.name,
                 .ops = s.n,
                 .elapsed_ns = elapsed,
@@ -484,9 +435,9 @@ pub fn main() !void {
             .{ .n = LARGE_N, .name = "restore fast (100K cycles, 10 entries each)" },
         };
         for (sizes) |s| {
-            const elapsed = benchRestoreFastPath(s.n);
+            const elapsed = bench_restore_fast_path(s.n);
             const per_op = if (s.n > 0) elapsed / s.n else 0;
-            printResult(.{
+            print_result(.{
                 .name = s.name,
                 .ops = s.n,
                 .elapsed_ns = elapsed,
@@ -510,9 +461,9 @@ pub fn main() !void {
             .{ .n = 5_000, .name = "restore slow (5K cycles, 8 entries, 25% cache)" },
         };
         for (sizes) |s| {
-            const elapsed = benchRestoreSlowPath(s.n);
+            const elapsed = bench_restore_slow_path(s.n);
             const per_op = if (s.n > 0) elapsed / s.n else 0;
-            printResult(.{
+            print_result(.{
                 .name = s.name,
                 .ops = s.n,
                 .elapsed_ns = elapsed,
@@ -531,9 +482,9 @@ pub fn main() !void {
             .{ .n = MEDIUM_N, .name = "restore+callback (10K cycles, 10 entries each)" },
         };
         for (sizes) |s| {
-            const elapsed = benchRestoreWithCallback(s.n);
+            const elapsed = bench_restore_with_callback(s.n);
             const per_op = if (s.n > 0) elapsed / s.n else 0;
-            printResult(.{
+            print_result(.{
                 .name = s.name,
                 .ops = s.n,
                 .elapsed_ns = elapsed,
@@ -553,9 +504,9 @@ pub fn main() !void {
             .{ .n = LARGE_N, .name = "commit (100K entries)" },
         };
         for (sizes) |s| {
-            const elapsed = benchCommit(s.n);
+            const elapsed = bench_commit(s.n);
             const per_op = if (s.n > 0) elapsed / s.n else 0;
-            printResult(.{
+            print_result(.{
                 .name = s.name,
                 .ops = s.n,
                 .elapsed_ns = elapsed,
@@ -577,9 +528,9 @@ pub fn main() !void {
             .{ .depth = 1024, .name = "nested calls (depth=1024, max EVM)" },
         };
         for (depths) |d| {
-            const elapsed = benchNestedCalls(d.depth);
+            const elapsed = bench_nested_calls(d.depth);
             const per_depth = if (d.depth > 0) elapsed / d.depth else 0;
-            printResult(.{
+            print_result(.{
                 .name = d.name,
                 .ops = d.depth,
                 .elapsed_ns = elapsed,
@@ -599,9 +550,9 @@ pub fn main() !void {
             .{ .n = LARGE_N, .name = "arena append+free (100K entries)" },
         };
         for (sizes) |s| {
-            const elapsed = benchArenaPattern(s.n);
+            const elapsed = bench_arena_pattern(s.n);
             const per_op = if (s.n > 0) elapsed / s.n else 0;
-            printResult(.{
+            print_result(.{
                 .name = s.name,
                 .ops = s.n,
                 .elapsed_ns = elapsed,
@@ -620,7 +571,7 @@ pub fn main() !void {
 
         const sizes = [_]usize{ 100, 1_000, 10_000, 100_000 };
         for (sizes) |n| {
-            const result = benchMemoryUsage(n);
+            const result = bench_memory_usage(n);
             const bytes_per_entry = if (n > 0) result.peak_bytes / n else 0;
             const theoretical = entry_size * n;
             const overhead_pct = if (theoretical > 0)
@@ -642,8 +593,8 @@ pub fn main() !void {
     std.debug.print("--- Block Processing Simulation ---\n", .{});
     std.debug.print("  (200 txs/block, 7 changes/tx + 2 nested calls * 3 changes, 30%% revert)\n", .{});
     {
-        const elapsed = benchBlockProcessing(0);
-        const elapsed_str = formatNs(elapsed);
+        const elapsed = bench_block_processing(0);
+        const elapsed_str = format_ns(elapsed);
         const blocks_per_sec = if (elapsed > 0)
             1_000_000_000.0 / @as(f64, @floatFromInt(elapsed))
         else
@@ -658,14 +609,14 @@ pub fn main() !void {
     {
         // Target: 700 MGas/s, block = 15M gas → ~46.7 blocks/s
         // Journal overhead should be negligible compared to EVM execution
-        const block_elapsed = benchBlockProcessing(0);
+        const block_elapsed = bench_block_processing(0);
         const blocks_per_sec = if (block_elapsed > 0)
             1_000_000_000.0 / @as(f64, @floatFromInt(block_elapsed))
         else
             0.0;
         const effective_mgas = blocks_per_sec * 15.0;
 
-        std.debug.print("  Block journal time:          {s}\n", .{&formatNs(block_elapsed)});
+        std.debug.print("  Block journal time:          {s}\n", .{&format_ns(block_elapsed)});
         std.debug.print("  Block throughput (journal):   {d:.0} blocks/s\n", .{blocks_per_sec});
         std.debug.print("  Effective MGas/s (journal):   {d:.0} MGas/s\n", .{effective_mgas});
         std.debug.print("  Nethermind target:            700 MGas/s (full client)\n", .{});

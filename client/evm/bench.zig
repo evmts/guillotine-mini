@@ -18,10 +18,14 @@
 const std = @import("std");
 const host_adapter_mod = @import("host_adapter.zig");
 const HostAdapter = host_adapter_mod.HostAdapter;
+const bench_utils = @import("../bench_utils.zig");
 const state_manager_mod = @import("state-manager");
 const StateManager = state_manager_mod.StateManager;
 const primitives = @import("primitives");
 const Address = primitives.Address;
+const BenchResult = bench_utils.BenchResult;
+const format_ns = bench_utils.format_ns;
+const print_result = bench_utils.print_result;
 
 /// Number of warmup iterations before timing.
 const WARMUP_ITERS: usize = 3;
@@ -34,7 +38,7 @@ const MEDIUM_N: usize = 10_000;
 const LARGE_N: usize = 100_000;
 
 /// Generate a deterministic address from an index.
-fn makeAddress(index: usize) Address {
+fn make_address(index: usize) Address {
     var bytes: [20]u8 = [_]u8{0} ** 20;
     const idx_bytes = std.mem.asBytes(&index);
     const copy_len = @min(idx_bytes.len, 20);
@@ -42,60 +46,7 @@ fn makeAddress(index: usize) Address {
     return .{ .bytes = bytes };
 }
 
-/// Format nanoseconds into a human-readable string.
-fn formatNs(ns: u64) [32]u8 {
-    var buf: [32]u8 = [_]u8{0} ** 32;
-    if (ns < 1_000) {
-        _ = std.fmt.bufPrint(&buf, "{d} ns", .{ns}) catch unreachable;
-    } else if (ns < 1_000_000) {
-        _ = std.fmt.bufPrint(&buf, "{d:.1} us", .{@as(f64, @floatFromInt(ns)) / 1_000.0}) catch unreachable;
-    } else if (ns < 1_000_000_000) {
-        _ = std.fmt.bufPrint(&buf, "{d:.2} ms", .{@as(f64, @floatFromInt(ns)) / 1_000_000.0}) catch unreachable;
-    } else {
-        _ = std.fmt.bufPrint(&buf, "{d:.3} s", .{@as(f64, @floatFromInt(ns)) / 1_000_000_000.0}) catch unreachable;
-    }
-    return buf;
-}
-
-fn formatOpsPerSec(ops: usize, elapsed_ns: u64) [32]u8 {
-    var buf: [32]u8 = [_]u8{0} ** 32;
-    if (elapsed_ns == 0) {
-        _ = std.fmt.bufPrint(&buf, "inf ops/s", .{}) catch unreachable;
-        return buf;
-    }
-    const ops_per_sec = @as(f64, @floatFromInt(ops)) / (@as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0);
-    if (ops_per_sec >= 1_000_000) {
-        _ = std.fmt.bufPrint(&buf, "{d:.2} M ops/s", .{ops_per_sec / 1_000_000.0}) catch unreachable;
-    } else if (ops_per_sec >= 1_000) {
-        _ = std.fmt.bufPrint(&buf, "{d:.1} K ops/s", .{ops_per_sec / 1_000.0}) catch unreachable;
-    } else {
-        _ = std.fmt.bufPrint(&buf, "{d:.0} ops/s", .{ops_per_sec}) catch unreachable;
-    }
-    return buf;
-}
-
-const BenchResult = struct {
-    name: []const u8,
-    ops: usize,
-    elapsed_ns: u64,
-    per_op_ns: u64,
-    ops_per_sec: f64,
-};
-
-fn printResult(r: BenchResult) void {
-    const total_str = formatNs(r.elapsed_ns);
-    const per_op_str = formatNs(r.per_op_ns);
-    const ops_str = formatOpsPerSec(r.ops, r.elapsed_ns);
-    std.debug.print("  {s:<55} {d:>8} ops  total={s}  per-op={s}  {s}\n", .{
-        r.name,
-        r.ops,
-        &total_str,
-        &per_op_str,
-        &ops_str,
-    });
-}
-
-fn makeResult(name: []const u8, ops: usize, elapsed_ns: u64) BenchResult {
+fn make_result(name: []const u8, ops: usize, elapsed_ns: u64) BenchResult {
     const per_op = if (ops > 0) elapsed_ns / ops else 0;
     const ops_sec = if (elapsed_ns > 0) @as(f64, @floatFromInt(ops)) / (@as(f64, @floatFromInt(elapsed_ns)) / 1e9) else 0;
     return .{
@@ -112,7 +63,7 @@ fn makeResult(name: []const u8, ops: usize, elapsed_ns: u64) BenchResult {
 // ============================================================================
 
 /// Benchmark 1: Balance set+get through vtable (simulating EVM balance reads/writes)
-fn benchBalance(n: usize) u64 {
+fn bench_balance(n: usize) u64 {
     var total_ns: u64 = 0;
     for (0..BENCH_ITERS) |_| {
         var state = StateManager.init(std.heap.page_allocator, null) catch unreachable;
@@ -122,7 +73,7 @@ fn benchBalance(n: usize) u64 {
 
         var timer = std.time.Timer.start() catch unreachable;
         for (0..n) |i| {
-            const addr = makeAddress(i);
+            const addr = make_address(i);
             host.setBalance(addr, @intCast(i * 1000));
             _ = host.getBalance(addr);
         }
@@ -133,7 +84,7 @@ fn benchBalance(n: usize) u64 {
 }
 
 /// Benchmark 2: Storage set+get through vtable (hot path for SLOAD/SSTORE)
-fn benchStorage(n: usize) u64 {
+fn bench_storage(n: usize) u64 {
     var total_ns: u64 = 0;
     for (0..BENCH_ITERS) |_| {
         var state = StateManager.init(std.heap.page_allocator, null) catch unreachable;
@@ -141,7 +92,7 @@ fn benchStorage(n: usize) u64 {
         var adapter = HostAdapter.init(&state);
         const host = adapter.host_interface();
 
-        const addr = makeAddress(0xDEAD);
+        const addr = make_address(0xDEAD);
         var timer = std.time.Timer.start() catch unreachable;
         for (0..n) |i| {
             const slot: u256 = @intCast(i);
@@ -155,7 +106,7 @@ fn benchStorage(n: usize) u64 {
 }
 
 /// Benchmark 3: Nonce set+get through vtable
-fn benchNonce(n: usize) u64 {
+fn bench_nonce(n: usize) u64 {
     var total_ns: u64 = 0;
     for (0..BENCH_ITERS) |_| {
         var state = StateManager.init(std.heap.page_allocator, null) catch unreachable;
@@ -165,7 +116,7 @@ fn benchNonce(n: usize) u64 {
 
         var timer = std.time.Timer.start() catch unreachable;
         for (0..n) |i| {
-            const addr = makeAddress(i);
+            const addr = make_address(i);
             host.setNonce(addr, @intCast(i));
             _ = host.getNonce(addr);
         }
@@ -176,7 +127,7 @@ fn benchNonce(n: usize) u64 {
 }
 
 /// Benchmark 4: Code set+get through vtable
-fn benchCode(n: usize) u64 {
+fn bench_code(n: usize) u64 {
     // Typical contract bytecode sizes
     const bytecode = [_]u8{0x60} ** 256; // PUSH1 repeated (256 bytes)
     var total_ns: u64 = 0;
@@ -188,7 +139,7 @@ fn benchCode(n: usize) u64 {
 
         var timer = std.time.Timer.start() catch unreachable;
         for (0..n) |i| {
-            const addr = makeAddress(i);
+            const addr = make_address(i);
             host.setCode(addr, &bytecode);
             _ = host.getCode(addr);
         }
@@ -200,7 +151,7 @@ fn benchCode(n: usize) u64 {
 
 /// Benchmark 5: Mixed workload simulating EVM execution pattern
 /// Pattern per "instruction": 60% storage read, 20% storage write, 10% balance, 10% nonce
-fn benchMixed(n: usize) u64 {
+fn bench_mixed(n: usize) u64 {
     var total_ns: u64 = 0;
     for (0..BENCH_ITERS) |_| {
         var state = StateManager.init(std.heap.page_allocator, null) catch unreachable;
@@ -210,7 +161,7 @@ fn benchMixed(n: usize) u64 {
 
         // Pre-populate some state
         for (0..100) |i| {
-            const addr = makeAddress(i);
+            const addr = make_address(i);
             host.setBalance(addr, @intCast(i * 1000));
             host.setNonce(addr, @intCast(i));
             for (0..5) |s| {
@@ -220,7 +171,7 @@ fn benchMixed(n: usize) u64 {
 
         var timer = std.time.Timer.start() catch unreachable;
         for (0..n) |i| {
-            const addr = makeAddress(i % 100);
+            const addr = make_address(i % 100);
             const slot: u256 = @intCast(i % 5);
 
             if (i % 10 < 6) {
@@ -244,7 +195,7 @@ fn benchMixed(n: usize) u64 {
 }
 
 /// Benchmark 6: Checkpoint/revert cycles (simulating nested CALL/DELEGATECALL)
-fn benchCheckpointRevert(depth: usize) u64 {
+fn bench_checkpoint_revert(depth: usize) u64 {
     var total_ns: u64 = 0;
     for (0..BENCH_ITERS) |_| {
         var state = StateManager.init(std.heap.page_allocator, null) catch unreachable;
@@ -254,7 +205,7 @@ fn benchCheckpointRevert(depth: usize) u64 {
 
         // Pre-populate base state
         for (0..10) |i| {
-            const addr = makeAddress(i);
+            const addr = make_address(i);
             host.setBalance(addr, @intCast(i * 1000));
         }
 
@@ -266,7 +217,7 @@ fn benchCheckpointRevert(depth: usize) u64 {
 
             // Each call frame does ~5 state changes
             for (0..5) |s| {
-                const addr = makeAddress(d % 10);
+                const addr = make_address(d % 10);
                 host.setStorage(addr, @intCast(d * 5 + s), @intCast(d * 100 + s));
             }
 
@@ -286,7 +237,7 @@ fn benchCheckpointRevert(depth: usize) u64 {
 
 /// Benchmark 7: Simulated block processing through HostAdapter
 /// 200 transactions, each with balance transfer + storage writes + nested calls
-fn benchBlockProcessing() u64 {
+fn bench_block_processing() u64 {
     const txs_per_block: usize = 200;
     const storage_writes_per_tx: usize = 5;
     const nested_calls_per_tx: usize = 2;
@@ -301,7 +252,7 @@ fn benchBlockProcessing() u64 {
 
         // Pre-populate some accounts
         for (0..50) |i| {
-            const addr = makeAddress(i);
+            const addr = make_address(i);
             host.setBalance(addr, 1_000_000_000);
             host.setNonce(addr, @intCast(i));
         }
@@ -313,8 +264,8 @@ fn benchBlockProcessing() u64 {
             state.checkpoint() catch unreachable;
 
             // Sender/receiver
-            const sender = makeAddress(tx_idx % 50);
-            const receiver = makeAddress((tx_idx + 1) % 50);
+            const sender = make_address(tx_idx % 50);
+            const receiver = make_address((tx_idx + 1) % 50);
 
             // Balance transfer
             const sender_bal = host.getBalance(sender);
@@ -338,7 +289,7 @@ fn benchBlockProcessing() u64 {
                 state.checkpoint() catch unreachable;
 
                 for (0..changes_per_nested_call) |c| {
-                    const call_addr = makeAddress((tx_idx + call_idx + 10) % 50);
+                    const call_addr = make_address((tx_idx + call_idx + 10) % 50);
                     host.setStorage(call_addr, @intCast(c + 100), @intCast(call_idx * 10 + c));
                 }
 
@@ -361,19 +312,19 @@ fn benchBlockProcessing() u64 {
 }
 
 /// Benchmark 8: Direct StateManager vs HostAdapter vtable overhead comparison
-fn benchVtableOverhead(n: usize) struct { direct_ns: u64, vtable_ns: u64 } {
+fn bench_vtable_overhead(n: usize) struct { direct_ns: u64, vtable_ns: u64 } {
     // Direct StateManager calls
     var direct_total: u64 = 0;
     for (0..BENCH_ITERS) |_| {
         var state = StateManager.init(std.heap.page_allocator, null) catch unreachable;
-        const addr = makeAddress(0x42);
+        const addr = make_address(0x42);
 
         // Pre-populate
         state.setBalance(addr, 1000) catch unreachable;
 
         var timer = std.time.Timer.start() catch unreachable;
         for (0..n) |i| {
-            _ = state.getBalance(addr) catch 0;
+            _ = state.getBalance(addr) catch unreachable;
             state.setBalance(addr, @intCast(i)) catch unreachable;
         }
         direct_total += timer.read();
@@ -386,7 +337,7 @@ fn benchVtableOverhead(n: usize) struct { direct_ns: u64, vtable_ns: u64 } {
         var state = StateManager.init(std.heap.page_allocator, null) catch unreachable;
         var adapter = HostAdapter.init(&state);
         const host = adapter.host_interface();
-        const addr = makeAddress(0x42);
+        const addr = make_address(0x42);
 
         // Pre-populate
         host.setBalance(addr, 1000);
@@ -410,6 +361,7 @@ fn benchVtableOverhead(n: usize) struct { direct_ns: u64, vtable_ns: u64 } {
 // Main benchmark entry point
 // ============================================================================
 
+/// Benchmark entry point.
 pub fn main() !void {
     std.debug.print("\n", .{});
     std.debug.print("=" ** 100 ++ "\n", .{});
@@ -420,30 +372,30 @@ pub fn main() !void {
 
     // -- Core vtable operations --
     std.debug.print("--- Balance (set+get pair) ---\n", .{});
-    printResult(makeResult("balance set+get (1K addresses)", SMALL_N, benchBalance(SMALL_N)));
-    printResult(makeResult("balance set+get (10K addresses)", MEDIUM_N, benchBalance(MEDIUM_N)));
+    print_result(make_result("balance set+get (1K addresses)", SMALL_N, bench_balance(SMALL_N)));
+    print_result(make_result("balance set+get (10K addresses)", MEDIUM_N, bench_balance(MEDIUM_N)));
     std.debug.print("\n", .{});
 
     std.debug.print("--- Storage (set+get pair, single address) ---\n", .{});
-    printResult(makeResult("storage set+get (1K slots)", SMALL_N, benchStorage(SMALL_N)));
-    printResult(makeResult("storage set+get (10K slots)", MEDIUM_N, benchStorage(MEDIUM_N)));
+    print_result(make_result("storage set+get (1K slots)", SMALL_N, bench_storage(SMALL_N)));
+    print_result(make_result("storage set+get (10K slots)", MEDIUM_N, bench_storage(MEDIUM_N)));
     std.debug.print("\n", .{});
 
     std.debug.print("--- Nonce (set+get pair) ---\n", .{});
-    printResult(makeResult("nonce set+get (1K addresses)", SMALL_N, benchNonce(SMALL_N)));
-    printResult(makeResult("nonce set+get (10K addresses)", MEDIUM_N, benchNonce(MEDIUM_N)));
+    print_result(make_result("nonce set+get (1K addresses)", SMALL_N, bench_nonce(SMALL_N)));
+    print_result(make_result("nonce set+get (10K addresses)", MEDIUM_N, bench_nonce(MEDIUM_N)));
     std.debug.print("\n", .{});
 
     std.debug.print("--- Code (set+get, 256-byte contracts) ---\n", .{});
-    printResult(makeResult("code set+get (1K contracts)", SMALL_N, benchCode(SMALL_N)));
-    printResult(makeResult("code set+get (10K contracts)", MEDIUM_N, benchCode(MEDIUM_N)));
+    print_result(make_result("code set+get (1K contracts)", SMALL_N, bench_code(SMALL_N)));
+    print_result(make_result("code set+get (10K contracts)", MEDIUM_N, bench_code(MEDIUM_N)));
     std.debug.print("\n", .{});
 
     // -- Mixed workload --
     std.debug.print("--- Mixed Workload (60%% SLOAD, 20%% SSTORE, 10%% BALANCE, 10%% NONCE) ---\n", .{});
-    printResult(makeResult("mixed (1K ops, 100 accounts)", SMALL_N, benchMixed(SMALL_N)));
-    printResult(makeResult("mixed (10K ops, 100 accounts)", MEDIUM_N, benchMixed(MEDIUM_N)));
-    printResult(makeResult("mixed (100K ops, 100 accounts)", LARGE_N, benchMixed(LARGE_N)));
+    print_result(make_result("mixed (1K ops, 100 accounts)", SMALL_N, bench_mixed(SMALL_N)));
+    print_result(make_result("mixed (10K ops, 100 accounts)", MEDIUM_N, bench_mixed(MEDIUM_N)));
+    print_result(make_result("mixed (100K ops, 100 accounts)", LARGE_N, bench_mixed(LARGE_N)));
     std.debug.print("\n", .{});
 
     // -- Checkpoint/revert --
@@ -457,8 +409,8 @@ pub fn main() !void {
             .{ .depth = 1024, .name = "checkpoint/revert (depth=1024, max EVM)" },
         };
         for (depths) |d| {
-            const elapsed = benchCheckpointRevert(d.depth);
-            printResult(makeResult(d.name, d.depth, elapsed));
+            const elapsed = bench_checkpoint_revert(d.depth);
+            print_result(make_result(d.name, d.depth, elapsed));
         }
     }
     std.debug.print("\n", .{});
@@ -467,8 +419,8 @@ pub fn main() !void {
     std.debug.print("--- Block Processing Simulation ---\n", .{});
     std.debug.print("  (200 txs/block, balance xfer + 5 SSTORE + 2 nested calls * 3 changes, 30%% revert)\n", .{});
     {
-        const block_elapsed = benchBlockProcessing();
-        const block_str = formatNs(block_elapsed);
+        const block_elapsed = bench_block_processing();
+        const block_str = format_ns(block_elapsed);
         const blocks_per_sec = if (block_elapsed > 0)
             1_000_000_000.0 / @as(f64, @floatFromInt(block_elapsed))
         else
@@ -484,16 +436,16 @@ pub fn main() !void {
     // -- Vtable overhead measurement --
     std.debug.print("--- Vtable Dispatch Overhead (HostAdapter vs direct StateManager) ---\n", .{});
     {
-        const result = benchVtableOverhead(LARGE_N);
+        const result = bench_vtable_overhead(LARGE_N);
         const direct_per_op = if (LARGE_N > 0) result.direct_ns / LARGE_N else 0;
         const vtable_per_op = if (LARGE_N > 0) result.vtable_ns / LARGE_N else 0;
         std.debug.print("  Direct StateManager (100K get+set):  {s}  per-op={s}\n", .{
-            &formatNs(result.direct_ns),
-            &formatNs(direct_per_op),
+            &format_ns(result.direct_ns),
+            &format_ns(direct_per_op),
         });
         std.debug.print("  HostAdapter vtable (100K get+set):   {s}  per-op={s}\n", .{
-            &formatNs(result.vtable_ns),
-            &formatNs(vtable_per_op),
+            &format_ns(result.vtable_ns),
+            &format_ns(vtable_per_op),
         });
         if (direct_per_op > 0) {
             const overhead_pct = if (vtable_per_op > direct_per_op)
@@ -508,7 +460,7 @@ pub fn main() !void {
     // -- Throughput analysis vs Nethermind target --
     std.debug.print("--- Throughput Analysis ---\n", .{});
     {
-        const block_elapsed = benchBlockProcessing();
+        const block_elapsed = bench_block_processing();
         const blocks_per_sec = if (block_elapsed > 0)
             1_000_000_000.0 / @as(f64, @floatFromInt(block_elapsed))
         else
@@ -519,7 +471,7 @@ pub fn main() !void {
         const host_ops_per_block: usize = 200 * 18;
         const host_ops_per_sec = blocks_per_sec * @as(f64, @floatFromInt(host_ops_per_block));
 
-        std.debug.print("  Block processing time:           {s}\n", .{&formatNs(block_elapsed)});
+        std.debug.print("  Block processing time:           {s}\n", .{&format_ns(block_elapsed)});
         std.debug.print("  Block throughput:                {d:.0} blocks/s\n", .{blocks_per_sec});
         std.debug.print("  Effective MGas/s:                {d:.0} MGas/s\n", .{effective_mgas});
         std.debug.print("  Host ops/block:                  ~{d}\n", .{host_ops_per_block});
