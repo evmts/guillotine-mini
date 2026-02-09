@@ -78,7 +78,7 @@ pub const MemoryDatabase = struct {
     }
 
     /// Return the number of entries currently stored.
-    pub fn count(self: *const MemoryDatabase) usize {
+    fn count(self: *const MemoryDatabase) usize {
         return self.map.count();
     }
 

@@ -187,7 +187,7 @@ pub const ReadOnlyDb = struct {
     }
 
     /// Return whether this ReadOnlyDb has a write overlay enabled.
-    pub fn has_write_overlay(self: *const ReadOnlyDb) bool {
+    fn has_write_overlay(self: *const ReadOnlyDb) bool {
         return self.overlay != null;
     }
 

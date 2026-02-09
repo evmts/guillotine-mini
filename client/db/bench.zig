@@ -16,7 +16,6 @@
 const std = @import("std");
 const adapter = @import("adapter.zig");
 const memory = @import("memory.zig");
-const Database = adapter.Database;
 const WriteBatch = adapter.WriteBatch;
 const MemoryDatabase = memory.MemoryDatabase;
 

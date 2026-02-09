@@ -372,7 +372,7 @@ pub const WriteBatch = struct {
     }
 
     /// Return the number of pending operations.
-    pub fn pending(self: *const WriteBatch) usize {
+    fn pending(self: *const WriteBatch) usize {
         return self.ops.items.len;
     }
 };
