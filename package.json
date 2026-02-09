@@ -7,7 +7,8 @@
     "genesis": "bun scripts/genesis.ts",
     "test:isolate": "bun scripts/isolate-test.ts",
     "test:subset": "bun scripts/test-subset.ts",
-    "fix:specs": "bun scripts/fix-specs.ts"
+    "fix:specs": "bun scripts/fix-specs.ts",
+    "test": "bun --cwd client-ts run test"
   },
   "keywords": [
     "ethereum",
