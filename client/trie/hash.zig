@@ -351,61 +351,142 @@ fn encode_data(
     allocator: Allocator,
     data: RlpMod.Data,
 ) RlpMod.EncodeError![]u8 {
+    const total_len = try encoded_len(RlpMod, data);
+    const out = try allocator.alloc(u8, total_len);
+    errdefer allocator.free(out);
+
+    const written = try encode_into(RlpMod, data, out);
+    std.debug.assert(written == total_len);
+    return out;
+}
+
+fn checked_add(
+    comptime RlpMod: type,
+    left: usize,
+    right: usize,
+) RlpMod.EncodeError!usize {
+    return std.math.add(usize, left, right) catch return error.OutOfMemory;
+}
+
+fn encoded_len(
+    comptime RlpMod: type,
+    data: RlpMod.Data,
+) RlpMod.EncodeError!usize {
     return switch (data) {
-        .String => |bytes| RlpMod.encodeBytes(allocator, bytes),
-        .List => |items| encode_list(RlpMod, allocator, items),
+        .String => |bytes| encoded_len_bytes(RlpMod, bytes),
+        .List => |items| encoded_len_list(RlpMod, items),
     };
 }
 
-fn encode_list(
+fn encoded_len_bytes(
     comptime RlpMod: type,
-    allocator: Allocator,
+    bytes: []const u8,
+) RlpMod.EncodeError!usize {
+    if (bytes.len == 1 and bytes[0] < 0x80) {
+        return 1;
+    }
+
+    var header_len: usize = 1;
+    if (bytes.len >= 56) {
+        header_len = try checked_add(RlpMod, header_len, length_of_length(bytes.len));
+    }
+    return checked_add(RlpMod, header_len, bytes.len);
+}
+
+fn encoded_len_list(
+    comptime RlpMod: type,
     items: []const RlpMod.Data,
-) RlpMod.EncodeError![]u8 {
-    const encoded_items = try allocator.alloc([]u8, items.len);
-    errdefer allocator.free(encoded_items);
-
-    var total_len: usize = 0;
-    var i: usize = 0;
-    errdefer {
-        for (0..i) |idx| {
-            allocator.free(encoded_items[idx]);
-        }
+) RlpMod.EncodeError!usize {
+    var payload_len: usize = 0;
+    for (items) |item| {
+        const item_len = try encoded_len(RlpMod, item);
+        payload_len = try checked_add(RlpMod, payload_len, item_len);
     }
 
-    for (items, 0..) |item, idx| {
-        const encoded_item = try encode_data(RlpMod, allocator, item);
-        encoded_items[idx] = encoded_item;
-        total_len += encoded_item.len;
-        i = idx + 1;
+    var header_len: usize = 1;
+    if (payload_len >= 56) {
+        header_len = try checked_add(RlpMod, header_len, length_of_length(payload_len));
     }
+    return checked_add(RlpMod, header_len, payload_len);
+}
 
-    var header_buf: [9]u8 = undefined;
-    const header_len: usize = if (total_len < 56) blk: {
-        header_buf[0] = 0xc0 + @as(u8, @intCast(total_len));
-        break :blk 1;
-    } else blk: {
-        const len_bytes = try RlpMod.encodeLength(allocator, total_len);
-        defer allocator.free(len_bytes);
-        header_buf[0] = 0xf7 + @as(u8, @intCast(len_bytes.len));
-        @memcpy(header_buf[1 .. 1 + len_bytes.len], len_bytes);
-        break :blk 1 + len_bytes.len;
+fn encode_into(
+    comptime RlpMod: type,
+    data: RlpMod.Data,
+    out: []u8,
+) RlpMod.EncodeError!usize {
+    return switch (data) {
+        .String => |bytes| encode_bytes_into(bytes, out),
+        .List => |items| encode_list_into(RlpMod, items, out),
     };
+}
 
-    const result = try allocator.alloc(u8, header_len + total_len);
-    errdefer allocator.free(result);
-
-    @memcpy(result[0..header_len], header_buf[0..header_len]);
-
-    var offset: usize = header_len;
-    for (encoded_items) |item| {
-        @memcpy(result[offset .. offset + item.len], item);
-        offset += item.len;
-        allocator.free(item);
+fn encode_bytes_into(bytes: []const u8, out: []u8) usize {
+    if (bytes.len == 1 and bytes[0] < 0x80) {
+        out[0] = bytes[0];
+        return 1;
     }
-    allocator.free(encoded_items);
 
-    return result;
+    if (bytes.len < 56) {
+        out[0] = 0x80 + @as(u8, @intCast(bytes.len));
+        @memcpy(out[1 .. 1 + bytes.len], bytes);
+        return 1 + bytes.len;
+    }
+
+    const len_len = length_of_length(bytes.len);
+    out[0] = 0xb7 + @as(u8, @intCast(len_len));
+    write_length(bytes.len, out[1 .. 1 + len_len]);
+    @memcpy(out[1 + len_len .. 1 + len_len + bytes.len], bytes);
+    return 1 + len_len + bytes.len;
+}
+
+fn encode_list_into(
+    comptime RlpMod: type,
+    items: []const RlpMod.Data,
+    out: []u8,
+) RlpMod.EncodeError!usize {
+    var payload_len: usize = 0;
+    for (items) |item| {
+        const item_len = try encoded_len(RlpMod, item);
+        payload_len = try checked_add(RlpMod, payload_len, item_len);
+    }
+
+    var offset: usize = 0;
+    if (payload_len < 56) {
+        out[0] = 0xc0 + @as(u8, @intCast(payload_len));
+        offset = 1;
+    } else {
+        const len_len = length_of_length(payload_len);
+        out[0] = 0xf7 + @as(u8, @intCast(len_len));
+        write_length(payload_len, out[1 .. 1 + len_len]);
+        offset = 1 + len_len;
+    }
+
+    for (items) |item| {
+        const written = try encode_into(RlpMod, item, out[offset..]);
+        offset += written;
+    }
+
+    return offset;
+}
+
+fn length_of_length(value: usize) usize {
+    var tmp = value;
+    var len: usize = 0;
+    while (tmp > 0) : (tmp >>= 8) {
+        len += 1;
+    }
+    return len;
+}
+
+fn write_length(value: usize, out: []u8) void {
+    var tmp = value;
+    var i: usize = out.len;
+    while (i > 0) {
+        i -= 1;
+        out[i] = @as(u8, @intCast(tmp & 0xff));
+        tmp >>= 8;
+    }
 }
 // ---------------------------------------------------------------------------
 // Tests
