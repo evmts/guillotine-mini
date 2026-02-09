@@ -136,10 +136,16 @@ test "validateTransaction — init code size limit (Shanghai+)" {
     const init_code = try allocator.alloc(u8, size);
     defer allocator.free(init_code);
 
+    const intrinsic = intrinsic_gas.calculateIntrinsicGas(.{
+        .data = init_code,
+        .is_create = true,
+        .hardfork = .SHANGHAI,
+    });
+
     const tx = tx_mod.LegacyTransaction{
         .nonce = 0,
         .gas_price = 0,
-        .gas_limit = intrinsic_gas.TX_BASE_COST + @as(u64, @intCast(size)) * intrinsic_gas.TX_DATA_COST_PER_NON_ZERO,
+        .gas_limit = intrinsic,
         .to = null,
         .value = 0,
         .data = init_code,
