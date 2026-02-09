@@ -170,12 +170,12 @@ const makeWorldState = Effect.gen(function* () {
   >;
   const accounts = new Map<AccountKey, AccountStateType>();
   const storage = new Map<AccountKey, Map<StorageKey, StorageValueType>>();
-  const createdAccountFrames: Array<Set<AccountKey>> = [];
+  const createdAccounts = new Set<AccountKey>();
   const snapshotStack: Array<WorldStateSnapshot> = [];
 
   const clearCreatedIfNoSnapshots = () => {
     if (snapshotStack.length === 0) {
-      createdAccountFrames.length = 0;
+      createdAccounts.clear();
     }
   };
 
@@ -195,15 +195,11 @@ const makeWorldState = Effect.gen(function* () {
       if (snapshotStack.length === 0) {
         return;
       }
-      createdAccountFrames[createdAccountFrames.length - 1]?.add(
-        addressKey(address),
-      );
+      createdAccounts.add(addressKey(address));
     });
 
   const wasAccountCreated = (address: Address.AddressType) =>
-    Effect.sync(() =>
-      createdAccountFrames.some((frame) => frame.has(addressKey(address))),
-    );
+    Effect.sync(() => createdAccounts.has(addressKey(address)));
 
   const getStorage = (address: Address.AddressType, slot: StorageSlotType) =>
     Effect.sync(() => {
@@ -354,10 +350,9 @@ const makeWorldState = Effect.gen(function* () {
     Effect.gen(function* () {
       const snapshot = yield* journal.takeSnapshot();
       if (snapshotStack.length === 0) {
-        createdAccountFrames.length = 0;
+        createdAccounts.clear();
       }
       snapshotStack.push(snapshot);
-      createdAccountFrames.push(new Set<AccountKey>());
       return snapshot;
     });
 
@@ -420,26 +415,12 @@ const makeWorldState = Effect.gen(function* () {
 
   const dropSnapshotsFromRestore = (index: number) => {
     snapshotStack.splice(index);
-    createdAccountFrames.splice(index);
     clearCreatedIfNoSnapshots();
   };
 
   const dropSnapshotsFromCommit = (index: number) => {
-    const droppedFrames = createdAccountFrames.splice(index);
     snapshotStack.splice(index);
-    if (createdAccountFrames.length === 0) {
-      createdAccountFrames.length = 0;
-      return;
-    }
-    const target = createdAccountFrames[createdAccountFrames.length - 1];
-    if (!target) {
-      return;
-    }
-    for (const frame of droppedFrames) {
-      for (const key of frame) {
-        target.add(key);
-      }
-    }
+    clearCreatedIfNoSnapshots();
   };
 
   const restoreSnapshot = (snapshot: WorldStateSnapshot) =>
@@ -460,7 +441,7 @@ const makeWorldState = Effect.gen(function* () {
     Effect.gen(function* () {
       accounts.clear();
       storage.clear();
-      createdAccountFrames.length = 0;
+      createdAccounts.clear();
       snapshotStack.length = 0;
       yield* journal.clear();
     });

@@ -264,7 +264,7 @@ describe("WorldState", () => {
     ),
   );
 
-  it.effect("rolls back created accounts on snapshot restore", () =>
+  it.effect("preserves created accounts after snapshot restore", () =>
     provideWorldState(
       Effect.gen(function* () {
         const addr = makeAddress(7);
@@ -275,11 +275,12 @@ describe("WorldState", () => {
         assert.isTrue(yield* wasAccountCreated(addr));
 
         yield* restoreSnapshot(inner);
-        assert.isFalse(yield* wasAccountCreated(addr));
+        assert.isTrue(yield* wasAccountCreated(addr));
         const reverted = yield* getAccountOptional(addr);
         assert.isNull(reverted);
 
         yield* restoreSnapshot(outer);
+        assert.isFalse(yield* wasAccountCreated(addr));
       }),
     ),
   );
