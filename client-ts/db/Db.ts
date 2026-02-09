@@ -64,6 +64,22 @@ export class DbError extends Data.TaggedError("DbError")<{
   readonly cause?: unknown;
 }> {}
 
+/** DB metrics for maintenance/telemetry. */
+export interface DbMetric {
+  readonly size: number;
+  readonly cacheSize: number;
+  readonly indexSize: number;
+  readonly memtableSize: number;
+  readonly totalReads: number;
+  readonly totalWrites: number;
+}
+
+/** DB key/value pair entry. */
+export interface DbEntry {
+  readonly key: BytesType;
+  readonly value: BytesType;
+}
+
 /** Single write operation for batched commits. */
 export type DbWriteOp =
   | {
@@ -92,12 +108,25 @@ export interface DbService {
   readonly get: (
     key: BytesType,
   ) => Effect.Effect<Option.Option<BytesType>, DbError>;
+  readonly getAll: (
+    ordered?: boolean,
+  ) => Effect.Effect<ReadonlyArray<DbEntry>, DbError>;
+  readonly getAllKeys: (
+    ordered?: boolean,
+  ) => Effect.Effect<ReadonlyArray<BytesType>, DbError>;
+  readonly getAllValues: (
+    ordered?: boolean,
+  ) => Effect.Effect<ReadonlyArray<BytesType>, DbError>;
   readonly put: (
     key: BytesType,
     value: BytesType,
   ) => Effect.Effect<void, DbError>;
   readonly remove: (key: BytesType) => Effect.Effect<void, DbError>;
   readonly has: (key: BytesType) => Effect.Effect<boolean, DbError>;
+  readonly flush: (onlyWal?: boolean) => Effect.Effect<void, DbError>;
+  readonly clear: () => Effect.Effect<void, DbError>;
+  readonly compact: () => Effect.Effect<void, DbError>;
+  readonly gatherMetric: () => Effect.Effect<DbMetric, DbError>;
   readonly writeBatch: (
     ops: ReadonlyArray<DbWriteOp>,
   ) => Effect.Effect<void, DbError>;
@@ -123,6 +152,9 @@ const encodeKey = (key: BytesType): Effect.Effect<string, DbError> =>
     catch: (cause) => new DbError({ message: "Invalid DB key", cause }),
   });
 
+const decodeKey = (keyHex: string): BytesType =>
+  Hex.toBytes(keyHex) as BytesType;
+
 const cloneBytes = (value: BytesType): BytesType => value.slice() as BytesType;
 
 type PreparedWriteOp =
@@ -143,6 +175,30 @@ const makeMemoryDb = (config: DbConfig) =>
       Effect.sync(() => new Map<string, BytesType>()),
       (map) => Effect.sync(() => map.clear()),
     );
+
+    const getEntries = (ordered = false): ReadonlyArray<DbEntry> => {
+      const entries = Array.from(store.entries());
+      if (ordered) {
+        entries.sort(([left], [right]) =>
+          left < right ? -1 : left > right ? 1 : 0,
+        );
+      }
+      return entries.map(([keyHex, value]) => ({
+        key: decodeKey(keyHex),
+        value: cloneBytes(value),
+      }));
+    };
+
+    const getAll = (ordered?: boolean) =>
+      Effect.sync(() => getEntries(Boolean(ordered)));
+
+    const getAllKeys = (ordered?: boolean) =>
+      Effect.sync(() => getEntries(Boolean(ordered)).map((entry) => entry.key));
+
+    const getAllValues = (ordered?: boolean) =>
+      Effect.sync(() =>
+        getEntries(Boolean(ordered)).map((entry) => entry.value),
+      );
 
     const get = (key: BytesType) =>
       Effect.gen(function* () {
@@ -168,6 +224,33 @@ const makeMemoryDb = (config: DbConfig) =>
         const keyHex = yield* encodeKey(key);
         return store.has(keyHex);
       });
+
+    const flush = (_onlyWal?: boolean) =>
+      Effect.sync(() => {
+        // no-op for in-memory DB
+      });
+
+    const clear = () =>
+      Effect.sync(() => {
+        store.clear();
+      });
+
+    const compact = () =>
+      Effect.sync(() => {
+        // no-op for in-memory DB
+      });
+
+    const gatherMetric = () =>
+      Effect.sync(
+        (): DbMetric => ({
+          size: store.size,
+          cacheSize: 0,
+          indexSize: 0,
+          memtableSize: 0,
+          totalReads: 0,
+          totalWrites: 0,
+        }),
+      );
 
     const writeBatch = (ops: ReadonlyArray<DbWriteOp>) =>
       Effect.gen(function* () {
@@ -252,9 +335,16 @@ const makeMemoryDb = (config: DbConfig) =>
     return {
       name: validated.name,
       get,
+      getAll,
+      getAllKeys,
+      getAllValues,
       put,
       remove,
       has,
+      flush,
+      clear,
+      compact,
+      gatherMetric,
       writeBatch,
       startWriteBatch,
     } satisfies DbService;
@@ -276,6 +366,27 @@ export const get = (key: BytesType) =>
     return yield* db.get(key);
   });
 
+/** Return all entries. */
+export const getAll = (ordered?: boolean) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.getAll(ordered);
+  });
+
+/** Return all keys. */
+export const getAllKeys = (ordered?: boolean) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.getAllKeys(ordered);
+  });
+
+/** Return all values. */
+export const getAllValues = (ordered?: boolean) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.getAllValues(ordered);
+  });
+
 /** Store a value by key. */
 export const put = (key: BytesType, value: BytesType) =>
   Effect.gen(function* () {
@@ -295,6 +406,34 @@ export const has = (key: BytesType) =>
   Effect.gen(function* () {
     const db = yield* Db;
     return yield* db.has(key);
+  });
+
+/** Flush underlying storage buffers. */
+export const flush = (onlyWal?: boolean) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db.flush(onlyWal);
+  });
+
+/** Clear all data from the database. */
+export const clear = () =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db.clear();
+  });
+
+/** Compact underlying storage. */
+export const compact = () =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db.compact();
+  });
+
+/** Gather DB metrics. */
+export const gatherMetric = () =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.gatherMetric();
   });
 
 /** Apply a batch of write operations. */
