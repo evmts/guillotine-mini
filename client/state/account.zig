@@ -90,9 +90,11 @@ pub fn is_totally_empty(account: *const AccountState) bool {
 ///
 /// This is equivalent to `account != EMPTY_ACCOUNT` and requires the account
 /// to be present; storage_root is not considered.
-pub fn is_account_alive(account: ?AccountState) bool {
+///
+/// Accepts an optional pointer to avoid copying `AccountState`.
+pub fn is_account_alive(account: ?*const AccountState) bool {
     if (account) |acct| {
-        return !is_empty(&acct);
+        return !is_empty(acct);
     }
     return false;
 }
@@ -130,17 +132,17 @@ test "EMPTY_ACCOUNT is totally empty" {
 }
 
 test "is_account_alive: false for null account" {
-    const account: ?AccountState = null;
+    const account: ?*const AccountState = null;
     try std.testing.expect(!is_account_alive(account));
 }
 
 test "is_account_alive: false for EMPTY_ACCOUNT" {
-    try std.testing.expect(!is_account_alive(EMPTY_ACCOUNT));
+    try std.testing.expect(!is_account_alive(&EMPTY_ACCOUNT));
 }
 
 test "is_account_alive: true for non-zero nonce" {
     const account = AccountState.from(.{ .nonce = 1 });
-    try std.testing.expect(is_account_alive(account));
+    try std.testing.expect(is_account_alive(&account));
 }
 
 test "is_account_alive: false when only storage root is non-empty" {
@@ -155,7 +157,7 @@ test "is_account_alive: false when only storage root is non-empty" {
     });
 
     // Per execution-specs, storage root does not affect liveness.
-    try std.testing.expect(!is_account_alive(account));
+    try std.testing.expect(!is_account_alive(&account));
     try std.testing.expect(!is_totally_empty(&account));
 }
 
