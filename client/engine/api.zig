@@ -10,6 +10,10 @@ const ExchangeCapabilitiesMethod = @FieldType(jsonrpc.engine.EngineMethod, "engi
 pub const ExchangeCapabilitiesParams = @FieldType(ExchangeCapabilitiesMethod, "params");
 /// Result payload for `engine_exchangeCapabilities` responses.
 pub const ExchangeCapabilitiesResult = @FieldType(ExchangeCapabilitiesMethod, "result");
+/// Parameters for `engine_getClientVersionV1` requests.
+pub const ClientVersionV1Params = jsonrpc.types.Quantity;
+/// Result payload for `engine_getClientVersionV1` responses.
+pub const ClientVersionV1Result = jsonrpc.types.Quantity;
 
 const exchange_capabilities_method = "engine_exchangeCapabilities";
 const engine_method_prefix = "engine_";
@@ -60,6 +64,11 @@ pub const EngineApi = struct {
             ptr: *anyopaque,
             params: ExchangeCapabilitiesParams,
         ) Error!ExchangeCapabilitiesResult,
+        /// Return execution layer client version information.
+        get_client_version_v1: *const fn (
+            ptr: *anyopaque,
+            params: ClientVersionV1Params,
+        ) Error!ClientVersionV1Result,
     };
 
     /// Exchange list of supported Engine API methods.
@@ -72,6 +81,14 @@ pub const EngineApi = struct {
         const result = try self.vtable.exchange_capabilities(self.ptr, params);
         try validateCapabilities(result.value, Error.InternalError);
         return result;
+    }
+
+    /// Returns execution client version information for `engine_getClientVersionV1`.
+    pub fn get_client_version_v1(
+        self: EngineApi,
+        params: ClientVersionV1Params,
+    ) Error!ClientVersionV1Result {
+        return self.vtable.get_client_version_v1(self.ptr, params);
     }
 };
 
@@ -175,7 +192,9 @@ const ResultType = @FieldType(ExchangeCapabilitiesResult, "value");
 const DummyEngine = struct {
     const Self = @This();
     result: ExchangeCapabilitiesResult,
+    client_version_result: ClientVersionV1Result = ClientVersionV1Result{ .value = .{ .null = {} } },
     called: bool = false,
+    client_version_called: bool = false,
 
     fn exchange_capabilities(
         ptr: *anyopaque,
@@ -186,9 +205,22 @@ const DummyEngine = struct {
         self.called = true;
         return self.result;
     }
+
+    fn get_client_version_v1(
+        ptr: *anyopaque,
+        params: ClientVersionV1Params,
+    ) EngineApi.Error!ClientVersionV1Result {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        _ = params;
+        self.client_version_called = true;
+        return self.client_version_result;
+    }
 };
 
-const dummy_vtable = EngineApi.VTable{ .exchange_capabilities = DummyEngine.exchange_capabilities };
+const dummy_vtable = EngineApi.VTable{
+    .exchange_capabilities = DummyEngine.exchange_capabilities,
+    .get_client_version_v1 = DummyEngine.get_client_version_v1,
+};
 
 fn makeApi(dummy: *DummyEngine) EngineApi {
     return EngineApi{ .ptr = dummy, .vtable = &dummy_vtable };
@@ -302,4 +334,22 @@ test "engine api rejects response containing exchangeCapabilities" {
 
     try std.testing.expectError(EngineApi.Error.InternalError, api.exchange_capabilities(params));
     try std.testing.expect(dummy.called);
+}
+
+test "engine api dispatches client version exchange" {
+    const params = ClientVersionV1Params{ .value = .{ .null = {} } };
+    const result_value = ClientVersionV1Result{ .value = .{ .null = {} } };
+    const exchange_result = ExchangeCapabilitiesResult{
+        .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } },
+    };
+
+    var dummy = DummyEngine{
+        .result = exchange_result,
+        .client_version_result = result_value,
+    };
+    const api = makeApi(&dummy);
+
+    const result = try api.get_client_version_v1(params);
+    try std.testing.expect(dummy.client_version_called);
+    try std.testing.expectEqualDeep(result_value, result);
 }
