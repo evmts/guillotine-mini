@@ -1,7 +1,8 @@
+import { Bytes } from "@tevm/voltaire/Bytes";
+import type { BytesType } from "@tevm/voltaire/Bytes";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import type * as Primitives from "voltaire-effect/primitives";
 
 export class NibbleEncodingError extends Data.TaggedError(
   "NibbleEncodingError",
@@ -25,8 +26,6 @@ export const NibbleListSchema: Schema.Schema<Uint8Array, Uint8Array> =
       message: () => "Nibble list must contain values between 0x0 and 0xf",
     }),
   );
-
-type BytesType = ReturnType<typeof Primitives.Bytes.random>;
 
 export type NibbleList = BytesType;
 
@@ -52,7 +51,7 @@ export const bytesToNibbleList = (
       nibbles[i * 2] = (byte & 0xf0) >> 4;
       nibbles[i * 2 + 1] = byte & 0x0f;
     }
-    return nibbles as BytesType;
+    return Bytes.from(nibbles);
   });
 
 export const nibbleListToCompact = (
@@ -78,7 +77,7 @@ export const nibbleListToCompact = (
         }
         compact[1 + i / 2] = (high << 4) | low;
       }
-      return compact as BytesType;
+      return Bytes.from(compact);
     }
 
     const first = validated[0];
@@ -102,5 +101,5 @@ export const nibbleListToCompact = (
       }
       compact[1 + (i - 1) / 2] = (high << 4) | low;
     }
-    return compact as BytesType;
+    return Bytes.from(compact);
   });

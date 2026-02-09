@@ -1,10 +1,8 @@
-import type { BrandedRlp } from "@tevm/voltaire/Rlp";
-import type * as Schema from "effect/Schema";
-import { Bytes, Hash } from "voltaire-effect/primitives";
+import type { BytesType } from "@tevm/voltaire/Bytes";
+import type { HashType } from "@tevm/voltaire/Hash";
+import type { BrandedRlp as RlpType } from "@tevm/voltaire/Rlp";
 
-export type BytesType = Schema.Schema.Type<typeof Bytes.Hex>;
-export type HashType = Schema.Schema.Type<typeof Hash.Hex>;
-export type RlpType = BrandedRlp;
+export type { BytesType, HashType, RlpType };
 
 export type NibbleList = BytesType;
 

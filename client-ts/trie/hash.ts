@@ -3,6 +3,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
+import { Bytes as VoltaireBytes } from "@tevm/voltaire/Bytes";
 import * as VoltaireHash from "@tevm/voltaire/Hash";
 import * as VoltaireRlp from "@tevm/voltaire/Rlp";
 import type {
@@ -17,7 +18,7 @@ import { NibbleEncodingError, nibbleListToCompact } from "./encoding";
 
 type RlpItem = Uint8Array | RlpType;
 
-const EmptyBytes = new Uint8Array([]) as BytesType;
+const EmptyBytes = VoltaireBytes.from([]);
 
 export class TrieHashError extends Data.TaggedError("TrieHashError")<{
   readonly message: string;
