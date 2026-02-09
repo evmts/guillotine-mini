@@ -4,12 +4,18 @@ const primitives = @import("primitives");
 const BlockHeader = primitives.BlockHeader;
 const Hash = primitives.Hash;
 
+pub const ValidationError = error{
+    InvalidDifficulty,
+    InvalidNonce,
+    InvalidOmmersHash,
+};
+
 /// Validate PoS header constants: difficulty=0, nonce=0, ommers=empty list hash.
-pub fn validatePosHeaderConstants(header: *const BlockHeader.BlockHeader) !void {
-    if (header.difficulty != 0) return error.InvalidDifficulty;
-    if (!std.mem.allEqual(u8, header.nonce[0..], 0)) return error.InvalidNonce;
+pub fn validatePosHeaderConstants(header: *const BlockHeader.BlockHeader) ValidationError!void {
+    if (header.difficulty != 0) return ValidationError.InvalidDifficulty;
+    if (!std.mem.allEqual(u8, header.nonce[0..], 0)) return ValidationError.InvalidNonce;
     if (!Hash.equals(&header.ommers_hash, &BlockHeader.EMPTY_OMMERS_HASH)) {
-        return error.InvalidOmmersHash;
+        return ValidationError.InvalidOmmersHash;
     }
 }
 
@@ -25,7 +31,7 @@ test "validatePosHeaderConstants - rejects non-zero difficulty" {
     header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
     header.difficulty = 1;
 
-    try std.testing.expectError(error.InvalidDifficulty, validatePosHeaderConstants(&header));
+    try std.testing.expectError(ValidationError.InvalidDifficulty, validatePosHeaderConstants(&header));
 }
 
 test "validatePosHeaderConstants - rejects non-zero nonce" {
@@ -34,12 +40,12 @@ test "validatePosHeaderConstants - rejects non-zero nonce" {
     header.nonce = [_]u8{0} ** BlockHeader.NONCE_SIZE;
     header.nonce[BlockHeader.NONCE_SIZE - 1] = 1;
 
-    try std.testing.expectError(error.InvalidNonce, validatePosHeaderConstants(&header));
+    try std.testing.expectError(ValidationError.InvalidNonce, validatePosHeaderConstants(&header));
 }
 
 test "validatePosHeaderConstants - rejects non-empty ommers hash" {
     var header = BlockHeader.init();
     header.ommers_hash = Hash.ZERO;
 
-    try std.testing.expectError(error.InvalidOmmersHash, validatePosHeaderConstants(&header));
+    try std.testing.expectError(ValidationError.InvalidOmmersHash, validatePosHeaderConstants(&header));
 }
