@@ -493,31 +493,12 @@ fn write_length(value: usize, out: []u8) void {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
-
-/// Helper: parse a comptime hex string literal into a fixed-size byte array.
-/// Returns the parsed array directly — evaluated at comptime via inline.
-inline fn hex_to_bytes(comptime hex: anytype) [@as(usize, hex.len) / 2]u8 {
-    const n = @as(usize, hex.len) / 2;
-    var result: [n]u8 = undefined;
-    for (&result, 0..) |*byte, i| {
-        byte.* = (hex_val(hex[i * 2]) << 4) | hex_val(hex[i * 2 + 1]);
-    }
-    return result;
-}
-
-inline fn hex_val(c: u8) u8 {
-    return switch (c) {
-        '0'...'9' => c - '0',
-        'a'...'f' => c - 'a' + 10,
-        'A'...'F' => c - 'A' + 10,
-        else => unreachable,
-    };
-}
+const Hex = TriePrimitives.Hex;
 
 test "EMPTY_TRIE_ROOT matches spec constant" {
     // keccak256(rlp(b'')) = keccak256(0x80) =
     // 56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
-    const expected = hex_to_bytes("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
+    const expected = try Hex.hexToBytesFixed(32, "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421");
     try testing.expectEqualSlices(u8, &expected, &EMPTY_TRIE_ROOT);
 }
 
@@ -556,8 +537,6 @@ test "trie_root - single entry" {
 
 test "secure_trie_root - hex_encoded_securetrie_test test1" {
     const allocator = testing.allocator;
-    const Hex = @import("primitives").Hex;
-
     const key_hexes = [_][]const u8{
         "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b",
         "0x095e7baea6a6c7c4c2dfeb977efac326af552d87",
@@ -607,7 +586,7 @@ test "trieanyorder - singleItem" {
     const keys = [_][]const u8{"A"};
     const values = [_][]const u8{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"};
     const root = try trie_root(allocator, &keys, &values);
-    const expected = hex_to_bytes("d23786fb4a010da3ce639d66d5e904a11dbc02746d1ce25029e53290cabf28ab");
+    const expected = try Hex.hexToBytesFixed(32, "0xd23786fb4a010da3ce639d66d5e904a11dbc02746d1ce25029e53290cabf28ab");
     try testing.expectEqualSlices(u8, &expected, &root);
 }
 
@@ -617,7 +596,7 @@ test "trieanyorder - dogs" {
     const keys = [_][]const u8{ "doe", "dog", "dogglesworth" };
     const values = [_][]const u8{ "reindeer", "puppy", "cat" };
     const root = try trie_root(allocator, &keys, &values);
-    const expected = hex_to_bytes("8aad789dff2f538bca5d8ea56e8abe10f4c7ba3a5dea95fea4cd6e7c3a1168d3");
+    const expected = try Hex.hexToBytesFixed(32, "0x8aad789dff2f538bca5d8ea56e8abe10f4c7ba3a5dea95fea4cd6e7c3a1168d3");
     try testing.expectEqualSlices(u8, &expected, &root);
 }
 
@@ -627,7 +606,7 @@ test "trieanyorder - puppy" {
     const keys = [_][]const u8{ "do", "horse", "doge", "dog" };
     const values = [_][]const u8{ "verb", "stallion", "coin", "puppy" };
     const root = try trie_root(allocator, &keys, &values);
-    const expected = hex_to_bytes("5991bb8c6514148a29db676a14ac506cd2cd5775ace63c30a4fe457715e9ac84");
+    const expected = try Hex.hexToBytesFixed(32, "0x5991bb8c6514148a29db676a14ac506cd2cd5775ace63c30a4fe457715e9ac84");
     try testing.expectEqualSlices(u8, &expected, &root);
 }
 
@@ -637,7 +616,7 @@ test "trieanyorder - foo" {
     const keys = [_][]const u8{ "foo", "food" };
     const values = [_][]const u8{ "bar", "bass" };
     const root = try trie_root(allocator, &keys, &values);
-    const expected = hex_to_bytes("17beaa1648bafa633cda809c90c04af50fc8aed3cb40d16efbddee6fdf63c4c3");
+    const expected = try Hex.hexToBytesFixed(32, "0x17beaa1648bafa633cda809c90c04af50fc8aed3cb40d16efbddee6fdf63c4c3");
     try testing.expectEqualSlices(u8, &expected, &root);
 }
 
@@ -647,7 +626,7 @@ test "trieanyorder - smallValues" {
     const keys = [_][]const u8{ "be", "dog", "bed" };
     const values = [_][]const u8{ "e", "puppy", "d" };
     const root = try trie_root(allocator, &keys, &values);
-    const expected = hex_to_bytes("3f67c7a47520f79faa29255d2d3c084a7a6df0453116ed7232ff10277a8be68b");
+    const expected = try Hex.hexToBytesFixed(32, "0x3f67c7a47520f79faa29255d2d3c084a7a6df0453116ed7232ff10277a8be68b");
     try testing.expectEqualSlices(u8, &expected, &root);
 }
 
@@ -657,7 +636,7 @@ test "trieanyorder - testy" {
     const keys = [_][]const u8{ "test", "te" };
     const values = [_][]const u8{ "test", "testy" };
     const root = try trie_root(allocator, &keys, &values);
-    const expected = hex_to_bytes("8452568af70d8d140f58d941338542f645fcca50094b20f3c3d8c3df49337928");
+    const expected = try Hex.hexToBytesFixed(32, "0x8452568af70d8d140f58d941338542f645fcca50094b20f3c3d8c3df49337928");
     try testing.expectEqualSlices(u8, &expected, &root);
 }
 
@@ -665,16 +644,20 @@ test "trieanyorder - hex" {
     // 0x0045 -> 0x0123456789, 0x4500 -> 0x9876543210
     // Keys/values are hex-encoded byte strings
     const allocator = testing.allocator;
+    const key_left = try Hex.hexToBytesFixed(2, "0x0045");
+    const key_right = try Hex.hexToBytesFixed(2, "0x4500");
+    const value_left = try Hex.hexToBytesFixed(5, "0x0123456789");
+    const value_right = try Hex.hexToBytesFixed(5, "0x9876543210");
     const keys = [_][]const u8{
-        &hex_to_bytes("0045"),
-        &hex_to_bytes("4500"),
+        key_left[0..],
+        key_right[0..],
     };
     const values = [_][]const u8{
-        &hex_to_bytes("0123456789"),
-        &hex_to_bytes("9876543210"),
+        value_left[0..],
+        value_right[0..],
     };
     const root = try trie_root(allocator, &keys, &values);
-    const expected = hex_to_bytes("285505fcabe84badc8aa310e2aae17eddc7d120aabec8a476902c8184b3a3503");
+    const expected = try Hex.hexToBytesFixed(32, "0x285505fcabe84badc8aa310e2aae17eddc7d120aabec8a476902c8184b3a3503");
     try testing.expectEqualSlices(u8, &expected, &root);
 }
 
@@ -701,7 +684,7 @@ test "trietest - insert-middle-leaf" {
         "1234567890123456789012345678901",
     };
     const root = try trie_root(allocator, &keys, &values);
-    const expected = hex_to_bytes("cb65032e2f76c48b82b5c24b3db8f670ce73982869d38cd39a624f23d62a9e89");
+    const expected = try Hex.hexToBytesFixed(32, "0xcb65032e2f76c48b82b5c24b3db8f670ce73982869d38cd39a624f23d62a9e89");
     try testing.expectEqualSlices(u8, &expected, &root);
 }
 
@@ -715,6 +698,6 @@ test "trietest - branch-value-update" {
     const keys = [_][]const u8{ "abc", "abcd" };
     const values = [_][]const u8{ "abc", "abcd" };
     const root = try trie_root(allocator, &keys, &values);
-    const expected = hex_to_bytes("7a320748f780ad9ad5b0837302075ce0eeba6c26e3d8562c67ccc0f1b273298a");
+    const expected = try Hex.hexToBytesFixed(32, "0x7a320748f780ad9ad5b0837302075ce0eeba6c26e3d8562c67ccc0f1b273298a");
     try testing.expectEqualSlices(u8, &expected, &root);
 }
