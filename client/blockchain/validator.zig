@@ -29,8 +29,21 @@ fn validate_pos_header_constants(header: *const BlockHeader.BlockHeader) Validat
 /// delegates to a pre-merge validator otherwise.
 pub fn merge_header_validator(comptime PreMergeValidator: type) type {
     return struct {
+        const validate_fn_info = @typeInfo(@TypeOf(PreMergeValidator.validate));
+        const validate_return = validate_fn_info.Fn.return_type orelse @compileError(
+            "PreMergeValidator.validate must return an error union",
+        );
+        const validate_return_info = @typeInfo(validate_return);
+        const PreMergeError = switch (validate_return_info) {
+            .ErrorUnion => validate_return_info.ErrorUnion.error_set,
+            else => @compileError("PreMergeValidator.validate must return an error union"),
+        };
+
+        /// Combined error set for merge-aware validation.
+        pub const Error = PreMergeError || ValidationError;
+
         /// Validate a header under the given hardfork.
-        pub fn validate(header: *const BlockHeader.BlockHeader, hardfork: Hardfork) ValidationError!void {
+        pub fn validate(header: *const BlockHeader.BlockHeader, hardfork: Hardfork) Error!void {
             if (hardfork.isAtLeast(.MERGE)) {
                 return validate_pos_header_constants(header);
             }
