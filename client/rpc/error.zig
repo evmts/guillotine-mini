@@ -1,7 +1,7 @@
-/// JSON-RPC error codes per EIP-1474 (Voltaire primitive).
 const std = @import("std");
 const primitives = @import("primitives");
 
+/// JSON-RPC error codes per EIP-1474 (Voltaire primitive).
 pub const JsonRpcErrorCode = primitives.JsonRpcErrorCode;
 
 // ============================================================================

@@ -1,9 +1,9 @@
+const std = @import("std");
+
 /// JSON-RPC server configuration.
 ///
 /// Mirrors core settings from Nethermind's JsonRpcConfig needed for
 /// HTTP and WebSocket transports.
-const std = @import("std");
-
 pub const RpcServerConfig = struct {
     /// Enable the JSON-RPC server.
     enabled: bool = false,
