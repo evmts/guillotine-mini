@@ -139,3 +139,27 @@ test "blobs support mode helpers mirror nethermind semantics" {
     try std.testing.expect(Mode.storage_with_reorgs.isPersistentStorage());
     try std.testing.expect(Mode.storage_with_reorgs.supportsReorgs());
 }
+
+test "txpool config defaults match nethermind" {
+    const config = TxPoolConfig{};
+
+    try std.testing.expectEqual(@as(u32, 5), config.peer_notification_threshold);
+    try std.testing.expectEqual(@as(u32, 70), config.min_base_fee_threshold);
+    try std.testing.expectEqual(@as(u32, 2048), config.size);
+    try std.testing.expectEqual(TxPoolConfig.BlobsSupportMode.storage_with_reorgs, config.blobs_support);
+    try std.testing.expectEqual(@as(u32, 16 * 1024), config.persistent_blob_storage_size);
+    try std.testing.expectEqual(@as(u32, 256), config.blob_cache_size);
+    try std.testing.expectEqual(@as(u32, 512), config.in_memory_blob_pool_size);
+    try std.testing.expectEqual(@as(u32, 0), config.max_pending_txs_per_sender);
+    try std.testing.expectEqual(@as(u32, 16), config.max_pending_blob_txs_per_sender);
+    try std.testing.expectEqual(@as(u32, 512 * 1024), config.hash_cache_size);
+    try std.testing.expectEqual(@as(?GasLimit, null), config.gas_limit);
+    try std.testing.expectEqual(@as(?u64, 128 * 1024), config.max_tx_size);
+    try std.testing.expectEqual(@as(?u64, 1024 * 1024), config.max_blob_tx_size);
+    try std.testing.expect(!config.proofs_translation_enabled);
+    try std.testing.expectEqual(@as(?u32, null), config.report_minutes);
+    try std.testing.expect(!config.accept_tx_when_not_synced);
+    try std.testing.expect(config.persistent_broadcast_enabled);
+    try std.testing.expect(config.current_blob_base_fee_required);
+    try std.testing.expect(config.min_blob_tx_priority_fee.eq(U256.ZERO));
+}
