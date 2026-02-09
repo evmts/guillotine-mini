@@ -26,7 +26,7 @@ pub fn createBlstLibrary(
         .files = &.{
             "lib/c-kzg-4844/blst/src/server.c",
         },
-        .flags = &.{"-std=c99", "-D__BLST_NO_ASM__", "-D__BLST_PORTABLE__", "-Dllimb_t=__uint128_t", "-fno-sanitize=undefined", "-Wno-unused-command-line-argument"},
+        .flags = &.{ "-std=c99", "-D__BLST_NO_ASM__", "-D__BLST_PORTABLE__", "-Dllimb_t=__uint128_t", "-fno-sanitize=undefined", "-Wno-unused-command-line-argument" },
     });
 
     lib.addIncludePath(b.path("lib/c-kzg-4844/blst/bindings"));

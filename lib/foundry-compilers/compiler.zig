@@ -264,7 +264,7 @@ pub const Compiler = struct {
                 allocator.free(std.mem.span(remappings[i]));
             }
             // Cast to get the slice and free it
-            const slice = @as([*][*c]const u8, @constCast(@ptrCast(remappings)))[0 .. i + 1];
+            const slice = @as([*][*c]const u8, @ptrCast(@constCast(remappings)))[0 .. i + 1];
             allocator.free(slice);
         }
     }

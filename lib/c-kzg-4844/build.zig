@@ -30,27 +30,22 @@ pub fn build(b: *std.Build) void {
     };
 
     var server_cmd: ?*std.Build.Step.Run = null;
-    
+
     if (!has_blst_submodule) {
         // Download blst at build time for zig fetch
         std.log.info("Downloading blst library...", .{});
-        
+
         const mkdir_cmd = b.addSystemCommand(&[_][]const u8{ "mkdir", "-p", "blst" });
-        
-        const download_cmd = b.addSystemCommand(&[_][]const u8{
-            "curl", "-L", "-o", "blst.tar.gz",
-            "https://github.com/supranational/blst/archive/v0.3.15.tar.gz"
-        });
+
+        const download_cmd = b.addSystemCommand(&[_][]const u8{ "curl", "-L", "-o", "blst.tar.gz", "https://github.com/supranational/blst/archive/v0.3.15.tar.gz" });
         download_cmd.step.dependOn(&mkdir_cmd.step);
-        
-        const extract_cmd = b.addSystemCommand(&[_][]const u8{
-            "tar", "xzf", "blst.tar.gz", "--strip-components=1", "-C", "blst"
-        });
+
+        const extract_cmd = b.addSystemCommand(&[_][]const u8{ "tar", "xzf", "blst.tar.gz", "--strip-components=1", "-C", "blst" });
         extract_cmd.step.dependOn(&download_cmd.step);
-        
+
         // Create server.c unity build file
         server_cmd = b.addSystemCommand(&[_][]const u8{
-            "sh", "-c", 
+            "sh", "-c",
             \\cat > blst/src/server.c << 'EOF'
             \\#include "keygen.c"
             \\#include "hash_to_field.c"
@@ -88,18 +83,18 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    
+
     const blst_lib = b.addLibrary(.{
         .linkage = .static,
         .name = "blst",
         .root_module = blst_mod,
     });
-    
+
     // If we downloaded blst, make sure blst_lib waits for the download
     if (server_cmd) |cmd| {
         blst_lib.step.dependOn(&cmd.step);
     }
-    
+
     blst_lib.addCSourceFiles(.{
         .files = &[_][]const u8{
             "blst/src/server.c",
@@ -115,7 +110,7 @@ pub fn build(b: *std.Build) void {
 
     blst_lib.addIncludePath(b.path("blst/bindings"));
     blst_lib.linkLibC();
-    
+
     // Link with our built blst library
     lib.linkLibrary(blst_lib);
 
@@ -129,13 +124,13 @@ pub fn build(b: *std.Build) void {
             "-DBLST_PORTABLE",
         },
     });
-    
+
     lib.addIncludePath(b.path("src"));
     lib.addIncludePath(b.path("blst/bindings"));
     lib.linkLibC();
 
     b.installArtifact(lib);
-    
+
     // Export module for external projects using this as a dependency
     _ = b.addModule("c_kzg_4844", .{
         .root_source_file = b.path("bindings/zig/root.zig"),
