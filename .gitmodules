@@ -31,3 +31,6 @@
 [submodule "smithers"]
 	path = smithers
 	url = https://github.com/evmts/smithers.git
+[submodule "effect-repo"]
+	path = effect-repo
+	url = https://github.com/Effect-TS/effect
