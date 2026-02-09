@@ -1,67 +1,54 @@
 # [pass 1/5] phase-2-world-state (World State (Journal + Snapshot/Restore))
 
-**Goals (from plan)**
+## Goal (from prd/GUILLOTINE_CLIENT_PLAN.md)
+Implement journaled world state with snapshot/restore for transaction processing.
 
-- Implement journaled world state with snapshot/restore for transaction processing.
-- Target components: `client/state/account.zig`, `client/state/journal.zig`, `client/state/state.zig`.
-- Follow Nethermind state architecture, but implement idiomatically in Zig using comptime DI.
+## Primary Specs
+- execution-specs/src/ethereum/forks/*/state.py (reviewed: execution-specs/src/ethereum/forks/cancun/state.py)
+- Yellow Paper Section 4 (world state) — not present in repo (yellowpaper/ is empty)
 
-**Spec Files Read**
+### Key behaviors from execution-specs/src/ethereum/forks/cancun/state.py
+- State uses a main account trie and per-account storage tries.
+- State keeps a snapshot stack: begin_transaction copies main trie + storage tries; commit pops snapshot; rollback restores snapshot.
+- Distinguishes non-existent account from EMPTY_ACCOUNT via get_account_optional vs get_account.
+- created_accounts set is cleared when exiting the outermost transaction.
+- TransientStorage mirrors snapshot/rollback semantics for transaction-scoped storage.
 
-- `execution-specs/src/ethereum/forks/prague/state.py`
+## Relevant EIP
+- EIPs/EIPS/eip-1153.md (Transient storage opcodes)
+- Specifies transient storage discarded after each transaction.
+- Revert semantics require journaling + checkpoints; suggested structure: current map + journal + checkpoints.
 
-**Spec Details Observed (execution-specs prague)**
+## Nethermind DB (nethermind/src/Nethermind/Nethermind.Db/)
+- IDb.cs, IReadOnlyDb.cs, IColumnsDb.cs, IDbProvider.cs, IDbFactory.cs
+- DbProvider.cs, DbProviderExtensions.cs, DbExtensions.cs
+- MemDb.cs, MemDbFactory.cs, MemColumnsDb.cs, InMemoryWriteBatch.cs
+- ReadOnlyDb.cs, ReadOnlyDbProvider.cs
+- RocksDbSettings.cs, RocksDbMergeEnumerator.cs
+- PruningConfig.cs, PruningMode.cs, FullPruning/*, Metrics.cs
+- DbNames.cs, MetadataDbKeys.cs, ReceiptsColumns.cs, BlobTxsColumns.cs
 
-- `State` owns a secured main account trie, per-account storage tries, a snapshot stack, and `created_accounts`.
-- `TransientStorage` maintains per-address storage tries with its own snapshot stack.
-- `begin_transaction` pushes copies of main/storage tries and transient storage tries; `commit_transaction` pops snapshots and clears `created_accounts` at outermost depth; `rollback_transaction` restores prior tries and clears `created_accounts` at outermost depth.
-- `get_account` returns `EMPTY_ACCOUNT` when `None`, while `get_account_optional` preserves missing vs empty distinction.
-- State transitions are snapshot-based; state root computation is invalid during an open transaction (per docstring).
+## Voltaire zig state-manager APIs
+- NOTE: /Users/williamcory/voltaire/packages/voltaire-zig/src/ does not exist in this checkout.
+- Used /Users/williamcory/voltaire/src/state-manager as the closest matching source.
+- /Users/williamcory/voltaire/src/state-manager/StateManager.zig
+- Provides high-level snapshot API (snapshot/revertToSnapshot) on top of checkpoints.
+- State accessors: getBalance/getNonce/getCode/getStorage; mutators: setBalance/setNonce/setCode/setStorage.
+- /Users/williamcory/voltaire/src/state-manager/JournaledState.zig
+- Wraps StateCache for account/storage/contract caches; checkpoint/revert/commit across caches.
+- Supports optional ForkBackend for read-through caching (remote state), writes go to normal cache.
+- /Users/williamcory/voltaire/src/state-manager/StateCache.zig, ForkBackend.zig (supporting caches + fork fetch APIs).
 
-**Spec References (not yet opened in this pass)**
+## Existing EVM Host Interface
+- src/host.zig defines HostInterface with get/set for balance, nonce, code, storage.
+- Note: inner_call bypasses HostInterface; only used for external state access.
 
-- `execution-specs/src/ethereum/forks/*/state.py` (other forks)
-- Yellow Paper Section 4 (World State)
-- EIP-1153 (Transient Storage)
+## Ethereum Tests
+- ethereum-tests/ (top-level dirs: ABITests, BasicTests, BlockchainTests, DifficultyTests, EOFTests, GenesisTests, JSONSchema, KeyStoreTests, LegacyTests, PoWTests, RLPTests, TransactionTests, TrieTests)
+- ethereum-tests/fixtures_general_state_tests.tgz (GeneralStateTests fixtures are packaged; ethereum-tests/GeneralStateTests/ is not present)
+- ethereum-tests/fixtures_blockchain_tests.tgz
 
-**Nethermind DB (listed for context)**
-
-- `nethermind/src/Nethermind/Nethermind.Db/IDb.cs`
-- `nethermind/src/Nethermind/Nethermind.Db/IColumnsDb.cs`
-- `nethermind/src/Nethermind/Nethermind.Db/DbProvider.cs`
-- `nethermind/src/Nethermind/Nethermind.Db/DbNames.cs`
-- `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs`
-- `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDb.cs`
-
-**Nethermind State (from plan, to inspect next)**
-
-- `nethermind/src/Nethermind/Nethermind.State/WorldState.cs`
-- `nethermind/src/Nethermind/Nethermind.State/WorldStateManager.cs`
-- `nethermind/src/Nethermind/Nethermind.State/StateProvider.cs`
-- `nethermind/src/Nethermind/Nethermind.State/StateReader.cs`
-- `nethermind/src/Nethermind/Nethermind.State/StorageTree.cs`
-- `nethermind/src/Nethermind/Nethermind.State/TransientStorageProvider.cs`
-
-**Voltaire Zig APIs (actual location differs from prompt)**
-
-- Expected path in prompt: `/Users/williamcory/voltaire/packages/voltaire-zig/src/` (not present).
-- Found Zig sources at `/Users/williamcory/voltaire/src/`.
-- `state-manager/root.zig`: re-exports `StateManager`, `JournaledState`, `StateCache` types, `ForkBackend`.
-- `state-manager/JournaledState.zig`: `init`, `getAccount`, `putAccount`, `getStorage`, `putStorage`, `getCode`, `putCode`, `checkpoint`, `revert`, `commit`.
-- `state-manager/StateCache.zig`: account/storage/contract caches with journaling.
-- `primitives/root.zig`: `AccountState`, `Address`, `Bytes`, `Bytes32`, `Hash`, `Nonce`, `State` and other core types.
-- `primitives/trie.zig`: `Trie`, `TrieMask`, `keyToNibbles`, `nibblesToKey` and trie helpers.
-
-**Existing Zig EVM Host Interface**
-
-- `src/host.zig`: `HostInterface` with vtable for `getBalance`, `setBalance`, `getCode`, `setCode`, `getStorage`, `setStorage`, `getNonce`, `setNonce`.
-
-**Test Fixtures**
-
-- `ethereum-tests/fixtures_general_state_tests.tgz` (GeneralStateTests bundle)
-- `ethereum-tests/TrieTests/`
-- `execution-spec-tests/fixtures/state_tests/` (present in spec mapping; verify contents later)
-
-**Notes**
-
-- Path mismatch for Voltaire Zig sources should be resolved before implementation (confirm correct import path for this repo).
+## Context Notes
+- Phase-2 world state should mirror execution-specs snapshot/rollback semantics and EIP-1153 journal behavior.
+- HostInterface methods map directly to world state accessors (balance, nonce, code, storage).
+- Voltaire StateManager/JournaledState provide a concrete pattern for checkpoint/snapshot layering and fork-backend read-through caching.
