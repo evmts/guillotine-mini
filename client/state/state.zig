@@ -34,7 +34,7 @@ pub const CreatedAccounts = struct {
     }
 
     /// Check whether an address is tracked as created.
-    pub fn contains(self: *Self, address: Address) bool {
+    pub fn contains(self: *const Self, address: Address) bool {
         return self.set.contains(address);
     }
 
@@ -48,7 +48,7 @@ pub const CreatedAccounts = struct {
     }
 
     /// Return the number of tracked addresses.
-    pub fn len(self: *Self) usize {
+    pub fn len(self: *const Self) usize {
         return self.set.count();
     }
 };
