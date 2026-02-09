@@ -208,6 +208,66 @@ const decodeGasPrice = (value: bigint, label: string) =>
     ),
   );
 
+const decodeTransaction = (tx: Transaction.Any) =>
+  Schema.validate(TransactionSchema)(tx).pipe(
+    Effect.mapError(
+      (cause) =>
+        new InvalidTransactionError({
+          message: "Invalid transaction",
+          cause,
+        }),
+    ),
+  );
+
+const parseTransactionAndBaseFee = (
+  tx: Transaction.Any,
+  baseFeePerGas: bigint,
+) =>
+  Effect.gen(function* () {
+    const parsedTx = yield* decodeTransaction(tx);
+    const baseFee = yield* decodeBaseFee(baseFeePerGas);
+    return { parsedTx, baseFee };
+  });
+
+const ensureLegacyGasPrice = (
+  tx: Transaction.Legacy | Transaction.EIP2930,
+  baseFeePerGas: bigint,
+) =>
+  tx.gasPrice < baseFeePerGas
+    ? Effect.fail(
+        new GasPriceBelowBaseFeeError({
+          gasPrice: tx.gasPrice,
+          baseFeePerGas,
+        }),
+      )
+    : Effect.succeed(tx);
+
+const ensureDynamicFeeBounds = (
+  tx: Transaction.EIP1559 | Transaction.EIP4844 | Transaction.EIP7702,
+  baseFeePerGas: bigint,
+) =>
+  Effect.gen(function* () {
+    if (tx.maxFeePerGas < tx.maxPriorityFeePerGas) {
+      return yield* Effect.fail(
+        new PriorityFeeGreaterThanMaxFeeError({
+          maxFeePerGas: tx.maxFeePerGas,
+          maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
+        }),
+      );
+    }
+
+    if (tx.maxFeePerGas < baseFeePerGas) {
+      return yield* Effect.fail(
+        new InsufficientMaxFeePerGasError({
+          maxFeePerGas: tx.maxFeePerGas,
+          baseFeePerGas,
+        }),
+      );
+    }
+
+    return tx;
+  });
+
 const decodeBalance = (value: bigint, label: string) =>
   Schema.decode(BalanceSchema)(value).pipe(
     Effect.mapError(
@@ -225,34 +285,20 @@ const makeTransactionProcessor = Effect.gen(function* () {
     baseFeePerGas: bigint,
   ) =>
     Effect.gen(function* () {
-      const parsedTx = yield* Schema.validate(TransactionSchema)(tx).pipe(
-        Effect.mapError(
-          (cause) =>
-            new InvalidTransactionError({
-              message: "Invalid transaction",
-              cause,
-            }),
-        ),
+      const { parsedTx, baseFee } = yield* parseTransactionAndBaseFee(
+        tx,
+        baseFeePerGas,
       );
-      const baseFee = yield* decodeBaseFee(baseFeePerGas);
       const txType = parsedTx.type;
 
       if (Transaction.isLegacy(parsedTx) || Transaction.isEIP2930(parsedTx)) {
-        if (parsedTx.gasPrice < baseFee) {
-          return yield* Effect.fail(
-            new GasPriceBelowBaseFeeError({
-              gasPrice: parsedTx.gasPrice,
-              baseFeePerGas: baseFee,
-            }),
-          );
-        }
-
+        const validatedTx = yield* ensureLegacyGasPrice(parsedTx, baseFee);
         const effectiveGasPrice = yield* decodeGasPrice(
-          parsedTx.gasPrice,
+          validatedTx.gasPrice,
           "effective",
         );
         const priorityFeePerGas = yield* decodeGasPrice(
-          parsedTx.gasPrice - baseFee,
+          validatedTx.gasPrice - baseFee,
           "priority",
         );
 
@@ -264,26 +310,9 @@ const makeTransactionProcessor = Effect.gen(function* () {
         Transaction.isEIP4844(parsedTx) ||
         Transaction.isEIP7702(parsedTx)
       ) {
-        if (parsedTx.maxFeePerGas < parsedTx.maxPriorityFeePerGas) {
-          return yield* Effect.fail(
-            new PriorityFeeGreaterThanMaxFeeError({
-              maxFeePerGas: parsedTx.maxFeePerGas,
-              maxPriorityFeePerGas: parsedTx.maxPriorityFeePerGas,
-            }),
-          );
-        }
-
-        if (parsedTx.maxFeePerGas < baseFee) {
-          return yield* Effect.fail(
-            new InsufficientMaxFeePerGasError({
-              maxFeePerGas: parsedTx.maxFeePerGas,
-              baseFeePerGas: baseFee,
-            }),
-          );
-        }
-
-        const maxPriorityFee = parsedTx.maxPriorityFeePerGas;
-        const maxPayablePriorityFee = parsedTx.maxFeePerGas - baseFee;
+        const validatedTx = yield* ensureDynamicFeeBounds(parsedTx, baseFee);
+        const maxPriorityFee = validatedTx.maxPriorityFeePerGas;
+        const maxPayablePriorityFee = validatedTx.maxFeePerGas - baseFee;
         const priorityFeeValue =
           maxPriorityFee < maxPayablePriorityFee
             ? maxPriorityFee
@@ -314,55 +343,24 @@ const makeTransactionProcessor = Effect.gen(function* () {
     senderBalance: bigint,
   ) =>
     Effect.gen(function* () {
-      const parsedTx = yield* Schema.validate(TransactionSchema)(tx).pipe(
-        Effect.mapError(
-          (cause) =>
-            new InvalidTransactionError({
-              message: "Invalid transaction",
-              cause,
-            }),
-        ),
+      const { parsedTx, baseFee } = yield* parseTransactionAndBaseFee(
+        tx,
+        baseFeePerGas,
       );
-      const baseFee = yield* decodeBaseFee(baseFeePerGas);
       const txType = parsedTx.type;
 
       let maxGasFeeValue: bigint;
 
       if (Transaction.isLegacy(parsedTx) || Transaction.isEIP2930(parsedTx)) {
-        if (parsedTx.gasPrice < baseFee) {
-          return yield* Effect.fail(
-            new GasPriceBelowBaseFeeError({
-              gasPrice: parsedTx.gasPrice,
-              baseFeePerGas: baseFee,
-            }),
-          );
-        }
-
-        maxGasFeeValue = parsedTx.gasLimit * parsedTx.gasPrice;
+        const validatedTx = yield* ensureLegacyGasPrice(parsedTx, baseFee);
+        maxGasFeeValue = validatedTx.gasLimit * validatedTx.gasPrice;
       } else if (
         Transaction.isEIP1559(parsedTx) ||
         Transaction.isEIP4844(parsedTx) ||
         Transaction.isEIP7702(parsedTx)
       ) {
-        if (parsedTx.maxFeePerGas < parsedTx.maxPriorityFeePerGas) {
-          return yield* Effect.fail(
-            new PriorityFeeGreaterThanMaxFeeError({
-              maxFeePerGas: parsedTx.maxFeePerGas,
-              maxPriorityFeePerGas: parsedTx.maxPriorityFeePerGas,
-            }),
-          );
-        }
-
-        if (parsedTx.maxFeePerGas < baseFee) {
-          return yield* Effect.fail(
-            new InsufficientMaxFeePerGasError({
-              maxFeePerGas: parsedTx.maxFeePerGas,
-              baseFeePerGas: baseFee,
-            }),
-          );
-        }
-
-        maxGasFeeValue = parsedTx.gasLimit * parsedTx.maxFeePerGas;
+        const validatedTx = yield* ensureDynamicFeeBounds(parsedTx, baseFee);
+        maxGasFeeValue = validatedTx.gasLimit * validatedTx.maxFeePerGas;
       } else {
         return yield* Effect.fail(
           new UnsupportedTransactionTypeError({ type: txType }),
