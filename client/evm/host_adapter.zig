@@ -73,6 +73,21 @@ pub const HostAdapter = struct {
 
     const log = std.log.scoped(.host_adapter);
 
+    fn panic_state_error(op: []const u8, address: Address, err: anyerror) noreturn {
+        log.err("{s} failed for {any}: {any}", .{ op, address, err });
+        std.debug.panic("{s} failed for {any}: {any}", .{ op, address, err });
+    }
+
+    fn panic_state_error_slot(op: []const u8, address: Address, slot: u256, err: anyerror) noreturn {
+        log.err("{s} failed for {any} slot {}: {any}", .{ op, address, slot, err });
+        std.debug.panic("{s} failed for {any} slot {}: {any}", .{ op, address, slot, err });
+    }
+
+    fn panic_state_error_nonce(op: []const u8, address: Address, nonce: u64, err: anyerror) noreturn {
+        log.err("{s} failed for {any} nonce {}: {any}", .{ op, address, nonce, err });
+        std.debug.panic("{s} failed for {any} nonce {}: {any}", .{ op, address, nonce, err });
+    }
+
     // -- vtable implementations ------------------------------------------------
     //
     // Error policy:
@@ -81,40 +96,27 @@ pub const HostAdapter = struct {
 
     fn get_balance(ptr: *anyopaque, address: Address) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getBalance(address) catch |err| {
-            log.err("getBalance failed for {any}: {any}", .{ address, err });
-            std.debug.panic("getBalance failed for {any}: {any}", .{ address, err });
-        };
+        return self.state.getBalance(address) catch |err| panic_state_error("getBalance", address, err);
     }
 
     fn set_balance(ptr: *anyopaque, address: Address, balance: u256) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setBalance(address, balance) catch |err| {
-            std.debug.panic("setBalance failed for {any}: {any}", .{ address, err });
-        };
+        self.state.setBalance(address, balance) catch |err| panic_state_error("setBalance", address, err);
     }
 
     fn get_code(ptr: *anyopaque, address: Address) []const u8 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getCode(address) catch |err| {
-            log.err("getCode failed for {any}: {any}", .{ address, err });
-            std.debug.panic("getCode failed for {any}: {any}", .{ address, err });
-        };
+        return self.state.getCode(address) catch |err| panic_state_error("getCode", address, err);
     }
 
     fn set_code(ptr: *anyopaque, address: Address, code: []const u8) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setCode(address, code) catch |err| {
-            std.debug.panic("setCode failed for {any}: {any}", .{ address, err });
-        };
+        self.state.setCode(address, code) catch |err| panic_state_error("setCode", address, err);
     }
 
     fn get_storage(ptr: *anyopaque, address: Address, slot: u256) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.get_storage_checked(address, slot) catch |err| {
-            log.err("getStorage failed for {any} slot {}: {any}", .{ address, slot, err });
-            std.debug.panic("getStorage failed for {any} slot {}: {any}", .{ address, slot, err });
-        };
+        return self.get_storage_checked(address, slot) catch |err| panic_state_error_slot("getStorage", address, slot, err);
     }
 
     fn get_storage_checked(self: *Self, address: Address, slot: u256) !u256 {
@@ -123,24 +125,17 @@ pub const HostAdapter = struct {
 
     fn set_storage(ptr: *anyopaque, address: Address, slot: u256, value: u256) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setStorage(address, slot, value) catch |err| {
-            std.debug.panic("setStorage failed for {any} slot {}: {any}", .{ address, slot, err });
-        };
+        self.state.setStorage(address, slot, value) catch |err| panic_state_error_slot("setStorage", address, slot, err);
     }
 
     fn get_nonce(ptr: *anyopaque, address: Address) u64 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getNonce(address) catch |err| {
-            log.err("getNonce failed for {any}: {any}", .{ address, err });
-            std.debug.panic("getNonce failed for {any}: {any}", .{ address, err });
-        };
+        return self.state.getNonce(address) catch |err| panic_state_error("getNonce", address, err);
     }
 
     fn set_nonce(ptr: *anyopaque, address: Address, nonce: u64) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setNonce(address, nonce) catch |err| {
-            std.debug.panic("setNonce failed for {any} nonce {}: {any}", .{ address, nonce, err });
-        };
+        self.state.setNonce(address, nonce) catch |err| panic_state_error_nonce("setNonce", address, nonce, err);
     }
 };
 
@@ -218,25 +213,6 @@ test "HostAdapter — getCode/setCode round-trip (bytecode)" {
     const code = [_]u8{ 0x60, 0x00, 0x60, 0x00, 0x56 };
     host.setCode(addr, &code);
     try std.testing.expectEqualSlices(u8, &code, host.getCode(addr));
-}
-
-test "HostAdapter — getCode/setCode round-trip" {
-    const allocator = std.testing.allocator;
-    var state = try StateManager.init(allocator, null);
-    defer state.deinit();
-
-    var adapter = HostAdapter.init(&state);
-    const host = adapter.host_interface();
-
-    const addr = Address{ .bytes = [_]u8{0xDD} ++ [_]u8{0} ** 19 };
-
-    // Default code is empty
-    try std.testing.expectEqual(@as(usize, 0), host.getCode(addr).len);
-
-    // Set bytecode and read back
-    const bytecode = [_]u8{ 0x60, 0x00, 0x60, 0x00, 0xFD };
-    host.setCode(addr, &bytecode);
-    try std.testing.expectEqualSlices(u8, &bytecode, host.getCode(addr));
 }
 
 test "HostAdapter — StateManager checkpoint/revert propagates through adapter" {
