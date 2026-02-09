@@ -18,6 +18,7 @@ import {
   compactToNibbleList,
   nibbleListToCompact,
 } from "./encoding";
+import { coerceEffect } from "./internal/effect";
 import { makeBytesHelpers, makeHashHelpers } from "./internal/primitives";
 import {
   PatricializeError,
@@ -35,8 +36,6 @@ const { bytesFromHex, bytesFromUint8Array } = makeBytesHelpers(
   (message) => new Error(message),
 );
 const { hashFromHex } = makeHashHelpers((message) => new Error(message));
-const coerceEffect = <A, E>(effect: unknown): Effect.Effect<A, E> =>
-  effect as Effect.Effect<A, E>;
 const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
   coerceEffect<Uint8Array, unknown>(Rlp.encode(data));
 const keccak256 = (data: Uint8Array) =>

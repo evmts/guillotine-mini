@@ -7,6 +7,7 @@ import { Hash, Rlp } from "voltaire-effect/primitives";
 import type { EncodedNode, HashType, RlpType, TrieNode } from "./Node";
 import { BranchChildrenCount } from "./Node";
 import { NibbleEncodingError, nibbleListToCompact } from "./encoding";
+import { coerceEffect } from "./internal/effect";
 import { makeBytesHelpers } from "./internal/primitives";
 
 /** Error raised when trie hashing fails. */
@@ -57,9 +58,6 @@ const wrapRlpError = (cause: unknown) =>
     message: "Failed to RLP-encode trie node",
     cause,
   });
-
-const coerceEffect = <A, E>(effect: unknown): Effect.Effect<A, E> =>
-  effect as Effect.Effect<A, E>;
 
 const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
   coerceEffect<Uint8Array, unknown>(Rlp.encode(data)).pipe(

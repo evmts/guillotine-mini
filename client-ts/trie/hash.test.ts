@@ -5,20 +5,17 @@ import { Bytes, Hash, Rlp } from "voltaire-effect/primitives";
 import type { BranchNode, BytesType, HashType, LeafNode } from "./Node";
 import { encodeInternalNode, TrieHashError, TrieHashTest } from "./hash";
 import { nibbleListToCompact } from "./encoding";
+import { coerceEffect } from "./internal/effect";
 import { makeBytesHelpers } from "./internal/primitives";
 
 const { bytesFromHex, bytesFromUint8Array } = makeBytesHelpers(
   (message) => new Error(message),
 );
 const toBytes = (hex: string): BytesType => bytesFromHex(hex);
-const coerceEffect = <A, E>(effect: unknown): Effect.Effect<A, E> =>
-  effect as Effect.Effect<A, E>;
 const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
   coerceEffect<Uint8Array, unknown>(Rlp.encode(data));
 const keccak256 = (data: Uint8Array) =>
   coerceEffect<HashType, never>(Hash.keccak256(data));
-const hashEquals = (left: HashType, right: HashType) =>
-  coerceEffect<boolean, never>(Hash.equals(left, right));
 
 describe("trie hashing", () => {
   it.effect("encodeInternalNode returns empty for null nodes", () =>
@@ -71,7 +68,7 @@ describe("trie hashing", () => {
       const expected = yield* keccak256(encoded);
 
       assert.isTrue(encoded.length >= 32);
-      assert.isTrue(yield* hashEquals(result.value, expected));
+      assert.isTrue(Hash.equals(result.value, expected));
     }).pipe(Effect.provide(TrieHashTest)),
   );
 
