@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { Hex } from "voltaire-effect/primitives";
 import type { BytesType, EncodedNode, NibbleList, TrieNode } from "./Node";
 import { BranchChildrenCount } from "./Node";
 import { NibbleListSchema } from "./encoding";
@@ -79,13 +80,21 @@ const validateNibbleList = (
     ),
   );
 
-const validateKeyMap = (
+const normalizeKeyMap = (
   obj: NibbleKeyMap,
-): Effect.Effect<void, PatricializeError> =>
+): Effect.Effect<Map<NibbleList, BytesType>, PatricializeError> =>
   Effect.gen(function* () {
-    for (const [key] of obj) {
-      yield* validateNibbleList(key);
+    const deduped = new Map<string, { key: NibbleList; value: BytesType }>();
+    for (const [key, value] of obj) {
+      const validated = yield* validateNibbleList(key);
+      deduped.set(Hex.fromBytes(validated), { key: validated, value });
     }
+
+    const normalized = new Map<NibbleList, BytesType>();
+    for (const { key, value } of deduped.values()) {
+      normalized.set(key, value);
+    }
+    return normalized;
   });
 
 const patricializeImpl = (
@@ -209,8 +218,8 @@ const makePatricialize = (
   patricialize: (obj: NibbleKeyMap, level: number) =>
     Effect.gen(function* () {
       yield* validateLevel(level);
-      yield* validateKeyMap(obj);
-      return yield* patricializeImpl(obj, level, encodeInternalNode);
+      const normalized = yield* normalizeKeyMap(obj);
+      return yield* patricializeImpl(normalized, level, encodeInternalNode);
     }),
 });
 
