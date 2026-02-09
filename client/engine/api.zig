@@ -55,6 +55,7 @@ pub const EngineApi = struct {
 
 test "engine api dispatches capabilities exchange" {
     const DummyEngine = struct {
+        const Self = @This();
         result: []const []const u8,
         seen_len: usize = 0,
 
@@ -62,7 +63,7 @@ test "engine api dispatches capabilities exchange" {
             ptr: *anyopaque,
             consensus_methods: []const []const u8,
         ) EngineApi.Error![]const []const u8 {
-            const self: *DummyEngine = @ptrCast(@alignCast(ptr));
+            const self: *Self = @ptrCast(@alignCast(ptr));
             self.seen_len = consensus_methods.len;
             return self.result;
         }
