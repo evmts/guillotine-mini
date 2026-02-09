@@ -423,6 +423,8 @@ test "Database supports_write_batch reports false when absent" {
 
 test "Database supports_write_batch reports true when present" {
     const BatchDb = struct {
+        const Self = @This();
+
         fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
             return null;
         }
@@ -445,7 +447,7 @@ test "Database supports_write_batch reports true when present" {
             .write_batch = write_batch_impl,
         };
 
-        fn database(self: *BatchDb) Database {
+        fn database(self: *Self) Database {
             return .{ .ptr = @ptrCast(self), .vtable = &vtable };
         }
     };
