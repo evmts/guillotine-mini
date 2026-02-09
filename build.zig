@@ -249,6 +249,33 @@ pub fn build(b: *std.Build) void {
     const bench_state_step = b.step("bench-state", "Run world state journal benchmarks");
     bench_state_step.dependOn(&run_client_state_bench.step);
 
+    // Client Blockchain benchmark executable
+    const bench_utils_mod = b.addModule("bench_utils", .{
+        .root_source_file = b.path("client/bench_utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const client_blockchain_bench_mod = b.addModule("client_blockchain_bench", .{
+        .root_source_file = b.path("client/blockchain/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "blockchain", .module = blockchain_mod },
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+        },
+    });
+
+    const client_blockchain_bench = b.addExecutable(.{
+        .name = "bench_blockchain",
+        .root_module = client_blockchain_bench_mod,
+    });
+
+    const run_client_blockchain_bench = b.addRunArtifact(client_blockchain_bench);
+    const bench_blockchain_step = b.step("bench-blockchain", "Run chain management benchmarks");
+    bench_blockchain_step.dependOn(&run_client_blockchain_bench.step);
+
     // Client DB benchmark executable
     const client_db_bench_mod = b.addModule("client_db_bench", .{
         .root_source_file = b.path("client/db/bench.zig"),
