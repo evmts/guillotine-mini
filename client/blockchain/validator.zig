@@ -147,12 +147,15 @@ fn is_post_merge(header: *const BlockHeader.BlockHeader, ctx: HeaderValidationCo
 pub fn merge_header_validator(comptime PreMergeValidator: type) type {
     return struct {
         const validate_fn_info = @typeInfo(@TypeOf(PreMergeValidator.validate));
-        const validate_return = validate_fn_info.Fn.return_type orelse @compileError(
-            "PreMergeValidator.validate must return an error union",
-        );
+        const validate_return = switch (validate_fn_info) {
+            .@"fn" => |fn_info| fn_info.return_type orelse @compileError(
+                "PreMergeValidator.validate must return an error union",
+            ),
+            else => @compileError("PreMergeValidator.validate must be a function"),
+        };
         const validate_return_info = @typeInfo(validate_return);
         const PreMergeError = switch (validate_return_info) {
-            .ErrorUnion => validate_return_info.ErrorUnion.error_set,
+            .error_union => |error_union| error_union.error_set,
             else => @compileError("PreMergeValidator.validate must return an error union"),
         };
 
@@ -207,6 +210,15 @@ test "validate_pos_header_constants - rejects extra data longer than max" {
     header.extra_data = extra[0..];
 
     try std.testing.expectError(ValidationError.InvalidExtraDataLength, validate_pos_header_constants(&header));
+}
+
+test "validate_pos_header_constants - accepts extra data at max length" {
+    var header = BlockHeader.init();
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    var extra = [_]u8{0} ** BlockHeader.MAX_EXTRA_DATA_SIZE;
+    header.extra_data = extra[0..];
+
+    try validate_pos_header_constants(&header);
 }
 
 test "merge_header_validator - delegates to pre-merge validator" {
@@ -265,6 +277,49 @@ test "merge_header_validator - enforces PoS constants post-merge" {
     const ctx = HeaderValidationContext{
         .allocator = allocator,
         .hardfork = .MERGE,
+        .parent_header = &parent,
+    };
+    try std.testing.expectError(ValidationError.InvalidNonce, MergeValidator.validate(&header, ctx));
+}
+
+test "merge_header_validator - treats Shanghai+ as post-merge" {
+    const PreMergeValidator = struct {
+        pub fn validate(_: *const BlockHeader.BlockHeader, _: HeaderValidationContext) ValidationError!void {
+            return;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const MergeValidator = merge_header_validator(PreMergeValidator);
+
+    var parent = BlockHeader.init();
+    parent.number = 1;
+    parent.timestamp = 1;
+    parent.gas_limit = 10_000;
+    parent.gas_used = 0;
+    parent.base_fee_per_gas = 100;
+    parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+
+    var header = BlockHeader.init();
+    header.number = 2;
+    header.timestamp = 2;
+    header.gas_limit = parent.gas_limit;
+    header.gas_used = 0;
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    header.difficulty = 0;
+    header.nonce = [_]u8{0} ** BlockHeader.NONCE_SIZE;
+    header.nonce[BlockHeader.NONCE_SIZE - 1] = 1;
+    header.parent_hash = try BlockHeader.hash(&parent, allocator);
+    header.base_fee_per_gas = try calculate_base_fee_per_gas(
+        header.gas_limit,
+        parent.gas_limit,
+        parent.gas_used,
+        parent.base_fee_per_gas.?,
+    );
+
+    const ctx = HeaderValidationContext{
+        .allocator = allocator,
+        .hardfork = .SHANGHAI,
         .parent_header = &parent,
     };
     try std.testing.expectError(ValidationError.InvalidNonce, MergeValidator.validate(&header, ctx));
