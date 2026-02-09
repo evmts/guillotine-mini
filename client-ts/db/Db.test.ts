@@ -1,9 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Option, Schema } from "effect";
-import * as Bytes from "voltaire-effect/primitives/Bytes";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import { Bytes, Hex } from "voltaire-effect/primitives";
 import { DbMemoryTest, get, has, put, remove } from "./Db";
+import type { BytesType } from "./Db";
 
-const toBytes = (hex: string) => Schema.decodeSync(Bytes.Hex)(hex);
+const toBytes = (hex: string): BytesType => Hex.toBytes(hex) as BytesType;
 
 describe("Db", () => {
   it.effect("put/get round-trips bytes", () =>
@@ -14,8 +16,8 @@ describe("Db", () => {
       yield* put(key, value);
       const result = yield* get(key);
 
-      assert.isTrue(Option.isSome(result));
-      assert.isTrue(Bytes.equals(result.value, value));
+      const stored = Option.getOrThrow(result);
+      assert.isTrue(Bytes.equals(stored, value));
     }).pipe(Effect.provide(DbMemoryTest())),
   );
 
