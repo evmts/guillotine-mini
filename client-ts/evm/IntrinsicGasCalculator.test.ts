@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { Address, Hash, Transaction } from "voltaire-effect/primitives";
 import {
   IntrinsicGasCalculatorTest,
@@ -8,6 +9,19 @@ import {
 
 const provideCalculator = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(IntrinsicGasCalculatorTest));
+
+const LegacySchema = Transaction.LegacySchema as unknown as Schema.Schema<
+  Transaction.Legacy,
+  unknown
+>;
+const Eip2930Schema = Transaction.EIP2930Schema as unknown as Schema.Schema<
+  Transaction.EIP2930,
+  unknown
+>;
+const Eip7702Schema = Transaction.EIP7702Schema as unknown as Schema.Schema<
+  Transaction.EIP7702,
+  unknown
+>;
 
 const makeAddress = (lastByte: number): Address.AddressType => {
   const addr = Address.zero();
@@ -23,54 +37,57 @@ const EMPTY_SIGNATURE = {
 const makeLegacyTx = (
   data: Uint8Array,
   to: Address.AddressType | null,
-): Transaction.Legacy => ({
-  type: Transaction.Type.Legacy,
-  nonce: 0n,
-  gasPrice: 1n,
-  gasLimit: 100_000n,
-  to,
-  value: 0n,
-  data,
-  v: 27n,
-  r: EMPTY_SIGNATURE.r,
-  s: EMPTY_SIGNATURE.s,
-});
+): Transaction.Legacy =>
+  Schema.decodeSync(LegacySchema)({
+    type: Transaction.Type.Legacy,
+    nonce: 0n,
+    gasPrice: 1n,
+    gasLimit: 100_000n,
+    to,
+    value: 0n,
+    data,
+    v: 27n,
+    r: EMPTY_SIGNATURE.r,
+    s: EMPTY_SIGNATURE.s,
+  });
 
 const makeAccessListTx = (
   accessList: Transaction.EIP2930["accessList"],
-): Transaction.EIP2930 => ({
-  type: Transaction.Type.EIP2930,
-  chainId: 1n,
-  nonce: 0n,
-  gasPrice: 1n,
-  gasLimit: 100_000n,
-  to: Address.zero(),
-  value: 0n,
-  data: new Uint8Array(0),
-  accessList,
-  yParity: 0,
-  r: EMPTY_SIGNATURE.r,
-  s: EMPTY_SIGNATURE.s,
-});
+): Transaction.EIP2930 =>
+  Schema.decodeSync(Eip2930Schema)({
+    type: Transaction.Type.EIP2930,
+    chainId: 1n,
+    nonce: 0n,
+    gasPrice: 1n,
+    gasLimit: 100_000n,
+    to: Address.zero(),
+    value: 0n,
+    data: new Uint8Array(0),
+    accessList,
+    yParity: 0,
+    r: EMPTY_SIGNATURE.r,
+    s: EMPTY_SIGNATURE.s,
+  });
 
 const makeSetCodeTx = (
   authorizationList: Transaction.EIP7702["authorizationList"],
-): Transaction.EIP7702 => ({
-  type: Transaction.Type.EIP7702,
-  chainId: 1n,
-  nonce: 0n,
-  maxPriorityFeePerGas: 1n,
-  maxFeePerGas: 2n,
-  gasLimit: 100_000n,
-  to: Address.zero(),
-  value: 0n,
-  data: new Uint8Array(0),
-  accessList: [],
-  authorizationList,
-  yParity: 0,
-  r: EMPTY_SIGNATURE.r,
-  s: EMPTY_SIGNATURE.s,
-});
+): Transaction.EIP7702 =>
+  Schema.decodeSync(Eip7702Schema)({
+    type: Transaction.Type.EIP7702,
+    chainId: 1n,
+    nonce: 0n,
+    maxPriorityFeePerGas: 1n,
+    maxFeePerGas: 2n,
+    gasLimit: 100_000n,
+    to: Address.zero(),
+    value: 0n,
+    data: new Uint8Array(0),
+    accessList: [],
+    authorizationList,
+    yParity: 0,
+    r: EMPTY_SIGNATURE.r,
+    s: EMPTY_SIGNATURE.s,
+  });
 
 describe("IntrinsicGasCalculator", () => {
   it.effect("calculates calldata costs and floor for legacy tx", () =>
