@@ -41,6 +41,8 @@ pub const trie = @import("trie.zig");
 // Re-export primary API
 /// Compute the Merkle Patricia Trie root hash for key-value pairs.
 pub const trie_root = hash.trie_root;
+/// Compute the Merkle Patricia Trie root hash for secure (key-hashed) tries.
+pub const secure_trie_root = hash.secure_trie_root;
 /// Root hash for an empty trie (keccak256(RLP(""))).
 pub const EMPTY_TRIE_ROOT = hash.EMPTY_TRIE_ROOT;
 /// 32-byte hash type used for root hashes.

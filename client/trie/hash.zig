@@ -126,6 +126,35 @@ pub fn trie_root(
     }
 }
 
+/// Compute the MPT root hash for a secure trie (keys hashed with keccak256).
+///
+/// This matches the `secured=True` behavior in the Python execution-specs.
+/// Input keys are raw bytes; values should already be RLP-encoded where needed.
+pub fn secure_trie_root(
+    allocator: Allocator,
+    keys: []const []const u8,
+    values: []const []const u8,
+) !Hash32 {
+    std.debug.assert(keys.len == values.len);
+
+    if (keys.len == 0) {
+        return EMPTY_TRIE_ROOT;
+    }
+
+    const hashed_keys = try allocator.alloc(Hash32, keys.len);
+    defer allocator.free(hashed_keys);
+
+    const hashed_slices = try allocator.alloc([]const u8, keys.len);
+    defer allocator.free(hashed_slices);
+
+    for (keys, 0..) |key, i| {
+        hashed_keys[i] = Hash.keccak256(key);
+        hashed_slices[i] = hashed_keys[i][0..];
+    }
+
+    return trie_root(allocator, hashed_slices, values);
+}
+
 /// Free memory owned by an `EncodedNode`.
 ///
 /// Only the `.raw` variant owns allocated memory (the RLP-encoded bytes).
@@ -525,6 +554,49 @@ test "trie_root - single entry" {
 
     // The root should NOT be the empty root
     try testing.expect(!std.mem.eql(u8, &root, &EMPTY_TRIE_ROOT));
+}
+
+test "secure_trie_root - hex_encoded_securetrie_test test1" {
+    const allocator = testing.allocator;
+    const Hex = @import("primitives").Hex;
+
+    const key_hexes = [_][]const u8{
+        "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b",
+        "0x095e7baea6a6c7c4c2dfeb977efac326af552d87",
+        "0xd2571607e241ecf590ed94b12d87c94babe36db6",
+        "0x62c01474f089b07dae603491675dc5b5748f7049",
+        "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba",
+    };
+
+    const value_hexes = [_][]const u8{
+        "0xf848018405f446a7a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+        "0xf8440101a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a004bccc5d94f4d1f99aab44369a910179931772f2a5c001c3229f57831c102769",
+        "0xf8440180a0ba4b47865c55a341a4a78759bb913cd15c3ee8eaf30a62fa8d1c8863113d84e8a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+        "0xf8448080a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+        "0xf8478083019a59a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+    };
+
+    var key_bytes: [key_hexes.len][]u8 = undefined;
+    var key_slices: [key_hexes.len][]const u8 = undefined;
+    defer for (key_bytes) |bytes| allocator.free(bytes);
+
+    for (key_hexes, 0..) |hex, i| {
+        key_bytes[i] = try Hex.hexToBytes(allocator, hex);
+        key_slices[i] = key_bytes[i];
+    }
+
+    var value_bytes: [value_hexes.len][]u8 = undefined;
+    var value_slices: [value_hexes.len][]const u8 = undefined;
+    defer for (value_bytes) |bytes| allocator.free(bytes);
+
+    for (value_hexes, 0..) |hex, i| {
+        value_bytes[i] = try Hex.hexToBytes(allocator, hex);
+        value_slices[i] = value_bytes[i];
+    }
+
+    const root = try secure_trie_root(allocator, &key_slices, &value_slices);
+    const expected = try Hex.hexToBytesFixed(32, "0x730a444e08ab4b8dee147c9b232fc52d34a223d600031c1e9d25bfc985cbd797");
+    try testing.expectEqualSlices(u8, &expected, &root);
 }
 
 test "nibble_list_to_compact - even extension" {
