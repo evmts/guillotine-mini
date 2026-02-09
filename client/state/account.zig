@@ -155,6 +155,23 @@ test "is_account_alive: true for non-zero nonce" {
     try std.testing.expect(is_account_alive(&account));
 }
 
+test "is_account_alive: true for non-zero balance" {
+    const account = AccountState.from(.{ .balance = 1 });
+    try std.testing.expect(is_account_alive(&account));
+}
+
+test "is_account_alive: true for non-empty code hash" {
+    var custom_hash: primitives.Hash.Hash = undefined;
+    @memset(&custom_hash, 0xCE);
+
+    const account = AccountState.from(.{
+        .nonce = 0,
+        .balance = 0,
+        .code_hash = custom_hash,
+    });
+    try std.testing.expect(is_account_alive(&account));
+}
+
 test "is_account_alive: false when only storage root is non-empty" {
     var custom_root: primitives.StateRoot.StateRoot = undefined;
     @memset(&custom_root, 0xAB);
