@@ -6,7 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
-import { Hex } from "voltaire-effect/primitives";
+import { Bytes, Hex } from "voltaire-effect/primitives";
 import type { BytesType } from "./DbTypes";
 import {
   DbConfigSchema,
@@ -189,15 +189,14 @@ const compareBytes = (left: BytesType, right: BytesType): number => {
 };
 
 const cloneBytes = (value: BytesType): BytesType =>
-  Hex.toBytes(Hex.fromBytes(value)) as BytesType;
+  (value as Uint8Array).slice() as BytesType;
 
 const cloneBytesEffect = (
   value: BytesType,
 ): Effect.Effect<BytesType, DbError> =>
-  Effect.try({
-    try: () => cloneBytes(value),
-    catch: (cause) => new DbError({ message: "Invalid DB value", cause }),
-  });
+  Bytes.isBytes(value)
+    ? Effect.succeed(cloneBytes(value))
+    : Effect.fail(new DbError({ message: "Invalid DB value" }));
 
 const mergeUnsupportedError = () =>
   new DbError({ message: "Merge is not supported by the memory DB" });
@@ -209,33 +208,59 @@ const nullDbWriteError = () =>
 
 const failNullDbWrite = () => Effect.fail(nullDbWriteError());
 
+type StoreEntry = {
+  readonly key: BytesType;
+  readonly value: BytesType;
+};
+
+const collectEntries = (store: Map<string, BytesType>): Array<StoreEntry> => {
+  const entries: Array<StoreEntry> = [];
+  for (const [keyHex, value] of store.entries()) {
+    entries.push({ key: decodeKey(keyHex), value });
+  }
+  return entries;
+};
+
+const orderEntries = (entries: Array<StoreEntry>): Array<StoreEntry> => {
+  entries.sort((left, right) => compareBytes(left.key, right.key));
+  return entries;
+};
+
 const listEntries = (
   store: Map<string, BytesType>,
   ordered = false,
 ): ReadonlyArray<DbEntry> => {
-  const entries = Array.from(store.entries());
+  const entries = collectEntries(store);
   if (ordered) {
-    entries.sort(([left], [right]) =>
-      compareBytes(decodeKey(left), decodeKey(right)),
-    );
+    orderEntries(entries);
   }
-  return entries.map(([keyHex, value]) => ({
-    key: decodeKey(keyHex),
+  return entries.map(({ key, value }) => ({
+    key,
     value: cloneBytes(value),
   }));
 };
 
 const makeReader = (store: Map<string, BytesType>): DbSnapshot => {
-  const getEntries = (ordered = false) => listEntries(store, ordered);
-
   const getAll = (ordered?: boolean) =>
-    Effect.sync(() => getEntries(Boolean(ordered)));
+    Effect.sync(() => listEntries(store, Boolean(ordered)));
 
   const getAllKeys = (ordered?: boolean) =>
-    Effect.sync(() => getEntries(Boolean(ordered)).map((entry) => entry.key));
+    Effect.sync(() => {
+      const keys = Array.from(store.keys(), (keyHex) => decodeKey(keyHex));
+      if (ordered) {
+        keys.sort(compareBytes);
+      }
+      return keys;
+    });
 
   const getAllValues = (ordered?: boolean) =>
-    Effect.sync(() => getEntries(Boolean(ordered)).map((entry) => entry.value));
+    Effect.sync(() => {
+      if (!ordered) {
+        return Array.from(store.values(), (value) => cloneBytes(value));
+      }
+      const entries = orderEntries(collectEntries(store));
+      return entries.map(({ value }) => cloneBytes(value));
+    });
 
   const get = (key: BytesType, _flags?: ReadFlags) =>
     Effect.gen(function* () {
