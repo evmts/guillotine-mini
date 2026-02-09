@@ -4,12 +4,14 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const evm_mod = @import("evm");
+const config_mod = @import("config.zig");
 
 const ChainId = primitives.ChainId;
 const NetworkId = primitives.NetworkId;
 const Hardfork = primitives.Hardfork;
 const TraceConfig = primitives.TraceConfig;
 const Chain = primitives.Chain;
+const RunnerConfig = config_mod.RunnerConfig;
 
 const usage =
     \\guillotine-mini runner
@@ -47,11 +49,7 @@ fn run(
     args: []const []const u8,
     writer: anytype,
 ) !void {
-    var chain_id: ChainId.ChainId = ChainId.MAINNET;
-    var network_id: NetworkId.NetworkId = NetworkId.MAINNET;
-    var network_set = false;
-    var hardfork: Hardfork = Hardfork.DEFAULT;
-    var trace_config: TraceConfig = TraceConfig.from();
+    var config = RunnerConfig{};
     var trace_enabled = false;
 
     var idx: usize = 1;
@@ -63,7 +61,7 @@ fn run(
         }
 
         if (std.mem.eql(u8, arg, "--trace")) {
-            trace_config = TraceConfig.enableAll();
+            config.trace_config = TraceConfig.enableAll();
             trace_enabled = true;
             continue;
         }
@@ -92,29 +90,28 @@ fn run(
 
             if (is_chain_id) {
                 const parsed = std.fmt.parseInt(u64, value, 10) catch return error.InvalidChainId;
-                chain_id = ChainId.from(parsed);
+                config.chain_id = ChainId.from(parsed);
                 continue;
             }
 
             if (is_network_id) {
                 const parsed = std.fmt.parseInt(u64, value, 10) catch return error.InvalidNetworkId;
-                network_id = NetworkId.from(parsed);
-                network_set = true;
+                config.network_id = NetworkId.from(parsed);
                 continue;
             }
 
             if (is_hardfork) {
-                hardfork = Hardfork.fromString(value) orelse return error.InvalidHardfork;
+                config.hardfork = Hardfork.fromString(value) orelse return error.InvalidHardfork;
                 continue;
             }
 
             if (is_trace_tracer) {
-                trace_config.tracer = value;
+                config.trace_config.tracer = value;
                 trace_enabled = true;
                 continue;
             }
 
-            trace_config.timeout = value;
+            config.trace_config.timeout = value;
             trace_enabled = true;
             continue;
         }
@@ -122,14 +119,11 @@ fn run(
         return error.UnknownOption;
     }
 
-    if (!network_set) {
-        network_id = NetworkId.from(chain_id);
-    }
-
-    const chain = Chain.fromId(chain_id) orelse return error.UnknownChainId;
+    const network_id = config.effective_network_id();
+    const chain = Chain.fromId(config.chain_id) orelse return error.UnknownChainId;
 
     const block_context = evm_mod.BlockContext{
-        .chain_id = @as(u256, chain_id),
+        .chain_id = @as(u256, config.chain_id),
         .block_number = 0,
         .block_timestamp = 0,
         .block_difficulty = 0,
@@ -141,18 +135,18 @@ fn run(
     };
 
     var evm_instance: EvmType = undefined;
-    try evm_instance.init(allocator, null, hardfork, block_context, null);
+    try evm_instance.init(allocator, null, config.hardfork, block_context, null);
     defer evm_instance.deinit();
 
     try writer.writeAll("guillotine-mini runner configured\n");
     try writer.print(
         "chain_id={d} network_id={d} chain={s} hardfork={s} gas_limit={d}\n",
-        .{ chain_id, network_id, Chain.getName(chain), @tagName(hardfork), Chain.getGasLimit(chain) },
+        .{ config.chain_id, network_id, Chain.getName(chain), @tagName(config.hardfork), Chain.getGasLimit(chain) },
     );
 
     if (trace_enabled) {
-        const tracer = trace_config.tracer orelse "none";
-        const timeout = trace_config.timeout orelse "none";
+        const tracer = config.trace_config.tracer orelse "none";
+        const timeout = config.trace_config.timeout orelse "none";
         try writer.print("trace=enabled tracer={s} timeout={s}\n", .{ tracer, timeout });
     } else {
         try writer.writeAll("trace=disabled\n");
