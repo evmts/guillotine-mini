@@ -52,3 +52,13 @@ test "rpc server config defaults ipc socket path to null" {
     const cfg = RpcServerConfig{};
     try std.testing.expectEqual(@as(?[]const u8, null), cfg.ipc_unix_domain_socket_path);
 }
+
+test "rpc server config defaults match Nethermind limits" {
+    const cfg = RpcServerConfig{};
+    try std.testing.expectEqual(@as(u32, 20_000), cfg.timeout_ms);
+    try std.testing.expectEqual(@as(usize, 500), cfg.request_queue_limit);
+    try std.testing.expectEqual(@as(usize, 1024), cfg.max_batch_size);
+    try std.testing.expectEqual(@as(?usize, 30_000_000), cfg.max_request_body_size);
+    try std.testing.expectEqual(@as(?usize, 33_554_432), cfg.max_batch_response_body_size);
+    try std.testing.expectEqual(true, cfg.strict_hex_format);
+}
