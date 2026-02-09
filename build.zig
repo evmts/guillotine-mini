@@ -153,6 +153,26 @@ pub fn build(b: *std.Build) void {
     const client_trie_test_step = b.step("test-trie", "Run Merkle Patricia Trie tests");
     client_trie_test_step.dependOn(&run_client_trie_tests.step);
 
+    const nethermind_trie_diff_mod = b.addModule("nethermind_trie_diff", .{
+        .root_source_file = b.path("scripts/nethermind-diff-trie.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "client_trie", .module = client_trie_mod },
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+        },
+    });
+
+    const nethermind_trie_diff_exe = b.addExecutable(.{
+        .name = "nethermind_trie_diff",
+        .root_module = nethermind_trie_diff_mod,
+    });
+
+    const run_nethermind_trie_diff = b.addRunArtifact(nethermind_trie_diff_exe);
+    const nethermind_diff_step = b.step("nethermind-diff", "Run Nethermind trie differential test");
+    nethermind_diff_step.dependOn(&run_nethermind_trie_diff.step);
+
     // Client State module (world state journal + snapshot/restore)
     const client_state_mod = b.addModule("client_state", .{
         .root_source_file = b.path("client/state/root.zig"),
