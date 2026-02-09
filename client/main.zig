@@ -34,7 +34,7 @@ const usage =
 /// Process entry point for the runner CLI.
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    defer std.debug.assert(gpa.deinit() == .ok);
     const allocator = gpa.allocator();
 
     const args = try std.process.argsAlloc(allocator);
@@ -42,8 +42,10 @@ pub fn main() !void {
 
     const EvmType = evm_mod.Evm(evm_mod.EvmConfig{});
     const stdout = std.fs.File.stdout();
-    const writer = stdout.deprecatedWriter();
-    try run(EvmType, allocator, args, writer);
+    var stdout_buffer: [4096]u8 = undefined;
+    var writer = stdout.writer(stdout_buffer[0..]);
+    defer writer.interface.flush() catch |err| std.debug.panic("stdout flush failed: {s}", .{@errorName(err)});
+    try run(EvmType, allocator, args, &writer.interface);
 }
 
 fn run(
