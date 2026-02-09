@@ -4,7 +4,10 @@ import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import type * as Queue from "effect/Queue";
+import type * as Scope from "effect/Scope";
 import { Block, BlockHash, BlockNumber, Hex } from "voltaire-effect/primitives";
 import {
   BlockNotFoundError,
@@ -17,6 +20,63 @@ import {
 export type BlockType = Block.BlockType;
 export type BlockHashType = BlockHash.BlockHashType;
 export type BlockNumberType = BlockNumber.BlockNumberType;
+
+export type ForkChoiceState = {
+  readonly head: Option.Option<BlockHashType>;
+  readonly safe: Option.Option<BlockHashType>;
+  readonly finalized: Option.Option<BlockHashType>;
+};
+
+export type ForkChoiceUpdate = {
+  readonly head: BlockHashType;
+  readonly safe: Option.Option<BlockHashType>;
+  readonly finalized: Option.Option<BlockHashType>;
+};
+
+export type BlockchainEvent =
+  | {
+      readonly _tag: "GenesisInitialized";
+      readonly block: BlockType;
+    }
+  | {
+      readonly _tag: "BlockSuggested";
+      readonly block: BlockType;
+    }
+  | {
+      readonly _tag: "BestSuggestedBlock";
+      readonly block: BlockType;
+    }
+  | {
+      readonly _tag: "CanonicalHeadUpdated";
+      readonly block: BlockType;
+    }
+  | {
+      readonly _tag: "ForkChoiceUpdated";
+      readonly update: ForkChoiceUpdate;
+    };
+
+export const BlockchainEvent = {
+  genesisInitialized: (block: BlockType): BlockchainEvent => ({
+    _tag: "GenesisInitialized",
+    block,
+  }),
+  blockSuggested: (block: BlockType): BlockchainEvent => ({
+    _tag: "BlockSuggested",
+    block,
+  }),
+  bestSuggestedBlock: (block: BlockType): BlockchainEvent => ({
+    _tag: "BestSuggestedBlock",
+    block,
+  }),
+  canonicalHeadUpdated: (block: BlockType): BlockchainEvent => ({
+    _tag: "CanonicalHeadUpdated",
+    block,
+  }),
+  forkChoiceUpdated: (update: ForkChoiceUpdate): BlockchainEvent => ({
+    _tag: "ForkChoiceUpdated",
+    update,
+  }),
+} as const;
 
 /** Error raised when genesis is already initialized. */
 export class GenesisAlreadyInitializedError extends Data.TaggedError(
@@ -72,12 +132,26 @@ export interface BlockchainService {
     number: BlockNumberType,
   ) => Effect.Effect<Option.Option<BlockType>, BlockchainError>;
   readonly putBlock: (block: BlockType) => Effect.Effect<void, BlockchainError>;
+  readonly insertBlock: (
+    block: BlockType,
+  ) => Effect.Effect<void, BlockchainError>;
+  readonly suggestBlock: (
+    block: BlockType,
+  ) => Effect.Effect<void, BlockchainError>;
   readonly setCanonicalHead: (
     hash: BlockHashType,
   ) => Effect.Effect<void, BlockchainError>;
   readonly initializeGenesis: (
     genesis: BlockType,
   ) => Effect.Effect<void, BlockchainError>;
+  readonly getBestKnownNumber: () => Effect.Effect<
+    Option.Option<BlockNumberType>,
+    BlockchainError
+  >;
+  readonly getBestSuggestedBlock: () => Effect.Effect<
+    Option.Option<BlockType>,
+    BlockchainError
+  >;
   readonly getGenesis: () => Effect.Effect<
     Option.Option<BlockType>,
     BlockchainError
@@ -85,6 +159,18 @@ export interface BlockchainService {
   readonly getHead: () => Effect.Effect<
     Option.Option<BlockType>,
     BlockchainError
+  >;
+  readonly getForkChoiceState: () => Effect.Effect<
+    ForkChoiceState,
+    BlockchainError
+  >;
+  readonly forkChoiceUpdated: (
+    update: ForkChoiceUpdate,
+  ) => Effect.Effect<void, BlockchainError>;
+  readonly subscribe: () => Effect.Effect<
+    Queue.Dequeue<BlockchainEvent>,
+    never,
+    Scope.Scope
   >;
 }
 
@@ -98,17 +184,37 @@ type BlockchainState = {
   readonly genesisHash: Option.Option<BlockHashType>;
   readonly headHash: Option.Option<BlockHashType>;
   readonly headNumber: Option.Option<BlockNumberType>;
+  readonly bestKnownNumber: Option.Option<BlockNumberType>;
+  readonly bestSuggestedHash: Option.Option<BlockHashType>;
+  readonly bestSuggestedNumber: Option.Option<BlockNumberType>;
+  readonly forkChoice: ForkChoiceState;
 };
 
 const ZERO_HASH_HEX = Hex.fromBytes(new Uint8Array(32));
+const EMPTY_FORK_CHOICE: ForkChoiceState = {
+  head: Option.none(),
+  safe: Option.none(),
+  finalized: Option.none(),
+};
 
 const makeBlockchain = Effect.gen(function* () {
   const store = yield* BlockStore;
+  const events = yield* Effect.acquireRelease(
+    PubSub.unbounded<BlockchainEvent>(),
+    (pubsub) => PubSub.shutdown(pubsub),
+  );
   const state = yield* Ref.make<BlockchainState>({
     genesisHash: Option.none(),
     headHash: Option.none(),
     headNumber: Option.none(),
+    bestKnownNumber: Option.none(),
+    bestSuggestedHash: Option.none(),
+    bestSuggestedNumber: Option.none(),
+    forkChoice: EMPTY_FORK_CHOICE,
   });
+
+  const publishEvent = (event: BlockchainEvent) =>
+    PubSub.publish(events, event).pipe(Effect.asVoid);
 
   const validateGenesisBlock = (genesis: BlockType) =>
     Effect.gen(function* () {
@@ -196,12 +302,73 @@ const makeBlockchain = Effect.gen(function* () {
       }
     });
 
+  const toBigInt = (number: BlockNumberType) => number as bigint;
+
+  const updateBestKnownNumber = (number: BlockNumberType) =>
+    Ref.update(state, (current) => {
+      const shouldUpdate = Option.match(current.bestKnownNumber, {
+        onNone: () => true,
+        onSome: (existing) => toBigInt(number) > toBigInt(existing),
+      });
+      return shouldUpdate
+        ? { ...current, bestKnownNumber: Option.some(number) }
+        : current;
+    });
+
+  const updateBestSuggestedBlock = (block: BlockType) =>
+    Ref.modify(state, (current) => {
+      const shouldUpdate = Option.match(current.bestSuggestedNumber, {
+        onNone: () => true,
+        onSome: (existing) =>
+          toBigInt(block.header.number) > toBigInt(existing),
+      });
+      const next = shouldUpdate
+        ? {
+            ...current,
+            bestSuggestedHash: Option.some(block.hash),
+            bestSuggestedNumber: Option.some(block.header.number),
+          }
+        : current;
+      return [shouldUpdate, next] as const;
+    });
+
   const getBlockByHash = (hash: BlockHashType) => store.getBlock(hash);
 
   const getBlockByNumber = (number: BlockNumberType) =>
     store.getBlockByNumber(number);
 
-  const putBlock = (block: BlockType) => store.putBlock(block);
+  const getBestKnownNumber = () =>
+    Ref.get(state).pipe(Effect.map((current) => current.bestKnownNumber));
+
+  const getBestSuggestedBlock = () =>
+    Effect.gen(function* () {
+      const current = yield* Ref.get(state);
+      if (Option.isNone(current.bestSuggestedHash)) {
+        return Option.none();
+      }
+
+      return yield* store.getBlock(
+        Option.getOrThrow(current.bestSuggestedHash),
+      );
+    });
+
+  const putBlock = (block: BlockType) =>
+    Effect.gen(function* () {
+      yield* store.putBlock(block);
+      yield* updateBestKnownNumber(block.header.number);
+    });
+
+  const insertBlock = (block: BlockType) => putBlock(block);
+
+  const suggestBlock = (block: BlockType) =>
+    Effect.gen(function* () {
+      yield* putBlock(block);
+      yield* publishEvent(BlockchainEvent.blockSuggested(block));
+      const updated = yield* updateBestSuggestedBlock(block);
+      if (updated) {
+        yield* publishEvent(BlockchainEvent.bestSuggestedBlock(block));
+      }
+    });
 
   const initializeGenesis = (genesis: BlockType) =>
     Effect.gen(function* () {
@@ -221,7 +388,17 @@ const makeBlockchain = Effect.gen(function* () {
         genesisHash: Option.some(genesis.hash),
         headHash: Option.some(genesis.hash),
         headNumber: Option.some(genesis.header.number),
+        bestKnownNumber: Option.some(genesis.header.number),
+        bestSuggestedHash: Option.none(),
+        bestSuggestedNumber: Option.none(),
+        forkChoice: {
+          head: Option.some(genesis.hash),
+          safe: Option.none(),
+          finalized: Option.none(),
+        },
       });
+      yield* publishEvent(BlockchainEvent.genesisInitialized(genesis));
+      yield* publishEvent(BlockchainEvent.canonicalHeadUpdated(genesis));
     });
 
   const getGenesis = () =>
@@ -244,6 +421,59 @@ const makeBlockchain = Effect.gen(function* () {
       return yield* store.getBlock(Option.getOrThrow(current.headHash));
     });
 
+  const getForkChoiceState = () =>
+    Ref.get(state).pipe(Effect.map((current) => current.forkChoice));
+
+  const forkChoiceUpdated = (update: ForkChoiceUpdate) =>
+    Effect.gen(function* () {
+      yield* ensureGenesisInitialized();
+
+      const headExists = yield* store.hasBlock(update.head);
+      if (!headExists) {
+        return yield* Effect.fail(
+          new BlockNotFoundError({ hash: update.head }),
+        );
+      }
+
+      const headOrphan = yield* store.isOrphan(update.head);
+      if (headOrphan) {
+        return yield* Effect.fail(
+          new CannotSetOrphanAsHeadError({ hash: update.head }),
+        );
+      }
+
+      if (Option.isSome(update.safe)) {
+        const safeHash = Option.getOrThrow(update.safe);
+        const safeExists = yield* store.hasBlock(safeHash);
+        if (!safeExists) {
+          return yield* Effect.fail(new BlockNotFoundError({ hash: safeHash }));
+        }
+      }
+
+      if (Option.isSome(update.finalized)) {
+        const finalizedHash = Option.getOrThrow(update.finalized);
+        const finalizedExists = yield* store.hasBlock(finalizedHash);
+        if (!finalizedExists) {
+          return yield* Effect.fail(
+            new BlockNotFoundError({ hash: finalizedHash }),
+          );
+        }
+      }
+
+      yield* Ref.update(state, (current) => ({
+        ...current,
+        forkChoice: {
+          head: Option.some(update.head),
+          safe: update.safe,
+          finalized: update.finalized,
+        },
+      }));
+
+      yield* publishEvent(BlockchainEvent.forkChoiceUpdated(update));
+    });
+
+  const subscribe = () => PubSub.subscribe(events);
+
   const setCanonicalHead = (hash: BlockHashType) =>
     Effect.gen(function* () {
       const orphaned = yield* store.isOrphan(hash);
@@ -264,31 +494,44 @@ const makeBlockchain = Effect.gen(function* () {
         ...current,
         headHash: Option.some(hash),
         headNumber: Option.some(head.header.number),
+        forkChoice: {
+          ...current.forkChoice,
+          head: Option.some(hash),
+        },
       }));
+      yield* updateBestKnownNumber(head.header.number);
+      yield* publishEvent(BlockchainEvent.canonicalHeadUpdated(head));
     });
 
   return {
     getBlockByHash,
     getBlockByNumber,
     putBlock,
+    insertBlock,
+    suggestBlock,
     setCanonicalHead,
     initializeGenesis,
+    getBestKnownNumber,
+    getBestSuggestedBlock,
     getGenesis,
     getHead,
+    getForkChoiceState,
+    forkChoiceUpdated,
+    subscribe,
   } satisfies BlockchainService;
 });
 
 /** Production blockchain layer. */
 export const BlockchainLive: Layer.Layer<Blockchain, never, BlockStore> =
-  Layer.effect(Blockchain, makeBlockchain);
+  Layer.scoped(Blockchain, makeBlockchain);
 
 /** Deterministic blockchain layer for tests. */
 export const BlockchainTest = BlockchainLive.pipe(
   Layer.provide(BlockStoreMemoryTest),
 );
 
-const withBlockchain = <A, E>(
-  f: (service: BlockchainService) => Effect.Effect<A, E>,
+const withBlockchain = <A, E, R>(
+  f: (service: BlockchainService) => Effect.Effect<A, E, R>,
 ) => Effect.flatMap(Blockchain, f);
 
 /** Retrieve a block by hash. */
@@ -303,6 +546,14 @@ export const getBlockByNumber = (number: BlockNumberType) =>
 export const putBlock = (block: BlockType) =>
   withBlockchain((service) => service.putBlock(block));
 
+/** Insert a block into local storage. */
+export const insertBlock = (block: BlockType) =>
+  withBlockchain((service) => service.insertBlock(block));
+
+/** Suggest a block for inclusion. */
+export const suggestBlock = (block: BlockType) =>
+  withBlockchain((service) => service.suggestBlock(block));
+
 /** Set the canonical head hash. */
 export const setCanonicalHead = (hash: BlockHashType) =>
   withBlockchain((service) => service.setCanonicalHead(hash));
@@ -311,9 +562,29 @@ export const setCanonicalHead = (hash: BlockHashType) =>
 export const initializeGenesis = (genesis: BlockType) =>
   withBlockchain((service) => service.initializeGenesis(genesis));
 
+/** Retrieve the highest known block number. */
+export const getBestKnownNumber = () =>
+  withBlockchain((service) => service.getBestKnownNumber());
+
+/** Retrieve the best suggested block, if any. */
+export const getBestSuggestedBlock = () =>
+  withBlockchain((service) => service.getBestSuggestedBlock());
+
 /** Retrieve the genesis block if initialized. */
 export const getGenesis = () =>
   withBlockchain((service) => service.getGenesis());
 
 /** Retrieve the canonical head block if set. */
 export const getHead = () => withBlockchain((service) => service.getHead());
+
+/** Retrieve fork-choice metadata. */
+export const getForkChoiceState = () =>
+  withBlockchain((service) => service.getForkChoiceState());
+
+/** Update fork-choice metadata. */
+export const forkChoiceUpdated = (update: ForkChoiceUpdate) =>
+  withBlockchain((service) => service.forkChoiceUpdated(update));
+
+/** Subscribe to blockchain events. */
+export const subscribeEvents = () =>
+  withBlockchain((service) => service.subscribe());
