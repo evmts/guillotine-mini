@@ -917,12 +917,12 @@ export fn evm_get_log_count(handle: ?*EvmHandle) usize {
 export fn evm_get_log(
     handle: ?*EvmHandle,
     index: usize,
-    address_out: [*]u8,           // 20 bytes
-    topics_count_out: *usize,     // Number of topics
-    topics_out: [*]u8,            // Up to 4 topics * 32 bytes
-    data_len_out: *usize,         // Data length
-    data_out: [*]u8,              // Data buffer
-    data_max_len: usize,          // Max data buffer size
+    address_out: [*]u8, // 20 bytes
+    topics_count_out: *usize, // Number of topics
+    topics_out: [*]u8, // Up to 4 topics * 32 bytes
+    data_len_out: *usize, // Data length
+    data_out: [*]u8, // Data buffer
+    data_max_len: usize, // Max data buffer size
 ) bool {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
@@ -978,9 +978,9 @@ export fn evm_get_storage_change_count(handle: ?*EvmHandle) usize {
 export fn evm_get_storage_change(
     handle: ?*EvmHandle,
     index: usize,
-    address_out: [*]u8,     // 20 bytes
-    slot_out: [*]u8,        // 32 bytes (big-endian u256)
-    value_out: [*]u8,       // 32 bytes (big-endian u256)
+    address_out: [*]u8, // 20 bytes
+    slot_out: [*]u8, // 32 bytes (big-endian u256)
+    value_out: [*]u8, // 32 bytes (big-endian u256)
 ) bool {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));

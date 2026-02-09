@@ -71,7 +71,7 @@ test "LT: basic less than comparison - true" {
     // Setup: 5 < 10 = true (1)
     // Stack order: push b first, then a (so a is on top)
     try frame.pushStack(10); // b (second from top)
-    try frame.pushStack(5);  // a (top of stack)
+    try frame.pushStack(5); // a (top of stack)
 
     const initial_gas = frame.gas_remaining;
 
@@ -104,7 +104,7 @@ test "LT: basic less than comparison - false" {
 
     // Setup: 10 < 5 = false (0)
     // Stack order: push b first, then a (so a is on top)
-    try frame.pushStack(5);  // b (second from top)
+    try frame.pushStack(5); // b (second from top)
     try frame.pushStack(10); // a (top of stack)
 
     // Execute LT
@@ -152,8 +152,8 @@ test "LT: zero comparison" {
     defer frame.deinit();
 
     // Setup: 0 < 1 = true (1)
-    try frame.pushStack(1);  // b (second from top)
-    try frame.pushStack(0);  // a (top of stack)
+    try frame.pushStack(1); // b (second from top)
+    try frame.pushStack(0); // a (top of stack)
 
     // Execute LT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -177,8 +177,8 @@ test "LT: max value comparison" {
 
     // Setup: (max - 1) < max = true (1)
     const max = std.math.maxInt(u256);
-    try frame.pushStack(max);       // b (second from top)
-    try frame.pushStack(max - 1);   // a (top of stack)
+    try frame.pushStack(max); // b (second from top)
+    try frame.pushStack(max - 1); // a (top of stack)
 
     // Execute LT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -251,7 +251,7 @@ test "GT: basic greater than comparison - true" {
     defer frame.deinit();
 
     // Setup: 10 > 5 = true (1)
-    try frame.pushStack(5);  // b (second from top)
+    try frame.pushStack(5); // b (second from top)
     try frame.pushStack(10); // a (top of stack)
 
     const initial_gas = frame.gas_remaining;
@@ -285,7 +285,7 @@ test "GT: basic greater than comparison - false" {
 
     // Setup: 5 > 10 = false (0)
     try frame.pushStack(10); // b (second from top)
-    try frame.pushStack(5);  // a (top of stack)
+    try frame.pushStack(5); // a (top of stack)
 
     // Execute GT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -333,8 +333,8 @@ test "GT: max value comparison" {
 
     // Setup: max > (max - 1) = true (1)
     const max = std.math.maxInt(u256);
-    try frame.pushStack(max - 1);   // b (second from top)
-    try frame.pushStack(max);       // a (top of stack)
+    try frame.pushStack(max - 1); // b (second from top)
+    try frame.pushStack(max); // a (top of stack)
 
     // Execute GT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -385,7 +385,7 @@ test "SLT: basic signed less than - both positive" {
 
     // Setup: 5 < 10 = true (1)
     try frame.pushStack(10); // b (second from top)
-    try frame.pushStack(5);  // a (top of stack)
+    try frame.pushStack(5); // a (top of stack)
 
     const initial_gas = frame.gas_remaining;
 
@@ -419,7 +419,7 @@ test "SLT: both negative" {
     // Setup: -10 < -5 = true (1)
     const neg_10 = @as(u256, @bitCast(@as(i256, -10)));
     const neg_5 = @as(u256, @bitCast(@as(i256, -5)));
-    try frame.pushStack(neg_5);  // b (second from top)
+    try frame.pushStack(neg_5); // b (second from top)
     try frame.pushStack(neg_10); // a (top of stack)
 
     // Execute SLT
@@ -444,8 +444,8 @@ test "SLT: negative less than positive" {
 
     // Setup: -1 < 1 = true (1)
     const neg_1 = @as(u256, @bitCast(@as(i256, -1)));
-    try frame.pushStack(1);      // b (second from top)
-    try frame.pushStack(neg_1);  // a (top of stack)
+    try frame.pushStack(1); // b (second from top)
+    try frame.pushStack(neg_1); // a (top of stack)
 
     // Execute SLT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -469,8 +469,8 @@ test "SLT: positive not less than negative" {
 
     // Setup: 1 < -1 = false (0)
     const neg_1 = @as(u256, @bitCast(@as(i256, -1)));
-    try frame.pushStack(neg_1);  // b (second from top)
-    try frame.pushStack(1);      // a (top of stack)
+    try frame.pushStack(neg_1); // b (second from top)
+    try frame.pushStack(1); // a (top of stack)
 
     // Execute SLT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -495,7 +495,7 @@ test "SLT: MIN_SIGNED boundary" {
     // Setup: MIN_SIGNED < 0 = true (1)
     // MIN_SIGNED is the most negative value
     const MIN_SIGNED = @as(u256, 1) << 255;
-    try frame.pushStack(0);          // b (second from top)
+    try frame.pushStack(0); // b (second from top)
     try frame.pushStack(MIN_SIGNED); // a (top of stack)
 
     // Execute SLT
@@ -522,7 +522,7 @@ test "SLT: MAX_SIGNED boundary" {
     // MAX_SIGNED is the most positive value (2^255 - 1)
     const MAX_SIGNED = (@as(u256, 1) << 255) - 1;
     try frame.pushStack(MAX_SIGNED); // b (second from top)
-    try frame.pushStack(0);          // a (top of stack)
+    try frame.pushStack(0); // a (top of stack)
 
     // Execute SLT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -597,7 +597,7 @@ test "SGT: basic signed greater than - both positive" {
     defer frame.deinit();
 
     // Setup: 10 > 5 = true (1)
-    try frame.pushStack(5);  // b (second from top)
+    try frame.pushStack(5); // b (second from top)
     try frame.pushStack(10); // a (top of stack)
 
     const initial_gas = frame.gas_remaining;
@@ -633,7 +633,7 @@ test "SGT: both negative" {
     const neg_5 = @as(u256, @bitCast(@as(i256, -5)));
     const neg_10 = @as(u256, @bitCast(@as(i256, -10)));
     try frame.pushStack(neg_10); // b (second from top)
-    try frame.pushStack(neg_5);  // a (top of stack)
+    try frame.pushStack(neg_5); // a (top of stack)
 
     // Execute SGT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -657,8 +657,8 @@ test "SGT: positive greater than negative" {
 
     // Setup: 1 > -1 = true (1)
     const neg_1 = @as(u256, @bitCast(@as(i256, -1)));
-    try frame.pushStack(neg_1);  // b (second from top)
-    try frame.pushStack(1);      // a (top of stack)
+    try frame.pushStack(neg_1); // b (second from top)
+    try frame.pushStack(1); // a (top of stack)
 
     // Execute SGT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -682,8 +682,8 @@ test "SGT: negative not greater than positive" {
 
     // Setup: -1 > 1 = false (0)
     const neg_1 = @as(u256, @bitCast(@as(i256, -1)));
-    try frame.pushStack(1);      // b (second from top)
-    try frame.pushStack(neg_1);  // a (top of stack)
+    try frame.pushStack(1); // b (second from top)
+    try frame.pushStack(neg_1); // a (top of stack)
 
     // Execute SGT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -709,7 +709,7 @@ test "SGT: MIN_SIGNED boundary" {
     // Push b first (bottom), then a last (top)
     const MIN_SIGNED = @as(u256, 1) << 255;
     try frame.pushStack(MIN_SIGNED); // b (second from top)
-    try frame.pushStack(0);          // a (top of stack)
+    try frame.pushStack(0); // a (top of stack)
 
     // Execute SGT
     const CompHandlers = @import("handlers_comparison.zig").Handlers(@TypeOf(frame));
@@ -734,7 +734,7 @@ test "SGT: MAX_SIGNED boundary" {
     // Setup: MAX_SIGNED > 0 = true (1)
     // Push b first (bottom), then a last (top)
     const MAX_SIGNED = (@as(u256, 1) << 255) - 1;
-    try frame.pushStack(0);          // b (second from top)
+    try frame.pushStack(0); // b (second from top)
     try frame.pushStack(MAX_SIGNED); // a (top of stack)
 
     // Execute SGT

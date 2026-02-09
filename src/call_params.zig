@@ -270,4 +270,3 @@ pub fn CallParams(config: anytype) type {
         }
     };
 }
-
