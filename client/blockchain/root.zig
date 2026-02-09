@@ -8,6 +8,8 @@ const validator = @import("validator.zig");
 pub const Chain = chain.Chain;
 /// Shared header validation errors.
 pub const ValidationError = validator.ValidationError;
+/// Header validation context.
+pub const HeaderValidationContext = validator.HeaderValidationContext;
 /// Merge-aware header validator.
 pub const merge_header_validator = validator.merge_header_validator;
 
