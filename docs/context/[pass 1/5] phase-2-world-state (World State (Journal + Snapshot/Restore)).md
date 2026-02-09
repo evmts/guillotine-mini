@@ -1,54 +1,67 @@
 # [pass 1/5] phase-2-world-state (World State (Journal + Snapshot/Restore))
 
-**Goals**
+**Goals (from plan)**
 
 - Implement journaled world state with snapshot/restore for transaction processing.
-- Target components from plan: `client/state/account.zig`, `client/state/journal.zig`, `client/state/state.zig` (TypeScript equivalents under `client-ts/`).
-- Follow Nethermind state architecture while using Effect.ts `Context.Tag` + `Layer`.
+- Target components: `client/state/account.zig`, `client/state/journal.zig`, `client/state/state.zig`.
+- Follow Nethermind state architecture, but implement idiomatically in Zig using comptime DI.
 
-**Specs**
+**Spec Files Read**
 
-- `execution-specs/src/ethereum/forks/*/state.py` for state structure, snapshotting, and storage semantics.
-- Yellow Paper Section 4 (World State) for conceptual model and root calculations.
-- EIP-1153 (Transient Storage) appears in Cancun/Prague/Osaka state specs via `TransientStorage`.
+- `execution-specs/src/ethereum/forks/prague/state.py`
 
-**Spec Details Observed (execution-specs)**
+**Spec Details Observed (execution-specs prague)**
 
-- `State` contains a main secured account trie, per-account storage tries, and a snapshot stack; `begin_transaction` copies tries and `commit_transaction`/`rollback_transaction` pops/restores.
-- `state_root` and `storage_root` assert no active snapshots; empty storage uses `EMPTY_TRIE_ROOT`.
-- `set_storage` requires account presence and deletes storage trie if it becomes empty.
-- Cancun adds `created_accounts` and `TransientStorage` with its own snapshot stack; commit/rollback clear `created_accounts` when outermost snapshot completes.
-- Account helpers include `get_account_optional` vs `get_account` (EMPTY_ACCOUNT), `account_exists`, `account_has_code_or_nonce`, `account_has_storage`, `touch_account`, and balance/nonce/code setters.
+- `State` owns a secured main account trie, per-account storage tries, a snapshot stack, and `created_accounts`.
+- `TransientStorage` maintains per-address storage tries with its own snapshot stack.
+- `begin_transaction` pushes copies of main/storage tries and transient storage tries; `commit_transaction` pops snapshots and clears `created_accounts` at outermost depth; `rollback_transaction` restores prior tries and clears `created_accounts` at outermost depth.
+- `get_account` returns `EMPTY_ACCOUNT` when `None`, while `get_account_optional` preserves missing vs empty distinction.
+- State transitions are snapshot-based; state root computation is invalid during an open transaction (per docstring).
 
-**Nethermind References (architecture)**
+**Spec References (not yet opened in this pass)**
 
-- DB interfaces (state persistence hooks): `nethermind/src/Nethermind/Nethermind.Db/IDb.cs`, `IColumnsDb.cs`, `DbProvider.cs`, `DbNames.cs`, `MemDb.cs`.
-- World state layout: `nethermind/src/Nethermind/Nethermind.State/WorldState.cs`, `WorldStateManager.cs`, `StateProvider.cs`, `StateReader.cs`, `StorageTree.cs`, `TransientStorageProvider.cs`.
+- `execution-specs/src/ethereum/forks/*/state.py` (other forks)
+- Yellow Paper Section 4 (World State)
+- EIP-1153 (Transient Storage)
 
-**Voltaire-Effect Primitives/Services To Reuse**
+**Nethermind DB (listed for context)**
 
-- `voltaire-effect/primitives/AccountState` for account schema + `EMPTY_CODE_HASH` and `EMPTY_STORAGE_ROOT`.
-- `voltaire-effect/primitives/State` for `StorageKeyType` and `StorageKeySchema`.
-- `voltaire-effect/primitives/Storage`, `StorageValue`, `StorageDiff` for slot/value modeling.
-- Core primitives: `Address`, `Bytes`, `Bytes32`, `Hash`, `Hex`, `U256`.
-- Hardfork gating: `voltaire-effect/primitives/Hardfork` (`supportsTransientStorage`).
+- `nethermind/src/Nethermind/Nethermind.Db/IDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/IColumnsDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/DbProvider.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/DbNames.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDb.cs`
 
-**Effect.ts Patterns (from effect-repo + client-ts)**
+**Nethermind State (from plan, to inspect next)**
 
-- Use `Context.Tag` for services and `Layer.scoped/succeed` for DI.
-- Use `Effect.gen(function* () { ... })` for sequential logic; pipe for short chains.
-- Use `Effect.acquireRelease` + `Scope` for snapshots and resource lifecycle.
-- Use `Schema` at boundaries, typed `Data.TaggedError`, and typed error channels.
+- `nethermind/src/Nethermind/Nethermind.State/WorldState.cs`
+- `nethermind/src/Nethermind/Nethermind.State/WorldStateManager.cs`
+- `nethermind/src/Nethermind/Nethermind.State/StateProvider.cs`
+- `nethermind/src/Nethermind/Nethermind.State/StateReader.cs`
+- `nethermind/src/Nethermind/Nethermind.State/StorageTree.cs`
+- `nethermind/src/Nethermind/Nethermind.State/TransientStorageProvider.cs`
 
-**Existing client-ts Code Patterns**
+**Voltaire Zig APIs (actual location differs from prompt)**
 
-- DB service in `client-ts/db/Db.ts` mirrors Nethermind flags, uses `Context.Tag`, `Layer.scoped`, `Schema`, `Effect.acquireRelease`, and `Effect.gen`.
-- Trie hashing in `client-ts/trie/hash.ts` exposes a `TrieHash` service with `Layer.succeed` and typed errors.
-- Trie node types in `client-ts/trie/Node.ts` alias Voltaire primitives (`Bytes`, `Hash`, `Rlp`).
-- Tests in `client-ts/db/*.test.ts` use `@effect/vitest` `it.effect()` and provide layers via `Effect.provide`.
+- Expected path in prompt: `/Users/williamcory/voltaire/packages/voltaire-zig/src/` (not present).
+- Found Zig sources at `/Users/williamcory/voltaire/src/`.
+- `state-manager/root.zig`: re-exports `StateManager`, `JournaledState`, `StateCache` types, `ForkBackend`.
+- `state-manager/JournaledState.zig`: `init`, `getAccount`, `putAccount`, `getStorage`, `putStorage`, `getCode`, `putCode`, `checkpoint`, `revert`, `commit`.
+- `state-manager/StateCache.zig`: account/storage/contract caches with journaling.
+- `primitives/root.zig`: `AccountState`, `Address`, `Bytes`, `Bytes32`, `Hash`, `Nonce`, `State` and other core types.
+- `primitives/trie.zig`: `Trie`, `TrieMask`, `keyToNibbles`, `nibblesToKey` and trie helpers.
+
+**Existing Zig EVM Host Interface**
+
+- `src/host.zig`: `HostInterface` with vtable for `getBalance`, `setBalance`, `getCode`, `setCode`, `getStorage`, `setStorage`, `getNonce`, `setNonce`.
 
 **Test Fixtures**
 
-- `ethereum-tests/fixtures_general_state_tests.tgz` (GeneralStateTests bundle referenced by plan/specs).
-- `ethereum-tests/TrieTests/` (relevant for state trie behavior).
-- `execution-spec-tests/` exists but is empty in this repo snapshot.
+- `ethereum-tests/fixtures_general_state_tests.tgz` (GeneralStateTests bundle)
+- `ethereum-tests/TrieTests/`
+- `execution-spec-tests/fixtures/state_tests/` (present in spec mapping; verify contents later)
+
+**Notes**
+
+- Path mismatch for Voltaire Zig sources should be resolved before implementation (confirm correct import path for this repo).
