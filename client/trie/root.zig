@@ -52,3 +52,17 @@ test {
     // Ensure all sub-modules compile and their tests run.
     @import("std").testing.refAllDecls(@This());
 }
+
+test "client_trie public API smoke" {
+    const std = @import("std");
+    const testing = std.testing;
+
+    var trie_instance = Trie.init(testing.allocator);
+    defer trie_instance.deinit();
+    try testing.expect(trie_instance.root_hash() == null);
+
+    const empty_keys: [0][]const u8 = .{};
+    const empty_values: [0][]const u8 = .{};
+    const root = try trie_root(testing.allocator, &empty_keys, &empty_values);
+    try testing.expectEqual(EMPTY_TRIE_ROOT, root);
+}
