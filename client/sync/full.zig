@@ -27,6 +27,7 @@ pub const BlocksRequest = struct {
     /// Optional arena owning response buffers. Must be deinit'd by caller.
     response_arena: ?std.heap.ArenaAllocator = null,
 
+    /// Errors returned when response slices do not align with requested headers.
     pub const ResponseAlignmentError = error{
         BodyAlignmentMismatch,
         ReceiptAlignmentMismatch,
@@ -45,7 +46,7 @@ pub const BlocksRequest = struct {
 
     /// Initialize a request that owns response buffers via an arena allocator.
     /// Call `deinit` when the response data is no longer needed.
-    pub fn initOwned(
+    pub fn init_owned(
         body_headers: []const BlockHeader.BlockHeader,
         receipt_headers: []const BlockHeader.BlockHeader,
         allocator: std.mem.Allocator,
@@ -60,12 +61,12 @@ pub const BlocksRequest = struct {
     }
 
     /// True if there are no body or receipt requests.
-    pub fn isEmpty(self: BlocksRequest) bool {
+    pub fn is_empty(self: BlocksRequest) bool {
         return self.body_headers.len == 0 and self.receipt_headers.len == 0;
     }
 
     /// Return the allocator backing the owned response arena, if present.
-    pub fn responseAllocator(self: *BlocksRequest) ?std.mem.Allocator {
+    pub fn response_allocator(self: *BlocksRequest) ?std.mem.Allocator {
         if (self.response_arena) |*arena| {
             return arena.allocator();
         }
@@ -83,19 +84,21 @@ pub const BlocksRequest = struct {
     }
 
     /// Set bodies response, enforcing alignment with `body_headers`.
-    pub fn setBodies(self: *BlocksRequest, bodies: []const ?BlockBody.BlockBody) ResponseAlignmentError!void {
-        if (bodies.len != self.body_headers.len) {
-            return ResponseAlignmentError.BodyAlignmentMismatch;
-        }
+    pub fn set_bodies(self: *BlocksRequest, bodies: []const ?BlockBody.BlockBody) ResponseAlignmentError!void {
+        try ensure_alignment(self.body_headers.len, bodies.len, ResponseAlignmentError.BodyAlignmentMismatch);
         self.bodies = bodies;
     }
 
     /// Set receipts response, enforcing alignment with `receipt_headers`.
-    pub fn setReceipts(self: *BlocksRequest, receipts: []const ?[]const Receipt.Receipt) ResponseAlignmentError!void {
-        if (receipts.len != self.receipt_headers.len) {
-            return ResponseAlignmentError.ReceiptAlignmentMismatch;
-        }
+    pub fn set_receipts(self: *BlocksRequest, receipts: []const ?[]const Receipt.Receipt) ResponseAlignmentError!void {
+        try ensure_alignment(self.receipt_headers.len, receipts.len, ResponseAlignmentError.ReceiptAlignmentMismatch);
         self.receipts = receipts;
+    }
+
+    fn ensure_alignment(expected_len: usize, actual_len: usize, err: ResponseAlignmentError) ResponseAlignmentError!void {
+        if (actual_len != expected_len) {
+            return err;
+        }
     }
 };
 
@@ -105,12 +108,12 @@ pub const BlocksRequest = struct {
 
 test "BlocksRequest.empty returns empty slices and null responses" {
     const req = BlocksRequest.empty();
-    try std.testing.expect(req.isEmpty());
+    try std.testing.expect(req.is_empty());
     try std.testing.expect(req.bodies == null);
     try std.testing.expect(req.receipts == null);
 }
 
-test "BlocksRequest.isEmpty detects pending body hashes" {
+test "BlocksRequest.is_empty detects pending body hashes" {
     const headers = &[_]BlockHeader.BlockHeader{BlockHeader.init()};
     const req = BlocksRequest{
         .body_headers = headers,
@@ -118,10 +121,10 @@ test "BlocksRequest.isEmpty detects pending body hashes" {
         .bodies = null,
         .receipts = null,
     };
-    try std.testing.expect(!req.isEmpty());
+    try std.testing.expect(!req.is_empty());
 }
 
-test "BlocksRequest.isEmpty detects pending receipt hashes" {
+test "BlocksRequest.is_empty detects pending receipt hashes" {
     const headers = &[_]BlockHeader.BlockHeader{BlockHeader.init()};
     const req = BlocksRequest{
         .body_headers = &[_]BlockHeader.BlockHeader{},
@@ -129,10 +132,10 @@ test "BlocksRequest.isEmpty detects pending receipt hashes" {
         .bodies = null,
         .receipts = null,
     };
-    try std.testing.expect(!req.isEmpty());
+    try std.testing.expect(!req.is_empty());
 }
 
-test "BlocksRequest.setBodies enforces alignment and allows missing entries" {
+test "BlocksRequest.set_bodies enforces alignment and allows missing entries" {
     const headers = &[_]BlockHeader.BlockHeader{ BlockHeader.init(), BlockHeader.init() };
     var req = BlocksRequest{
         .body_headers = headers,
@@ -142,16 +145,16 @@ test "BlocksRequest.setBodies enforces alignment and allows missing entries" {
     };
 
     const misaligned = &[_]?BlockBody.BlockBody{BlockBody.init()};
-    try std.testing.expectError(BlocksRequest.ResponseAlignmentError.BodyAlignmentMismatch, req.setBodies(misaligned));
+    try std.testing.expectError(BlocksRequest.ResponseAlignmentError.BodyAlignmentMismatch, req.set_bodies(misaligned));
 
     const aligned = &[_]?BlockBody.BlockBody{ null, BlockBody.init() };
-    try req.setBodies(aligned);
+    try req.set_bodies(aligned);
     try std.testing.expect(req.bodies != null);
     try std.testing.expect(req.bodies.?.len == headers.len);
     try std.testing.expect(req.bodies.?[0] == null);
 }
 
-test "BlocksRequest.setReceipts enforces alignment and allows missing entries" {
+test "BlocksRequest.set_receipts enforces alignment and allows missing entries" {
     const headers = &[_]BlockHeader.BlockHeader{ BlockHeader.init(), BlockHeader.init() };
     var req = BlocksRequest{
         .body_headers = &[_]BlockHeader.BlockHeader{},
@@ -161,30 +164,30 @@ test "BlocksRequest.setReceipts enforces alignment and allows missing entries" {
     };
 
     const misaligned = &[_]?[]const Receipt.Receipt{null};
-    try std.testing.expectError(BlocksRequest.ResponseAlignmentError.ReceiptAlignmentMismatch, req.setReceipts(misaligned));
+    try std.testing.expectError(BlocksRequest.ResponseAlignmentError.ReceiptAlignmentMismatch, req.set_receipts(misaligned));
 
     const empty_receipts = &[_]Receipt.Receipt{};
     const aligned = &[_]?[]const Receipt.Receipt{ null, empty_receipts };
-    try req.setReceipts(aligned);
+    try req.set_receipts(aligned);
     try std.testing.expect(req.receipts != null);
     try std.testing.expect(req.receipts.?.len == headers.len);
     try std.testing.expect(req.receipts.?[0] == null);
 }
 
-test "BlocksRequest.responseAllocator is null for unowned requests" {
+test "BlocksRequest.response_allocator is null for unowned requests" {
     var req = BlocksRequest.empty();
-    try std.testing.expect(req.responseAllocator() == null);
+    try std.testing.expect(req.response_allocator() == null);
 }
 
-test "BlocksRequest.initOwned provisions response arena and deinit clears it" {
+test "BlocksRequest.init_owned provisions response arena and deinit clears it" {
     const headers = &[_]BlockHeader.BlockHeader{BlockHeader.init()};
-    var req = BlocksRequest.initOwned(headers, &[_]BlockHeader.BlockHeader{}, std.testing.allocator);
-    const arena_alloc = req.responseAllocator().?;
+    var req = BlocksRequest.init_owned(headers, &[_]BlockHeader.BlockHeader{}, std.testing.allocator);
+    const arena_alloc = req.response_allocator().?;
     const buffer = try arena_alloc.alloc(u8, 4);
     buffer[0] = 1;
 
     req.deinit();
-    try std.testing.expect(req.responseAllocator() == null);
+    try std.testing.expect(req.response_allocator() == null);
     try std.testing.expect(req.bodies == null);
     try std.testing.expect(req.receipts == null);
 }
