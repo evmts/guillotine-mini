@@ -98,6 +98,12 @@ pub fn trie_root(
         return EMPTY_TRIE_ROOT;
     }
 
+    for (values) |value| {
+        if (value.len == 0) {
+            return TrieError.EmptyInput;
+        }
+    }
+
     // Convert keys to nibble form
     var nibble_keys = try allocator.alloc([]u8, keys.len);
     defer {
@@ -557,6 +563,14 @@ test "trie_root - rejects mismatched key/value lengths" {
     const values = [_][]const u8{ "verb", "extra" };
 
     try testing.expectError(TrieError.InvalidKey, trie_root(allocator, &keys, &values));
+}
+
+test "trie_root - rejects empty value" {
+    const allocator = testing.allocator;
+    const keys = [_][]const u8{"do"};
+    const values = [_][]const u8{""};
+
+    try testing.expectError(TrieError.EmptyInput, trie_root(allocator, &keys, &values));
 }
 
 test "trie_root - single entry" {
