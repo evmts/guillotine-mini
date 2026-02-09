@@ -27,6 +27,7 @@ const evm_mod = @import("evm");
 const HostInterface = evm_mod.HostInterface;
 const state_manager_mod = @import("state-manager");
 const StateManager = state_manager_mod.StateManager;
+const ForkBackend = state_manager_mod.ForkBackend;
 const primitives = @import("primitives");
 const Address = primitives.Address;
 
@@ -110,10 +111,14 @@ pub const HostAdapter = struct {
 
     fn get_storage(ptr: *anyopaque, address: Address, slot: u256) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getStorage(address, slot) catch |err| {
+        return self.get_storage_checked(address, slot) catch |err| {
             log.err("getStorage failed for {any} slot {}: {any}", .{ address, slot, err });
             std.debug.panic("getStorage failed for {any} slot {}: {any}", .{ address, slot, err });
         };
+    }
+
+    fn get_storage_checked(self: *Self, address: Address, slot: u256) !u256 {
+        return self.state.getStorage(address, slot);
     }
 
     fn set_storage(ptr: *anyopaque, address: Address, slot: u256, value: u256) void {
@@ -291,6 +296,21 @@ test "HostAdapter — getters return safe defaults for non-existent accounts" {
     try std.testing.expectEqual(@as(u64, 0), host.getNonce(unknown));
     try std.testing.expectEqual(@as(u256, 0), host.getStorage(unknown, 42));
     try std.testing.expectEqual(@as(usize, 0), host.getCode(unknown).len);
+}
+
+test "HostAdapter — storage read surfaces backend errors" {
+    const allocator = std.testing.allocator;
+    var fork = try ForkBackend.init(allocator, "latest", .{});
+    defer fork.deinit();
+
+    var state = try StateManager.init(allocator, &fork);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    const addr = Address{ .bytes = [_]u8{0xAB} ++ [_]u8{0} ** 19 };
+
+    const result = adapter.get_storage_checked(addr, 1);
+    try std.testing.expectError(error.RpcPending, result);
 }
 
 test "HostAdapter — setters panic on failure (policy check)" {
