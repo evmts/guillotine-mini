@@ -17,6 +17,17 @@ const intrinsic_gas = @import("intrinsic_gas.zig");
 const calculate_intrinsic_gas = intrinsic_gas.calculate_intrinsic_gas;
 const MAX_INIT_CODE_SIZE = intrinsic_gas.MAX_INIT_CODE_SIZE;
 
+fn assert_supported_tx_type(comptime Tx: type, comptime context: []const u8) void {
+    if (Tx != tx_mod.LegacyTransaction and
+        Tx != tx_mod.Eip2930Transaction and
+        Tx != tx_mod.Eip1559Transaction and
+        Tx != tx_mod.Eip4844Transaction and
+        Tx != tx_mod.Eip7702Transaction)
+    {
+        @compileError("Unsupported transaction type for " ++ context);
+    }
+}
+
 /// Validate a transaction per execution-specs and return its intrinsic gas.
 ///
 /// This performs the static checks that do not require state access:
@@ -28,16 +39,7 @@ pub fn validate_transaction(
     hardfork: Hardfork,
 ) error{ InsufficientGas, NonceOverflow, InitCodeTooLarge, UnsupportedTransactionType }!u64 {
     const Tx = @TypeOf(tx);
-    comptime {
-        if (Tx != tx_mod.LegacyTransaction and
-            Tx != tx_mod.Eip2930Transaction and
-            Tx != tx_mod.Eip1559Transaction and
-            Tx != tx_mod.Eip4844Transaction and
-            Tx != tx_mod.Eip7702Transaction)
-        {
-            @compileError("Unsupported transaction type for validate_transaction");
-        }
-    }
+    comptime assert_supported_tx_type(Tx, "validate_transaction");
 
     const required_fork: ?Hardfork = comptime blk: {
         if (Tx == tx_mod.Eip2930Transaction) break :blk .BERLIN;
@@ -76,16 +78,7 @@ pub fn calculate_effective_gas_price(
     base_fee_per_gas: u256,
 ) error{ PriorityFeeGreaterThanMaxFee, InsufficientMaxFeePerGas, GasPriceBelowBaseFee, UnsupportedTransactionType }!u256 {
     const Tx = @TypeOf(tx);
-    comptime {
-        if (Tx != tx_mod.LegacyTransaction and
-            Tx != tx_mod.Eip2930Transaction and
-            Tx != tx_mod.Eip1559Transaction and
-            Tx != tx_mod.Eip4844Transaction and
-            Tx != tx_mod.Eip7702Transaction)
-        {
-            @compileError("Unsupported transaction type for calculate_effective_gas_price");
-        }
-    }
+    comptime assert_supported_tx_type(Tx, "calculate_effective_gas_price");
 
     if (comptime Tx == tx_mod.LegacyTransaction or Tx == tx_mod.Eip2930Transaction) {
         if (tx.gas_price < base_fee_per_gas) return error.GasPriceBelowBaseFee;
