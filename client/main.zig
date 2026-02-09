@@ -38,7 +38,7 @@ pub fn main() !void {
     try run(EvmType, allocator, args, std.io.getStdOut().writer());
 }
 
-pub fn run(
+fn run(
     comptime EvmType: type,
     allocator: std.mem.Allocator,
     args: []const []const u8,
