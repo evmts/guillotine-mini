@@ -483,7 +483,7 @@ test "calculate_effective_gas_price — eip1559 caps priority fee" {
         .chain_id = 1,
         .nonce = 0,
         .max_priority_fee_per_gas = 20,
-        .max_fee_per_gas = 15,
+        .max_fee_per_gas = 25,
         .gas_limit = intrinsic_gas.TX_BASE_COST,
         .to = Address{ .bytes = [_]u8{0x12} ++ [_]u8{0} ** 19 },
         .value = 0,
@@ -495,7 +495,7 @@ test "calculate_effective_gas_price — eip1559 caps priority fee" {
     };
 
     const effective = try calculate_effective_gas_price(tx, 10);
-    try std.testing.expectEqual(@as(u256, 15), effective);
+    try std.testing.expectEqual(@as(u256, 25), effective);
 }
 
 test "calculate_effective_gas_price — eip1559 priority fee above max fee" {
