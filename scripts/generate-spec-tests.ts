@@ -15,7 +15,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-const SPECS_DIR = 'execution-specs/tests/eest/static';
+const STATE_SPECS_DIR = path.join('execution-specs', 'tests', 'eest', 'static', 'state_tests');
+const BLOCKCHAIN_SPECS_DIR = path.join('execution-spec-tests', 'fixtures', 'blockchain_tests');
 const OUTPUT_DIR = 'test/specs/generated';
 
 /**
@@ -46,7 +47,7 @@ function findTestFiles(dir: string): string[] {
 /**
  * Generate test file for a JSON fixture
  */
-function generateTestFile(jsonPath: string, outputDir: string): void {
+function generateTestFile(jsonPath: string, outputDir: string, specsDir: string): void {
   // Read JSON file
   const jsonContent = fs.readFileSync(jsonPath, 'utf8');
   let fixture: any;
@@ -65,7 +66,7 @@ function generateTestFile(jsonPath: string, outputDir: string): void {
   }
 
   // Calculate relative paths
-  const relativePath = path.relative(SPECS_DIR, jsonPath);
+  const relativePath = path.relative(specsDir, jsonPath);
   const outputPath = path.join(outputDir, relativePath.replace('.json', '.test.ts'));
 
   // Ensure output directory exists
@@ -120,8 +121,8 @@ function main() {
   console.log(`Generating ${testType} tests...`);
 
   // Find test files
-  const testDir = path.join(SPECS_DIR, testType === 'state' ? 'state_tests' : 'blockchain_tests');
-  const testFiles = findTestFiles(testDir);
+  const specsDir = testType === 'state' ? STATE_SPECS_DIR : BLOCKCHAIN_SPECS_DIR;
+  const testFiles = findTestFiles(specsDir);
 
   console.log(`Found ${testFiles.length} test files`);
 
@@ -135,7 +136,7 @@ function main() {
   // Generate test files
   let generated = 0;
   for (const testFile of testFiles) {
-    generateTestFile(testFile, outputDir);
+    generateTestFile(testFile, outputDir, specsDir);
     generated++;
 
     if (generated % 100 === 0) {
