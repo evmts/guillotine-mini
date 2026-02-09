@@ -166,3 +166,132 @@ pub const AccessListSnapshot = struct {
         self.slots.deinit();
     }
 };
+
+test "AccessListManager: address warm tracking" {
+    const allocator = std.testing.allocator;
+    var manager = AccessListManager.init(allocator);
+    defer manager.deinit();
+
+    const addr = Address{ .bytes = [_]u8{0x01} ** 20 };
+    try std.testing.expect(!manager.isAddressWarm(addr));
+
+    const cold_cost = try manager.accessAddress(addr);
+    try std.testing.expectEqual(gas_constants.ColdAccountAccessCost, cold_cost);
+    try std.testing.expect(manager.isAddressWarm(addr));
+
+    const warm_cost = try manager.accessAddress(addr);
+    try std.testing.expectEqual(gas_constants.WarmStorageReadCost, warm_cost);
+}
+
+test "AccessListManager: storage slot warm tracking" {
+    const allocator = std.testing.allocator;
+    var manager = AccessListManager.init(allocator);
+    defer manager.deinit();
+
+    const addr = Address{ .bytes = [_]u8{0x02} ** 20 };
+    const slot: u256 = 0x10;
+
+    try std.testing.expect(!manager.isStorageSlotWarm(addr, slot));
+
+    const cold_cost = try manager.accessStorageSlot(addr, slot);
+    try std.testing.expectEqual(gas_constants.ColdSloadCost, cold_cost);
+    try std.testing.expect(manager.isStorageSlotWarm(addr, slot));
+
+    const warm_cost = try manager.accessStorageSlot(addr, slot);
+    try std.testing.expectEqual(gas_constants.WarmStorageReadCost, warm_cost);
+}
+
+test "AccessListManager: preWarmAddresses and preWarmStorageSlots" {
+    const allocator = std.testing.allocator;
+    var manager = AccessListManager.init(allocator);
+    defer manager.deinit();
+
+    const addr1 = Address{ .bytes = [_]u8{0x03} ** 20 };
+    const addr2 = Address{ .bytes = [_]u8{0x04} ** 20 };
+    const addresses = [_]Address{ addr1, addr2 };
+
+    try manager.preWarmAddresses(addresses[0..]);
+    try std.testing.expect(manager.isAddressWarm(addr1));
+    try std.testing.expect(manager.isAddressWarm(addr2));
+
+    const slot1: u256 = 0x11;
+    const slot2: u256 = 0x12;
+    const key1 = StorageKey{ .address = addr1.bytes, .slot = slot1 };
+    const key2 = StorageKey{ .address = addr2.bytes, .slot = slot2 };
+    const keys = [_]StorageKey{ key1, key2 };
+
+    try manager.preWarmStorageSlots(keys[0..]);
+    try std.testing.expect(manager.isStorageSlotWarm(addr1, slot1));
+    try std.testing.expect(manager.isStorageSlotWarm(addr2, slot2));
+}
+
+test "AccessListManager: preWarmFromAccessList" {
+    const allocator = std.testing.allocator;
+    var manager = AccessListManager.init(allocator);
+    defer manager.deinit();
+
+    const addr = Address{ .bytes = [_]u8{0x05} ** 20 };
+    var storage_keys = [_][32]u8{
+        [_]u8{0} ** 32,
+        [_]u8{0} ** 32,
+    };
+    std.mem.writeInt(u256, &storage_keys[0], 0x21, .big);
+    std.mem.writeInt(u256, &storage_keys[1], 0x22, .big);
+
+    const entries = [_]primitives.AccessList.AccessListEntry{
+        .{
+            .address = addr,
+            .storage_keys = storage_keys[0..],
+        },
+    };
+    const access_list: AccessList = entries[0..];
+
+    try manager.preWarmFromAccessList(access_list);
+
+    try std.testing.expect(manager.isAddressWarm(addr));
+    try std.testing.expect(manager.isStorageSlotWarm(addr, 0x21));
+    try std.testing.expect(manager.isStorageSlotWarm(addr, 0x22));
+}
+
+test "AccessListManager: snapshot and restore" {
+    const allocator = std.testing.allocator;
+    var manager = AccessListManager.init(allocator);
+    defer manager.deinit();
+
+    const addr1 = Address{ .bytes = [_]u8{0x06} ** 20 };
+    const addr2 = Address{ .bytes = [_]u8{0x07} ** 20 };
+    const slot1: u256 = 0x31;
+    const slot2: u256 = 0x32;
+
+    _ = try manager.accessAddress(addr1);
+    _ = try manager.accessStorageSlot(addr1, slot1);
+
+    var snap = try manager.snapshot();
+    defer snap.deinit();
+
+    _ = try manager.accessAddress(addr2);
+    _ = try manager.accessStorageSlot(addr2, slot2);
+    try std.testing.expect(manager.isAddressWarm(addr2));
+    try std.testing.expect(manager.isStorageSlotWarm(addr2, slot2));
+
+    try manager.restore(snap);
+
+    try std.testing.expect(manager.isAddressWarm(addr1));
+    try std.testing.expect(manager.isStorageSlotWarm(addr1, slot1));
+    try std.testing.expect(!manager.isAddressWarm(addr2));
+    try std.testing.expect(!manager.isStorageSlotWarm(addr2, slot2));
+}
+
+test "AccessListManager: clear resets warm sets" {
+    const allocator = std.testing.allocator;
+    var manager = AccessListManager.init(allocator);
+    defer manager.deinit();
+
+    const addr = Address{ .bytes = [_]u8{0x08} ** 20 };
+    _ = try manager.accessAddress(addr);
+    try std.testing.expect(manager.isAddressWarm(addr));
+
+    manager.clear();
+
+    try std.testing.expect(!manager.isAddressWarm(addr));
+}
