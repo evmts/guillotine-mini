@@ -30,6 +30,7 @@ const state_manager_mod = @import("state-manager");
 const StateManager = state_manager_mod.StateManager;
 const primitives = @import("primitives");
 const Address = primitives.Address;
+const StorageKey = primitives.StorageKey;
 
 /// Adapts a Voltaire `StateManager` to the guillotine-mini `HostInterface` vtable.
 ///
@@ -44,12 +45,20 @@ const Address = primitives.Address;
 /// ```
 pub const HostAdapter = struct {
     state: *StateManager,
+    deleted_storage: std.AutoHashMap(StorageKey, void),
 
     const Self = @This();
 
     /// Create a new HostAdapter wrapping the given StateManager.
     pub fn init(state: *StateManager) Self {
-        return .{ .state = state };
+        return .{
+            .state = state,
+            .deleted_storage = std.AutoHashMap(StorageKey, void).init(state.allocator),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.deleted_storage.deinit();
     }
 
     /// Return a `HostInterface` vtable that delegates to the wrapped StateManager.
@@ -107,6 +116,8 @@ pub const HostAdapter = struct {
 
     fn get_storage(ptr: *anyopaque, address: Address, slot: u256) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
+        const key = StorageKey{ .address = address.bytes, .slot = slot };
+        if (self.deleted_storage.contains(key)) return 0;
         return self.state.getStorage(address, slot) catch |err| {
             std.debug.panic("getStorage failed for {any} slot {}: {any}", .{ address, slot, err });
         };
@@ -114,9 +125,19 @@ pub const HostAdapter = struct {
 
     fn set_storage(ptr: *anyopaque, address: Address, slot: u256, value: u256) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
+        const key = StorageKey{ .address = address.bytes, .slot = slot };
+        if (value == 0) {
+            self.deleted_storage.put(key, {}) catch |err| {
+                std.debug.panic("setStorage failed to track delete for {any} slot {}: {any}", .{ address, slot, err });
+            };
+            _ = self.state.journaled_state.storage_cache.delete(address, slot);
+            return;
+        }
+
         self.state.setStorage(address, slot, value) catch |err| {
             std.debug.panic("setStorage failed for {any} slot {}: {any}", .{ address, slot, err });
         };
+        _ = self.deleted_storage.remove(key);
     }
 
     fn get_nonce(ptr: *anyopaque, address: Address) u64 {
@@ -144,6 +165,7 @@ test "HostAdapter — getBalance/setBalance round-trip" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
+    defer adapter.deinit();
     const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0xAA} ++ [_]u8{0} ** 19 };
@@ -166,6 +188,7 @@ test "HostAdapter — getNonce/setNonce round-trip" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
+    defer adapter.deinit();
     const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0xBB} ++ [_]u8{0} ** 19 };
@@ -182,6 +205,7 @@ test "HostAdapter — getStorage/setStorage round-trip" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
+    defer adapter.deinit();
     const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0xCC} ++ [_]u8{0} ** 19 };
@@ -199,6 +223,7 @@ test "HostAdapter — getCode/setCode round-trip" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
+    defer adapter.deinit();
     const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0xDD} ++ [_]u8{0} ** 19 };
@@ -216,6 +241,7 @@ test "HostAdapter — getCode/setCode round-trip" {
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
+    defer adapter.deinit();
     const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0xDD} ++ [_]u8{0} ** 19 };
@@ -235,6 +261,7 @@ test "HostAdapter — StateManager checkpoint/revert propagates through adapter"
     defer state.deinit();
 
     var adapter = HostAdapter.init(&state);
+    defer adapter.deinit();
     const host = adapter.host_interface();
 
     const addr = Address{ .bytes = [_]u8{0xEE} ++ [_]u8{0} ** 19 };
