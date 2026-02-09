@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
-import { Address } from "voltaire-effect/primitives";
+import { Address, Hex } from "voltaire-effect/primitives";
 import {
   EMPTY_ACCOUNT,
   isTotallyEmpty,
@@ -14,9 +14,11 @@ import {
   destroyAccount,
   getAccount,
   getAccountOptional,
+  getStorage,
   markAccountCreated,
   restoreSnapshot,
   setAccount,
+  setStorage,
   takeSnapshot,
   wasAccountCreated,
 } from "./State";
@@ -33,6 +35,24 @@ const makeAddress = (lastByte: number): Address.AddressType => {
   addr[addr.length - 1] = lastByte;
   return addr;
 };
+
+type StorageSlotType = Parameters<typeof getStorage>[1];
+type StorageValueType = Parameters<typeof setStorage>[2];
+
+const makeSlot = (lastByte: number): StorageSlotType => {
+  const value = new Uint8Array(32);
+  value[value.length - 1] = lastByte;
+  return value as StorageSlotType;
+};
+
+const makeStorageValue = (byte: number): StorageValueType => {
+  const value = new Uint8Array(32);
+  value.fill(byte);
+  return value as StorageValueType;
+};
+
+const storageValueHex = (value: Uint8Array) => Hex.fromBytes(value);
+const ZERO_STORAGE_VALUE = makeStorageValue(0);
 
 const provideWorldState = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(WorldStateTest));
@@ -73,6 +93,84 @@ describe("WorldState", () => {
         yield* destroyAccount(addr);
         const deleted = yield* getAccountOptional(addr);
         assert.isNull(deleted);
+      }),
+    ),
+  );
+
+  it.effect("returns zero for missing storage slots", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(10);
+        const slot = makeSlot(0);
+        const value = yield* getStorage(addr, slot);
+        assert.strictEqual(
+          storageValueHex(value),
+          storageValueHex(ZERO_STORAGE_VALUE),
+        );
+      }),
+    ),
+  );
+
+  it.effect("sets, updates, and clears storage slots", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(11);
+        const slot = makeSlot(1);
+        const valueA = makeStorageValue(5);
+        const valueB = makeStorageValue(9);
+
+        yield* setStorage(addr, slot, valueA);
+        const created = yield* getStorage(addr, slot);
+        assert.strictEqual(storageValueHex(created), storageValueHex(valueA));
+
+        yield* setStorage(addr, slot, valueB);
+        const updated = yield* getStorage(addr, slot);
+        assert.strictEqual(storageValueHex(updated), storageValueHex(valueB));
+
+        yield* setStorage(addr, slot, ZERO_STORAGE_VALUE);
+        const cleared = yield* getStorage(addr, slot);
+        assert.strictEqual(
+          storageValueHex(cleared),
+          storageValueHex(ZERO_STORAGE_VALUE),
+        );
+      }),
+    ),
+  );
+
+  it.effect("restores storage snapshot changes", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(12);
+        const slot = makeSlot(2);
+        const valueA = makeStorageValue(3);
+        const valueB = makeStorageValue(7);
+
+        yield* setStorage(addr, slot, valueA);
+        const snapshot = yield* takeSnapshot();
+        yield* setStorage(addr, slot, valueB);
+
+        yield* restoreSnapshot(snapshot);
+        const reverted = yield* getStorage(addr, slot);
+        assert.strictEqual(storageValueHex(reverted), storageValueHex(valueA));
+      }),
+    ),
+  );
+
+  it.effect("commits storage snapshot changes", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(13);
+        const slot = makeSlot(3);
+        const valueA = makeStorageValue(6);
+        const valueB = makeStorageValue(8);
+
+        yield* setStorage(addr, slot, valueA);
+        const snapshot = yield* takeSnapshot();
+        yield* setStorage(addr, slot, valueB);
+
+        yield* commitSnapshot(snapshot);
+        const committed = yield* getStorage(addr, slot);
+        assert.strictEqual(storageValueHex(committed), storageValueHex(valueB));
       }),
     ),
   );
