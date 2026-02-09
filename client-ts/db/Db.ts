@@ -252,6 +252,61 @@ const decodeKey = (keyHex: string): BytesType =>
 const cloneBytes = (value: BytesType): BytesType =>
   Hex.toBytes(Hex.fromBytes(value)) as BytesType;
 
+const mergeUnsupportedError = () =>
+  new DbError({ message: "Merge is not supported by the memory DB" });
+
+const failMergeUnsupported = () => Effect.fail(mergeUnsupportedError());
+
+const listEntries = (
+  store: Map<string, BytesType>,
+  ordered = false,
+): ReadonlyArray<DbEntry> => {
+  const entries = Array.from(store.entries());
+  if (ordered) {
+    entries.sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0,
+    );
+  }
+  return entries.map(([keyHex, value]) => ({
+    key: decodeKey(keyHex),
+    value: cloneBytes(value),
+  }));
+};
+
+const makeReader = (store: Map<string, BytesType>): DbSnapshot => {
+  const getEntries = (ordered = false) => listEntries(store, ordered);
+
+  const getAll = (ordered?: boolean) =>
+    Effect.sync(() => getEntries(Boolean(ordered)));
+
+  const getAllKeys = (ordered?: boolean) =>
+    Effect.sync(() => getEntries(Boolean(ordered)).map((entry) => entry.key));
+
+  const getAllValues = (ordered?: boolean) =>
+    Effect.sync(() => getEntries(Boolean(ordered)).map((entry) => entry.value));
+
+  const get = (key: BytesType, _flags?: ReadFlags) =>
+    Effect.gen(function* () {
+      const keyHex = yield* encodeKey(key);
+      const value = store.get(keyHex);
+      return pipe(Option.fromNullable(value), Option.map(cloneBytes));
+    });
+
+  const has = (key: BytesType) =>
+    Effect.gen(function* () {
+      const keyHex = yield* encodeKey(key);
+      return store.has(keyHex);
+    });
+
+  return {
+    get,
+    getAll,
+    getAllKeys,
+    getAllValues,
+    has,
+  };
+};
+
 type PreparedWriteOp =
   | {
       readonly _tag: "put";
@@ -271,36 +326,7 @@ const makeMemoryDb = (config: DbConfig) =>
       (map) => Effect.sync(() => map.clear()),
     );
 
-    const getEntries = (ordered = false): ReadonlyArray<DbEntry> => {
-      const entries = Array.from(store.entries());
-      if (ordered) {
-        entries.sort(([left], [right]) =>
-          left < right ? -1 : left > right ? 1 : 0,
-        );
-      }
-      return entries.map(([keyHex, value]) => ({
-        key: decodeKey(keyHex),
-        value: cloneBytes(value),
-      }));
-    };
-
-    const getAll = (ordered?: boolean) =>
-      Effect.sync(() => getEntries(Boolean(ordered)));
-
-    const getAllKeys = (ordered?: boolean) =>
-      Effect.sync(() => getEntries(Boolean(ordered)).map((entry) => entry.key));
-
-    const getAllValues = (ordered?: boolean) =>
-      Effect.sync(() =>
-        getEntries(Boolean(ordered)).map((entry) => entry.value),
-      );
-
-    const get = (key: BytesType, _flags?: ReadFlags) =>
-      Effect.gen(function* () {
-        const keyHex = yield* encodeKey(key);
-        const value = store.get(keyHex);
-        return pipe(Option.fromNullable(value), Option.map(cloneBytes));
-      });
+    const { get, getAll, getAllKeys, getAllValues, has } = makeReader(store);
 
     const put = (key: BytesType, value: BytesType, _flags?: WriteFlags) =>
       Effect.gen(function* () {
@@ -309,20 +335,12 @@ const makeMemoryDb = (config: DbConfig) =>
       });
 
     const merge = (_key: BytesType, _value: BytesType, _flags?: WriteFlags) =>
-      Effect.fail(
-        new DbError({ message: "Merge is not supported by the memory DB" }),
-      );
+      failMergeUnsupported();
 
     const remove = (key: BytesType) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
         store.delete(keyHex);
-      });
-
-    const has = (key: BytesType) =>
-      Effect.gen(function* () {
-        const keyHex = yield* encodeKey(key);
-        return store.has(keyHex);
       });
 
     const createSnapshot = () =>
@@ -338,54 +356,7 @@ const makeMemoryDb = (config: DbConfig) =>
           (snapshotStore) => Effect.sync(() => snapshotStore.clear()),
         ),
         Effect.map((snapshotStore) => {
-          const getSnapshotEntries = (
-            ordered = false,
-          ): ReadonlyArray<DbEntry> => {
-            const entries = Array.from(snapshotStore.entries());
-            if (ordered) {
-              entries.sort(([left], [right]) =>
-                left < right ? -1 : left > right ? 1 : 0,
-              );
-            }
-            return entries.map(([keyHex, value]) => ({
-              key: decodeKey(keyHex),
-              value: cloneBytes(value),
-            }));
-          };
-
-          const get = (key: BytesType, _flags?: ReadFlags) =>
-            Effect.gen(function* () {
-              const keyHex = yield* encodeKey(key);
-              const value = snapshotStore.get(keyHex);
-              return pipe(Option.fromNullable(value), Option.map(cloneBytes));
-            });
-
-          const getAll = (ordered?: boolean) =>
-            Effect.sync(() => getSnapshotEntries(Boolean(ordered)));
-
-          const getAllKeys = (ordered?: boolean) =>
-            Effect.sync(() =>
-              getSnapshotEntries(Boolean(ordered)).map((entry) => entry.key),
-            );
-
-          const getAllValues = (ordered?: boolean) =>
-            Effect.sync(() =>
-              getSnapshotEntries(Boolean(ordered)).map((entry) => entry.value),
-            );
-
-          const has = (key: BytesType) =>
-            Effect.gen(function* () {
-              const keyHex = yield* encodeKey(key);
-              return snapshotStore.has(keyHex);
-            });
-
-          return {
-            get,
-            getAll,
-            getAllKeys,
-            getAllValues,
-            has,
-          } satisfies DbSnapshot;
+          return makeReader(snapshotStore);
         }),
       );
 
@@ -441,11 +412,7 @@ const makeMemoryDb = (config: DbConfig) =>
               break;
             }
             case "merge": {
-              return yield* Effect.fail(
-                new DbError({
-                  message: "Merge is not supported by the memory DB",
-                }),
-              );
+              return yield* failMergeUnsupported();
             }
           }
         }
@@ -472,12 +439,7 @@ const makeMemoryDb = (config: DbConfig) =>
             _key: BytesType,
             _value: BytesType,
             _flags?: WriteFlags,
-          ) =>
-            Effect.fail(
-              new DbError({
-                message: "Merge is not supported by the memory DB",
-              }),
-            );
+          ) => failMergeUnsupported();
 
           const remove = (key: BytesType) =>
             Effect.gen(function* () {
