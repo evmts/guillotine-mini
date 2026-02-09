@@ -20,10 +20,10 @@ RULES:
 GIT COMMIT RULES:
 - Make atomic commits — one logical change per commit
 - Commit EACH smallest unit of work separately, do NOT batch everything into one commit
-- Use emoji prefixes: ✨ feat, 🧪 test, 🐛 fix, ♻️ refactor, ⚡ perf, 🔧 chore
+- Use emoji prefixes: 🐛 fix, ♻️ refactor, 🧪 test, ⚡ perf
 - Format: "EMOJI type(scope): description"
 - Examples:
-  - "✨ feat(phase-0-db): add RocksDB adapter with get/put/delete"
+  - "♻️ refactor(phase-0-db): add RocksDB adapter with get/put/delete"
   - "🧪 test(phase-0-db): add unit tests for RocksDB adapter"
   - "🐛 fix(phase-0-db): handle missing key edge case in get()"
 - git add the specific files changed, then git commit with the emoji message
@@ -33,7 +33,7 @@ IMPORTANT: After completing the implementation and committing, you MUST output a
 {"{"}
   "filesCreated": ["client/path/to/new_file.zig"],
   "filesModified": ["src/existing_file.zig"],
-  "commitMessage": "✨ feat(phase-X): Description of what was implemented",
+  "commitMessage": "♻️ refactor(phase-X): Description of what was implemented",
   "whatWasDone": "Detailed description of what was implemented",
   "nextSmallestUnit": "Description of the next smallest atomic unit of work to implement"
 {"}"}

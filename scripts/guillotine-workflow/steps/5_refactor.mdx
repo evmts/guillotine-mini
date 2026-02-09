@@ -13,12 +13,12 @@ Make improvements. Run zig fmt && zig build && zig build test after each change.
 
 GIT COMMIT RULES:
 - Make atomic commits — one refactor per commit
-- Use emoji prefixes: ♻️ refactor, 📋 docs, 🔧 chore
+- Use emoji prefixes: ♻️ refactor, 🐛 fix, 🧪 test, ⚡ perf
 - Format: "EMOJI type(scope): description"
 - Examples:
   - "♻️ refactor(phase-0-db): extract shared iterator logic into helper"
-  - "📋 docs(phase-0-db): add doc comments to public API"
-  - "🔧 chore(phase-0-db): clean up unused imports"
+  - "🐛 fix(phase-0-db): correct error propagation in iterator"
+  - "🧪 test(phase-0-db): add coverage for iterator edge cases"
 - git add the specific files changed, then git commit with the emoji message
 - Each meaningful refactor gets its own atomic commit
 
