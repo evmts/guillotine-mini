@@ -255,7 +255,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 return 0;
             }
 
-            return try self.access_list_manager.accessAddress(address);
+            return try self.access_list_manager.access_address(address);
         }
 
         /// Access a storage slot and return the gas cost (EIP-2929 warm/cold)
@@ -270,7 +270,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
             }
 
-            return try self.access_list_manager.accessStorageSlot(contract_address, slot);
+            return try self.access_list_manager.access_storage_slot(contract_address, slot);
         }
 
         /// Set balance with copy-on-write snapshot for revert handling
@@ -313,8 +313,8 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Pre-warm addresses for transaction initialization
-        fn preWarmAddresses(self: *Self, addresses: []const primitives.Address) !void {
-            self.access_list_manager.preWarmAddresses(addresses) catch {
+        fn pre_warm_addresses(self: *Self, addresses: []const primitives.Address) !void {
+            self.access_list_manager.pre_warm_addresses(addresses) catch {
                 return errors.CallError.StorageError;
             };
         }
@@ -468,7 +468,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             }
 
             // Pre-warm origin, target, and coinbase
-            try self.preWarmAddresses(warm[0..count]);
+            try self.pre_warm_addresses(warm[0..count]);
 
             // Pre-warm precompiles
             // EIP-2929: Precompiles are always warm at transaction start
@@ -488,7 +488,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             while (i < precompile_count) : (i += 1) {
                 precompile_addrs[i] = primitives.Address.fromU256(i + 1);
             }
-            try self.preWarmAddresses(precompile_addrs[0..precompile_count]);
+            try self.pre_warm_addresses(precompile_addrs[0..precompile_count]);
         }
 
         /// Set bytecode for the next call() invocation
@@ -575,7 +575,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // Pre-warm access list (EIP-2929/EIP-2930)
             if (access_list) |list| {
-                self.access_list_manager.preWarmFromAccessList(list) catch {
+                self.access_list_manager.pre_warm_from_access_list(list) catch {
                     return makeFailure(self.arena.allocator(), 0);
                 };
             }
@@ -632,7 +632,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     self.access_list_manager.clear();
 
                     // Clear transient storage at end of transaction (EIP-1153)
-                    self.storage.clearTransient();
+                    self.storage.clear_transient();
 
                     // Delete selfdestructed accounts at end of transaction (EIP-6780)
                     var selfdestruct_it = self.selfdestructed_accounts.iterator();
@@ -691,7 +691,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 // For non-precompile empty accounts, return success with no output
                 // Reset transaction-scoped caches
                 self.access_list_manager.clear();
-                self.storage.clearTransient();
+                self.storage.clear_transient();
                 self.selfdestructed_accounts.clearRetainingCapacity();
 
                 return CallResult{
@@ -773,7 +773,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.access_list_manager.clear();
 
             // Clear transient storage at end of transaction (EIP-1153)
-            self.storage.clearTransient();
+            self.storage.clear_transient();
 
             // Clear logs buffer for next transaction
             self.logs.clearRetainingCapacity();
@@ -913,7 +913,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
                 // Clean up transaction state (safe now)
                 self.access_list_manager.clear();
-                self.storage.clearTransient();
+                self.storage.clear_transient();
 
                 return .{ .result = CallResult{
                     .success = success,
@@ -1298,7 +1298,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
 
                 // Restore transient storage on failure (EIP-1153)
-                self.storage.clearTransient();
+                self.storage.clear_transient();
                 var restore_it = transient_snapshot.iterator();
                 while (restore_it.next()) |entry| {
                     self.storage.transient.put(entry.key_ptr.*, entry.value_ptr.*) catch {
@@ -1396,7 +1396,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // Restore transient storage on revert (EIP-1153)
             if (frame.reverted) {
-                self.storage.clearTransient();
+                self.storage.clear_transient();
                 var restore_it = transient_snapshot.iterator();
                 while (restore_it.next()) |entry| {
                     self.storage.transient.put(entry.key_ptr.*, entry.value_ptr.*) catch {
@@ -1619,7 +1619,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             // Per Python reference: accessed_addresses.add(contract_address) happens
             // BEFORE collision check and nonce increment
             if (self.hardfork.isAtLeast(.BERLIN)) {
-                try self.access_list_manager.preWarmAddresses(&[_]primitives.Address{new_address});
+                try self.access_list_manager.pre_warm_addresses(&[_]primitives.Address{new_address});
             }
 
             // Check for address collision (code, nonce, or storage already exists)

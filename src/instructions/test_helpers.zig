@@ -311,12 +311,12 @@ pub const TestHelper = struct {
 
     /// Set transient storage (EIP-1153, Cancun+)
     pub fn setTransientStorage(self: *Self, slot: u256, value: u256) !void {
-        try self.evm.storage.setTransient(self.frame.address, slot, value);
+        try self.evm.storage.set_transient(self.frame.address, slot, value);
     }
 
     /// Get transient storage
     pub fn getTransientStorage(self: *Self, slot: u256) u256 {
-        return self.evm.storage.getTransient(self.frame.address, slot);
+        return self.evm.storage.get_transient(self.frame.address, slot);
     }
 
     // =============================================================================

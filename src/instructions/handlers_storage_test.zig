@@ -71,7 +71,7 @@ test "SLOAD: basic load from storage" {
 
     // Setup: Set storage slot 0 to value 42
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
-    try evm.storage.putInCache(address, 0, 42);
+    try evm.storage.put_in_cache(address, 0, 42);
 
     // Push key onto stack
     try frame.pushStack(0);
@@ -366,7 +366,7 @@ test "SSTORE: warm storage access (Berlin+)" {
     _ = try evm.accessStorageSlot(address, 0);
 
     // Set initial value
-    try evm.storage.putInCache(address, 0, 10);
+    try evm.storage.put_in_cache(address, 0, 10);
 
     try frame.pushStack(20); // value (10 -> 20 = UPDATE, warm)
     try frame.pushStack(0); // key
@@ -397,7 +397,7 @@ test "SSTORE: original storage tracking" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set initial storage value
-    try evm.storage.putInCache(address, 0, 100);
+    try evm.storage.put_in_cache(address, 0, 100);
 
     // First SSTORE: should track original value (100)
     try frame.pushStack(200); // value
@@ -407,7 +407,7 @@ test "SSTORE: original storage tracking" {
     try StorageHandlers.sstore(&frame);
 
     // Verify original value is tracked
-    const original = evm.storage.getOriginal(address, 0);
+    const original = evm.storage.get_original(address, 0);
     try testing.expectEqual(@as(u256, 100), original);
 
     // Verify current value is updated
@@ -456,7 +456,7 @@ test "SSTORE: update non-zero to non-zero (UPDATE operation)" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set initial non-zero value
-    try evm.storage.putInCache(address, 5, 100);
+    try evm.storage.put_in_cache(address, 5, 100);
 
     try frame.pushStack(200); // value (100 -> 200 = UPDATE)
     try frame.pushStack(5); // key
@@ -484,7 +484,7 @@ test "SSTORE: clear storage (non-zero to zero)" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set initial non-zero value
-    try evm.storage.putInCache(address, 7, 500);
+    try evm.storage.put_in_cache(address, 7, 500);
 
     const initial_refund = evm.gas_refund;
 
@@ -517,7 +517,7 @@ test "SSTORE: refund calculation (London+)" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set initial value
-    try evm.storage.putInCache(address, 0, 100);
+    try evm.storage.put_in_cache(address, 0, 100);
 
     const initial_refund = evm.gas_refund;
 
@@ -548,7 +548,7 @@ test "SSTORE: restore to original value refund (London+)" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set original value
-    try evm.storage.putInCache(address, 0, 50);
+    try evm.storage.put_in_cache(address, 0, 50);
 
     // First SSTORE: change to different value
     {
@@ -644,7 +644,7 @@ test "TLOAD: basic load from transient storage" {
 
     // Setup: Set transient storage slot 0 to value 99
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
-    try evm.storage.setTransient(address, 0, 99);
+    try evm.storage.set_transient(address, 0, 99);
 
     // Push key onto stack
     try frame.pushStack(0);
@@ -808,7 +808,7 @@ test "TSTORE: basic store to transient storage" {
 
     // Verify transient storage was updated
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
-    const stored_value = evm.storage.getTransient(address, 5);
+    const stored_value = evm.storage.get_transient(address, 5);
     try testing.expectEqual(@as(u256, 123), stored_value);
 
     // Verify gas consumed (always warm: 100 gas)
@@ -905,7 +905,7 @@ test "TSTORE: no refunds" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set initial transient value
-    try evm.storage.setTransient(address, 0, 100);
+    try evm.storage.set_transient(address, 0, 100);
 
     const initial_refund = evm.gas_refund;
 
@@ -935,7 +935,7 @@ test "TSTORE: overwrite existing value" {
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
 
     // Set initial transient value
-    try evm.storage.setTransient(address, 7, 500);
+    try evm.storage.set_transient(address, 7, 500);
 
     // Overwrite with new value
     try frame.pushStack(999); // new value
@@ -945,7 +945,7 @@ test "TSTORE: overwrite existing value" {
     try StorageHandlers.tstore(&frame);
 
     // Verify transient storage was updated
-    const stored_value = evm.storage.getTransient(address, 7);
+    const stored_value = evm.storage.get_transient(address, 7);
     try testing.expectEqual(@as(u256, 999), stored_value);
 }
 

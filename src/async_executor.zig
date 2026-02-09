@@ -114,7 +114,7 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
                     }
 
                     // Also put in self.storage so get_storage can find it
-                    try self.evm.storage.putInCache(data.address, data.slot, data.value);
+                    try self.evm.storage.put_in_cache(data.address, data.slot, data.value);
 
                     // Clear the request
                     self.async_data_request = .none;
@@ -216,7 +216,7 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
 
             // Pre-warm access list if present (EIP-2929/EIP-2930)
             if (self.evm.pending_access_list) |list| {
-                try self.evm.access_list_manager.preWarmFromAccessList(list);
+                try self.evm.access_list_manager.pre_warm_from_access_list(list);
             }
 
             // Transfer value if needed

@@ -816,7 +816,7 @@ pub fn Handlers(FrameType: type) type {
             // IMPORTANT: Unlike CALL which always charges an access cost (warm=100 or cold=2600),
             // SELFDESTRUCT only charges if the beneficiary is cold (not already accessed)
             if (frame.hardfork.isAtLeast(.BERLIN)) {
-                const is_warm = evm_ptr.access_list_manager.isAddressWarm(beneficiary);
+                const is_warm = evm_ptr.access_list_manager.is_address_warm(beneficiary);
                 if (!is_warm) {
                     // Mark as warm and charge cold access cost
                     // We must mark it warm BEFORE charging to match Python's behavior
