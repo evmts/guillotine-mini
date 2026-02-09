@@ -10,9 +10,8 @@
 /// - `HostInterface` vtable functions are non-failable (return `u256`, not `!u256`),
 ///   but `StateManager` methods return error unions (`!u256`). The adapter bridges
 ///   this gap with a fail-fast policy:
-///   - **Getters** (getBalance, getCode, etc.): Log the error and return a safe default
-///     (0 for numeric, empty for code). A missing account is normal (returns default);
-///     a backend failure is logged as an error for diagnostics.
+///   - **Getters** (getBalance, getCode, etc.): Panic on error. Missing accounts
+///     are handled by `StateManager` and return safe defaults (0/empty) without error.
 ///   - **Setters** (setBalance, setCode, etc.): Panic on failure. State write failures
 ///     are consensus-critical — silently dropping a write would cause state divergence.
 /// - The adapter holds a pointer to a `StateManager`, not an owned copy. The caller
@@ -76,7 +75,7 @@ pub const HostAdapter = struct {
     // -- vtable implementations ------------------------------------------------
     //
     // Error policy:
-    //   Getters → log error, return safe default (non-existent account is normal).
+    //   Getters → @panic on error (non-existent account is normal and returns default).
     //   Setters → @panic. A failed state write is consensus-critical.
 
     fn get_balance(ptr: *anyopaque, address: Address) u256 {
