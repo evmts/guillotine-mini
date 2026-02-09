@@ -330,7 +330,7 @@ pub const WriteBatch = struct {
         // Reset arena to free all accumulated key/value copies.
         // This prevents unbounded memory growth for long-lived batches
         // that repeatedly accumulate and clear operations.
-        _ = self.arena.reset(.retain_capacity);
+        _ = self.arena.reset(.free_all);
     }
 
     /// Return the number of pending operations.
