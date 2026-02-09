@@ -46,6 +46,13 @@ export class UnknownSnapshotError extends Data.TaggedError(
   readonly depth: number;
 }> {}
 
+/** Error raised when writing storage for a missing account. */
+export class MissingAccountError extends Data.TaggedError(
+  "MissingAccountError",
+)<{
+  readonly address: Address.AddressType;
+}> {}
+
 /** World state service interface (accounts + storage + snapshots). */
 export interface WorldStateService {
   readonly getAccountOptional: (
@@ -75,7 +82,7 @@ export interface WorldStateService {
     address: Address.AddressType,
     slot: StorageSlotType,
     value: StorageValueType,
-  ) => Effect.Effect<void>;
+  ) => Effect.Effect<void, MissingAccountError>;
   readonly takeSnapshot: () => Effect.Effect<WorldStateSnapshot>;
   readonly restoreSnapshot: (
     snapshot: WorldStateSnapshot,
@@ -240,6 +247,9 @@ const makeWorldState = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const key = addressKey(address);
+      if (!accounts.has(key)) {
+        return yield* Effect.fail(new MissingAccountError({ address }));
+      }
       const slotKey = storageSlotKey(slot);
       const slots = storage.get(key);
       const previous = slots?.get(slotKey) ?? null;

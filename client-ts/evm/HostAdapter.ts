@@ -11,7 +11,11 @@ import {
   StorageValue,
 } from "voltaire-effect/primitives";
 import { EMPTY_CODE_HASH, type AccountStateType } from "../state/Account";
-import { WorldState, WorldStateTest } from "../state/State";
+import {
+  MissingAccountError,
+  WorldState,
+  WorldStateTest,
+} from "../state/State";
 import { coerceEffect } from "../trie/internal/effect";
 
 /** Hex-encoded key for account map storage. */
@@ -69,7 +73,7 @@ export interface HostAdapterService {
     address: Address.AddressType,
     slot: StorageSlotType,
     value: StorageValueType,
-  ) => Effect.Effect<void>;
+  ) => Effect.Effect<void, MissingAccountError>;
 }
 
 /** Context tag for the host adapter service. */

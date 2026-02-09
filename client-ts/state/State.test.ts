@@ -119,6 +119,7 @@ describe("WorldState", () => {
         const valueA = makeStorageValue(5);
         const valueB = makeStorageValue(9);
 
+        yield* setAccount(addr, makeAccount({ nonce: 1n }));
         yield* setStorage(addr, slot, valueA);
         const created = yield* getStorage(addr, slot);
         assert.strictEqual(storageValueHex(created), storageValueHex(valueA));
@@ -145,6 +146,7 @@ describe("WorldState", () => {
         const valueA = makeStorageValue(3);
         const valueB = makeStorageValue(7);
 
+        yield* setAccount(addr, makeAccount({ nonce: 1n }));
         yield* setStorage(addr, slot, valueA);
         const snapshot = yield* takeSnapshot();
         yield* setStorage(addr, slot, valueB);
@@ -164,6 +166,7 @@ describe("WorldState", () => {
         const valueA = makeStorageValue(6);
         const valueB = makeStorageValue(8);
 
+        yield* setAccount(addr, makeAccount({ nonce: 1n }));
         yield* setStorage(addr, slot, valueA);
         const snapshot = yield* takeSnapshot();
         yield* setStorage(addr, slot, valueB);

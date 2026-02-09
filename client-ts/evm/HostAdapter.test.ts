@@ -108,6 +108,7 @@ describe("HostAdapter", () => {
         const addr = makeAddress(4);
         const slot = makeSlot(5);
         const value = makeStorageValue(7);
+        yield* setBalance(addr, 1n);
         yield* setStorage(addr, slot, value);
         const stored = yield* getStorage(addr, slot);
         assert.strictEqual(storageValueHex(stored), storageValueHex(value));
