@@ -10,9 +10,9 @@
 /// - `HostInterface` vtable functions are non-failable (return `u256`, not `!u256`),
 ///   but `StateManager` methods return error unions (`!u256`). The adapter bridges
 ///   this gap with a fail-fast policy:
-///   - **Getters** (getBalance, getCode, etc.): Log the error and return a safe default
-///     (0 for numeric, empty for code). A missing account is normal (returns default);
-///     a backend failure is logged as an error for diagnostics.
+///   - **Getters** (getBalance, getCode, etc.): Panic on backend errors. Missing
+///     accounts are handled by `StateManager` and return defaults. Backend failures
+///     are consensus-critical and must halt execution.
 ///   - **Setters** (setBalance, setCode, etc.): Panic on failure. State write failures
 ///     are consensus-critical — silently dropping a write would cause state divergence.
 /// - The adapter holds a pointer to a `StateManager`, not an owned copy. The caller
@@ -71,19 +71,16 @@ pub const HostAdapter = struct {
         .setNonce = set_nonce,
     };
 
-    const log = std.log.scoped(.host_adapter);
-
     // -- vtable implementations ------------------------------------------------
     //
     // Error policy:
-    //   Getters → log error, return safe default (non-existent account is normal).
+    //   Getters → @panic on backend errors (non-existent account is normal).
     //   Setters → @panic. A failed state write is consensus-critical.
 
     fn get_balance(ptr: *anyopaque, address: Address) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getBalance(address) catch |err| {
-            log.err("getBalance failed for {any}: {any}", .{ address, err });
-            return 0;
+            std.debug.panic("getBalance failed for {any}: {any}", .{ address, err });
         };
     }
 
@@ -97,8 +94,7 @@ pub const HostAdapter = struct {
     fn get_code(ptr: *anyopaque, address: Address) []const u8 {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getCode(address) catch |err| {
-            log.err("getCode failed for {any}: {any}", .{ address, err });
-            return &[_]u8{};
+            std.debug.panic("getCode failed for {any}: {any}", .{ address, err });
         };
     }
 
@@ -112,8 +108,7 @@ pub const HostAdapter = struct {
     fn get_storage(ptr: *anyopaque, address: Address, slot: u256) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getStorage(address, slot) catch |err| {
-            log.err("getStorage failed for {any} slot {}: {any}", .{ address, slot, err });
-            return 0;
+            std.debug.panic("getStorage failed for {any} slot {}: {any}", .{ address, slot, err });
         };
     }
 
@@ -127,8 +122,7 @@ pub const HostAdapter = struct {
     fn get_nonce(ptr: *anyopaque, address: Address) u64 {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getNonce(address) catch |err| {
-            log.err("getNonce failed for {any}: {any}", .{ address, err });
-            return 0;
+            std.debug.panic("getNonce failed for {any}: {any}", .{ address, err });
         };
     }
 
