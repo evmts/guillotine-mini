@@ -167,9 +167,9 @@ describe("Journal", () => {
   it.effect("commit invokes callback and truncates entries", () =>
     provideJournal(
       Effect.gen(function* () {
-        const addrA = Address.zero();
-        const addrB = Address.zero();
-        const addrC = Address.zero();
+        const addrA = makeAddress(0);
+        const addrB = makeAddress(1);
+        const addrC = makeAddress(2);
 
         yield* append(
           makeEntry(addrA, makeAccount({ nonce: 1n }), ChangeTag.Create),
@@ -177,6 +177,9 @@ describe("Journal", () => {
         const snapshot = yield* takeSnapshot();
         yield* append(
           makeEntry(addrB, makeAccount({ nonce: 2n }), ChangeTag.Update),
+        );
+        yield* append(
+          makeEntry(addrB, makeAccount({ nonce: 4n }), ChangeTag.Update),
         );
         yield* append(
           makeEntry(addrC, makeAccount({ nonce: 3n }), ChangeTag.Update),
@@ -198,13 +201,8 @@ describe("Journal", () => {
         const all = yield* entries<Address.AddressType, AccountStateType>();
         assert.strictEqual(all.length, 1);
         assert.strictEqual(committed.length, 2);
-        const firstCommitted = committed[0];
-        const secondCommitted = committed[1];
-        if (!firstCommitted || !secondCommitted) {
-          throw new Error("Expected two committed entries");
-        }
-        assert.strictEqual(firstCommitted, 2n);
-        assert.strictEqual(secondCommitted, 3n);
+        assert.strictEqual(committed[0], 3n);
+        assert.strictEqual(committed[1], 4n);
       }),
     ),
   );

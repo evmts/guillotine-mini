@@ -157,17 +157,22 @@ const makeJournal = <K, V>(): JournalService<K, V> => {
         );
       }
 
+      const currentLength = entries.length;
       const targetLength = snapshotToLength(snapshot);
-      if (targetLength >= entries.length) {
+      if (targetLength >= currentLength) {
         return;
       }
 
       if (onCommit) {
-        for (let i = targetLength; i < entries.length; i += 1) {
+        const committedKeys = new Set<K>();
+        for (let i = currentLength - 1; i >= targetLength; i -= 1) {
           const entry = entries[i];
-          if (entry) {
-            yield* onCommit(entry);
+          if (!entry || committedKeys.has(entry.key)) {
+            continue;
           }
+
+          committedKeys.add(entry.key);
+          yield* onCommit(entry);
         }
       }
 
