@@ -23,6 +23,14 @@ describe("trie encoding", () => {
     }),
   );
 
+  it.effect("bytesToNibbleList handles empty input", () =>
+    Effect.gen(function* () {
+      const bytes = VoltaireBytes.from([]);
+      const result = yield* bytesToNibbleList(bytes);
+      assert.deepEqual(Array.from(result), []);
+    }),
+  );
+
   it.effect("nibbleListToCompact encodes even extension paths", () =>
     Effect.gen(function* () {
       const nibbles = VoltaireBytes.from([0x1, 0x2, 0x3, 0x4]);
@@ -52,6 +60,14 @@ describe("trie encoding", () => {
       const nibbles = VoltaireBytes.from([0x1]);
       const result = yield* nibbleListToCompact(nibbles, false);
       assert.isTrue(Bytes.equals(result, toBytes("0x11")));
+    }),
+  );
+
+  it.effect("nibbleListToCompact encodes empty extension paths", () =>
+    Effect.gen(function* () {
+      const nibbles = VoltaireBytes.from([]);
+      const result = yield* nibbleListToCompact(nibbles, false);
+      assert.isTrue(Bytes.equals(result, toBytes("0x00")));
     }),
   );
 
