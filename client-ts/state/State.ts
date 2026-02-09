@@ -99,6 +99,10 @@ export class WorldState extends Context.Tag("WorldState")<
   WorldStateService
 >() {}
 
+const withWorldState = <A, E>(
+  f: (state: WorldStateService) => Effect.Effect<A, E>,
+) => Effect.flatMap(WorldState, f);
+
 const addressKey = (address: Address.AddressType): AccountKey =>
   Hex.fromBytes(address);
 
@@ -501,94 +505,54 @@ export const WorldStateTest: Layer.Layer<WorldState> = WorldStateLive.pipe(
 
 /** Read an optional account (None if not present). */
 export const getAccountOptional = (address: Address.AddressType) =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.getAccountOptional(address);
-  });
+  withWorldState((state) => state.getAccountOptional(address));
 
 /** Read an account (EMPTY_ACCOUNT if absent). */
 export const getAccount = (address: Address.AddressType) =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.getAccount(address);
-  });
+  withWorldState((state) => state.getAccount(address));
 
 /** Set or delete an account. */
 export const setAccount = (
   address: Address.AddressType,
   account: AccountStateType | null,
-) =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.setAccount(address, account);
-  });
+) => withWorldState((state) => state.setAccount(address, account));
 
 /** Remove an account and its data from state. */
 export const destroyAccount = (address: Address.AddressType) =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.destroyAccount(address);
-  });
+  withWorldState((state) => state.destroyAccount(address));
 
 /** Mark an account as created in the current transaction. */
 export const markAccountCreated = (address: Address.AddressType) =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.markAccountCreated(address);
-  });
+  withWorldState((state) => state.markAccountCreated(address));
 
 /** Check if an account was created in the current transaction. */
 export const wasAccountCreated = (address: Address.AddressType) =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.wasAccountCreated(address);
-  });
+  withWorldState((state) => state.wasAccountCreated(address));
 
 /** Read a storage slot value (zero if unset). */
 export const getStorage = (
   address: Address.AddressType,
   slot: StorageSlotType,
-) =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.getStorage(address, slot);
-  });
+) => withWorldState((state) => state.getStorage(address, slot));
 
 /** Set a storage slot value (zero clears the slot). */
 export const setStorage = (
   address: Address.AddressType,
   slot: StorageSlotType,
   value: StorageValueType,
-) =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.setStorage(address, slot, value);
-  });
+) => withWorldState((state) => state.setStorage(address, slot, value));
 
 /** Capture a world state snapshot for later restore/commit. */
 export const takeSnapshot = () =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.takeSnapshot();
-  });
+  withWorldState((state) => state.takeSnapshot());
 
 /** Restore the world state to a prior snapshot. */
 export const restoreSnapshot = (snapshot: WorldStateSnapshot) =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.restoreSnapshot(snapshot);
-  });
+  withWorldState((state) => state.restoreSnapshot(snapshot));
 
 /** Commit changes since a snapshot and discard the snapshot. */
 export const commitSnapshot = (snapshot: WorldStateSnapshot) =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.commitSnapshot(snapshot);
-  });
+  withWorldState((state) => state.commitSnapshot(snapshot));
 
 /** Clear all in-memory state and journal entries. */
-export const clear = () =>
-  Effect.gen(function* () {
-    const state = yield* WorldState;
-    return yield* state.clear();
-  });
+export const clear = () => withWorldState((state) => state.clear());
