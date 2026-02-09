@@ -120,3 +120,119 @@ test "DbEntry: release invokes key and value callbacks" {
     try std.testing.expect(key_ctx.called);
     try std.testing.expect(val_ctx.called);
 }
+
+test "DbIterator: next and deinit dispatch" {
+    const Iter = struct {
+        next_calls: usize = 0,
+        deinit_calls: usize = 0,
+
+        fn next(self: *Iter) Error!?DbEntry {
+            self.next_calls += 1;
+            return null;
+        }
+
+        fn deinit(self: *Iter) void {
+            self.deinit_calls += 1;
+        }
+    };
+
+    var iter = Iter{};
+    var db_iter = DbIterator.init(Iter, &iter, Iter.next, Iter.deinit);
+
+    _ = try db_iter.next();
+    db_iter.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), iter.next_calls);
+    try std.testing.expectEqual(@as(usize, 1), iter.deinit_calls);
+}
+
+test "DbSnapshot: get/contains/iterator/deinit dispatch" {
+    const Iter = struct {
+        next_calls: usize = 0,
+
+        fn next(self: *Iter) Error!?DbEntry {
+            self.next_calls += 1;
+            return null;
+        }
+
+        fn deinit(_: *Iter) void {}
+    };
+
+    const Snap = struct {
+        iter: *Iter,
+        get_calls: usize = 0,
+        contains_calls: usize = 0,
+        iterator_calls: usize = 0,
+        deinit_calls: usize = 0,
+
+        fn get(self: *Snap, key: []const u8, flags: ReadFlags) Error!?DbValue {
+            _ = flags;
+            self.get_calls += 1;
+            if (std.mem.eql(u8, key, "hit")) {
+                return DbValue.borrowed("value");
+            }
+            return null;
+        }
+
+        fn contains(self: *Snap, key: []const u8) Error!bool {
+            self.contains_calls += 1;
+            return std.mem.eql(u8, key, "hit");
+        }
+
+        fn iterator(self: *Snap, ordered: bool) Error!DbIterator {
+            _ = ordered;
+            self.iterator_calls += 1;
+            return DbIterator.init(Iter, self.iter, Iter.next, Iter.deinit);
+        }
+
+        fn deinit(self: *Snap) void {
+            self.deinit_calls += 1;
+        }
+    };
+
+    var iter = Iter{};
+    var snap = Snap{ .iter = &iter };
+    var db_snap = DbSnapshot.init(Snap, &snap, Snap.get, Snap.contains, Snap.iterator, Snap.deinit);
+
+    const miss = try db_snap.get("miss", .none);
+    try std.testing.expect(miss == null);
+
+    const hit = (try db_snap.get("hit", .none)).?;
+    defer hit.release();
+    try std.testing.expectEqualStrings("value", hit.bytes);
+
+    try std.testing.expect(try db_snap.contains("hit"));
+    try std.testing.expect(!try db_snap.contains("miss"));
+
+    var it = try db_snap.iterator(false);
+    _ = try it.next();
+    it.deinit();
+
+    db_snap.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), snap.get_calls);
+    try std.testing.expectEqual(@as(usize, 2), snap.contains_calls);
+    try std.testing.expectEqual(@as(usize, 1), snap.iterator_calls);
+    try std.testing.expectEqual(@as(usize, 1), snap.deinit_calls);
+    try std.testing.expectEqual(@as(usize, 1), iter.next_calls);
+}
+
+test "DbSnapshot: iterator returns UnsupportedOperation when unset" {
+    const Snap = struct {
+        fn get(_: *Snap, _: []const u8, _: ReadFlags) Error!?DbValue {
+            return null;
+        }
+
+        fn contains(_: *Snap, _: []const u8) Error!bool {
+            return false;
+        }
+
+        fn deinit(_: *Snap) void {}
+    };
+
+    var snap = Snap{};
+    var db_snap = DbSnapshot.init(Snap, &snap, Snap.get, Snap.contains, null, Snap.deinit);
+
+    try std.testing.expectError(error.UnsupportedOperation, db_snap.iterator(false));
+    db_snap.deinit();
+}
