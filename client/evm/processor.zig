@@ -26,7 +26,7 @@ const MAX_INIT_CODE_SIZE = intrinsic_gas.MAX_INIT_CODE_SIZE;
 pub fn validateTransaction(
     tx: anytype,
     hardfork: Hardfork,
-) error{ InsufficientGas, NonceOverflow, InitCodeTooLarge }!u64 {
+) error{ InsufficientGas, NonceOverflow, InitCodeTooLarge, UnsupportedTransactionType }!u64 {
     const Tx = @TypeOf(tx);
     comptime {
         if (Tx != tx_mod.LegacyTransaction and
@@ -36,6 +36,16 @@ pub fn validateTransaction(
         {
             @compileError("Unsupported transaction type for validateTransaction");
         }
+    }
+
+    const required_fork: ?Hardfork = comptime blk: {
+        if (Tx == tx_mod.Eip1559Transaction) break :blk .LONDON;
+        if (Tx == tx_mod.Eip4844Transaction) break :blk .CANCUN;
+        if (Tx == tx_mod.Eip7702Transaction) break :blk .PRAGUE;
+        break :blk null;
+    };
+    if (required_fork) |fork| {
+        if (hardfork.isBefore(fork)) return error.UnsupportedTransactionType;
     }
 
     const is_create = if (comptime Tx == tx_mod.Eip4844Transaction) false else tx.to == null;
@@ -189,4 +199,83 @@ test "validateTransaction — eip1559 access list intrinsic gas" {
 
     const intrinsic = try validateTransaction(tx, .CANCUN);
     try std.testing.expectEqual(@as(u64, expected_gas), intrinsic);
+}
+
+test "validateTransaction — eip1559 rejected before London" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x66} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.UnsupportedTransactionType, validateTransaction(tx, .BERLIN));
+}
+
+test "validateTransaction — eip4844 rejected before Cancun" {
+    const Address = primitives.Address;
+    const VersionedHash = primitives.Blob.VersionedHash;
+
+    const hashes = [_]VersionedHash{.{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 31 }};
+
+    const tx = tx_mod.Eip4844Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x77} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .max_fee_per_blob_gas = 1,
+        .blob_versioned_hashes = &hashes,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.UnsupportedTransactionType, validateTransaction(tx, .SHANGHAI));
+}
+
+test "validateTransaction — eip7702 rejected before Prague" {
+    const Address = primitives.Address;
+    const Authorization = primitives.Authorization.Authorization;
+
+    const auths = [_]Authorization{.{
+        .chain_id = 1,
+        .address = Address{ .bytes = [_]u8{0x88} ++ [_]u8{0} ** 19 },
+        .nonce = 0,
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    }};
+
+    const tx = tx_mod.Eip7702Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x99} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .authorization_list = &auths,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.UnsupportedTransactionType, validateTransaction(tx, .CANCUN));
 }
