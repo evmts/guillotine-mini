@@ -10,10 +10,14 @@ pub const ValidationError = error{
     InvalidDifficulty,
     InvalidNonce,
     InvalidOmmersHash,
+    InvalidExtraDataLength,
 };
 
-/// Validate PoS header constants: difficulty=0, nonce=0, ommers=empty list hash.
+/// Validate PoS header constants: extraData<=32, difficulty=0, nonce=0, ommers=empty list hash.
 fn validate_pos_header_constants(header: *const BlockHeader.BlockHeader) ValidationError!void {
+    if (header.extra_data.len > BlockHeader.MAX_EXTRA_DATA_SIZE) {
+        return ValidationError.InvalidExtraDataLength;
+    }
     if (header.difficulty != 0) return ValidationError.InvalidDifficulty;
     if (!std.mem.allEqual(u8, header.nonce[0..], 0)) return ValidationError.InvalidNonce;
     if (!Hash.equals(&header.ommers_hash, &BlockHeader.EMPTY_OMMERS_HASH)) {
@@ -64,6 +68,15 @@ test "validate_pos_header_constants - rejects non-empty ommers hash" {
     header.ommers_hash = Hash.ZERO;
 
     try std.testing.expectError(ValidationError.InvalidOmmersHash, validate_pos_header_constants(&header));
+}
+
+test "validate_pos_header_constants - rejects extra data longer than max" {
+    var header = BlockHeader.init();
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    var extra = [_]u8{0} ** (BlockHeader.MAX_EXTRA_DATA_SIZE + 1);
+    header.extra_data = extra[0..];
+
+    try std.testing.expectError(ValidationError.InvalidExtraDataLength, validate_pos_header_constants(&header));
 }
 
 test "merge_header_validator - delegates to pre-merge validator" {
