@@ -20,7 +20,7 @@ const MAX_INIT_CODE_SIZE = intrinsic_gas.MAX_INIT_CODE_SIZE;
 /// Validate a transaction per execution-specs and return its intrinsic gas.
 ///
 /// This performs the static checks that do not require state access:
-/// - gas limit >= intrinsic gas
+/// - gas limit >= max(intrinsic gas, calldata floor) (Prague+ EIP-7623)
 /// - nonce < 2**64 - 1
 /// - init code size <= MAX_INIT_CODE_SIZE (Shanghai+ contract creation)
 pub fn validateTransaction(
@@ -62,15 +62,23 @@ pub fn validateTransaction(
         }
     }
 
+    var authorization_count: u64 = 0;
+    if (comptime Tx == tx_mod.Eip7702Transaction) {
+        authorization_count = @intCast(tx.authorization_list.len);
+    }
+
     const intrinsic = calculateIntrinsicGas(.{
         .data = tx.data,
         .is_create = is_create,
         .access_list_address_count = access_list_address_count,
         .access_list_storage_key_count = access_list_storage_key_count,
+        .authorization_count = authorization_count,
         .hardfork = hardfork,
     });
 
-    if (intrinsic > tx.gas_limit) return error.InsufficientGas;
+    const calldata_floor = intrinsic_gas.calculateCalldataFloorGas(tx.data, hardfork);
+    const required_gas = if (calldata_floor > intrinsic) calldata_floor else intrinsic;
+    if (required_gas > tx.gas_limit) return error.InsufficientGas;
     if (tx.nonce >= std.math.maxInt(u64)) return error.NonceOverflow;
     if (is_create and hardfork.isAtLeast(.SHANGHAI)) {
         const max_init_code_size: usize = @intCast(MAX_INIT_CODE_SIZE);
@@ -278,4 +286,73 @@ test "validateTransaction — eip7702 rejected before Prague" {
     };
 
     try std.testing.expectError(error.UnsupportedTransactionType, validateTransaction(tx, .CANCUN));
+}
+
+test "validateTransaction — prague calldata floor enforced" {
+    const Address = primitives.Address;
+
+    const data = [_]u8{0x01}; // one non-zero byte => floor > intrinsic
+    const intrinsic = intrinsic_gas.calculateIntrinsicGas(.{
+        .data = &data,
+        .hardfork = .PRAGUE,
+    });
+
+    const tx = tx_mod.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = 0,
+        .gas_limit = intrinsic,
+        .to = Address{ .bytes = [_]u8{0xAA} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &data,
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.InsufficientGas, validateTransaction(tx, .PRAGUE));
+}
+
+test "validateTransaction — eip7702 authorization intrinsic gas" {
+    const Address = primitives.Address;
+    const Authorization = primitives.Authorization.Authorization;
+
+    const auths = [_]Authorization{
+        .{
+            .chain_id = 1,
+            .address = Address{ .bytes = [_]u8{0xBB} ++ [_]u8{0} ** 19 },
+            .nonce = 0,
+            .v = 0,
+            .r = [_]u8{0} ** 32,
+            .s = [_]u8{0} ** 32,
+        },
+        .{
+            .chain_id = 1,
+            .address = Address{ .bytes = [_]u8{0xCC} ++ [_]u8{0} ** 19 },
+            .nonce = 1,
+            .v = 0,
+            .r = [_]u8{0} ** 32,
+            .s = [_]u8{0} ** 32,
+        },
+    };
+
+    const expected = intrinsic_gas.TX_BASE_COST + (2 * intrinsic_gas.TX_AUTHORIZATION_COST_PER_ITEM);
+
+    const tx = tx_mod.Eip7702Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
+        .gas_limit = expected,
+        .to = Address{ .bytes = [_]u8{0xDD} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .authorization_list = &auths,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const intrinsic = try validateTransaction(tx, .PRAGUE);
+    try std.testing.expectEqual(@as(u64, expected), intrinsic);
 }

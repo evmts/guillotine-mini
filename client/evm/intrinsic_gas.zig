@@ -46,6 +46,15 @@ pub const TX_ACCESS_LIST_ADDRESS_COST: u64 = 2_400;
 /// Gas cost per storage key in an EIP-2930 access list.
 pub const TX_ACCESS_LIST_STORAGE_KEY_COST: u64 = 1_900;
 
+/// Gas cost per authorization tuple in an EIP-7702 transaction.
+pub const TX_AUTHORIZATION_COST_PER_ITEM: u64 = 25_000;
+
+/// Calldata floor cost per token (EIP-7623, Prague+).
+pub const TX_CALLDATA_FLOOR_COST_PER_TOKEN: u64 = 10;
+
+/// Token multiplier for non-zero calldata bytes (EIP-7623).
+pub const TX_CALLDATA_NONZERO_TOKEN_MULTIPLIER: u64 = 4;
+
 /// Gas cost per 32-byte word of init code (EIP-3860, Shanghai+).
 pub const INIT_CODE_WORD_COST: u64 = 2;
 
@@ -73,6 +82,9 @@ pub const IntrinsicGasParams = struct {
 
     /// Total number of storage keys across all access list entries.
     access_list_storage_key_count: u64 = 0,
+
+    /// Number of authorization tuples (EIP-7702).
+    authorization_count: u64 = 0,
 
     /// Active hardfork — controls whether EIP-3860 init code cost applies.
     hardfork: Hardfork = Hardfork.DEFAULT,
@@ -111,8 +123,34 @@ pub fn calculateIntrinsicGas(params: IntrinsicGasParams) u64 {
         params.access_list_address_count * TX_ACCESS_LIST_ADDRESS_COST +
         params.access_list_storage_key_count * TX_ACCESS_LIST_STORAGE_KEY_COST;
 
-    // 4. Total = base + data + create + access list
-    return TX_BASE_COST + data_cost + create_cost + access_list_cost;
+    // 4. Authorization cost (EIP-7702, Prague+)
+    var authorization_cost: u64 = 0;
+    if (params.authorization_count > 0 and params.hardfork.isAtLeast(.PRAGUE)) {
+        authorization_cost = params.authorization_count * TX_AUTHORIZATION_COST_PER_ITEM;
+    }
+
+    // 5. Total = base + data + create + access list + authorization
+    return TX_BASE_COST + data_cost + create_cost + access_list_cost + authorization_cost;
+}
+
+/// Calculate the calldata floor gas cost (EIP-7623, Prague+).
+///
+/// Returns zero for pre-Prague hardforks.
+pub fn calculateCalldataFloorGas(data: []const u8, hardfork: Hardfork) u64 {
+    if (!hardfork.isAtLeast(.PRAGUE)) return 0;
+
+    var zero_bytes: u64 = 0;
+    var nonzero_bytes: u64 = 0;
+    for (data) |byte| {
+        if (byte == 0) {
+            zero_bytes += 1;
+        } else {
+            nonzero_bytes += 1;
+        }
+    }
+
+    const tokens_in_calldata = zero_bytes + nonzero_bytes * TX_CALLDATA_NONZERO_TOKEN_MULTIPLIER;
+    return TX_BASE_COST + (tokens_in_calldata * TX_CALLDATA_FLOOR_COST_PER_TOKEN);
 }
 
 /// Calculate the gas cost for init code words (EIP-3860).
@@ -238,6 +276,27 @@ test "initCodeCost — non-word-aligned" {
     try std.testing.expectEqual(@as(u64, 4), initCodeCost(33));
     // 31 bytes → ceil(31/32) = 1 word → 2 gas
     try std.testing.expectEqual(@as(u64, 2), initCodeCost(31));
+}
+
+test "intrinsic gas — eip7702 authorization cost (Prague+)" {
+    const gas = calculateIntrinsicGas(.{
+        .authorization_count = 2,
+        .hardfork = .PRAGUE,
+    });
+    // 21000 + 2*25000 = 71000
+    try std.testing.expectEqual(@as(u64, 71_000), gas);
+}
+
+test "calldata floor gas — prague applies floor" {
+    const data = [_]u8{0x01}; // one non-zero byte => 4 tokens
+    const floor = calculateCalldataFloorGas(&data, .PRAGUE);
+    // 21000 + 4*10 = 21040
+    try std.testing.expectEqual(@as(u64, 21_040), floor);
+}
+
+test "calldata floor gas — pre-prague returns zero" {
+    const data = [_]u8{0x01};
+    try std.testing.expectEqual(@as(u64, 0), calculateCalldataFloorGas(&data, .CANCUN));
 }
 
 test "initCodeCost — zero length" {
