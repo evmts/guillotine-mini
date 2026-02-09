@@ -61,14 +61,14 @@ pub const HostAdapter = struct {
     }
 
     const vtable = HostInterface.VTable{
-        .getBalance = getBalance,
-        .setBalance = setBalance,
-        .getCode = getCode,
-        .setCode = setCode,
-        .getStorage = getStorage,
-        .setStorage = setStorage,
-        .getNonce = getNonce,
-        .setNonce = setNonce,
+        .getBalance = get_balance,
+        .setBalance = set_balance,
+        .getCode = get_code,
+        .setCode = set_code,
+        .getStorage = get_storage,
+        .setStorage = set_storage,
+        .getNonce = get_nonce,
+        .setNonce = set_nonce,
     };
 
     const log = std.log.scoped(.host_adapter);
@@ -79,7 +79,7 @@ pub const HostAdapter = struct {
     //   Getters → log error, return safe default (non-existent account is normal).
     //   Setters → @panic. A failed state write is consensus-critical.
 
-    fn getBalance(ptr: *anyopaque, address: Address) u256 {
+    fn get_balance(ptr: *anyopaque, address: Address) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getBalance(address) catch |err| {
             log.err("getBalance failed for {any}: {any}", .{ address, err });
@@ -87,14 +87,14 @@ pub const HostAdapter = struct {
         };
     }
 
-    fn setBalance(ptr: *anyopaque, address: Address, balance: u256) void {
+    fn set_balance(ptr: *anyopaque, address: Address, balance: u256) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
         self.state.setBalance(address, balance) catch |err| {
             std.debug.panic("setBalance failed for {any}: {any}", .{ address, err });
         };
     }
 
-    fn getCode(ptr: *anyopaque, address: Address) []const u8 {
+    fn get_code(ptr: *anyopaque, address: Address) []const u8 {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getCode(address) catch |err| {
             log.err("getCode failed for {any}: {any}", .{ address, err });
@@ -102,14 +102,14 @@ pub const HostAdapter = struct {
         };
     }
 
-    fn setCode(ptr: *anyopaque, address: Address, code: []const u8) void {
+    fn set_code(ptr: *anyopaque, address: Address, code: []const u8) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
         self.state.setCode(address, code) catch |err| {
             std.debug.panic("setCode failed for {any}: {any}", .{ address, err });
         };
     }
 
-    fn getStorage(ptr: *anyopaque, address: Address, slot: u256) u256 {
+    fn get_storage(ptr: *anyopaque, address: Address, slot: u256) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getStorage(address, slot) catch |err| {
             log.err("getStorage failed for {any} slot {}: {any}", .{ address, slot, err });
@@ -117,14 +117,14 @@ pub const HostAdapter = struct {
         };
     }
 
-    fn setStorage(ptr: *anyopaque, address: Address, slot: u256, value: u256) void {
+    fn set_storage(ptr: *anyopaque, address: Address, slot: u256, value: u256) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
         self.state.setStorage(address, slot, value) catch |err| {
             std.debug.panic("setStorage failed for {any} slot {}: {any}", .{ address, slot, err });
         };
     }
 
-    fn getNonce(ptr: *anyopaque, address: Address) u64 {
+    fn get_nonce(ptr: *anyopaque, address: Address) u64 {
         const self: *Self = @ptrCast(@alignCast(ptr));
         return self.state.getNonce(address) catch |err| {
             log.err("getNonce failed for {any}: {any}", .{ address, err });
@@ -132,7 +132,7 @@ pub const HostAdapter = struct {
         };
     }
 
-    fn setNonce(ptr: *anyopaque, address: Address, nonce: u64) void {
+    fn set_nonce(ptr: *anyopaque, address: Address, nonce: u64) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
         self.state.setNonce(address, nonce) catch |err| {
             std.debug.panic("setNonce failed for {any} nonce {}: {any}", .{ address, nonce, err });
