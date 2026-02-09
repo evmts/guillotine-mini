@@ -1,21 +1,15 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
-import { Bytes, Hash, Hex, Rlp } from "voltaire-effect/primitives";
+import { Bytes, Hash, Rlp } from "voltaire-effect/primitives";
 import type { BranchNode, BytesType, HashType, LeafNode } from "./Node";
 import { encodeInternalNode, TrieHashError, TrieHashTest } from "./hash";
 import { nibbleListToCompact } from "./encoding";
+import { makeBytesHelpers } from "./internal/primitives";
 
-const isBytesType = (value: Uint8Array): value is BytesType =>
-  Bytes.isBytes(value);
-const bytesFromUint8Array = (value: Uint8Array): BytesType => {
-  if (!isBytesType(value)) {
-    throw new Error("Invalid bytes input");
-  }
-  return value;
-};
-const bytesFromHex = (hex: string): BytesType =>
-  bytesFromUint8Array(Hex.toBytes(hex));
+const { bytesFromHex, bytesFromUint8Array } = makeBytesHelpers(
+  (message) => new Error(message),
+);
 const toBytes = (hex: string): BytesType => bytesFromHex(hex);
 const coerceEffect = <A, E>(effect: unknown): Effect.Effect<A, E> =>
   effect as Effect.Effect<A, E>;

@@ -3,10 +3,11 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
-import { Bytes, Hash, Hex, Rlp } from "voltaire-effect/primitives";
+import { Hash, Rlp } from "voltaire-effect/primitives";
 import type { BytesType, EncodedNode, HashType, NibbleList } from "./Node";
 import { bytesToNibbleList } from "./encoding";
 import { encodeInternalNode, TrieHashError, TrieHashLive } from "./hash";
+import { makeBytesHelpers, makeHashHelpers } from "./internal/primitives";
 import {
   PatricializeError,
   patricialize,
@@ -31,24 +32,12 @@ class TrieBenchError extends Data.TaggedError("TrieBenchError")<{
   readonly cause?: unknown;
 }> {}
 
-const isBytesType = (value: Uint8Array): value is BytesType =>
-  Bytes.isBytes(value);
-const bytesFromUint8Array = (value: Uint8Array): BytesType => {
-  if (!isBytesType(value)) {
-    throw new TrieBenchError({ message: "Invalid bytes input" });
-  }
-  return value;
-};
-const bytesFromHex = (hex: string): BytesType =>
-  bytesFromUint8Array(Hex.toBytes(hex));
-const isHashType = (value: Uint8Array): value is HashType => Hash.isHash(value);
-const hashFromHex = (hex: string): HashType => {
-  const bytes = Hex.toBytes(hex);
-  if (!isHashType(bytes)) {
-    throw new TrieBenchError({ message: "Invalid hash input" });
-  }
-  return bytes;
-};
+const { bytesFromHex } = makeBytesHelpers(
+  (message) => new TrieBenchError({ message }),
+);
+const { hashFromHex } = makeHashHelpers(
+  (message) => new TrieBenchError({ message }),
+);
 const coerceEffect = <A, E>(effect: unknown): Effect.Effect<A, E> =>
   effect as Effect.Effect<A, E>;
 const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>

@@ -2,9 +2,10 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
 import * as Layer from "effect/Layer";
-import { Bytes, Hex } from "voltaire-effect/primitives";
+import { Bytes } from "voltaire-effect/primitives";
 import type { BytesType } from "./Node";
 import { TrieHashTest } from "./hash";
+import { makeBytesHelpers } from "./internal/primitives";
 import {
   PatricializeError,
   TriePatricializeTest,
@@ -12,16 +13,9 @@ import {
   patricialize,
 } from "./patricialize";
 
-const isBytesType = (value: Uint8Array): value is BytesType =>
-  Bytes.isBytes(value);
-const bytesFromUint8Array = (value: Uint8Array): BytesType => {
-  if (!isBytesType(value)) {
-    throw new Error("Invalid bytes input");
-  }
-  return value;
-};
-const bytesFromHex = (hex: string): BytesType =>
-  bytesFromUint8Array(Hex.toBytes(hex));
+const { bytesFromHex, bytesFromUint8Array } = makeBytesHelpers(
+  (message) => new Error(message),
+);
 const toBytes = (hex: string): BytesType => bytesFromHex(hex);
 const nibbles = (...values: number[]): BytesType =>
   bytesFromUint8Array(new Uint8Array(values));

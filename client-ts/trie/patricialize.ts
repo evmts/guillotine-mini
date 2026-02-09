@@ -4,25 +4,13 @@ import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { Bytes, Hex } from "voltaire-effect/primitives";
+import { Hex } from "voltaire-effect/primitives";
 import type { BytesType, EncodedNode, NibbleList, TrieNode } from "./Node";
 import { BranchChildrenCount } from "./Node";
 import { NibbleListSchema } from "./encoding";
 import type { TrieHashError } from "./hash";
 import { TrieHash } from "./hash";
-
-const isBytesType = (value: Uint8Array): value is BytesType =>
-  Bytes.isBytes(value);
-const bytesFromUint8Array = (value: Uint8Array): BytesType => {
-  if (!isBytesType(value)) {
-    throw new PatricializeError({ message: "Invalid bytes input" });
-  }
-  return value;
-};
-const bytesFromHex = (hex: string): BytesType =>
-  bytesFromUint8Array(Hex.toBytes(hex));
-
-const EmptyBytes = bytesFromHex("0x");
+import { makeBytesHelpers } from "./internal/primitives";
 
 /** Map of nibble-encoded keys to raw values. */
 export type NibbleKeyMap = ReadonlyMap<NibbleList, BytesType>;
@@ -32,6 +20,12 @@ export class PatricializeError extends Data.TaggedError("PatricializeError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
+
+const { bytesFromHex, bytesFromUint8Array } = makeBytesHelpers(
+  (message) => new PatricializeError({ message }),
+);
+
+const EmptyBytes = bytesFromHex("0x");
 
 /** Compute the shared prefix length for two nibble lists. */
 export const commonPrefixLength = (a: Uint8Array, b: Uint8Array): number => {

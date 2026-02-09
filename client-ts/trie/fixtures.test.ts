@@ -18,6 +18,7 @@ import {
   compactToNibbleList,
   nibbleListToCompact,
 } from "./encoding";
+import { makeBytesHelpers, makeHashHelpers } from "./internal/primitives";
 import {
   PatricializeError,
   TriePatricializeTest,
@@ -30,24 +31,10 @@ class FixtureError extends Data.TaggedError("FixtureError")<{
   readonly cause?: unknown;
 }> {}
 
-const isBytesType = (value: Uint8Array): value is BytesType =>
-  Bytes.isBytes(value);
-const bytesFromUint8Array = (value: Uint8Array): BytesType => {
-  if (!isBytesType(value)) {
-    throw new Error("Invalid bytes input");
-  }
-  return value;
-};
-const bytesFromHex = (hex: string): BytesType =>
-  bytesFromUint8Array(Hex.toBytes(hex));
-const isHashType = (value: Uint8Array): value is HashType => Hash.isHash(value);
-const hashFromHex = (hex: string): HashType => {
-  const bytes = Hex.toBytes(hex);
-  if (!isHashType(bytes)) {
-    throw new Error("Invalid hash input");
-  }
-  return bytes;
-};
+const { bytesFromHex, bytesFromUint8Array } = makeBytesHelpers(
+  (message) => new Error(message),
+);
+const { hashFromHex } = makeHashHelpers((message) => new Error(message));
 const coerceEffect = <A, E>(effect: unknown): Effect.Effect<A, E> =>
   effect as Effect.Effect<A, E>;
 const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>

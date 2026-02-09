@@ -1,8 +1,8 @@
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { Bytes, Hex } from "voltaire-effect/primitives";
 import type { BytesType } from "./Node";
+import { makeBytesHelpers } from "./internal/primitives";
 
 /** Error raised when nibble encoding/decoding fails. */
 export class NibbleEncodingError extends Data.TaggedError(
@@ -11,6 +11,10 @@ export class NibbleEncodingError extends Data.TaggedError(
   readonly message: string;
   readonly cause?: unknown;
 }> {}
+
+const { bytesFromHex, bytesFromUint8Array } = makeBytesHelpers(
+  (message) => new NibbleEncodingError({ message }),
+);
 
 const isNibbleList = (nibbles: Uint8Array): boolean => {
   for (const nibble of nibbles) {
@@ -37,17 +41,6 @@ export interface HexPrefixDecoded {
   readonly nibbles: NibbleList;
   readonly isLeaf: boolean;
 }
-
-const isBytesType = (value: Uint8Array): value is BytesType =>
-  Bytes.isBytes(value);
-const bytesFromUint8Array = (value: Uint8Array): BytesType => {
-  if (!isBytesType(value)) {
-    throw new NibbleEncodingError({ message: "Invalid bytes input" });
-  }
-  return value;
-};
-const bytesFromHex = (hex: string): BytesType =>
-  bytesFromUint8Array(Hex.toBytes(hex));
 
 const EmptyNibbles = bytesFromHex("0x");
 const SingleNibbleCache = Array.from({ length: 16 }, (_, nibble) =>

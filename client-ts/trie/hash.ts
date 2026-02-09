@@ -3,36 +3,24 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
-import { Bytes, Hash, Hex, Rlp } from "voltaire-effect/primitives";
-import type {
-  BytesType,
-  EncodedNode,
-  HashType,
-  RlpType,
-  TrieNode,
-} from "./Node";
+import { Hash, Rlp } from "voltaire-effect/primitives";
+import type { EncodedNode, HashType, RlpType, TrieNode } from "./Node";
 import { BranchChildrenCount } from "./Node";
 import { NibbleEncodingError, nibbleListToCompact } from "./encoding";
-
-type RlpItem = Uint8Array | RlpType;
-
-const isBytesType = (value: Uint8Array): value is BytesType =>
-  Bytes.isBytes(value);
-const bytesFromUint8Array = (value: Uint8Array): BytesType => {
-  if (!isBytesType(value)) {
-    throw new TrieHashError({ message: "Invalid bytes input" });
-  }
-  return value;
-};
-const bytesFromHex = (hex: string): BytesType =>
-  bytesFromUint8Array(Hex.toBytes(hex));
-const EmptyBytes = bytesFromHex("0x");
+import { makeBytesHelpers } from "./internal/primitives";
 
 /** Error raised when trie hashing fails. */
 export class TrieHashError extends Data.TaggedError("TrieHashError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
+
+type RlpItem = Uint8Array | RlpType;
+
+const { bytesFromHex } = makeBytesHelpers(
+  (message) => new TrieHashError({ message }),
+);
+const EmptyBytes = bytesFromHex("0x");
 
 const toRlpItem = (node: EncodedNode): RlpItem => {
   switch (node._tag) {
