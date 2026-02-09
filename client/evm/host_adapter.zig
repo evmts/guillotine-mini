@@ -209,6 +209,23 @@ test "HostAdapter — getCode/setCode round-trip" {
 
     const addr = Address{ .bytes = [_]u8{0xDD} ++ [_]u8{0} ** 19 };
 
+    try std.testing.expectEqual(@as(usize, 0), host.getCode(addr).len);
+
+    const code = [_]u8{ 0x60, 0x00, 0x60, 0x00, 0x56 };
+    host.setCode(addr, &code);
+    try std.testing.expectEqualSlices(u8, &code, host.getCode(addr));
+}
+
+test "HostAdapter — getCode/setCode round-trip" {
+    const allocator = std.testing.allocator;
+    var state = try StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    const host = adapter.host_interface();
+
+    const addr = Address{ .bytes = [_]u8{0xDD} ++ [_]u8{0} ** 19 };
+
     // Default code is empty
     try std.testing.expectEqual(@as(usize, 0), host.getCode(addr).len);
 
