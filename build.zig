@@ -156,6 +156,29 @@ pub fn build(b: *std.Build) void {
     const client_trie_test_step = b.step("test-trie", "Run Merkle Patricia Trie tests");
     client_trie_test_step.dependOn(&run_client_trie_tests.step);
 
+    // Trie integration tests (ethereum-tests/TrieTests fixtures)
+    const trie_fixture_mod = b.addModule("trie_fixtures", .{
+        .root_source_file = b.path("test/trie/fixtures.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "client_trie", .module = client_trie_mod },
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+        },
+    });
+
+    const trie_fixture_tests = b.addTest(.{
+        .root_module = trie_fixture_mod,
+    });
+
+    const run_trie_fixture_tests = b.addRunArtifact(trie_fixture_tests);
+    run_trie_fixture_tests.setCwd(b.path("."));
+    test_step.dependOn(&run_trie_fixture_tests.step);
+
+    const trie_fixture_step = b.step("test-trie-fixtures", "Run trie fixture integration tests");
+    trie_fixture_step.dependOn(&run_trie_fixture_tests.step);
+
     // Client State module (world state journal + snapshot/restore)
     const client_state_mod = b.addModule("client_state", .{
         .root_source_file = b.path("client/state/root.zig"),
