@@ -12,6 +12,22 @@ pub const TxPoolConfig = struct {
         in_memory,
         storage,
         storage_with_reorgs,
+
+        pub fn isPersistentStorage(self: BlobsSupportMode) bool {
+            return self == .storage or self == .storage_with_reorgs;
+        }
+
+        pub fn isEnabled(self: BlobsSupportMode) bool {
+            return self != .disabled;
+        }
+
+        pub fn isDisabled(self: BlobsSupportMode) bool {
+            return self == .disabled;
+        }
+
+        pub fn supportsReorgs(self: BlobsSupportMode) bool {
+            return self == .storage_with_reorgs;
+        }
     };
 
     peer_notification_threshold: u32 = 5,
@@ -98,4 +114,28 @@ test "txpool interface dispatches pending counts" {
     const pool = TxPool{ .ptr = &dummy, .vtable = &vtable };
     try std.testing.expectEqual(@as(usize, 42), pool.pending_count());
     try std.testing.expectEqual(@as(usize, 7), pool.pending_blob_count());
+}
+
+test "blobs support mode helpers mirror nethermind semantics" {
+    const Mode = TxPoolConfig.BlobsSupportMode;
+
+    try std.testing.expect(Mode.disabled.isDisabled());
+    try std.testing.expect(!Mode.disabled.isEnabled());
+    try std.testing.expect(!Mode.disabled.isPersistentStorage());
+    try std.testing.expect(!Mode.disabled.supportsReorgs());
+
+    try std.testing.expect(Mode.in_memory.isEnabled());
+    try std.testing.expect(!Mode.in_memory.isDisabled());
+    try std.testing.expect(!Mode.in_memory.isPersistentStorage());
+    try std.testing.expect(!Mode.in_memory.supportsReorgs());
+
+    try std.testing.expect(Mode.storage.isEnabled());
+    try std.testing.expect(!Mode.storage.isDisabled());
+    try std.testing.expect(Mode.storage.isPersistentStorage());
+    try std.testing.expect(!Mode.storage.supportsReorgs());
+
+    try std.testing.expect(Mode.storage_with_reorgs.isEnabled());
+    try std.testing.expect(!Mode.storage_with_reorgs.isDisabled());
+    try std.testing.expect(Mode.storage_with_reorgs.isPersistentStorage());
+    try std.testing.expect(Mode.storage_with_reorgs.supportsReorgs());
 }
