@@ -227,6 +227,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "jsonrpc", .module = jsonrpc_mod },
         },
     });
 
