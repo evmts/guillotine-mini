@@ -196,6 +196,27 @@ pub fn build(b: *std.Build) void {
     const client_network_test_step = b.step("test-network", "Run devp2p networking tests");
     client_network_test_step.dependOn(&run_client_network_tests.step);
 
+    // Client Sync module (full + snap synchronization)
+    const client_sync_mod = b.addModule("client_sync", .{
+        .root_source_file = b.path("client/sync/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+        },
+    });
+
+    const client_sync_tests = b.addTest(.{
+        .root_module = client_sync_mod,
+    });
+
+    const run_client_sync_tests = b.addRunArtifact(client_sync_tests);
+    test_step.dependOn(&run_client_sync_tests.step);
+    unit_test_step.dependOn(&run_client_sync_tests.step);
+
+    const client_sync_test_step = b.step("test-sync", "Run synchronization tests");
+    client_sync_test_step.dependOn(&run_client_sync_tests.step);
+
     // Client Blockchain module (chain management)
     const client_blockchain_mod = b.addModule("client_blockchain", .{
         .root_source_file = b.path("client/blockchain/root.zig"),
