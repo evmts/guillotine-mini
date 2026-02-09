@@ -417,6 +417,7 @@ fn encode_internal_from_items(allocator: Allocator, items: []const RlpItem) !Enc
 fn rlp_encode_tagged_list(allocator: Allocator, items: []const RlpItem) ![]u8 {
     // First pass: encode string items, keep verbatim as-is, compute total size.
     // Use a stack buffer for small lists (branch nodes have 17 items).
+    const rlp_empty_string = [_]u8{0x80};
     var encoded_buf: [17][]const u8 = undefined;
     var owned_mask: [17]bool = [_]bool{false} ** 17;
     std.debug.assert(items.len <= 17);
@@ -425,8 +426,13 @@ fn rlp_encode_tagged_list(allocator: Allocator, items: []const RlpItem) ![]u8 {
     for (items, 0..) |item, i| {
         switch (item) {
             .string => |s| {
-                encoded_buf[i] = try Rlp.encodeBytes(allocator, s);
-                owned_mask[i] = true;
+                if (s.len == 0) {
+                    encoded_buf[i] = &rlp_empty_string;
+                    owned_mask[i] = false;
+                } else {
+                    encoded_buf[i] = try Rlp.encodeBytes(allocator, s);
+                    owned_mask[i] = true;
+                }
             },
             .verbatim => |v| {
                 encoded_buf[i] = v;
