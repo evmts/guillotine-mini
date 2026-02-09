@@ -3,8 +3,6 @@
 /// Mirrors Nethermind's IEngineRpcModule capability exchange surface and
 /// follows the vtable-based dependency injection pattern used in src/host.zig.
 const std = @import("std");
-const primitives = @import("primitives");
-const crypto = @import("crypto");
 const jsonrpc = @import("jsonrpc");
 
 const ExchangeCapabilitiesMethod = @FieldType(jsonrpc.engine.EngineMethod, "engine_exchangeCapabilities");
