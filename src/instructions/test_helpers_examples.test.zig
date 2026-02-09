@@ -93,8 +93,8 @@ test "example: SUB - underflow wrapping" {
     var helper = try TestHelper.init(testing.allocator);
     defer helper.deinit();
 
-    try helper.pushStack(5);
     try helper.pushStack(10);
+    try helper.pushStack(5);
 
     try ArithmeticHandlers.sub(helper.frame);
 
@@ -162,6 +162,7 @@ test "example: PUSH0 - Shanghai hardfork requirement" {
 
     // PUSH0 requires Shanghai or later
     helper.withHardfork(.SHANGHAI);
+    try helper.withBytecode(&[_]u8{0x5F});
 
     try StackHandlers.push(helper.frame, 0x5F); // PUSH0 opcode
 
@@ -244,7 +245,7 @@ test "example: MSTORE8 - write single byte to memory" {
     try MemoryHandlers.mstore8(helper.frame);
 
     try helper.assertMemoryByte(10, 0xFF);
-    try helper.assertMemorySize(11); // Size expanded to 11
+    try helper.assertMemorySize(32); // Size expands to next 32-byte word
 }
 
 // =============================================================================
@@ -307,9 +308,9 @@ test "example: TSTORE - fails in static context" {
     try helper.pushStack(0x1234);
     try helper.pushStack(0x42);
 
-    // Should fail with WriteInStaticContext
+    // Should fail with StaticCallViolation
     try testing.expectError(
-        error.WriteInStaticContext,
+        error.StaticCallViolation,
         StorageHandlers.tstore(helper.frame),
     );
 }
@@ -339,8 +340,8 @@ test "example: LT - less than comparison" {
     var helper = try TestHelper.init(testing.allocator);
     defer helper.deinit();
 
-    try helper.pushStack(10);
     try helper.pushStack(20);
+    try helper.pushStack(10);
     try ComparisonHandlers.lt(helper.frame);
     try helper.assertStackTop(1); // 10 < 20 = true
 }
