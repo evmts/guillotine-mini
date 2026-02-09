@@ -3,7 +3,7 @@
 ## Goal (from prd/GUILLOTINE_CLIENT_PLAN.md)
 
 - Manage the block chain structure and validation.
-- Key components: `client/blockchain/chain.zig`, `client/blockchain/validator.zig` (Zig reference only).
+- Key components: `client/blockchain/chain.zig`, `client/blockchain/validator.zig`.
 - Architecture reference: `nethermind/src/Nethermind/Nethermind.Blockchain/`.
 - Voltaire reference: `voltaire/packages/voltaire-zig/src/blockchain/`.
 - Test fixtures: `ethereum-tests/BlockchainTests/`.
@@ -14,22 +14,22 @@
 - Yellow Paper Section 11 (Block Finalization) under `yellowpaper/`.
 - Tests: `ethereum-tests/BlockchainTests/` and `execution-spec-tests/fixtures/blockchain_tests/`.
 
-### execution-specs spot check (prague fork)
+### execution-specs spot check (cancun fork)
 
-Source: `execution-specs/src/ethereum/forks/prague/fork.py`
+Source: `execution-specs/src/ethereum/forks/cancun/fork.py`
 
-- `state_transition(chain, block)`
-  - Calls `validate_header`.
-  - Requires `block.ommers` to be empty.
-  - Builds `BlockEnvironment` and calls `apply_body`.
-  - Validates header/body derived fields: `gas_used`, `transactions_root`, `state_root`, `receipt_root`, `bloom`, `withdrawals_root`, `blob_gas_used`, `requests_hash`.
-  - Appends block to chain (spec retains only last 255 blocks).
-- `validate_header(chain, header)`
-  - `header.number >= 1` and parent header checks.
-  - Validates `excess_blob_gas`, `gas_used <= gas_limit`, `base_fee_per_gas` via `calculate_base_fee_per_gas`.
-  - Enforces timestamp increase, number increments, `extra_data <= 32`, `difficulty == 0`, `nonce == 0`, `ommers_hash == EMPTY_OMMER_HASH`.
-- `apply_body(block_env, transactions, withdrawals)`
-  - Runs system transactions, processes transactions, withdrawals, and general purpose requests.
+- `BlockChain` dataclass holds `blocks`, `state`, `chain_id`.
+- `state_transition(chain, block)`:
+- Validates header with `validate_header` and rejects non-empty `ommers`.
+- Builds `vm.BlockEnvironment` from header fields, applies body, computes roots/bloom.
+- Validates `gas_used`, `transactions_root`, `state_root`, `receipt_root`, `bloom`, `withdrawals_root`, `blob_gas_used`.
+- Appends block and keeps only the latest 255 blocks in `chain.blocks`.
+- `validate_header(chain, header)`:
+- Enforces `header.number >= 1` and proper parent linkage.
+- Checks `excess_blob_gas`, `gas_used <= gas_limit`, and `base_fee_per_gas` via `calculate_base_fee_per_gas`.
+- Enforces timestamp increase, number increment, `extra_data <= 32`.
+- Requires `difficulty == 0`, `nonce == 0`, `ommers_hash == EMPTY_OMMER_HASH`.
+- Verifies `parent_hash` via RLP of parent header.
 
 ## Nethermind.Db Reference Inventory
 
@@ -43,49 +43,26 @@ Listed from `nethermind/src/Nethermind/Nethermind.Db/`:
 - Columns/metadata: `BlobTxsColumns.cs`, `ReceiptsColumns.cs`, `MetadataDbKeys.cs`.
 - Other: `NullDb.cs`, `NullRocksDbFactory.cs`, `SimpleFilePublicKeyDb.cs`, `CompressingDb.cs`.
 
-## voltaire-effect APIs (source: /Users/williamcory/voltaire/voltaire-effect/src/)
+## Voltaire Zig Primitives
 
-Key primitives and services to reuse (no custom Ethereum types):
+- Attempted to list `/Users/williamcory/voltaire/packages/voltaire-zig/src/` and `voltaire/packages/voltaire-zig/src`, but both paths do not exist in this workspace. The Voltaire Zig primitives need to be located or the submodule path updated before implementation.
 
-- `primitives/`: `Block`, `BlockHeader`, `BlockBody`, `BlockHash`, `BlockNumber`, `Chain`, `ChainHead`, `Receipt`, `Transaction`, `Withdrawal`, `StateRoot`, `BloomFilter`, `Gas`, `GasUsed`, `BaseFeePerGas`, `Nonce`, `Hash`, `Hex`, `Bytes`, `Rlp`, `Hardfork`, `ForkId`.
-- `blockchain/BlockchainService.ts`: `BlockchainService` Context.Tag and `BlockchainShape` for storage/canonical management (Hex-based block representation).
-- `block/`: `fetchBlock`, `fetchBlockByHash`, `fetchBlockReceipts`, `toLightBlock` helpers (RPC integration).
-- `services/`: `Chain`, `Provider`, `RawProvider`, `Signer`, `RpcBatch`, `Transport` (for network-backed block retrieval if needed).
+## Existing EVM Host Interface (src/host.zig)
 
-## Effect.ts Patterns (source: effect-repo/packages/effect/src/)
-
-- DI: `Context.ts`, `Layer.ts`.
-- Sequential logic: `Effect.ts` with `Effect.gen` and `Function.ts` (`pipe`).
-- Validation: `Schema.ts`, `ParseResult.ts`.
-- State + events: `Ref.ts`, `PubSub.ts`.
-- Resource safety: `Scope.ts`, `Effect.acquireRelease`.
-- Errors: `Data.ts` (TaggedError), `Cause.ts`, `Exit.ts`.
-- Data types: `Option.ts`, `Either.ts`, `HashMap.ts`, `HashSet.ts`.
-
-## Existing client-ts Code (Effect.ts client)
-
-Files reviewed:
-
-- `client-ts/blockchain/BlockStore.ts`
-  - Context.Tag service; in-memory maps for blocks, canonical chain, and orphans.
-  - Schema validation for block/hash/number boundaries.
-  - `Effect.acquireRelease` for store lifecycle; `setCanonicalHead` walks ancestors.
-- `client-ts/blockchain/Blockchain.ts`
-  - Context.Tag chain manager with `Ref` state + `PubSub` event stream.
-  - Genesis validation (number 0, zero parent hash), canonical chain checks, fork-choice state updates.
-- `client-ts/blockchain/testUtils.ts`
-  - Uses `Schema.decodeSync` with voltaire-effect primitives to build test blocks.
-- Tests: `client-ts/blockchain/BlockStore.test.ts`, `client-ts/blockchain/Blockchain.test.ts` use `@effect/vitest` and `it.effect`.
-- DB patterns: `client-ts/db/Db.ts` shows Context.Tag + Layer.scoped + Schema-based validation for DB boundaries.
+- `HostInterface` vtable provides minimal external state access:
+- `getBalance` / `setBalance`
+- `getCode` / `setCode`
+- `getStorage` / `setStorage`
+- `getNonce` / `setNonce`
 
 ## Test Fixtures (filesystem)
 
 - `ethereum-tests/BlockchainTests/`
 - `ethereum-tests/fixtures_blockchain_tests.tgz`
-- `execution-spec-tests/` is currently empty in this workspace (no fixtures present).
+- `execution-spec-tests/` exists but is empty in this workspace (no fixtures present).
 
 ## Notes for Implementation
 
 - Read fork-specific `fork.py` before coding validation logic; mirror logic per active fork.
-- Stick to voltaire-effect primitives and services for all Ethereum types.
-- Follow existing client-ts service + Layer patterns and avoid `Effect.runPromise` outside app entry points.
+- Use Voltaire Zig primitives for all Ethereum types (path currently missing).
+- Use the existing EVM in `src/` and the `HostInterface` for external state access.
