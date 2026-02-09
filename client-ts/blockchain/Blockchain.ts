@@ -332,6 +332,12 @@ const makeBlockchain = Effect.gen(function* () {
       return [shouldUpdate, next] as const;
     });
 
+  const getBlockFromHashOption = (hash: Option.Option<BlockHashType>) =>
+    Option.match(hash, {
+      onNone: () => Effect.succeed(Option.none()),
+      onSome: (value) => store.getBlock(value),
+    });
+
   const getBlockByHash = (hash: BlockHashType) => store.getBlock(hash);
 
   const getBlockByNumber = (number: BlockNumberType) =>
@@ -341,16 +347,11 @@ const makeBlockchain = Effect.gen(function* () {
     Ref.get(state).pipe(Effect.map((current) => current.bestKnownNumber));
 
   const getBestSuggestedBlock = () =>
-    Effect.gen(function* () {
-      const current = yield* Ref.get(state);
-      if (Option.isNone(current.bestSuggestedHash)) {
-        return Option.none();
-      }
-
-      return yield* store.getBlock(
-        Option.getOrThrow(current.bestSuggestedHash),
-      );
-    });
+    Ref.get(state).pipe(
+      Effect.flatMap((current) =>
+        getBlockFromHashOption(current.bestSuggestedHash),
+      ),
+    );
 
   const putBlock = (block: BlockType) =>
     Effect.gen(function* () {
@@ -402,24 +403,14 @@ const makeBlockchain = Effect.gen(function* () {
     });
 
   const getGenesis = () =>
-    Effect.gen(function* () {
-      const current = yield* Ref.get(state);
-      if (Option.isNone(current.genesisHash)) {
-        return Option.none();
-      }
-
-      return yield* store.getBlock(Option.getOrThrow(current.genesisHash));
-    });
+    Ref.get(state).pipe(
+      Effect.flatMap((current) => getBlockFromHashOption(current.genesisHash)),
+    );
 
   const getHead = () =>
-    Effect.gen(function* () {
-      const current = yield* Ref.get(state);
-      if (Option.isNone(current.headHash)) {
-        return Option.none();
-      }
-
-      return yield* store.getBlock(Option.getOrThrow(current.headHash));
-    });
+    Ref.get(state).pipe(
+      Effect.flatMap((current) => getBlockFromHashOption(current.headHash)),
+    );
 
   const getForkChoiceState = () =>
     Ref.get(state).pipe(Effect.map((current) => current.forkChoice));

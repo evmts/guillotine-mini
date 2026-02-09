@@ -324,79 +324,48 @@ export const BlockStoreMemoryLive: Layer.Layer<BlockStore, BlockStoreError> =
 export const BlockStoreMemoryTest: Layer.Layer<BlockStore, BlockStoreError> =
   Layer.scoped(BlockStore, makeBlockStore);
 
+const withBlockStore = <A, E, R>(
+  f: (service: BlockStoreService) => Effect.Effect<A, E, R>,
+) => Effect.flatMap(BlockStore, f);
+
 /** Retrieve a block by hash. */
 export const getBlock = (hash: BlockHashType) =>
-  Effect.gen(function* () {
-    const store = yield* BlockStore;
-    return yield* store.getBlock(hash);
-  });
+  withBlockStore((store) => store.getBlock(hash));
 
 /** Retrieve a canonical block by number. */
 export const getBlockByNumber = (number: BlockNumberType) =>
-  Effect.gen(function* () {
-    const store = yield* BlockStore;
-    return yield* store.getBlockByNumber(number);
-  });
+  withBlockStore((store) => store.getBlockByNumber(number));
 
 /** Retrieve the canonical hash for a block number. */
 export const getCanonicalHash = (number: BlockNumberType) =>
-  Effect.gen(function* () {
-    const store = yield* BlockStore;
-    return yield* store.getCanonicalHash(number);
-  });
+  withBlockStore((store) => store.getCanonicalHash(number));
 
 /** Check whether a block exists by hash. */
 export const hasBlock = (hash: BlockHashType) =>
-  Effect.gen(function* () {
-    const store = yield* BlockStore;
-    return yield* store.hasBlock(hash);
-  });
+  withBlockStore((store) => store.hasBlock(hash));
 
 /** Check whether a block is currently orphaned. */
 export const isOrphan = (hash: BlockHashType) =>
-  Effect.gen(function* () {
-    const store = yield* BlockStore;
-    return yield* store.isOrphan(hash);
-  });
+  withBlockStore((store) => store.isOrphan(hash));
 
 /** Put a block into local storage. */
 export const putBlock = (block: BlockType) =>
-  Effect.gen(function* () {
-    const store = yield* BlockStore;
-    yield* store.putBlock(block);
-  });
+  withBlockStore((store) => store.putBlock(block));
 
 /** Set the canonical head hash. */
 export const setCanonicalHead = (hash: BlockHashType) =>
-  Effect.gen(function* () {
-    const store = yield* BlockStore;
-    yield* store.setCanonicalHead(hash);
-  });
+  withBlockStore((store) => store.setCanonicalHead(hash));
 
 /** Get the highest canonical block number. */
 export const getHeadBlockNumber = () =>
-  Effect.gen(function* () {
-    const store = yield* BlockStore;
-    return yield* store.getHeadBlockNumber();
-  });
+  withBlockStore((store) => store.getHeadBlockNumber());
 
 /** Get the total count of stored blocks. */
-export const blockCount = () =>
-  Effect.gen(function* () {
-    const store = yield* BlockStore;
-    return yield* store.blockCount();
-  });
+export const blockCount = () => withBlockStore((store) => store.blockCount());
 
 /** Get the total count of orphaned blocks. */
-export const orphanCount = () =>
-  Effect.gen(function* () {
-    const store = yield* BlockStore;
-    return yield* store.orphanCount();
-  });
+export const orphanCount = () => withBlockStore((store) => store.orphanCount());
 
 /** Get the length of the canonical chain. */
 export const canonicalChainLength = () =>
-  Effect.gen(function* () {
-    const store = yield* BlockStore;
-    return yield* store.canonicalChainLength();
-  });
+  withBlockStore((store) => store.canonicalChainLength());
