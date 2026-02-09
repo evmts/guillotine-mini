@@ -3,6 +3,7 @@ const full = @import("full.zig");
 
 // -- Public API --------------------------------------------------------------
 
+/// Full sync block/receipt request container.
 pub const BlocksRequest = full.BlocksRequest;
 
 test {
