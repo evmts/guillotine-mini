@@ -1,4 +1,5 @@
 import { AccountState } from "voltaire-effect/primitives";
+import { bytes32Equals } from "./internal/bytes";
 
 /** Canonical AccountState type from voltaire-effect. */
 export type AccountStateType = AccountState.AccountStateType;
@@ -16,18 +17,6 @@ export const EMPTY_ACCOUNT: AccountStateType = {
   codeHash: EMPTY_CODE_HASH,
   storageRoot: EMPTY_STORAGE_ROOT,
   __tag: "AccountState",
-};
-
-const bytes32Equals = (left: Uint8Array, right: Uint8Array): boolean => {
-  if (left.length !== right.length) {
-    return false;
-  }
-  for (let i = 0; i < left.length; i += 1) {
-    if (left[i] !== right[i]) {
-      return false;
-    }
-  }
-  return true;
 };
 
 /** True if the account has zero nonce and balance with empty code. */

@@ -19,6 +19,7 @@ import {
   Journal,
   JournalTest,
 } from "./Journal";
+import { bytes32Equals, cloneBytes32 } from "./internal/bytes";
 
 /** Hex-encoded key for account map storage. */
 type AccountKey = Parameters<typeof Hex.equals>[0];
@@ -137,8 +138,6 @@ const parseStorageJournalKey = (
   };
 };
 
-const cloneBytes32 = (value: Uint8Array): Uint8Array => value.slice();
-
 const cloneAccount = (account: AccountStateType): AccountStateType => ({
   ...account,
   codeHash: cloneBytes32(account.codeHash) as AccountStateType["codeHash"],
@@ -146,18 +145,6 @@ const cloneAccount = (account: AccountStateType): AccountStateType => ({
     account.storageRoot,
   ) as AccountStateType["storageRoot"],
 });
-
-const bytes32Equals = (left: Uint8Array, right: Uint8Array): boolean => {
-  if (left.length !== right.length) {
-    return false;
-  }
-  for (let i = 0; i < left.length; i += 1) {
-    if (left[i] !== right[i]) {
-      return false;
-    }
-  }
-  return true;
-};
 
 const ZERO_STORAGE_VALUE = new Uint8Array(32) as StorageValueType;
 

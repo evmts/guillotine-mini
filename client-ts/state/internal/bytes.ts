@@ -1,0 +1,13 @@
+export const bytes32Equals = (left: Uint8Array, right: Uint8Array): boolean => {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) {
+      return false;
+    }
+  }
+  return true;
+};
+
+export const cloneBytes32 = (value: Uint8Array): Uint8Array => value.slice();
