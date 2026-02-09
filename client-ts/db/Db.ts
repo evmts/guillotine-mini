@@ -32,12 +32,21 @@ export interface DbEntry {
   readonly value: BytesType;
 }
 
+/** DB key/value pair result for multi-get operations. */
+export interface DbGetEntry {
+  readonly key: BytesType;
+  readonly value: Option.Option<BytesType>;
+}
+
 /** Read-only snapshot view of a DB. */
 export interface DbSnapshot {
   readonly get: (
     key: BytesType,
     flags?: ReadFlags,
   ) => Effect.Effect<Option.Option<BytesType>, DbError>;
+  readonly getMany: (
+    keys: ReadonlyArray<BytesType>,
+  ) => Effect.Effect<ReadonlyArray<DbGetEntry>, DbError>;
   readonly getAll: (
     ordered?: boolean,
   ) => Effect.Effect<ReadonlyArray<DbEntry>, DbError>;
@@ -92,6 +101,9 @@ export interface DbService {
     key: BytesType,
     flags?: ReadFlags,
   ) => Effect.Effect<Option.Option<BytesType>, DbError>;
+  readonly getMany: (
+    keys: ReadonlyArray<BytesType>,
+  ) => Effect.Effect<ReadonlyArray<DbGetEntry>, DbError>;
   readonly getAll: (
     ordered?: boolean,
   ) => Effect.Effect<ReadonlyArray<DbEntry>, DbError>;
@@ -198,6 +210,22 @@ const makeReader = (store: Map<string, BytesType>): DbSnapshot => {
       return pipe(Option.fromNullable(value), Option.map(cloneBytes));
     });
 
+  const getMany = (keys: ReadonlyArray<BytesType>) =>
+    Effect.gen(function* () {
+      const entries: Array<DbGetEntry> = [];
+
+      for (const key of keys) {
+        const keyHex = yield* encodeKey(key);
+        const value = store.get(keyHex);
+        entries.push({
+          key,
+          value: pipe(Option.fromNullable(value), Option.map(cloneBytes)),
+        });
+      }
+
+      return entries;
+    });
+
   const has = (key: BytesType) =>
     Effect.gen(function* () {
       const keyHex = yield* encodeKey(key);
@@ -206,6 +234,7 @@ const makeReader = (store: Map<string, BytesType>): DbSnapshot => {
 
   return {
     get,
+    getMany,
     getAll,
     getAllKeys,
     getAllValues,
@@ -216,6 +245,14 @@ const makeReader = (store: Map<string, BytesType>): DbSnapshot => {
 const makeNullSnapshot = (): DbSnapshot => {
   const get = (_key: BytesType, _flags?: ReadFlags) =>
     Effect.succeed(Option.none());
+
+  const getMany = (keys: ReadonlyArray<BytesType>) =>
+    Effect.succeed(
+      keys.map((key) => ({
+        key,
+        value: Option.none(),
+      })),
+    );
 
   const getAll = (_ordered?: boolean) =>
     Effect.succeed<ReadonlyArray<DbEntry>>([]);
@@ -230,6 +267,7 @@ const makeNullSnapshot = (): DbSnapshot => {
 
   return {
     get,
+    getMany,
     getAll,
     getAllKeys,
     getAllValues,
@@ -256,7 +294,8 @@ const makeMemoryDb = (config: DbConfig) =>
       (map) => Effect.sync(() => map.clear()),
     );
 
-    const { get, getAll, getAllKeys, getAllValues, has } = makeReader(store);
+    const { get, getMany, getAll, getAllKeys, getAllValues, has } =
+      makeReader(store);
 
     const put = (key: BytesType, value: BytesType, _flags?: WriteFlags) =>
       Effect.gen(function* () {
@@ -398,6 +437,7 @@ const makeMemoryDb = (config: DbConfig) =>
     return {
       name: validated.name,
       get,
+      getMany,
       getAll,
       getAllKeys,
       getAllValues,
@@ -476,6 +516,7 @@ const makeNullDb = (config: DbConfig) =>
     return {
       name: validated.name,
       get: snapshot.get,
+      getMany: snapshot.getMany,
       getAll: snapshot.getAll,
       getAllKeys: snapshot.getAllKeys,
       getAllValues: snapshot.getAllValues,
@@ -516,6 +557,13 @@ export const get = (key: BytesType, flags?: ReadFlags) =>
   Effect.gen(function* () {
     const db = yield* Db;
     return yield* db.get(key, flags);
+  });
+
+/** Retrieve values for multiple keys. */
+export const getMany = (keys: ReadonlyArray<BytesType>) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.getMany(keys);
   });
 
 /** Return all entries. */

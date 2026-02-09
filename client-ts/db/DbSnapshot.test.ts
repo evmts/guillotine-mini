@@ -31,4 +31,35 @@ describe("Db snapshots", () => {
       );
     }).pipe(Effect.provide(DbMemoryTest())),
   );
+
+  it.effect("getMany returns snapshot values in order", () =>
+    Effect.gen(function* () {
+      const keyA = toBytes("0x31");
+      const keyB = toBytes("0x32");
+      const initial = toBytes("0xaaaa");
+      const updated = toBytes("0xbbbb");
+      const added = toBytes("0xcccc");
+
+      yield* put(keyA, initial);
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const snapshot = yield* createSnapshot();
+
+          yield* put(keyA, updated);
+          yield* put(keyB, added);
+
+          const entries = yield* snapshot.getMany([keyA, keyB]);
+          assert.strictEqual(entries.length, 2);
+          const first = entries[0]!;
+          const second = entries[1]!;
+          assert.isTrue(Bytes.equals(first.key, keyA));
+          assert.isTrue(Option.isSome(first.value));
+          assert.isTrue(Bytes.equals(Option.getOrThrow(first.value), initial));
+          assert.isTrue(Bytes.equals(second.key, keyB));
+          assert.isTrue(Option.isNone(second.value));
+        }),
+      );
+    }).pipe(Effect.provide(DbMemoryTest())),
+  );
 });
