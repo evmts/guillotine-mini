@@ -112,7 +112,7 @@ pub fn trie_root(
     }
 
     for (keys, 0..) |key, i| {
-        nibble_keys[i] = try key_to_nibbles(allocator, key);
+        nibble_keys[i] = try TriePrimitives.keyToNibbles(allocator, key);
     }
 
     // Build the trie and get the root node encoding
@@ -178,65 +178,6 @@ fn free_encoded_node(allocator: Allocator, node: EncodedNode) void {
     }
 }
 
-/// Convert a byte sequence to nibble-list form (each byte → two 4-bit nibbles).
-///
-/// Matches Python's `bytes_to_nibble_list()` from `execution-specs`.
-/// For example, `[0x12, 0xAB]` becomes `[0x1, 0x2, 0xA, 0xB]`.
-/// The caller owns the returned slice and must free it with `allocator`.
-fn key_to_nibbles(allocator: Allocator, key: []const u8) ![]u8 {
-    const nibbles = try allocator.alloc(u8, key.len * 2);
-    for (key, 0..) |byte, i| {
-        nibbles[i * 2] = byte >> 4;
-        nibbles[i * 2 + 1] = byte & 0x0F;
-    }
-    return nibbles;
-}
-
-/// Hex-prefix (compact) encoding for nibble paths.
-///
-/// Matches Python's `nibble_list_to_compact()` from `execution-specs`.
-/// Encodes a nibble path with a flag byte indicating leaf vs extension and
-/// even vs odd length. The caller owns the returned slice.
-///
-/// Encoding rules:
-/// - Even extension: `[0x00, packed_nibbles...]`
-/// - Odd extension:  `[0x1N, packed_nibbles...]` where N is the first nibble
-/// - Even leaf:      `[0x20, packed_nibbles...]`
-/// - Odd leaf:       `[0x3N, packed_nibbles...]` where N is the first nibble
-fn nibble_list_to_compact(allocator: Allocator, nibbles: []const u8, is_leaf: bool) ![]u8 {
-    if (nibbles.len % 2 == 0) {
-        // Even length
-        const result = try allocator.alloc(u8, 1 + nibbles.len / 2);
-        result[0] = if (is_leaf) 0x20 else 0x00;
-        var i: usize = 0;
-        while (i < nibbles.len) : (i += 2) {
-            result[1 + i / 2] = (nibbles[i] << 4) | nibbles[i + 1];
-        }
-        return result;
-    } else {
-        // Odd length
-        const result = try allocator.alloc(u8, 1 + nibbles.len / 2);
-        result[0] = (if (is_leaf) @as(u8, 0x30) else @as(u8, 0x10)) | nibbles[0];
-        var i: usize = 1;
-        while (i < nibbles.len) : (i += 2) {
-            result[1 + i / 2] = (nibbles[i] << 4) | nibbles[i + 1];
-        }
-        return result;
-    }
-}
-
-/// Find the length of the longest common prefix between two byte slices.
-///
-/// Returns the number of leading bytes that are identical in both slices.
-/// Used to find shared prefixes among nibble-encoded trie keys.
-fn common_prefix_length(a: []const u8, b: []const u8) usize {
-    const min_len = @min(a.len, b.len);
-    for (0..min_len) |i| {
-        if (a[i] != b[i]) return i;
-    }
-    return min_len;
-}
-
 /// Recursively build the MPT from key-value pairs.
 ///
 /// Matches Python's `patricialize(obj, level)`. Instead of using a dict,
@@ -266,7 +207,10 @@ fn patricialize(
 
     for (nibble_keys[1..]) |key| {
         const key_suffix = key[level..];
-        prefix_length = @min(prefix_length, common_prefix_length(first_key, key_suffix));
+        const min_len = @min(prefix_length, key_suffix.len);
+        var i: usize = 0;
+        while (i < min_len and first_key[i] == key_suffix[i]) : (i += 1) {}
+        prefix_length = i;
         if (prefix_length == 0) break;
     }
 
@@ -360,7 +304,7 @@ fn encode_internal_path_node(
     is_leaf: bool,
     second: RlpItem,
 ) !EncodedNode {
-    const compact_path = try nibble_list_to_compact(allocator, path, is_leaf);
+    const compact_path = try TriePrimitives.encodePath(allocator, path, is_leaf);
     defer allocator.free(compact_path);
 
     const items = [2]RlpItem{
@@ -625,72 +569,6 @@ test "secure_trie_root - hex_encoded_securetrie_test test1" {
     const root = try secure_trie_root(allocator, &key_slices, &value_slices);
     const expected = try Hex.hexToBytesFixed(32, "0x730a444e08ab4b8dee147c9b232fc52d34a223d600031c1e9d25bfc985cbd797");
     try testing.expectEqualSlices(u8, &expected, &root);
-}
-
-test "nibble_list_to_compact - even extension" {
-    const allocator = testing.allocator;
-    const nibbles = [_]u8{ 0x1, 0x2, 0x3, 0x4 };
-    const result = try nibble_list_to_compact(allocator, &nibbles, false);
-    defer allocator.free(result);
-    try testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x12, 0x34 }, result);
-}
-
-test "nibble_list_to_compact - odd leaf" {
-    const allocator = testing.allocator;
-    const nibbles = [_]u8{ 0x1, 0x2, 0x3 };
-    const result = try nibble_list_to_compact(allocator, &nibbles, true);
-    defer allocator.free(result);
-    try testing.expectEqualSlices(u8, &[_]u8{ 0x31, 0x23 }, result);
-}
-
-test "nibble_list_to_compact - even leaf" {
-    const allocator = testing.allocator;
-    const nibbles = [_]u8{ 0x1, 0x2, 0x3, 0x4 };
-    const result = try nibble_list_to_compact(allocator, &nibbles, true);
-    defer allocator.free(result);
-    try testing.expectEqualSlices(u8, &[_]u8{ 0x20, 0x12, 0x34 }, result);
-}
-
-test "nibble_list_to_compact - odd extension" {
-    const allocator = testing.allocator;
-    const nibbles = [_]u8{0x1};
-    const result = try nibble_list_to_compact(allocator, &nibbles, false);
-    defer allocator.free(result);
-    try testing.expectEqualSlices(u8, &[_]u8{0x11}, result);
-}
-
-test "nibble_list_to_compact - empty leaf" {
-    const allocator = testing.allocator;
-    const nibbles = [_]u8{};
-    const result = try nibble_list_to_compact(allocator, &nibbles, true);
-    defer allocator.free(result);
-    try testing.expectEqualSlices(u8, &[_]u8{0x20}, result);
-}
-
-test "key_to_nibbles - basic" {
-    const allocator = testing.allocator;
-    const key = [_]u8{ 0x12, 0xAB };
-    const nibbles = try key_to_nibbles(allocator, &key);
-    defer allocator.free(nibbles);
-    try testing.expectEqualSlices(u8, &[_]u8{ 0x1, 0x2, 0xA, 0xB }, nibbles);
-}
-
-test "common_prefix_length - basic" {
-    const a = [_]u8{ 1, 2, 3, 4 };
-    const b = [_]u8{ 1, 2, 5, 6 };
-    try testing.expectEqual(@as(usize, 2), common_prefix_length(&a, &b));
-}
-
-test "common_prefix_length - no common prefix" {
-    const a = [_]u8{ 1, 2, 3 };
-    const b = [_]u8{ 4, 5, 6 };
-    try testing.expectEqual(@as(usize, 0), common_prefix_length(&a, &b));
-}
-
-test "common_prefix_length - full match" {
-    const a = [_]u8{ 1, 2, 3 };
-    const b = [_]u8{ 1, 2, 3 };
-    try testing.expectEqual(@as(usize, 3), common_prefix_length(&a, &b));
 }
 
 // ---------------------------------------------------------------------------
