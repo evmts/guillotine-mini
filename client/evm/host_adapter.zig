@@ -27,6 +27,7 @@ const std = @import("std");
 const evm_mod = @import("evm");
 const HostInterface = evm_mod.HostInterface;
 const state_manager_mod = @import("state-manager");
+const ForkBackend = state_manager_mod.ForkBackend;
 const StateManager = state_manager_mod.StateManager;
 const primitives = @import("primitives");
 const Address = primitives.Address;
@@ -88,9 +89,13 @@ pub const HostAdapter = struct {
 
     fn get_balance(ptr: *anyopaque, address: Address) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getBalance(address) catch |err| {
+        return self.get_balance_fallible(address) catch |err| {
             std.debug.panic("getBalance failed for {any}: {any}", .{ address, err });
         };
+    }
+
+    fn get_balance_fallible(self: *Self, address: Address) !u256 {
+        return self.state.getBalance(address);
     }
 
     fn set_balance(ptr: *anyopaque, address: Address, balance: u256) void {
@@ -215,6 +220,54 @@ test "HostAdapter — getStorage/setStorage round-trip" {
 
     host.setStorage(addr, slot, 999);
     try std.testing.expectEqual(@as(u256, 999), host.getStorage(addr, slot));
+}
+
+test "HostAdapter — fork backend pending surfaces as error" {
+    const allocator = std.testing.allocator;
+
+    var fork = try ForkBackend.init(allocator, "latest", .{});
+    defer fork.deinit();
+
+    var state = try StateManager.init(allocator, &fork);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    defer adapter.deinit();
+
+    const addr = Address{ .bytes = [_]u8{0xAB} ++ [_]u8{0} ** 19 };
+
+    try std.testing.expectError(error.RpcPending, adapter.get_balance_fallible(addr));
+}
+
+test "HostAdapter — setStorage zero deletes and masks fork cache" {
+    const allocator = std.testing.allocator;
+
+    var fork = try ForkBackend.init(allocator, "latest", .{});
+    defer fork.deinit();
+
+    const addr = Address{ .bytes = [_]u8{0xF0} ++ [_]u8{0} ** 19 };
+    const slot: u256 = 7;
+    const fork_value: u256 = 123;
+
+    var slots = std.AutoHashMap(u256, u256).init(allocator);
+    errdefer slots.deinit();
+    try slots.put(slot, fork_value);
+    try fork.storage_cache.put(addr, slots);
+
+    var state = try StateManager.init(allocator, &fork);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    defer adapter.deinit();
+    const host = adapter.host_interface();
+
+    try std.testing.expectEqual(fork_value, host.getStorage(addr, slot));
+
+    host.setStorage(addr, slot, 0);
+
+    try std.testing.expect(!state.journaled_state.storage_cache.has(addr, slot));
+    try std.testing.expectEqual(fork_value, try state.getStorage(addr, slot));
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(addr, slot));
 }
 
 test "HostAdapter — getCode/setCode default empty" {
