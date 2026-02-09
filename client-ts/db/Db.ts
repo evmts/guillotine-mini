@@ -6,11 +6,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
-import { Hex } from "voltaire-effect/primitives";
-import type { BytesType as VoltaireBytesType } from "@tevm/voltaire/Bytes";
+import { Bytes, Hex } from "voltaire-effect/primitives";
 
 /** Byte array type used for DB keys and values. */
-export type BytesType = VoltaireBytesType;
+export type BytesType = Schema.Schema.Type<typeof Bytes.Hex>;
 
 /** Canonical DB names used by the execution client. */
 export const DbNames = {
