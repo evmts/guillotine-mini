@@ -9,6 +9,7 @@ import {
 } from "./Account";
 import {
   WorldStateTest,
+  MissingAccountError,
   UnknownSnapshotError,
   commitSnapshot,
   destroyAccount,
@@ -244,6 +245,41 @@ describe("WorldState", () => {
 
         yield* commitSnapshot(snapshot);
         assert.isFalse(yield* wasAccountCreated(addr));
+      }),
+    ),
+  );
+
+  it.effect("fails to set storage for missing accounts", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(6);
+        const slot = makeSlot(4);
+        const value = makeStorageValue(1);
+        const outcome = yield* Effect.either(setStorage(addr, slot, value));
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof MissingAccountError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("rolls back created accounts on snapshot restore", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(7);
+        const outer = yield* takeSnapshot();
+        const inner = yield* takeSnapshot();
+
+        yield* setAccount(addr, makeAccount({ nonce: 1n }));
+        assert.isTrue(yield* wasAccountCreated(addr));
+
+        yield* restoreSnapshot(inner);
+        assert.isFalse(yield* wasAccountCreated(addr));
+        const reverted = yield* getAccountOptional(addr);
+        assert.isNull(reverted);
+
+        yield* restoreSnapshot(outer);
       }),
     ),
   );
