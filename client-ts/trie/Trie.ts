@@ -213,13 +213,13 @@ const TrieLayer = (config?: TrieConfig) => Layer.effect(Trie, makeTrie(config));
 /** In-memory trie layer backed by a scoped store. */
 export const TrieMemoryLive = (
   config: TrieConfig = {},
-): Layer.Layer<Trie, TrieError, TrieRoot> =>
+): Layer.Layer<Trie, never, TrieRoot> =>
   TrieLayer(config).pipe(Layer.provide(TrieStoreMemoryLayer));
 
 /** Deterministic in-memory trie layer for tests. */
 export const TrieMemoryTest = (
   config: TrieConfig = {},
-): Layer.Layer<Trie, TrieError, TrieRoot> => TrieMemoryLive(config);
+): Layer.Layer<Trie, never, TrieRoot> => TrieMemoryLive(config);
 
 /** Retrieve a value by key. */
 export const get = (key: BytesType) =>
