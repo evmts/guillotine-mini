@@ -65,6 +65,7 @@ pub const Trie = trie.Trie;
 test {
     // Ensure all sub-modules compile and their tests run.
     @import("std").testing.refAllDecls(@This());
+    _ = @import("fixtures.zig");
 }
 
 test "client_trie public API smoke" {
