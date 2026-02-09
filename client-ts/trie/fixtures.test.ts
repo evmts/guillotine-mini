@@ -5,27 +5,13 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Bytes, Hash, Hex, Rlp } from "voltaire-effect/primitives";
-import type { BytesType, EncodedNode, HashType, NibbleList } from "./Node";
-import {
-  encodeInternalNode,
-  TrieHashTest,
-  type TrieHash,
-  type TrieHashError,
-} from "./hash";
-import {
-  bytesToNibbleList,
-  compactToNibbleList,
-  nibbleListToCompact,
-} from "./encoding";
-import { coerceEffect } from "./internal/effect";
-import { makeBytesHelpers, makeHashHelpers } from "./internal/primitives";
-import {
-  PatricializeError,
-  TriePatricializeTest,
-  patricialize,
-  type TriePatricialize,
-} from "./patricialize";
+import { Bytes, Hex } from "voltaire-effect/primitives";
+import type { BytesType, HashType } from "./Node";
+import { TrieHashTest } from "./hash";
+import { compactToNibbleList, nibbleListToCompact } from "./encoding";
+import { makeBytesHelpers } from "./internal/primitives";
+import { TriePatricializeTest } from "./patricialize";
+import { TrieRoot, TrieRootTest, trieRoot } from "./root";
 
 class FixtureError extends Data.TaggedError("FixtureError")<{
   readonly message: string;
@@ -35,20 +21,13 @@ class FixtureError extends Data.TaggedError("FixtureError")<{
 const { bytesFromHex, bytesFromUint8Array } = makeBytesHelpers(
   (message) => new Error(message),
 );
-const { hashFromHex } = makeHashHelpers((message) => new Error(message));
-const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
-  coerceEffect<Uint8Array, unknown>(Rlp.encode(data));
-const keccak256 = (data: Uint8Array) =>
-  coerceEffect<HashType, never>(Hash.keccak256(data));
 const EmptyBytes = bytesFromHex("0x");
-const EmptyTrieRoot = hashFromHex(
-  "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
-);
 
-const TestLayer = Layer.merge(
+const BaseLayer = Layer.merge(
   TrieHashTest,
   TriePatricializeTest.pipe(Layer.provide(TrieHashTest)),
 );
+const TestLayer = TrieRootTest.pipe(Layer.provide(BaseLayer));
 
 type HexPrefixFixture = Readonly<
   Record<
@@ -166,50 +145,21 @@ const collectEntries = (
     return map;
   });
 
-const encodedNodeToRoot = (
-  encoded: EncodedNode,
-): Effect.Effect<HashType, TrieHashError | FixtureError> => {
-  switch (encoded._tag) {
-    case "hash":
-      return Effect.succeed(encoded.value);
-    case "raw":
-      return encodeRlp(encoded.value).pipe(
-        Effect.flatMap((encodedNode) => keccak256(encodedNode)),
-        Effect.mapError(
-          (cause) =>
-            new FixtureError({
-              message: "Failed to encode root node",
-              cause,
-            }),
-        ),
-      );
-    case "empty":
-      return Effect.succeed(EmptyTrieRoot);
-  }
-};
-
 const computeRoot = (
   entries: ReadonlyArray<readonly [string, string | null]>,
   secured: boolean,
-): Effect.Effect<
-  HashType,
-  FixtureError | PatricializeError | TrieHashError,
-  TrieHash | TriePatricialize
-> =>
+): Effect.Effect<HashType, FixtureError, TrieRoot> =>
   Effect.gen(function* () {
     const finalEntries = yield* collectEntries(entries);
-    const nibbleMap = new Map<NibbleList, BytesType>();
-    for (const { key, value } of finalEntries.values()) {
-      const hashedKey = secured
-        ? bytesFromUint8Array(yield* keccak256(key))
-        : key;
-      const nibbleKey = yield* bytesToNibbleList(hashedKey);
-      nibbleMap.set(nibbleKey, value);
-    }
-
-    const node = yield* patricialize(nibbleMap, 0);
-    const encoded = yield* encodeInternalNode(node);
-    return yield* encodedNodeToRoot(encoded);
+    return yield* trieRoot(Array.from(finalEntries.values()), { secured }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new FixtureError({
+            message: "Failed to compute trie root",
+            cause,
+          }),
+      ),
+    );
   });
 
 describe("trie fixture harness", () => {
