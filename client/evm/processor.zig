@@ -344,6 +344,33 @@ test "validateTransaction — eip7702 rejected before Prague" {
     try std.testing.expectError(error.UnsupportedTransactionType, validateTransaction(tx, .CANCUN));
 }
 
+test "validateTransaction — eip4844 intrinsic gas" {
+    const Address = primitives.Address;
+    const VersionedHash = primitives.Blob.VersionedHash;
+
+    const hashes = [_]VersionedHash{.{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 31 }};
+
+    const tx = tx_mod.Eip4844Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0xAB} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .max_fee_per_blob_gas = 1,
+        .blob_versioned_hashes = &hashes,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const intrinsic = try validateTransaction(tx, .CANCUN);
+    try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), intrinsic);
+}
+
 test "validateTransaction — prague calldata floor enforced" {
     const Address = primitives.Address;
 
