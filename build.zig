@@ -187,6 +187,28 @@ pub fn build(b: *std.Build) void {
     const client_blockchain_test_step = b.step("test-blockchain", "Run chain management tests");
     client_blockchain_test_step.dependOn(&run_client_blockchain_tests.step);
 
+    // Client JSON-RPC module (HTTP/WebSocket server + namespaces)
+    const client_rpc_mod = b.addModule("client_rpc", .{
+        .root_source_file = b.path("client/rpc/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+        },
+    });
+
+    const client_rpc_tests = b.addTest(.{
+        .root_module = client_rpc_mod,
+    });
+
+    const run_client_rpc_tests = b.addRunArtifact(client_rpc_tests);
+    test_step.dependOn(&run_client_rpc_tests.step);
+    unit_test_step.dependOn(&run_client_rpc_tests.step);
+
+    const client_rpc_test_step = b.step("test-rpc", "Run JSON-RPC server tests");
+    client_rpc_test_step.dependOn(&run_client_rpc_tests.step);
+
     // Client EVM module (EVM ↔ WorldState integration)
     const state_manager_mod = primitives_dep.module("state-manager");
 
