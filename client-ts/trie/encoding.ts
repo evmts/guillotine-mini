@@ -1,9 +1,9 @@
-import { Bytes } from "@tevm/voltaire/Bytes";
-import type { BytesType } from "@tevm/voltaire/Bytes";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import type { BytesType } from "./Node";
 
+/** Error raised when nibble encoding/decoding fails. */
 export class NibbleEncodingError extends Data.TaggedError(
   "NibbleEncodingError",
 )<{
@@ -20,6 +20,7 @@ const isNibbleList = (nibbles: Uint8Array): boolean => {
   return true;
 };
 
+/** Schema for validating nibble lists (values 0x0 through 0xf). */
 export const NibbleListSchema: Schema.Schema<Uint8Array, Uint8Array> =
   Schema.Uint8ArrayFromSelf.pipe(
     Schema.filter(isNibbleList, {
@@ -27,29 +28,40 @@ export const NibbleListSchema: Schema.Schema<Uint8Array, Uint8Array> =
     }),
   );
 
+/** Nibble list type used by trie paths. */
 export type NibbleList = BytesType;
 
+/** Decoded hex-prefix path with leaf flag. */
 export interface HexPrefixDecoded {
   readonly nibbles: NibbleList;
   readonly isLeaf: boolean;
 }
 
-const EmptyNibbles = Bytes.from([]);
-const SingleNibbleCache = Array.from({ length: 16 }, (_, nibble) =>
-  Bytes.from([nibble]),
+const EmptyNibbles = new Uint8Array(0) as NibbleList;
+const SingleNibbleCache = Array.from(
+  { length: 16 },
+  (_, nibble) => new Uint8Array([nibble]) as NibbleList,
 );
-const DoubleNibbleCache = Array.from({ length: 256 }, (_, value) =>
-  Bytes.from([(value >> 4) & 0x0f, value & 0x0f]),
+const DoubleNibbleCache = Array.from(
+  { length: 256 },
+  (_, value) =>
+    new Uint8Array([(value >> 4) & 0x0f, value & 0x0f]) as NibbleList,
 );
-const TripleNibbleCache = Array.from({ length: 4096 }, (_, value) =>
-  Bytes.from([(value >> 8) & 0x0f, (value >> 4) & 0x0f, value & 0x0f]),
+const TripleNibbleCache = Array.from(
+  { length: 4096 },
+  (_, value) =>
+    new Uint8Array([
+      (value >> 8) & 0x0f,
+      (value >> 4) & 0x0f,
+      value & 0x0f,
+    ]) as NibbleList,
 );
 
 const validateNibbleList = (
   nibbles: BytesType,
 ): Effect.Effect<NibbleList, NibbleEncodingError> =>
   Schema.decode(NibbleListSchema)(nibbles).pipe(
-    Effect.map((validated) => Bytes.from(validated)),
+    Effect.map((validated) => validated as NibbleList),
     Effect.mapError(
       (cause) =>
         new NibbleEncodingError({
@@ -59,6 +71,7 @@ const validateNibbleList = (
     ),
   );
 
+/** Convert a byte array into a nibble list (two nibbles per byte). */
 export const bytesToNibbleList = (
   bytes: BytesType,
 ): Effect.Effect<NibbleList> =>
@@ -75,9 +88,10 @@ export const bytesToNibbleList = (
       nibbles[i * 2] = (byte & 0xf0) >> 4;
       nibbles[i * 2 + 1] = byte & 0x0f;
     }
-    return Bytes.from(nibbles);
+    return nibbles as NibbleList;
   });
 
+/** Decode a hex-prefix compact-encoded path into nibbles and leaf flag. */
 export const compactToNibbleList = (
   compact: BytesType,
 ): Effect.Effect<HexPrefixDecoded, NibbleEncodingError> =>
@@ -137,9 +151,10 @@ export const compactToNibbleList = (
       }
     }
 
-    return { nibbles: Bytes.from(nibbles), isLeaf };
+    return { nibbles: nibbles as NibbleList, isLeaf };
   });
 
+/** Encode a nibble list into a hex-prefix compact path. */
 export const nibbleListToCompact = (
   nibbles: BytesType,
   isLeaf: boolean,
@@ -163,7 +178,7 @@ export const nibbleListToCompact = (
         }
         compact[1 + i / 2] = (high << 4) | low;
       }
-      return Bytes.from(compact);
+      return compact as BytesType;
     }
 
     const first = validated[0];
@@ -187,5 +202,5 @@ export const nibbleListToCompact = (
       }
       compact[1 + (i - 1) / 2] = (high << 4) | low;
     }
-    return Bytes.from(compact);
+    return compact as BytesType;
   });

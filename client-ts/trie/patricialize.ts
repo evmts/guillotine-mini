@@ -1,4 +1,3 @@
-import { Bytes } from "@tevm/voltaire/Bytes";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -11,15 +10,18 @@ import { NibbleListSchema } from "./encoding";
 import type { TrieHashError } from "./hash";
 import { TrieHash } from "./hash";
 
-const EmptyBytes = new Uint8Array([]) as BytesType;
+const EmptyBytes: BytesType = new Uint8Array(0) as BytesType;
 
+/** Map of nibble-encoded keys to raw values. */
 export type NibbleKeyMap = ReadonlyMap<NibbleList, BytesType>;
 
+/** Error raised when patricialization fails. */
 export class PatricializeError extends Data.TaggedError("PatricializeError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
 
+/** Compute the shared prefix length for two nibble lists. */
 export const commonPrefixLength = (a: NibbleList, b: NibbleList): number => {
   const limit = Math.min(a.length, b.length);
   for (let i = 0; i < limit; i += 1) {
@@ -67,7 +69,7 @@ const validateNibbleList = (
   nibbles: NibbleList,
 ): Effect.Effect<NibbleList, PatricializeError> =>
   Schema.decode(NibbleListSchema)(nibbles).pipe(
-    Effect.map((validated) => Bytes.from(validated)),
+    Effect.map((validated) => validated as NibbleList),
     Effect.mapError(
       (cause) =>
         new PatricializeError({
@@ -212,6 +214,7 @@ const makePatricialize = (
     }),
 });
 
+/** Trie patricialization service interface. */
 export interface TriePatricializeService {
   readonly patricialize: (
     obj: NibbleKeyMap,
@@ -219,13 +222,13 @@ export interface TriePatricializeService {
   ) => Effect.Effect<TrieNode | null, PatricializeError>;
 }
 
+/** Context tag for trie patricialization. */
 export class TriePatricialize extends Context.Tag("TriePatricialize")<
   TriePatricialize,
   TriePatricializeService
 >() {}
 
-/** Production trie patricialize layer. */
-export const TriePatricializeLive = Layer.effect(
+const TriePatricializeLayer = Layer.effect(
   TriePatricialize,
   Effect.gen(function* () {
     const hasher = yield* TrieHash;
@@ -233,14 +236,11 @@ export const TriePatricializeLive = Layer.effect(
   }),
 );
 
+/** Production trie patricialize layer. */
+export const TriePatricializeLive = TriePatricializeLayer;
+
 /** Deterministic trie patricialize layer for tests. */
-export const TriePatricializeTest = Layer.effect(
-  TriePatricialize,
-  Effect.gen(function* () {
-    const hasher = yield* TrieHash;
-    return makePatricialize(hasher.encodeInternalNode);
-  }),
-);
+export const TriePatricializeTest = TriePatricializeLayer;
 
 /** Build a trie node from a nibble-key map. */
 export const patricialize = (obj: NibbleKeyMap, level: number) =>

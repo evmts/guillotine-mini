@@ -1,7 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
-import { Bytes as VoltaireBytes } from "@tevm/voltaire/Bytes";
 import * as VoltaireHash from "@tevm/voltaire/Hash";
 import * as VoltaireRlp from "@tevm/voltaire/Rlp";
 import { Bytes, Hex } from "voltaire-effect/primitives";
@@ -9,8 +8,8 @@ import type { BranchNode, BytesType, LeafNode } from "./Node";
 import { encodeInternalNode, TrieHashError, TrieHashTest } from "./hash";
 import { nibbleListToCompact } from "./encoding";
 
-const toBytes = (hex: string): BytesType =>
-  VoltaireBytes.from(Hex.toBytes(hex));
+const toBytes = (hex: string): BytesType => Hex.toBytes(hex) as BytesType;
+const asBytes = (value: Uint8Array): BytesType => value as BytesType;
 const encodeRlp = (data: VoltaireRlp.Encodable) =>
   Effect.sync(() => VoltaireRlp.encode(data));
 const keccak256 = (data: Uint8Array) =>
@@ -26,7 +25,7 @@ describe("trie hashing", () => {
 
   it.effect("encodeInternalNode inlines small leaf nodes", () =>
     Effect.gen(function* () {
-      const restOfKey = VoltaireBytes.from([0x1, 0x2, 0x3]);
+      const restOfKey = new Uint8Array([0x1, 0x2, 0x3]) as BytesType;
       const value = toBytes("0x01");
       const node: LeafNode = { _tag: "leaf", restOfKey, value };
 
@@ -41,16 +40,14 @@ describe("trie hashing", () => {
       const encoded = yield* encodeRlp(result.value);
 
       assert.isTrue(encoded.length < 32);
-      assert.isTrue(
-        Bytes.equals(VoltaireBytes.from(encoded), VoltaireBytes.from(expected)),
-      );
+      assert.isTrue(Bytes.equals(asBytes(encoded), asBytes(expected)));
     }).pipe(Effect.provide(TrieHashTest)),
   );
 
   it.effect("encodeInternalNode hashes large leaf nodes", () =>
     Effect.gen(function* () {
-      const restOfKey = VoltaireBytes.from([]);
-      const value = VoltaireBytes.from(new Uint8Array(64).fill(0xab));
+      const restOfKey = new Uint8Array(0) as BytesType;
+      const value = new Uint8Array(64).fill(0xab) as BytesType;
       const node: LeafNode = { _tag: "leaf", restOfKey, value };
 
       const result = yield* encodeInternalNode(node);

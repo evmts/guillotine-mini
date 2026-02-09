@@ -5,12 +5,10 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Bytes as VoltaireBytes } from "@tevm/voltaire/Bytes";
-import type { HashType } from "@tevm/voltaire/Hash";
 import * as VoltaireHash from "@tevm/voltaire/Hash";
 import * as VoltaireRlp from "@tevm/voltaire/Rlp";
 import { Bytes, Hex } from "voltaire-effect/primitives";
-import type { BytesType, EncodedNode, NibbleList } from "./Node";
+import type { BytesType, EncodedNode, HashType, NibbleList } from "./Node";
 import {
   encodeInternalNode,
   TrieHashTest,
@@ -34,10 +32,11 @@ class FixtureError extends Data.TaggedError("FixtureError")<{
   readonly cause?: unknown;
 }> {}
 
-const EmptyBytes = VoltaireBytes.from([]);
+const EmptyBytes: BytesType = new Uint8Array(0) as BytesType;
 const EmptyTrieRoot = VoltaireHash.fromHex(
   "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
 );
+const asBytes = (value: Uint8Array): BytesType => value as BytesType;
 
 const TestLayer = Layer.merge(
   TrieHashTest,
@@ -126,9 +125,9 @@ const toBytes = (
         return EmptyBytes;
       }
       if (value.startsWith("0x")) {
-        return VoltaireBytes.from(Hex.toBytes(value));
+        return Hex.toBytes(value) as BytesType;
       }
-      return VoltaireBytes.from(new TextEncoder().encode(value));
+      return new TextEncoder().encode(value) as BytesType;
     },
     catch: (cause) =>
       new FixtureError({ message: "Invalid bytes in fixture", cause }),
@@ -192,9 +191,7 @@ const computeRoot = (
     const finalEntries = yield* collectEntries(entries);
     const nibbleMap = new Map<NibbleList, BytesType>();
     for (const { key, value } of finalEntries.values()) {
-      const hashedKey = secured
-        ? VoltaireBytes.from(VoltaireHash.keccak256(key))
-        : key;
+      const hashedKey = secured ? asBytes(VoltaireHash.keccak256(key)) : key;
       const nibbleKey = yield* bytesToNibbleList(hashedKey);
       nibbleMap.set(nibbleKey, value);
     }
@@ -217,12 +214,12 @@ describe("trie fixture harness", () => {
       const fixtures = yield* loadFixture(fixturePath, HexPrefixFixtureSchema);
 
       for (const [name, fixture] of Object.entries(fixtures)) {
-        const sequence = VoltaireBytes.from(Array.from(fixture.seq));
+        const sequence = new Uint8Array(fixture.seq) as BytesType;
         const encoded = yield* nibbleListToCompact(sequence, fixture.term);
         const encodedHex = Hex.fromBytes(encoded).slice(2);
         assert.strictEqual(encodedHex, fixture.out, name);
 
-        const compact = VoltaireBytes.from(Hex.toBytes(`0x${fixture.out}`));
+        const compact = Hex.toBytes(`0x${fixture.out}`) as BytesType;
         const decoded = yield* compactToNibbleList(compact);
         assert.isTrue(Bytes.equals(decoded.nibbles, sequence), name);
         assert.strictEqual(decoded.isLeaf, fixture.term, name);

@@ -3,23 +3,17 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
-import { Bytes as VoltaireBytes } from "@tevm/voltaire/Bytes";
 import * as VoltaireHash from "@tevm/voltaire/Hash";
 import * as VoltaireRlp from "@tevm/voltaire/Rlp";
-import type {
-  BytesType,
-  EncodedNode,
-  HashType,
-  RlpType,
-  TrieNode,
-} from "./Node";
+import type { EncodedNode, RlpType, TrieNode } from "./Node";
 import { BranchChildrenCount } from "./Node";
 import { NibbleEncodingError, nibbleListToCompact } from "./encoding";
 
 type RlpItem = Uint8Array | RlpType;
 
-const EmptyBytes = VoltaireBytes.from([]);
+const EmptyBytes = new Uint8Array(0);
 
+/** Error raised when trie hashing fails. */
 export class TrieHashError extends Data.TaggedError("TrieHashError")<{
   readonly message: string;
   readonly cause?: unknown;
@@ -109,7 +103,7 @@ const encodeInternalNodeImpl = (
 ): Effect.Effect<EncodedNode, TrieHashError> =>
   Effect.gen(function* () {
     if (node === null || node === undefined) {
-      return { _tag: "empty" } as EncodedNode;
+      return { _tag: "empty" };
     }
 
     const items = yield* nodeToItems(node);
@@ -117,36 +111,38 @@ const encodeInternalNodeImpl = (
     const encoded = yield* encodeRlp(rlpList);
 
     if (encoded.length < 32) {
-      return { _tag: "raw", value: rlpList } as EncodedNode;
+      return { _tag: "raw", value: rlpList };
     }
 
     const hashed = yield* keccak256(encoded);
     return {
       _tag: "hash",
-      value: hashed as HashType,
-    } as EncodedNode;
+      value: hashed,
+    };
   });
 
+/** Trie hashing service interface. */
 export interface TrieHashService {
   readonly encodeInternalNode: (
     node: TrieNode | null | undefined,
   ) => Effect.Effect<EncodedNode, TrieHashError>;
 }
 
+/** Context tag for trie hashing. */
 export class TrieHash extends Context.Tag("TrieHash")<
   TrieHash,
   TrieHashService
 >() {}
 
-/** Production trie hashing layer. */
-export const TrieHashLive: Layer.Layer<TrieHash> = Layer.succeed(TrieHash, {
+const TrieHashLayer: Layer.Layer<TrieHash> = Layer.succeed(TrieHash, {
   encodeInternalNode: (node) => encodeInternalNodeImpl(node),
 });
 
+/** Production trie hashing layer. */
+export const TrieHashLive: Layer.Layer<TrieHash> = TrieHashLayer;
+
 /** Deterministic trie hashing layer for tests. */
-export const TrieHashTest: Layer.Layer<TrieHash> = Layer.succeed(TrieHash, {
-  encodeInternalNode: (node) => encodeInternalNodeImpl(node),
-});
+export const TrieHashTest: Layer.Layer<TrieHash> = TrieHashLayer;
 
 /** Encode an internal trie node reference (inline or hash). */
 export const encodeInternalNode = (node: TrieNode | null | undefined) =>
