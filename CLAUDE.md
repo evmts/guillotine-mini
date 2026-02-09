@@ -11,19 +11,18 @@ zig build specs        # Run ethereum/tests validation
 zig build wasm         # Build WebAssembly library
 zig build test-watch   # Interactive test runner
 
-# Debug failing tests (RECOMMENDED)
+# Debug failing tests (recommended)
 bun scripts/isolate-test.ts "test_name"  # Max debug output + analysis
 bun scripts/test-subset.ts "pattern"     # Filter test categories
 ```
 
-**Prerequisites**:
-- **Zig 0.15.1+** (core build system)
-- **Cargo** (Rust package manager - **required** for building BN254/ARK cryptographic dependencies)
-- **Python 3.8+** (for test generation and reference implementation)
-- **uv** (Python package manager for spec fixture generation): `brew install uv`
-- **Bun** (for TS helpers/agents): `brew install bun`
+## Prerequisites
 
----
+- Zig 0.15.1+ (core build system)
+- Cargo (required for BN254/ARK cryptographic dependencies)
+- Python 3.8+ (test generation and reference implementation)
+- uv (Python package manager for spec fixture generation): `brew install uv`
+- Bun (TS helpers/agents): `brew install bun`
 
 ## Architecture
 
@@ -44,7 +43,7 @@ External Dependencies (fetched via zig build):
 └── precompiles           # Ethereum precompiled contracts
 ```
 
-### Key Design Principles
+### Core Responsibilities
 
 | Component | Responsibility |
 |-----------|----------------|
@@ -53,57 +52,47 @@ External Dependencies (fetched via zig build):
 | **Host** | Pluggable state backend (balances, nonces, code, logs, self-destruct) |
 | **Hardfork** | Gas cost adjustments, feature flag guards (`isAtLeast()`, `isBefore()`) |
 
-**Allocation strategy**: Arena allocator for transaction-scoped memory (all freed at transaction end)
+**Allocation strategy**: Arena allocator for transaction-scoped memory (freed at transaction end).
 
----
-
-## Testing & Debugging
+## Testing and Debugging
 
 ### Test Types
 
 | Type | Purpose | Command |
 |------|---------|---------|
-| **Unit tests** | Inline `test` blocks | `zig build test` |
-| **Spec tests** | ethereum/tests GeneralStateTests | `zig build specs` |
-| **Filtered tests** | By hardfork/EIP/opcode | `TEST_FILTER="Cancun" zig build specs` |
-| **Trace tests** | EIP-3155 trace capture/comparison | `zig build test-trace` |
-| **Watch mode** | Auto-reload on changes | `zig build test-watch` |
-| **Engine tests** | Consensus-layer format tests | `INCLUDE_ENGINE_TESTS=1 zig build specs` |
+| Unit tests | Inline `test` blocks | `zig build test` |
+| Spec tests | ethereum/tests GeneralStateTests | `zig build specs` |
+| Filtered tests | By hardfork/EIP/opcode | `TEST_FILTER="Cancun" zig build specs` |
+| Trace tests | EIP-3155 trace capture/comparison | `zig build test-trace` |
+| Watch mode | Auto-reload on changes | `zig build test-watch` |
+| Engine tests | Consensus-layer format tests | `INCLUDE_ENGINE_TESTS=1 zig build specs` |
 
-**Prerequisites:**
-- Zig 0.15.1 or later
-- Python 3.8+ (for test generation and reference implementation)
-- uv (Python package manager) for spec fixture generation: `brew install uv`
-- Bun (for TS helpers/agents): `brew install bun`
+### Engine API Tests (Optional)
 
-### Test Scope and Filtering
+`blockchain_test_engine` format tests are disabled by default because they test consensus-layer functionality (block validation, Engine API payloads) rather than core EVM execution. To include them:
 
-**Engine API Tests (Optional)**
-
-By default, `blockchain_test_engine` format tests are **disabled** because they test consensus-layer functionality (block validation, Engine API payloads) rather than core EVM execution. These tests are out of scope for an EVM library like guillotine-mini (similar to how REVM doesn't implement Engine API).
-
-To include them for comprehensive testing:
 ```bash
 INCLUDE_ENGINE_TESTS=1 zig build specs
 ```
 
-**What's tested:**
-- ✅ **Default**: Pure EVM execution (opcodes, gas, state transitions, precompiles)
-- ✅ **Default**: Transaction processing and hardfork-specific EVM changes
-- ❌ **Disabled**: Block validation, consensus rules, Engine API server implementation
-- ❌ **Disabled**: Withdrawal timing edge cases (consensus-layer concern)
+### Test Scope and Filtering
+
+- **Hardfork**: `Cancun`, `Shanghai`, `London`, `Berlin`, `Merge`, `Prague`
+- **EIP**: `transientStorage`, `push0`, `MCOPY`, `warmcoinbase`
+- **Opcode**: `add`, `mul`, `sstore`, `sload`, `call`, `create2`
+- **Category**: `vmArithmeticTest`, `vmBitwiseLogicOperation`, `vmIOandFlowOperations`
 
 ### Helper Scripts
 
 <details>
-<summary><b>🔬 isolate-test.ts</b> - Test Isolation Helper (⭐ RECOMMENDED)</summary>
+<summary><b>isolate-test.ts - Test Isolation Helper (recommended)</b></summary>
 
 ```bash
 bun scripts/isolate-test.ts "exact_test_name"
 ```
 
 **Features:**
-- Runs single test with maximum debug output
+- Runs a single test with maximum debug output
 - Automatic failure type detection (crash/gas/behavior)
 - Trace divergence analysis (PC, opcode, gas, stack)
 - Next-step debugging guidance
@@ -112,8 +101,9 @@ bun scripts/isolate-test.ts "exact_test_name"
 </details>
 
 <details>
-<summary><b>🎯 test-subset.ts</b> - Test Subset Runner</summary>
+<summary><b>test-subset.ts - Test Subset Runner</b></summary>
 
+```bash
 # Using helper scripts
 bun scripts/test-subset.ts Cancun
 bun scripts/test-subset.ts transientStorage
@@ -129,7 +119,11 @@ TEST_FILTER="transientStorage" zig build specs
 TEST_FILTER="push0" zig build specs
 ```
 
-#### Granular Spec Targets
+**Use for:** Running entire test categories by hardfork, EIP, or pattern.
+
+</details>
+
+### Granular Spec Targets
 
 Large hardforks are split into smaller sub-targets for faster iteration:
 
@@ -196,27 +190,6 @@ zig build specs-osaka-modexp-misc
 zig build specs-osaka-other
 ```
 
-**Use for:** Running entire test categories by hardfork, EIP, or pattern
-
-</details>
-
-<details>
-<summary><b>🤖 fix-specs.ts</b> - Automated Spec Fixer</summary>
-
-```bash
-bun run scripts/fix-specs.ts               # Fix all test suites
-bun run scripts/fix-specs.ts suite <name>  # Fix specific suite
-```
-
-**Features:**
-- AI-powered systematic test fixing
-- 7-checkpoint methodology (no guesswork)
-- Historical context injection (known-issues.json)
-- Auto-commit on success
-- Comprehensive reporting (reports/spec-fixes/)
-
-</details>
-
 ### Debugging Workflow
 
 ```bash
@@ -226,29 +199,22 @@ bun scripts/test-subset.ts transientStorage
 # 2. Isolate and debug (get automated analysis)
 bun scripts/isolate-test.ts "transStorageReset"
 
-# 3. Review divergence output (PC, opcode, gas, stack)
-# 4. Fix in src/frame.zig or src/evm.zig
-# 5. Verify
+# 3. Fix in src/frame.zig or src/evm.zig
+# 4. Verify
 bun scripts/isolate-test.ts "transStorageReset"
 ```
 
-**Test filtering patterns:**
-- **Hardfork**: `Cancun`, `Shanghai`, `London`, `Berlin`, `Merge`, `Prague`
-- **EIP**: `transientStorage`, `push0`, `MCOPY`, `warmcoinbase`
-- **Opcode**: `add`, `mul`, `sstore`, `sload`, `call`, `create2`
-- **Category**: `vmArithmeticTest`, `vmBitwiseLogicOperation`, `vmIOandFlowOperations`
+## Spec Fixer (AI-Assisted)
 
----
+The `scripts/fix-specs.ts` pipeline enforces a mandatory 7-checkpoint methodology for systematic, evidence-based debugging.
 
-### Spec Fixer (AI-Assisted)
+### Prereqs
 
-Use an agent to iterate on failing specs and generate focused reports:
-
-Prereqs:
 - `bun` installed and `cd scripts && bun install`
 - `ANTHROPIC_API_KEY` exported in your shell (or `.env` at repo root)
 
-Run:
+### Run
+
 ```bash
 # All suites
 bun run scripts/fix-specs.ts
@@ -257,7 +223,45 @@ bun run scripts/fix-specs.ts
 bun run scripts/fix-specs.ts suite shanghai-push0
 ```
 
-The script runs tests, invokes the agent on failure, and saves reports in `reports/spec-fixes/` with a summary at the end. If no API key is set, it skips auto-fix and just runs the tests.
+Reports are saved in `reports/spec-fixes/`. If no API key is set, it skips auto-fix and just runs the tests.
+
+### 7-Checkpoint System
+
+Each checkpoint requires actual data (no placeholders):
+
+1. Run test and confirm failure (capture output, identify failing tests)
+2. Generate trace comparison (`bun scripts/isolate-test.ts`, identify divergence)
+3. Read Python reference (quote actual code)
+4. Compare Zig implementation (quote actual code)
+5. Diagnose root cause and propose fix
+6. Implement fix (minimal changes, preserve hardfork guards)
+7. Verify fix (re-run tests)
+
+### Known Issues Database
+
+**Location:** `scripts/known-issues.json`
+
+Tracks historical debugging insights:
+- Common failure patterns and root causes
+- Relevant file locations (with line ranges)
+- Python reference locations
+- Key invariants
+- Expected gas costs
+
+**Schema:**
+```json
+{
+  "test-suite-name": {
+    "test_suite": "test-suite-name",
+    "description": "Brief description",
+    "common_causes": ["Cause 1", "Cause 2"],
+    "relevant_files": ["src/file.zig:function", "src/other.zig:line-range"],
+    "python_ref": "execution-specs/.../reference.py",
+    "key_invariants": ["Invariant 1", "Invariant 2"],
+    "gas_costs": { "OPERATION": 100 }
+  }
+}
+```
 
 ## Core Components
 
@@ -344,7 +348,7 @@ pub const Hardfork = enum(u8) {
 <details>
 <summary><b>Primitives Module (External Dependency)</b></summary>
 
-The primitives library is now an external dependency fetched via `zig fetch` from https://github.com/evmts/primitives. It is no longer included as a git submodule.
+The primitives library is an external dependency fetched via `zig fetch` from https://github.com/evmts/primitives. It is no longer included as a git submodule.
 
 **Modules provided:**
 - **Address** - 20-byte Ethereum address
@@ -361,54 +365,45 @@ The primitives library is now an external dependency fetched via `zig fetch` fro
 
 </details>
 
----
-
 ## EIP Support
 
 | EIP | Feature | Hardfork | Status |
 |-----|---------|----------|--------|
-| EIP-2929 | State access gas costs | Berlin | ✅ |
-| EIP-2930 | Access lists | Berlin | ✅ |
-| EIP-1559 | Fee market | London | ✅ |
-| EIP-3198 | BASEFEE opcode | London | ✅ |
-| EIP-3529 | Reduced gas refunds | London | ✅ |
-| EIP-3541 | Reject code starting with 0xEF | London | ✅ |
-| EIP-3651 | Warm coinbase | Shanghai | ✅ |
-| EIP-3855 | PUSH0 instruction | Shanghai | ✅ |
-| EIP-3860 | Limit init code size | Shanghai | ✅ |
-| EIP-1153 | Transient storage (TLOAD/TSTORE) | Cancun | ✅ |
-| EIP-4844 | Blob transactions (BLOBHASH/BLOBBASEFEE) | Cancun | ✅ |
-| EIP-5656 | MCOPY instruction | Cancun | ✅ |
-| EIP-6780 | SELFDESTRUCT only in same tx | Cancun | ✅ |
-| EIP-7516 | BLOBBASEFEE opcode | Cancun | ✅ |
-
----
+| EIP-2929 | State access gas costs | Berlin | OK |
+| EIP-2930 | Access lists | Berlin | OK |
+| EIP-1559 | Fee market | London | OK |
+| EIP-3198 | BASEFEE opcode | London | OK |
+| EIP-3529 | Reduced gas refunds | London | OK |
+| EIP-3541 | Reject code starting with 0xEF | London | OK |
+| EIP-3651 | Warm coinbase | Shanghai | OK |
+| EIP-3855 | PUSH0 instruction | Shanghai | OK |
+| EIP-3860 | Limit init code size | Shanghai | OK |
+| EIP-1153 | Transient storage (TLOAD/TSTORE) | Cancun | OK |
+| EIP-4844 | Blob transactions (BLOBHASH/BLOBBASEFEE) | Cancun | OK |
+| EIP-5656 | MCOPY instruction | Cancun | OK |
+| EIP-6780 | SELFDESTRUCT only in same tx | Cancun | OK |
+| EIP-7516 | BLOBBASEFEE opcode | Cancun | OK |
 
 ## Gas Metering
 
 **Location:** `src/primitives/gas_constants.zig`
 
-- **Base costs** - Per-opcode execution (ADD, MUL, SSTORE)
-- **Memory expansion** - Quadratic cost for growth
-- **Call stipend** - 2300 gas for value transfers
-- **Warm/Cold access** - EIP-2929 (Berlin+): warm=100, cold=2600
-- **Gas refunds** - Capped at 1/2 (pre-London) or 1/5 (London+)
-- **Intrinsic gas** - 21000 + calldata costs
-
----
+- Base costs: per-opcode execution (ADD, MUL, SSTORE)
+- Memory expansion: quadratic cost for growth
+- Call stipend: 2300 gas for value transfers
+- Warm/cold access: EIP-2929 (Berlin+): warm=100, cold=2600
+- Gas refunds: capped at 1/2 (pre-London) or 1/5 (London+)
+- Intrinsic gas: 21000 + calldata costs
 
 ## Tracing
 
 Full EIP-3155 trace support:
+
 ```bash
 zig build test-trace
 ```
 
-**Includes:** PC, opcode, gas remaining, stack, memory, storage changes
-
-Compare traces against reference implementations (geth, execution-specs) to identify divergences.
-
----
+Includes PC, opcode, gas remaining, stack, memory, storage changes. Compare traces against reference implementations (geth, execution-specs) to identify divergences.
 
 ## WASM Build
 
@@ -430,8 +425,6 @@ See `src/root_c.zig` for full API.
 
 </details>
 
----
-
 ## Development Workflow
 
 ### Build Targets
@@ -447,27 +440,25 @@ See `src/root_c.zig` for full API.
 
 ### Adding New Features
 
-1. **Implement**: `src/frame.zig` (opcodes) or `src/evm.zig` (behavior)
-2. **Update gas**: `src/primitives/gas_constants.zig` if needed
-3. **Add guards**: `self.hardfork.isAtLeast(.FORK_NAME)`
-4. **Test**: Run relevant spec tests
-5. **Debug**: Use trace divergence analysis
+1. Implement in `src/frame.zig` (opcodes) or `src/evm.zig` (behavior)
+2. Update gas in `src/primitives/gas_constants.zig` if needed
+3. Add guards: `self.hardfork.isAtLeast(.FORK_NAME)`
+4. Test: run relevant spec tests
+5. Debug: use trace divergence analysis
 
 ### Code Style
 
-- **Naming**: `snake_case` (functions/variables), `PascalCase` (types)
-- **Errors**: Explicit unions, propagate with `try`
-- **Comments**: Explain "why", not "what"
-- **Docs**: Use `///` for public APIs
-- **Format**: Run `zig fmt` before commit
+- Naming: `snake_case` (functions/variables), `PascalCase` (types)
+- Errors: explicit unions, propagate with `try`
+- Comments: explain why, not what
+- Docs: use `///` for public APIs
+- Format: run `zig fmt` before commit
 
----
+## Agent Reference: Python Specs vs Zig Implementation
 
-## Agent Quick Reference: Python Reference vs Zig Implementation
+**Critical for debugging:** Python execution-specs are authoritative. When in doubt, trust Python code over intuition, docs, or the Yellow Paper.
 
-> **Critical for debugging**: Python execution-specs are the authoritative source. When in doubt, trust Python code over intuition, docs, or Yellow Paper.
-
-> **⚠️ IMPORTANT**: The `execution-specs/` directory is a git submodule containing the official Ethereum execution specifications. **NEVER commit, clean, or modify any files within this submodule.** It should be managed separately and left untouched during normal development.
+**Important:** `execution-specs/` is a git submodule containing official Ethereum execution specs. Never commit, clean, or modify any files within this submodule.
 
 ### File Location Mapping
 
@@ -486,7 +477,7 @@ See `src/root_c.zig` for full API.
 
 ### Architectural Differences
 
-**Python: Single `Evm` Class**
+**Python: Single `Evm` class**
 - Location: `execution-specs/.../vm/__init__.py`
 - One dataclass: `evm.stack`, `evm.memory`, `evm.pc`, `evm.gas_left`, `evm.message.block_env.state`
 
@@ -499,9 +490,7 @@ See `src/root_c.zig` for full API.
   - Stack, memory, PC, gas, bytecode
   - Per-frame context: caller, address, value, calldata
 
-> **Key insight**: Python's `evm.stack` → Zig's `frame.stack`. Python's `evm.message.block_env.state` → Zig's `evm.storage`/`evm.balances`
-
----
+**Key mapping:** Python's `evm.stack` -> Zig's `frame.stack`. Python's `evm.message.block_env.state` -> Zig's `evm.storage`/`evm.balances`.
 
 ## Common Bug Patterns
 
@@ -536,10 +525,10 @@ def sstore(evm: Evm) -> None:
 ```
 
 **Common mistakes:**
-- ❌ Forgetting `SstoreSentryGas` (2300) check
-- ❌ Not tracking `original_storage` separately from `storage`
-- ❌ Wrong gas refund calculation
-- ❌ Not adding cold access cost before warm/set/update
+- Forgetting `SstoreSentryGas` (2300) check
+- Not tracking `original_storage` separately from `storage`
+- Wrong gas refund calculation
+- Not adding cold access cost before warm/set/update
 
 </details>
 
@@ -571,7 +560,7 @@ if (!self.warm_addresses.contains(address)) {
 }
 ```
 
-**Key difference**: Python uses sets, Zig uses hash maps with `void` values.
+**Key difference:** Python uses sets; Zig uses hash maps with `void` values.
 
 </details>
 
@@ -596,19 +585,19 @@ def tstore(evm: Evm) -> None:
 ```
 
 **Critical rules:**
-- ✅ Transient storage is ALWAYS warm (100 gas), never cold
-- ✅ Cleared at transaction boundaries, NOT call boundaries
-- ✅ Must check `is_static` for TSTORE
-- ✅ No gas refunds
+- Transient storage is always warm (100 gas), never cold
+- Cleared at transaction boundaries, not call boundaries
+- Must check `is_static` for TSTORE
+- No gas refunds
 
 </details>
 
 <details>
 <summary><b>4. Hardfork-Specific Behavior</b></summary>
 
-**Python**: Separate directories (`execution-specs/forks/berlin/`, `cancun/`), each fork inherits and overrides.
+**Python:** Separate directories (`execution-specs/forks/berlin/`, `cancun/`), each fork inherits and overrides.
 
-**Zig**: Runtime checks in one codebase:
+**Zig:** Runtime checks in one codebase:
 ```zig
 if (self.hardfork.isAtLeast(.CANCUN)) {
     // Cancun-specific (EIP-1153, EIP-4844)
@@ -618,17 +607,15 @@ if (self.hardfork.isAtLeast(.CANCUN)) {
 ```
 
 **Common mistakes:**
-- ❌ Wrong hardfork for feature (e.g., PUSH0 before Shanghai)
-- ❌ Not using `isAtLeast` for backward compatibility
-- ❌ Breaking earlier hardforks when adding new feature
+- Wrong hardfork for feature (e.g., PUSH0 before Shanghai)
+- Not using `isAtLeast` for backward compatibility
+- Breaking earlier hardforks when adding new feature
 
 </details>
 
----
-
 ## Gas Constant Reference
 
-> **Must match exactly** between Python and Zig.
+Must match exactly between Python and Zig.
 
 <details>
 <summary><b>Gas Constants Table</b></summary>
@@ -638,8 +625,8 @@ if (self.hardfork.isAtLeast(.CANCUN)) {
 | Warm storage read | `GAS_WARM_ACCESS` | `WarmStorageReadCost` | 100 | Berlin+ |
 | Cold SLOAD | `GAS_COLD_SLOAD` | `ColdSloadCost` | 2100 | Berlin+ |
 | Cold account access | `GAS_COLD_ACCOUNT_ACCESS` | `ColdAccountAccessCost` | 2600 | Berlin+ |
-| SSTORE set (0→nonzero) | `GAS_STORAGE_SET` | `SstoreSetGas` | 20000 | All |
-| SSTORE update (nonzero→nonzero) | `GAS_STORAGE_UPDATE` | `SstoreResetGas` | 5000 | All |
+| SSTORE set (0->nonzero) | `GAS_STORAGE_SET` | `SstoreSetGas` | 20000 | All |
+| SSTORE update (nonzero->nonzero) | `GAS_STORAGE_UPDATE` | `SstoreResetGas` | 5000 | All |
 | SSTORE clear refund | `GAS_STORAGE_CLEAR_REFUND` | `SstoreClearRefund` | 4800 | London+ |
 | SSTORE stipend check | `GAS_CALL_STIPEND` | `SstoreSentryGas` | 2300 | All |
 | Call value transfer | `GAS_CALL_VALUE` | `CallValueCost` | 9000 | All |
@@ -651,169 +638,59 @@ if (self.hardfork.isAtLeast(.CANCUN)) {
 
 </details>
 
----
-
 ## Debugging Workflow Cheat Sheet
 
-**When a test fails:**
-
-1. **Run with trace**
+1. Run with trace
    ```bash
    TEST_FILTER="exact_test_name" zig build specs
-   # Or use: bun scripts/isolate-test.ts "exact_test_name"
+   # Or: bun scripts/isolate-test.ts "exact_test_name"
    ```
-
-2. **Identify divergence**
-   - Find "Trace divergence at step N"
-   - Note: PC, opcode, gas remaining, stack state
-
-3. **Find Python reference**
+2. Identify divergence (PC, opcode, gas remaining, stack state)
+3. Find Python reference
    ```bash
    cd execution-specs/src/ethereum/forks/cancun/vm/instructions/
    grep -r "def <opcode_name>" .
    ```
-
-4. **Read Python implementation**
-   - Note gas charge order (matters!)
-   - Note state modifications
-   - Note refund updates
-   - Note error conditions
-
-5. **Compare Zig implementation**
+4. Compare Zig implementation
    - Opcodes: `src/frame.zig`
    - Calls/creates: `src/evm.zig`
    - Storage: `src/evm.zig`
-
-6. **Fix minimally**
-   - Match Python exactly
-   - Keep gas calculation order identical
-   - Preserve hardfork guards
-
-7. **Verify**
+5. Fix minimally, preserve hardfork guards
+6. Verify
    ```bash
    TEST_FILTER="exact_test_name" zig build specs
    ```
 
----
-
 ## Pro Tips
 
-1. **Gas calculation order matters** - Match Python's exact sequence (e.g., SSTORE: stipend → cold access → value comparison → refunds)
-2. **Original vs Current storage** - Track both for refund calculations
-3. **Warm/cold is cumulative** - Once warm, stays warm for entire transaction
-4. **Refund counter can go negative** - Gets capped at transaction end, don't clamp prematurely
-5. **Static context propagates** - STATICCALL → all child calls inherit `is_static`
-6. **Memory expansion is quadratic** - `size_in_words ** 2 // 512` (match Python exactly)
-7. **Call depth limit is 1024** - Check before any CALL/CREATE
-
----
+1. Gas calculation order matters: match Python's exact sequence
+2. Original vs current storage: track both for refund calculations
+3. Warm/cold is cumulative: once warm, stays warm for entire transaction
+4. Refund counter can go negative: cap only at transaction end
+5. Static context propagates: STATICCALL -> all child calls inherit `is_static`
+6. Memory expansion is quadratic: `size_in_words ** 2 // 512`
+7. Call depth limit is 1024: check before any CALL/CREATE
 
 ## Anti-Patterns
 
-> **Things NOT to do:**
-
-- ❌ Guess gas costs (must match Python exactly)
-- ❌ Skip trace comparison (shows exact divergence point)
-- ❌ Mix hardfork behaviors (use `isAtLeast` guards)
-- ❌ Ignore error conditions (Python's `raise` must map to Zig errors)
-- ❌ Hardcode test-specific logic (fix general implementation)
-- ❌ Forget to charge gas before operations (Python charges first)
-- ❌ Modify test files (only change `src/` implementations)
-- ❌ **CRITICAL: Silently ignore errors with `catch {}`** - ALL errors MUST be handled and/or propagated properly. Never use `catch {}` to suppress errors (e.g., `slots_to_remove.append(allocator, key) catch {}` is forbidden). Either handle the error meaningfully or propagate it with `try`. The only exception is when the function signature explicitly cannot return errors (non-error-union return type), in which case the function design should be reconsidered.
-- ❌ **NEVER create .backup files** - We use git for version control. Never create files with .backup, .bak, .old, or similar extensions. Use git branches/stashes instead.
-
----
-
-## Essential Python Reference Files
-
-**Cancun (latest tested hardfork):**
-- `execution-specs/src/ethereum/forks/cancun/vm/interpreter.py` - Main loop
-- `execution-specs/src/ethereum/forks/cancun/vm/gas.py` - Gas calculations
-- `execution-specs/src/ethereum/forks/cancun/vm/instructions/storage.py` - SLOAD/SSTORE/TLOAD/TSTORE
-- `execution-specs/src/ethereum/forks/cancun/vm/instructions/system.py` - CALL/CREATE/SELFDESTRUCT
-- `execution-specs/src/ethereum/forks/cancun/vm/instructions/arithmetic.py` - ADD/MUL/EXP
-- `execution-specs/src/ethereum/forks/cancun/vm/instructions/memory.py` - MLOAD/MSTORE/MCOPY
-- `execution-specs/src/ethereum/forks/cancun/state.py` - State primitives
-
-**For other hardforks:** Replace `cancun` with `shanghai`, `paris`, `london`, `berlin`, etc.
-
----
-
-## 🤖 Automated Spec Fixer: 7-Checkpoint System
-
-The `scripts/fix-specs.ts` pipeline enforces a **mandatory 7-checkpoint methodology** for systematic, evidence-based debugging.
-
-### Checkpoints
-
-Each checkpoint requires **actual data** (no placeholders):
-
-1. **✅ Run Test and Confirm Failure** - Execute, capture output, identify failing tests
-2. **✅ Generate Trace Comparison** - Use `bun scripts/isolate-test.ts`, identify divergence (PC, opcode, gas, stack)
-3. **✅ Read Python Reference** - Navigate to `execution-specs/.../`, quote actual code (not summaries)
-4. **✅ Compare Zig Implementation** - Read current code, quote actual Zig, identify discrepancies
-5. **✅ Diagnose Root Cause and Propose Fix** - Based on checkpoints 2-4, propose specific fix
-6. **✅ Implement Fix** - Make minimal changes, preserve hardfork compatibility
-7. **✅ Verify Fix** - Re-run test, confirm pass (if failing, return to Checkpoint 2)
-
-### Enforcement Rules
-
-- ✅ ALL checkpoints MUST be explicitly confirmed with actual data
-- ✅ NO placeholders: `[TODO]`, `[TBD]`, `[value]`
-- ✅ Iteration required if tests fail
-- ❌ DO NOT skip checkpoints
-- ❌ DO NOT proceed to fixes without analysis (1-5)
-- ❌ DO NOT use summaries instead of code quotes
-
-### Usage
-
-```bash
-bun run scripts/fix-specs.ts               # Fix all suites
-bun run scripts/fix-specs.ts suite <name>  # Fix specific suite
-
-# Reports: reports/spec-fixes/
-#   - pipeline-summary.md: Overall results
-#   - pipeline-summary-ai.md: AI narrative summary
-#   - {suite}-attempt{N}.md: Per-suite debugging reports
-```
-
-### Known Issues Database
-
-**Location:** `scripts/known-issues.json`
-
-Tracks historical debugging insights:
-- Common failure patterns and root causes
-- Relevant file locations (with line ranges)
-- Python reference locations
-- Key invariants
-- Expected gas costs
-
-**Schema:**
-```json
-{
-  "test-suite-name": {
-    "test_suite": "test-suite-name",
-    "description": "Brief description",
-    "common_causes": ["Cause 1", "Cause 2"],
-    "relevant_files": ["src/file.zig:function", "src/other.zig:line-range"],
-    "python_ref": "execution-specs/.../reference.py",
-    "key_invariants": ["Invariant 1", "Invariant 2"],
-    "gas_costs": { "OPERATION": 100 }
-  }
-}
-```
-
----
+- Guessing gas costs (must match Python exactly)
+- Skipping trace comparison (shows exact divergence point)
+- Mixing hardfork behaviors (use `isAtLeast` guards)
+- Ignoring error conditions (Python `raise` must map to Zig errors)
+- Hardcoding test-specific logic (fix general implementation)
+- Forgetting to charge gas before operations (Python charges first)
+- Modifying test files (only change `src/` implementations)
+- Silently ignoring errors with `catch {}` (forbidden; handle or `try`)
+- Creating `.backup`/`.bak`/`.old` files (use git instead)
 
 ## Resources
 
-- **ethereum/tests**: https://github.com/ethereum/tests
-- **execution-specs**: https://github.com/ethereum/execution-specs
-- **EIP Index**: https://eips.ethereum.org/
-- **EIP-3155 (Trace Format)**: https://eips.ethereum.org/EIPS/eip-3155
-- **Yellow Paper**: https://ethereum.github.io/yellowpaper/paper.pdf
-- **Zig Documentation**: https://ziglang.org/documentation/
-
----
+- ethereum/tests: https://github.com/ethereum/tests
+- execution-specs: https://github.com/ethereum/execution-specs
+- EIP Index: https://eips.ethereum.org/
+- EIP-3155 (Trace Format): https://eips.ethereum.org/EIPS/eip-3155
+- Yellow Paper: https://ethereum.github.io/yellowpaper/paper.pdf
+- Zig Documentation: https://ziglang.org/documentation/
 
 ## File Summary
 
@@ -837,8 +714,6 @@ Tracks historical debugging insights:
 
 </details>
 
----
-
 ## Contributing
 
 When making changes:
@@ -849,24 +724,18 @@ When making changes:
 4. Add tests for new features
 5. Update documentation
 
-**For questions:** Refer to test output and trace divergence analysis.
-
-**License:** See LICENSE file.
-
----
-
-## Full Client (Guillotine) — Specs & Submodules
+## Full Client (Guillotine) - Specs and Submodules
 
 This repo is evolving from an EVM-only library into a full Ethereum execution client ("Guillotine"), mirroring Nethermind's architecture in Zig.
 
 **Plan:** See `prd/GUILLOTINE_CLIENT_PLAN.md` for the phased implementation plan.
 **Spec reference:** See `prd/ETHEREUM_SPECS_REFERENCE.md` for the full source map.
 
-### Cloned Submodules (canonical specs & tests)
+### Cloned Submodules (canonical specs and tests)
 
 | Submodule | Purpose |
 |---|---|
-| `execution-specs/` | EELS — authoritative Python EL spec (state transitions, fork rules) |
+| `execution-specs/` | EELS - authoritative Python EL spec (state transitions, fork rules) |
 | `EIPs/` | Ethereum Improvement Proposals (normative change log) |
 | `yellowpaper/` | Yellow Paper (background only, outdated past Shanghai) |
 | `devp2p/` | Networking specs: RLPx, eth/68, snap/1, discv4/v5, ENR |
@@ -874,7 +743,7 @@ This repo is evolving from an EVM-only library into a full Ethereum execution cl
 | `ethereum-tests/` | Classic JSON test fixtures (TrieTests, GeneralStateTests, BlockchainTests) |
 | `execution-spec-tests/` | Python-generated EVM + state transition test fixtures |
 | `hive/` | End-to-end integration test harness (RPC, Engine API, devp2p, sync) |
-| `consensus-specs/` | Consensus-layer specs (beacon chain, SSZ — future reference) |
+| `consensus-specs/` | Consensus-layer specs (beacon chain, SSZ - future reference) |
 | `nethermind/` | C# reference implementation (architecture reference only) |
 
 ### Existing Zig Libraries
@@ -882,20 +751,20 @@ This repo is evolving from an EVM-only library into a full Ethereum execution cl
 | Library | Location | Provides |
 |---|---|---|
 | **Voltaire** | `/Users/williamcory/voltaire/packages/voltaire-zig/` | All primitives, RLP, SSZ, Crypto, Precompiles, JSON-RPC types, JournaledState, Blockchain, StateManager |
-| **Guillotine-Mini** | `src/` (this repo) | EVM engine (frame, opcodes, gas, hardforks Berlin→Prague) |
+| **Guillotine-Mini** | `src/` (this repo) | EVM engine (frame, opcodes, gas, hardforks Berlin->Prague) |
 
 ### Source Priority (when in doubt)
 
-1. `execution-specs/` + `EIPs/` — for EVM + state transition behavior
-2. `devp2p/` — for networking wire formats
-3. `execution-apis/` — for JSON-RPC and Engine API
-4. `ethereum-tests/` + `execution-spec-tests/` — for correctness validation
-5. `nethermind/` — architecture reference only (not behavioral truth)
+1. `execution-specs/` + `EIPs/` - for EVM + state transition behavior
+2. `devp2p/` - for networking wire formats
+3. `execution-apis/` - for JSON-RPC and Engine API
+4. `ethereum-tests/` + `execution-spec-tests/` - for correctness validation
+5. `nethermind/` - architecture reference only (not behavioral truth)
 
 ### Key Rules for Full Client Work
 
-- **NEVER modify files in submodules** (execution-specs, EIPs, devp2p, etc.)
-- Use **Voltaire primitives** for all types (Address, Block, Tx, Hash, RLP, Crypto, etc.)
-- Use **guillotine-mini EVM** for execution — do not build a new EVM
+- Never modify files in submodules (`execution-specs`, `EIPs`, `devp2p`, etc.)
+- Use Voltaire primitives for all types (Address, Block, Tx, Hash, RLP, Crypto, etc.)
+- Use guillotine-mini EVM for execution (do not build a new EVM)
 - Validate every phase against official test suites (see plan for mapping)
 - Mirror Nethermind's module boundaries for architecture consistency
