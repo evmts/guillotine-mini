@@ -354,18 +354,18 @@ pub const WriteBatch = struct {
             }
         }
         // Only clear on success.
-        self.ops.items.len = 0;
+        _ = self.arena.reset(.free_all);
+        self.ops = .{};
     }
 
     /// Discard all pending operations without applying them.
     /// Resets the arena to free accumulated key/value memory, preventing
     /// unbounded memory retention for long-lived batches.
     pub fn clear(self: *WriteBatch) void {
-        self.ops.items.len = 0;
         // Reset arena to free all accumulated key/value copies.
         // This prevents unbounded memory growth for long-lived batches
         // that repeatedly accumulate and clear operations.
-        _ = self.arena.reset(.retain_capacity);
+        _ = self.arena.reset(.free_all);
         // After reset, the ops ArrayList's buffer is invalidated,
         // so reset it to empty state.
         self.ops = .{};
@@ -641,7 +641,17 @@ const TrackingDb = struct {
     }
 
     fn deinit(self: *TrackingDb) void {
+        for (self.puts.items) |item| {
+            self.alloc.free(item.key);
+            if (item.value) |val| {
+                self.alloc.free(val);
+            }
+        }
         self.puts.deinit(self.alloc);
+
+        for (self.deletes.items) |item| {
+            self.alloc.free(item.key);
+        }
         self.deletes.deinit(self.alloc);
     }
 
@@ -656,12 +666,29 @@ const TrackingDb = struct {
 
     fn put_impl(ptr: *anyopaque, key: []const u8, value: ?[]const u8, flags: WriteFlags) Error!void {
         const self: *TrackingDb = @ptrCast(@alignCast(ptr));
-        self.puts.append(self.alloc, .{ .key = key, .value = value, .flags = flags }) catch return error.OutOfMemory;
+        const owned_key = self.alloc.dupe(u8, key) catch return error.OutOfMemory;
+        var owned_val: ?[]const u8 = null;
+        if (value) |val| {
+            owned_val = self.alloc.dupe(u8, val) catch {
+                self.alloc.free(owned_key);
+                return error.OutOfMemory;
+            };
+        }
+
+        self.puts.append(self.alloc, .{ .key = owned_key, .value = owned_val, .flags = flags }) catch {
+            if (owned_val) |val| self.alloc.free(val);
+            self.alloc.free(owned_key);
+            return error.OutOfMemory;
+        };
     }
 
     fn delete_impl(ptr: *anyopaque, key: []const u8, flags: WriteFlags) Error!void {
         const self: *TrackingDb = @ptrCast(@alignCast(ptr));
-        self.deletes.append(self.alloc, .{ .key = key, .flags = flags }) catch return error.OutOfMemory;
+        const owned_key = self.alloc.dupe(u8, key) catch return error.OutOfMemory;
+        self.deletes.append(self.alloc, .{ .key = owned_key, .flags = flags }) catch {
+            self.alloc.free(owned_key);
+            return error.OutOfMemory;
+        };
     }
 
     fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
