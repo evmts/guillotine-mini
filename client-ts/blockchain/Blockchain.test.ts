@@ -6,6 +6,7 @@ import {
   BlockchainTest,
   getBlockByHash,
   getBlockByNumber,
+  initializeGenesis,
   putBlock,
   setCanonicalHead,
 } from "./Blockchain";
@@ -51,7 +52,7 @@ describe("Blockchain", () => {
         parentHash: genesis.hash,
       });
 
-      yield* putBlock(genesis);
+      yield* initializeGenesis(genesis);
       yield* putBlock(block1);
       yield* setCanonicalHead(block1.hash);
 
