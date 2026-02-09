@@ -365,6 +365,48 @@ test "engine api rejects unknown engine consensus capabilities" {
     try std.testing.expect(!dummy.called);
 }
 
+test "engine api rejects non-array consensus capabilities payload" {
+    const allocator = std.testing.allocator;
+    var result_payload = try makeMethodsPayload(ResultType, allocator, &[_][]const u8{
+        "engine_newPayloadV1",
+    });
+    defer if (result_payload.array) |*array| array.deinit();
+
+    const params = ExchangeCapabilitiesParams{
+        .consensus_client_methods = jsonrpc.types.Quantity{ .value = .{ .string = "engine_newPayloadV1" } },
+    };
+
+    var dummy = DummyEngine{ .result = .{ .value = result_payload.value } };
+    const api = makeApi(&dummy);
+
+    try std.testing.expectError(EngineApi.Error.InvalidParams, api.exchange_capabilities(params));
+    try std.testing.expect(!dummy.called);
+}
+
+test "engine api rejects non-string consensus capabilities entries" {
+    const allocator = std.testing.allocator;
+
+    var invalid_array = std.json.Array.init(allocator);
+    defer invalid_array.deinit();
+    try invalid_array.append(.{ .bool = true });
+    try invalid_array.append(.{ .string = "engine_newPayloadV1" });
+
+    const params = ExchangeCapabilitiesParams{
+        .consensus_client_methods = jsonrpc.types.Quantity{ .value = .{ .array = invalid_array } },
+    };
+
+    var result_payload = try makeMethodsPayload(ResultType, allocator, &[_][]const u8{
+        "engine_newPayloadV1",
+    });
+    defer if (result_payload.array) |*array| array.deinit();
+
+    var dummy = DummyEngine{ .result = .{ .value = result_payload.value } };
+    const api = makeApi(&dummy);
+
+    try std.testing.expectError(EngineApi.Error.InvalidParams, api.exchange_capabilities(params));
+    try std.testing.expect(!dummy.called);
+}
+
 test "engine api rejects response containing exchangeCapabilities" {
     const allocator = std.testing.allocator;
 
