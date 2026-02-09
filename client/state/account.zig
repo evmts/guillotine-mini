@@ -92,7 +92,7 @@ pub fn is_totally_empty(account: *const AccountState) bool {
 /// present and not totally empty (i.e. not equal to `EMPTY_ACCOUNT`).
 pub fn is_account_alive(account: ?AccountState) bool {
     if (account) |acct| {
-        return !is_totally_empty(&acct);
+        return !is_empty(&acct);
     }
     return false;
 }
