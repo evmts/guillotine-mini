@@ -1,85 +1,51 @@
 # [pass 2/5] phase-5-txpool (Transaction Pool)
 
-## Goal (from plan)
+## Goal (from prd/GUILLOTINE_CLIENT_PLAN.md)
 
-Implement the transaction pool for pending transactions, including:
-- `client/txpool/pool.zig` — pool storage, admission, eviction
-- `client/txpool/sorter.zig` — prioritization (gas price / tip / blob fee)
+- Implement the transaction pool for pending transactions.
+- Key components: `client/txpool/pool.zig` and `client/txpool/sorter.zig` (priority sorting by gas price/tip).
 
----
+## Spec references (from prd/ETHEREUM_SPECS_REFERENCE.md)
 
-## Specs to Anchor Behavior
+- EIP-1559 fee market: `EIPs/EIPS/eip-1559.md`
+- EIP-2930 access lists: `EIPs/EIPS/eip-2930.md`
+- EIP-4844 blob transactions: `EIPs/EIPS/eip-4844.md`
+- Transaction rules by fork (execution-specs):
+  - `execution-specs/src/ethereum/forks/london/transactions.py` (EIP-1559)
+  - `execution-specs/src/ethereum/forks/berlin/transactions.py` (EIP-2930)
+  - `execution-specs/src/ethereum/forks/cancun/transactions.py` (EIP-4844 / blob txs)
 
-### EIPs (core transaction formats + pricing)
+## Nethermind reference (architecture)
 
-- `EIPs/EIPS/eip-1559.md` — type 2 fee market transactions (`max_fee_per_gas`, `max_priority_fee_per_gas`), effective gas price, base fee checks.
-- `EIPs/EIPS/eip-2930.md` — type 1 access list transactions; access list structure + intrinsic cost additions.
-- `EIPs/EIPS/eip-4844.md` — type 3 blob transactions; `max_fee_per_blob_gas`, `blob_versioned_hashes`, blob gas accounting, non-null `to`.
+- TxPool module: `nethermind/src/Nethermind/Nethermind.TxPool/`
+  - Key files: `ITxPool.cs`, `TxPool.cs`, `TxPoolConfig.cs`, `ITxValidator.cs`,
+    `NonceManager.cs`, `TxBroadcaster.cs`, `TxSealer.cs`, `TxPoolSender.cs`,
+    `SpecDrivenTxGossipPolicy.cs`, `IBlobTxStorage.cs`, `BlobTxStorage.cs`.
+- Db module (persistence primitives): `nethermind/src/Nethermind/Nethermind.Db/`
+  - Key files: `IDb.cs`, `IColumnsDb.cs`, `DbProvider.cs`, `DbNames.cs`,
+    `RocksDbSettings.cs`, `ReadOnlyDb.cs`, `MemDb.cs`, `PruningConfig.cs`,
+    `PruningMode.cs`, `Metrics.cs`.
 
-### Execution-specs (authoritative validation + intrinsic gas)
+## Voltaire primitives (from /Users/williamcory/voltaire/packages/voltaire-zig/src/)
 
-- `execution-specs/src/ethereum/forks/prague/transactions.py`
-  - Defines all transaction types (legacy, 2930, 1559, 4844, 7702).
-  - Intrinsic gas constants: `TX_BASE_COST`, `TX_ACCESS_LIST_*`, calldata costs, create cost, and post-Prague rules (EIP-7623 floor calldata cost).
-  - Signature validation + error surfaces (invalid signature, nonce overflow, insufficient intrinsic gas).
+- `primitives/` (txpool-critical types):
+  - `Transaction`, `TransactionHash`, `FeeMarket`, `Gas`, `GasPrice`,
+    `MaxFeePerGas`, `MaxPriorityFeePerGas`, `BaseFeePerGas`, `AccessList`,
+    `Nonce`, `Hash`, `Blob`, `Receipt`, `PendingTransactionFilter`, `Rlp`,
+    `ChainId`.
+- Other relevant modules: `blockchain/` (chain head + block types),
+  `state-manager/` (state access), `evm/` (execution types).
 
-Note: If targeting pre-Prague fork, use the corresponding fork’s `transactions.py` for the active chain rules.
+## Existing Zig code
 
----
+- `client/txpool/pool.zig`: TxPoolConfig + TxPool vtable (pending_count, pending_blob_count) with tests.
+- `src/host.zig`: HostInterface vtable for balance/code/storage/nonce; EVM inner_call bypasses host for nested calls.
 
-## Nethermind Architecture References
+## Test fixtures (ethereum-tests/)
 
-### TxPool module
-
-Key files in `nethermind/src/Nethermind/Nethermind.TxPool/`:
-- `TxPool.cs`, `ITxPool.cs` — core pool interface + implementation.
-- `TxPoolConfig.cs` — pool sizing, eviction, and policy configuration.
-- `TxSealer.cs`, `ITxSealer.cs` — sealing/extraction of best transactions for block assembly.
-- `TxBroadcaster.cs` — gossip/broadcast integration.
-- `ITxValidator.cs`, `TransactionExtensions.cs` — validation hooks, sender recovery, and tx utilities.
-- `NonceManager.cs`, `INonceManager.cs`, `NonceLocker.cs` — per-sender nonce tracking and reservation.
-- `SpecDrivenTxGossipPolicy.cs`, `ITxGossipPolicy.cs` — fork-aware gossip rules.
-- `BlobTxStorage.cs`, `IBlobTxStorage.cs` — blob tx storage and pruning.
-- `TxFilteringState.cs`, `TxHandlingOptions.cs` — filter policies (underpriced, replaced, etc).
-
-### Nethermind.Db (storage backing primitives)
-
-Files in `nethermind/src/Nethermind/Nethermind.Db/` relevant for storage patterns:
-- `IDb.cs`, `IReadOnlyDb.cs`, `IColumnsDb.cs` — DB abstraction.
-- `DbProvider.cs`, `DbProviderExtensions.cs` — DB lifecycle and wiring.
-- `MemDb.cs`, `MemColumnsDb.cs` — in-memory implementations (useful for tests).
-- `RocksDbSettings.cs`, `RocksDbMergeEnumerator.cs` — persistent storage tuning.
-
----
-
-## Voltaire Primitives (must-use)
-
-Relevant APIs in `/Users/williamcory/voltaire/packages/voltaire-zig/src/`:
-- `primitives/Transaction/Transaction.zig`
-  - `TransactionType`
-  - `LegacyTransaction`, `Eip2930Transaction`, `Eip1559Transaction`, `Eip4844Transaction`, `Eip7702Transaction`
-  - `AccessListItem`
-  - signing/encoding helpers (RLP)
-- `primitives/AccessList/`, `primitives/Nonce/`, `primitives/Address/`, `primitives/Hash/`, `primitives/Signature/`
-- `primitives/Gas/`, `primitives/GasPrice/`, `primitives/MaxFeePerGas/`, `primitives/MaxPriorityFeePerGas/`, `primitives/EffectiveGasPrice/`
-- `primitives/BaseFeePerGas/`, `primitives/Blob/` (e.g., `VersionedHash`)
-- `primitives/Rlp/` for encoding/decoding
-
----
-
-## Existing Zig Integration Points
-
-- `src/host.zig` — EVM `HostInterface` vtable for state access. Any txpool simulation/validation that needs EVM execution must reuse the existing EVM + host patterns (no reimplementation).
-
----
-
-## Test Fixtures to Reuse
-
-From `ethereum-tests/`:
-- `ethereum-tests/TransactionTests/` — transaction format + signature correctness.
-- `ethereum-tests/RLPTests/` — RLP decoding/encoding corner cases for raw txs.
-- `ethereum-tests/BasicTests/` — basic transaction validity patterns (if needed).
-
-Additional available fixtures:
-- `execution-spec-tests/` (if tx validity fixtures are needed beyond classic tests).
-
+- Directories: `ABITests/`, `BasicTests/`, `BlockchainTests/`, `DifficultyTests/`,
+  `EOFTests/`, `GenesisTests/`, `KeyStoreTests/`, `LegacyTests/`, `PoWTests/`,
+  `RLPTests/`, `TransactionTests/`, `TrieTests/`.
+- Likely txpool-relevant: `ethereum-tests/TransactionTests/`, `ethereum-tests/BasicTests/`,
+  `ethereum-tests/RLPTests/` and fixture tarballs:
+  `ethereum-tests/fixtures_blockchain_tests.tgz`, `ethereum-tests/fixtures_general_state_tests.tgz`.
