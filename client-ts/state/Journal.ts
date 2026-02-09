@@ -44,6 +44,24 @@ const invalidSnapshotError = (
 const snapshotToLength = (snapshot: JournalSnapshot): number =>
   snapshot === EMPTY_SNAPSHOT ? 0 : snapshot + 1;
 
+const validateSnapshot = (
+  snapshot: JournalSnapshot,
+  currentLength: number,
+): Effect.Effect<number, InvalidSnapshotError> =>
+  Effect.gen(function* () {
+    if (snapshot < EMPTY_SNAPSHOT) {
+      return yield* Effect.fail(invalidSnapshotError(snapshot, currentLength));
+    }
+
+    const targetLength = snapshotToLength(snapshot);
+
+    if (snapshot !== EMPTY_SNAPSHOT && targetLength > currentLength) {
+      return yield* Effect.fail(invalidSnapshotError(snapshot, currentLength));
+    }
+
+    return targetLength;
+  });
+
 /** Journal service interface. */
 export interface JournalService<K, V> {
   readonly append: (entry: JournalEntry<K, V>) => Effect.Effect<number>;
@@ -86,20 +104,7 @@ const makeJournal = <K, V>(): JournalService<K, V> => {
   ): Effect.Effect<void, InvalidSnapshotError | E> =>
     Effect.gen(function* () {
       const currentLength = entries.length;
-
-      if (snapshot < EMPTY_SNAPSHOT) {
-        return yield* Effect.fail(
-          invalidSnapshotError(snapshot, currentLength),
-        );
-      }
-
-      const targetLength = snapshotToLength(snapshot);
-
-      if (snapshot !== EMPTY_SNAPSHOT && targetLength > currentLength) {
-        return yield* Effect.fail(
-          invalidSnapshotError(snapshot, currentLength),
-        );
-      }
+      const targetLength = yield* validateSnapshot(snapshot, currentLength);
 
       if (targetLength === currentLength) {
         return;
@@ -151,19 +156,8 @@ const makeJournal = <K, V>(): JournalService<K, V> => {
     onCommit?: (entry: JournalEntry<K, V>) => Effect.Effect<void, E>,
   ): Effect.Effect<void, InvalidSnapshotError | E> =>
     Effect.gen(function* () {
-      if (snapshot < EMPTY_SNAPSHOT) {
-        return yield* Effect.fail(
-          invalidSnapshotError(snapshot, entries.length),
-        );
-      }
-
       const currentLength = entries.length;
-      const targetLength = snapshotToLength(snapshot);
-      if (snapshot !== EMPTY_SNAPSHOT && targetLength > currentLength) {
-        return yield* Effect.fail(
-          invalidSnapshotError(snapshot, currentLength),
-        );
-      }
+      const targetLength = yield* validateSnapshot(snapshot, currentLength);
 
       if (targetLength === currentLength) {
         return;
