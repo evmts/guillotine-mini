@@ -313,6 +313,13 @@ test "DbValue: release invokes callback" {
     try std.testing.expect(ctx.called);
 }
 
+test "DbValue: borrowed returns bytes without release" {
+    const value = DbValue.borrowed("hello");
+    try std.testing.expectEqualStrings("hello", value.bytes);
+    try std.testing.expect(value.release_ctx == null);
+    try std.testing.expect(value.release_fn == null);
+}
+
 test "DbEntry: release invokes key and value callbacks" {
     const Ctx = struct { called: bool = false };
     var key_ctx = Ctx{};
