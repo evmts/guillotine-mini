@@ -9,7 +9,7 @@ pub const Chain = chain.Chain;
 /// Shared header validation errors.
 pub const ValidationError = validator.ValidationError;
 /// Merge-aware header validator.
-pub const MergeHeaderValidator = validator.MergeHeaderValidator;
+pub const merge_header_validator = validator.merge_header_validator;
 
 test {
     @import("std").testing.refAllDecls(@This());

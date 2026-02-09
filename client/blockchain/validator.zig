@@ -22,7 +22,7 @@ fn validate_pos_header_constants(header: *const BlockHeader.BlockHeader) Validat
 
 /// Merge-aware header validator that enforces PoS constants post-merge and
 /// delegates to a pre-merge validator otherwise.
-pub fn MergeHeaderValidator(comptime PreMergeValidator: type) type {
+pub fn merge_header_validator(comptime PreMergeValidator: type) type {
     return struct {
         /// Validate a header under the given hardfork.
         pub fn validate(header: *const BlockHeader.BlockHeader, hardfork: Hardfork) ValidationError!void {
@@ -65,28 +65,28 @@ test "validate_pos_header_constants - rejects non-empty ommers hash" {
     try std.testing.expectError(ValidationError.InvalidOmmersHash, validate_pos_header_constants(&header));
 }
 
-test "MergeHeaderValidator - delegates to pre-merge validator" {
+test "merge_header_validator - delegates to pre-merge validator" {
     const PreMergeValidator = struct {
         pub fn validate(_: *const BlockHeader.BlockHeader, _: Hardfork) ValidationError!void {
             return ValidationError.InvalidDifficulty;
         }
     };
 
-    const MergeValidator = MergeHeaderValidator(PreMergeValidator);
+    const MergeValidator = merge_header_validator(PreMergeValidator);
     var header = BlockHeader.init();
     header.difficulty = 1;
 
     try std.testing.expectError(ValidationError.InvalidDifficulty, MergeValidator.validate(&header, .LONDON));
 }
 
-test "MergeHeaderValidator - enforces PoS constants post-merge" {
+test "merge_header_validator - enforces PoS constants post-merge" {
     const PreMergeValidator = struct {
         pub fn validate(_: *const BlockHeader.BlockHeader, _: Hardfork) ValidationError!void {
             return;
         }
     };
 
-    const MergeValidator = MergeHeaderValidator(PreMergeValidator);
+    const MergeValidator = merge_header_validator(PreMergeValidator);
     var header = BlockHeader.init();
     header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
     header.difficulty = 1;

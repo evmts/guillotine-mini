@@ -60,7 +60,7 @@ fn validateBlockHeaderConstants(
             return;
         }
     };
-    const MergeValidator = client_blockchain.MergeHeaderValidator(PreMergeValidator);
+    const MergeValidator = client_blockchain.merge_header_validator(PreMergeValidator);
     try MergeValidator.validate(&header, hardfork);
 }
 
