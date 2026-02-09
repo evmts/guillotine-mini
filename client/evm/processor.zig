@@ -51,33 +51,7 @@ pub fn validate_transaction(
     }
 
     const is_create = if (comptime Tx == tx_mod.Eip4844Transaction) false else tx.to == null;
-
-    var access_list_address_count: u64 = 0;
-    var access_list_storage_key_count: u64 = 0;
-    if (comptime Tx == tx_mod.Eip2930Transaction or
-        Tx == tx_mod.Eip1559Transaction or
-        Tx == tx_mod.Eip4844Transaction or
-        Tx == tx_mod.Eip7702Transaction)
-    {
-        access_list_address_count = @intCast(tx.access_list.len);
-        for (tx.access_list) |entry| {
-            access_list_storage_key_count += @intCast(entry.storage_keys.len);
-        }
-    }
-
-    var authorization_count: u64 = 0;
-    if (comptime Tx == tx_mod.Eip7702Transaction) {
-        authorization_count = @intCast(tx.authorization_list.len);
-    }
-
-    const intrinsic = calculate_intrinsic_gas(.{
-        .data = tx.data,
-        .is_create = is_create,
-        .access_list_address_count = access_list_address_count,
-        .access_list_storage_key_count = access_list_storage_key_count,
-        .authorization_count = authorization_count,
-        .hardfork = hardfork,
-    });
+    const intrinsic = calculate_intrinsic_gas(tx, hardfork);
 
     const calldata_floor = intrinsic_gas.calculate_calldata_floor_gas(tx.data, hardfork);
     const required_gas = if (calldata_floor > intrinsic) calldata_floor else intrinsic;
@@ -157,16 +131,10 @@ test "validate_transaction — init code size limit (Shanghai+)" {
     const init_code = try allocator.alloc(u8, size);
     defer allocator.free(init_code);
 
-    const intrinsic = intrinsic_gas.calculate_intrinsic_gas(.{
-        .data = init_code,
-        .is_create = true,
-        .hardfork = .SHANGHAI,
-    });
-
-    const tx = tx_mod.LegacyTransaction{
+    var tx = tx_mod.LegacyTransaction{
         .nonce = 0,
         .gas_price = 0,
-        .gas_limit = intrinsic,
+        .gas_limit = 0,
         .to = null,
         .value = 0,
         .data = init_code,
@@ -174,6 +142,8 @@ test "validate_transaction — init code size limit (Shanghai+)" {
         .r = [_]u8{0} ** 32,
         .s = [_]u8{0} ** 32,
     };
+    const intrinsic = intrinsic_gas.calculate_intrinsic_gas(tx, .SHANGHAI);
+    tx.gas_limit = intrinsic;
 
     try std.testing.expectError(error.InitCodeTooLarge, validate_transaction(tx, .SHANGHAI));
 }
@@ -375,15 +345,10 @@ test "validate_transaction — prague calldata floor enforced" {
     const Address = primitives.Address;
 
     const data = [_]u8{0x01}; // one non-zero byte => floor > intrinsic
-    const intrinsic = intrinsic_gas.calculate_intrinsic_gas(.{
-        .data = &data,
-        .hardfork = .PRAGUE,
-    });
-
-    const tx = tx_mod.LegacyTransaction{
+    var tx = tx_mod.LegacyTransaction{
         .nonce = 0,
         .gas_price = 0,
-        .gas_limit = intrinsic,
+        .gas_limit = 0,
         .to = Address{ .bytes = [_]u8{0xAA} ++ [_]u8{0} ** 19 },
         .value = 0,
         .data = &data,
@@ -391,6 +356,8 @@ test "validate_transaction — prague calldata floor enforced" {
         .r = [_]u8{0} ** 32,
         .s = [_]u8{0} ** 32,
     };
+    const intrinsic = intrinsic_gas.calculate_intrinsic_gas(tx, .PRAGUE);
+    tx.gas_limit = intrinsic;
 
     try std.testing.expectError(error.InsufficientGas, validate_transaction(tx, .PRAGUE));
 }
