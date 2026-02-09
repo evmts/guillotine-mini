@@ -1,81 +1,73 @@
-# [Pass 1/5] Phase 4: Block Chain Management - Context
+# Context: Phase 4 Block Chain Management
 
 ## Goal (from prd/GUILLOTINE_CLIENT_PLAN.md)
-Manage the block chain structure and validation. Planned modules:
-- client/blockchain/chain.zig (chain management)
-- client/blockchain/validator.zig (block validation)
 
-## Spec References (from prd/ETHEREUM_SPECS_REFERENCE.md)
-Authoritative specs and tests:
-- execution-specs/src/ethereum/forks/*/fork.py (block validation, state transition)
-- yellowpaper/Paper.tex Section 11 (Block Finalisation)
-- ethereum-tests/BlockchainTests/
-- execution-spec-tests/fixtures/blockchain_tests/
-- execution-spec-tests/fixtures/blockchain_tests_engine/
+- Manage the block chain structure and validation.
+- Key components: `client/blockchain/chain.zig`, `client/blockchain/validator.zig` (Zig reference for parity).
+- References: `nethermind/src/Nethermind/Nethermind.Blockchain/`, `voltaire/packages/voltaire-zig/src/blockchain/`.
+- Test fixtures: `ethereum-tests/BlockchainTests/`.
 
-## execution-specs fork.py (cancun)
-Key validation and transition touchpoints in execution-specs/src/ethereum/forks/cancun/fork.py:
-- BlockChain dataclass: blocks list + state + chain_id
-- state_transition: validate_header, apply_body, compute state root / tx root / receipts root / logs bloom / withdrawals root, then verify header fields
-- validate_header: gas limit checks, base fee, timestamp monotonicity, block number increment, extra_data length, PoS header constraints (difficulty=0, nonce=0, ommers_hash = EMPTY_OMMER_HASH), parent_hash from parent header
-- check_transaction: gas limit accounting, nonce/balance checks, max fee/max priority fee checks, blob gas checks, sender recovery
-- apply_body: transaction loop, receipts/transactions trie roots, withdrawals processing
+## Specs to Read First (from prd/ETHEREUM_SPECS_REFERENCE.md)
 
-## Yellow Paper Section 11 (Block Finalisation)
-Key block-level rules in yellowpaper/Paper.tex (Section 11):
-- Finalisation stages: execute withdrawals, validate transactions, verify state
-- Withdrawals increase recipient balance by gwei amount, no gas cost, no failure
-- gasUsed in header must equal cumulative gas used per transaction
-- State validation ties block state root to the post-transaction + post-withdrawal state via TRIE
+- `execution-specs/src/ethereum/forks/*/fork.py` (block validation per fork).
+- Yellow Paper Section 11 (Block Finalization) — locate under `yellowpaper/` if present.
+- Tests: `execution-spec-tests/fixtures/blockchain_tests/`.
+- Related: `execution-spec-tests/fixtures/blockchain_tests_engine/` (engine-focused blockchain tests).
+- P2P context if needed later: `devp2p/caps/eth.md` (block/header exchange).
 
-## Nethermind references
-Primary architecture reference:
-- nethermind/src/Nethermind/Nethermind.Blockchain/
+## Nethermind.Db Reference Inventory
 
-Nethermind.Db listing (requested for context):
-- IDb.cs, IReadOnlyDb.cs, IColumnsDb.cs, IFullDb.cs
-- DbProvider.cs, DbProviderExtensions.cs, DbNames.cs
-- RocksDbSettings.cs, RocksDbMergeEnumerator.cs
-- MemDb.cs, MemDbFactory.cs, MemColumnsDb.cs
-- ReadOnlyDb.cs, ReadOnlyColumnsDb.cs, ReadOnlyDbProvider.cs
-- PruningConfig.cs, PruningMode.cs, FullPruning/
-- BlobTxsColumns.cs, ReceiptsColumns.cs, MetadataDbKeys.cs
-- InMemoryColumnBatch.cs, InMemoryWriteBatch.cs
+Listed from `nethermind/src/Nethermind/Nethermind.Db/`:
 
-## Voltaire primitives to use (never reimplement)
-Relevant APIs under /Users/williamcory/voltaire/packages/voltaire-zig/src:
-- blockchain/Blockchain.zig: Blockchain
-- blockchain/BlockStore.zig: BlockStore
-- blockchain/ForkBlockCache.zig: ForkBlockCache
-- primitives/Block/ (Block, Header, Transactions, Receipts)
-- primitives/Hash/Hash.zig (Hash type)
-- primitives/Address/Address.zig (Address)
-- state-manager/ (state access and snapshots, if used by chain validation)
-- evm/ (EVM execution integration)
-- crypto/ (keccak256, hashes)
+- Core DB interfaces: `IDb.cs`, `IColumnsDb.cs`, `IDbFactory.cs`, `IDbProvider.cs`, `IFullDb.cs`, `IReadOnlyDb.cs`, `IReadOnlyDbProvider.cs`, `ITunableDb.cs`, `IMergeOperator.cs`.
+- Providers/config: `DbProvider.cs`, `DbProviderExtensions.cs`, `DbNames.cs`, `DbExtensions.cs`, `PruningConfig.cs`, `PruningMode.cs`, `RocksDbSettings.cs`.
+- In-memory: `MemDb.cs`, `MemDbFactory.cs`, `MemColumnsDb.cs`, `InMemoryColumnBatch.cs`, `InMemoryWriteBatch.cs`.
+- Read-only wrappers: `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs`, `ReadOnlyDbProvider.cs`.
+- Maintenance/metrics: `Metrics.cs`, `RocksDbMergeEnumerator.cs`, `FullPruning/*`, `FullPruningTrigger.cs`, `FullPruningCompletionBehavior.cs`.
+- Columns/metadata: `BlobTxsColumns.cs`, `ReceiptsColumns.cs`, `MetadataDbKeys.cs`.
+- Other: `NullDb.cs`, `NullRocksDbFactory.cs`, `SimpleFilePublicKeyDb.cs`, `CompressingDb.cs`.
 
-## Existing Zig files to integrate with
-src/host.zig
-- HostInterface vtable for get/set balance, code, storage, nonce
-- Uses primitives.Address.Address and u256
+## voltaire-effect APIs (source: /Users/williamcory/voltaire/voltaire-effect/src/index.ts)
 
-## Test fixtures
-ethereum-tests/BlockchainTests/
-- Canonical JSON blockchain fixtures
+Focus on primitives and modules needed for chain management and validation. Relevant exports:
 
-execution-spec-tests fixtures:
-- execution-spec-tests/fixtures/blockchain_tests/
-- execution-spec-tests/fixtures/blockchain_tests_engine/
+- Primitives: `Block`, `BlockHeader`, `BlockBody`, `BlockHash`, `BlockNumber`, `BloomFilter`, `Receipt`, `Transaction`, `Chain`, `ChainHead`, `StateRoot`, `Gas`, `GasUsed`, `GasPrice`, `BaseFeePerGas`, `Nonce`, `Hash`, `Hex`, `Bytes`, `Rlp`.
+- Crypto: `Keccak256` (block/tx hashing), `KZG` (blob-related validation if used), `Secp256k1` (signature checks).
+- Utilities: `BlockUtils` (block streaming/fetching helper layer).
 
-Additional ethereum-tests assets:
-- ethereum-tests/fixtures_blockchain_tests.tgz (archived fixtures)
+Use voltaire-effect primitives only for Ethereum types (Address/Hash/Hex/etc.) — no custom Ethereum types.
 
-## Paths read in this pass
-- prd/GUILLOTINE_CLIENT_PLAN.md
-- prd/ETHEREUM_SPECS_REFERENCE.md
-- execution-specs/src/ethereum/forks/cancun/fork.py
-- yellowpaper/Paper.tex
-- src/host.zig
-- nethermind/src/Nethermind/Nethermind.Db/
-- /Users/williamcory/voltaire/packages/voltaire-zig/src/
-- ethereum-tests/
+## Effect.ts Patterns (source: effect-repo/packages/effect/src/)
+
+Notable modules/patterns for idiomatic implementation:
+
+- DI: `Context`, `Layer` (use `Context.Tag` + `Layer.scoped/effect/succeed/merge`).
+- Composition: `Effect`, `Effect.gen`, `pipe` (`Function.ts`).
+- Validation: `Schema`, `ParseResult`.
+- Resource safety: `Scope`, `Effect.acquireRelease`.
+- Errors: `Data` (TaggedError), `Cause`, `Exit`.
+- Collections: `Option`, `Either`, `Chunk`, `HashMap`, `HashSet`.
+
+## Existing client-ts Patterns (Effect.ts client)
+
+Files reviewed:
+
+- `client-ts/evm/TransactionProcessor.ts`: Context.Tag service + Layer.effect; Schema decoding at boundary; Effect.gen for sequential logic; explicit error union.
+- `client-ts/db/Db.ts`: Context.Tag Db service; Schema validation; Effect.acquireRelease for in-memory store; write batch APIs; scoped Layer.
+- `client-ts/state/State.ts`: WorldState service using Journal; snapshot handling; uses voltaire-effect primitives (Address/Storage/etc.).
+- `client-ts/state/Journal.ts`: Change journal with snapshots; Effect.gen; TaggedError for InvalidSnapshot.
+- Tests: `client-ts/db/Db.test.ts` uses `@effect/vitest` `it.effect` and provides Layer in tests.
+
+## Test Fixtures (filesystem)
+
+- `ethereum-tests/BlockchainTests/`
+- `ethereum-tests/fixtures_blockchain_tests.tgz` (archived fixtures)
+- `execution-spec-tests/fixtures/blockchain_tests/`
+- `execution-spec-tests/fixtures/blockchain_tests_engine/`
+
+## Notes for Implementation
+
+- Read fork-specific block validation in `execution-specs/src/ethereum/forks/*/fork.py` before coding.
+- Use Nethermind blockchain architecture for structure (not implementation details) and map it into Effect.ts services/layers.
+- Maintain voltaire-effect primitives throughout (Block/BlockHeader/etc.).
+- Follow existing client-ts layering/style and avoid `Effect.runPromise` except at the app edge.
