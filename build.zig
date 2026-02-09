@@ -31,6 +31,7 @@ pub fn build(b: *std.Build) void {
     const primitives_mod = primitives_dep.module("primitives");
     const crypto_mod = primitives_dep.module("crypto");
     const precompiles_mod = primitives_dep.module("precompiles");
+    const blockchain_mod = primitives_dep.module("blockchain");
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -163,6 +164,28 @@ pub fn build(b: *std.Build) void {
 
     const client_state_test_step = b.step("test-state", "Run world state journal tests");
     client_state_test_step.dependOn(&run_client_state_tests.step);
+
+    // Client Blockchain module (chain management)
+    const client_blockchain_mod = b.addModule("client_blockchain", .{
+        .root_source_file = b.path("client/blockchain/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "blockchain", .module = blockchain_mod },
+        },
+    });
+
+    const client_blockchain_tests = b.addTest(.{
+        .root_module = client_blockchain_mod,
+    });
+
+    const run_client_blockchain_tests = b.addRunArtifact(client_blockchain_tests);
+    test_step.dependOn(&run_client_blockchain_tests.step);
+    unit_test_step.dependOn(&run_client_blockchain_tests.step);
+
+    const client_blockchain_test_step = b.step("test-blockchain", "Run chain management tests");
+    client_blockchain_test_step.dependOn(&run_client_blockchain_tests.step);
 
     // Client EVM module (EVM ↔ WorldState integration)
     const state_manager_mod = primitives_dep.module("state-manager");
