@@ -36,7 +36,9 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     const EvmType = evm_mod.Evm(evm_mod.EvmConfig{});
-    try run(EvmType, allocator, args, std.io.getStdOut().writer());
+    const stdout = std.fs.File.stdout();
+    const writer = stdout.deprecatedWriter();
+    try run(EvmType, allocator, args, writer);
 }
 
 fn run(
