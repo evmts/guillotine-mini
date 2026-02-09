@@ -197,6 +197,13 @@ pub const Database = struct {
     pub fn supports_write_batch(self: Database) bool {
         return self.vtable.write_batch != null;
     }
+
+    /// Create a new write batch targeting this database.
+    ///
+    /// Mirrors Nethermind's `StartWriteBatch()` convenience API.
+    pub fn start_write_batch(self: Database, allocator: std.mem.Allocator) WriteBatch {
+        return WriteBatch.init(allocator, self);
+    }
 };
 
 /// A single write operation for use with `Database.VTable.write_batch`.
@@ -474,6 +481,22 @@ test "Database vtable dispatches multiple operations" {
     _ = try db.contains("d");
 
     try std.testing.expectEqual(@as(usize, 4), mock.call_count);
+}
+
+test "Database start_write_batch creates batch targeting database" {
+    var tracker = TrackingDb.init(std.testing.allocator);
+    defer tracker.deinit();
+
+    const db = tracker.database();
+    var batch = db.start_write_batch(std.testing.allocator);
+    defer batch.deinit();
+
+    try batch.put("key1", "val1");
+    try batch.commit();
+
+    try std.testing.expectEqual(@as(usize, 1), tracker.puts.items.len);
+    try std.testing.expectEqualStrings("key1", tracker.puts.items[0].key);
+    try std.testing.expectEqualStrings("val1", tracker.puts.items[0].value.?);
 }
 
 test "DbName to_string matches Nethermind constants" {
