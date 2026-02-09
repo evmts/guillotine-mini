@@ -7,6 +7,7 @@ const std = @import("std");
 const primitives = @import("primitives");
 const BlockHeader = primitives.BlockHeader;
 const BlockBody = primitives.BlockBody;
+const Hash = primitives.Hash;
 const Receipt = primitives.Receipt;
 
 /// Block body + receipt request/response container.
@@ -65,6 +66,12 @@ pub const BlocksRequest = struct {
         return self.body_headers.len == 0 and self.receipt_headers.len == 0;
     }
 
+    /// Compute block hashes for the body request headers.
+    /// Caller owns the returned slice.
+    pub fn body_hashes(self: BlocksRequest, allocator: std.mem.Allocator) ![]const Hash.Hash {
+        return headers_to_hashes(self.body_headers, allocator);
+    }
+
     /// Return the allocator backing the owned response arena, if present.
     pub fn response_allocator(self: *BlocksRequest) ?std.mem.Allocator {
         if (self.response_arena) |*arena| {
@@ -100,6 +107,17 @@ pub const BlocksRequest = struct {
             return err;
         }
     }
+
+    fn headers_to_hashes(headers: []const BlockHeader.BlockHeader, allocator: std.mem.Allocator) ![]const Hash.Hash {
+        if (headers.len == 0) {
+            return &[_]Hash.Hash{};
+        }
+        var hashes = try allocator.alloc(Hash.Hash, headers.len);
+        for (headers, 0..) |_, index| {
+            hashes[index] = try BlockHeader.hash(&headers[index], allocator);
+        }
+        return hashes;
+    }
 };
 
 // ============================================================================
@@ -133,6 +151,32 @@ test "BlocksRequest.is_empty detects pending receipt hashes" {
         .receipts = null,
     };
     try std.testing.expect(!req.is_empty());
+}
+
+test "BlocksRequest.body_hashes returns ordered hashes" {
+    var header1 = BlockHeader.init();
+    header1.number = 1;
+    var header2 = BlockHeader.init();
+    header2.number = 2;
+    const headers = &[_]BlockHeader.BlockHeader{ header1, header2 };
+
+    const req = BlocksRequest{
+        .body_headers = headers,
+        .receipt_headers = &[_]BlockHeader.BlockHeader{},
+        .bodies = null,
+        .receipts = null,
+    };
+
+    const allocator = std.testing.allocator;
+    const hashes = try req.body_hashes(allocator);
+    defer allocator.free(hashes);
+
+    const expected1 = try BlockHeader.hash(&headers[0], allocator);
+    const expected2 = try BlockHeader.hash(&headers[1], allocator);
+
+    try std.testing.expectEqual(@as(usize, headers.len), hashes.len);
+    try std.testing.expect(Hash.equals(&hashes[0], &expected1));
+    try std.testing.expect(Hash.equals(&hashes[1], &expected2));
 }
 
 test "BlocksRequest.set_bodies enforces alignment and allows missing entries" {
