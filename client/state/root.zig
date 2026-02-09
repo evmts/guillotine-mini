@@ -18,6 +18,7 @@
 /// - `ChangeTag`     — Change classification enum (just_cache, update, create, delete, touch)
 /// - `Entry`         — Single change record (key + value + tag)
 /// - `JournalError`  — Error set for journal operations (InvalidSnapshot, OutOfMemory)
+/// - `Snapshot`      — Composite snapshot positions (state + storage)
 /// - `AccountState`  — Voltaire account state type (re-exported)
 /// - `is_empty`       — EIP-161 empty account predicate
 /// - `is_totally_empty` — Empty account with empty storage predicate
@@ -40,6 +41,7 @@
 /// ```
 const journal = @import("journal.zig");
 const account = @import("account.zig");
+const state = @import("state.zig");
 
 // -- Public API: flat re-exports -------------------------------------------
 
@@ -55,6 +57,10 @@ pub const ChangeTag = journal.ChangeTag;
 
 /// Error set for journal operations.
 pub const JournalError = journal.JournalError;
+
+// Snapshot types
+/// Composite snapshot positions for state + persistent/transient storage.
+pub const Snapshot = state.Snapshot;
 
 // Account types and helpers
 /// Voltaire account state type — the canonical Ethereum account representation.
