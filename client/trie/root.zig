@@ -25,7 +25,9 @@
 //! ```zig
 //! const trie = @import("client_trie");
 //!
-//! // Compute root hash from key-value pairs
+//! // Compute root hash from key-value pairs.
+//! // NOTE: keys must already be keccak256-prehashed for secure tries,
+//! // and values must be RLP-encoded (e.g. transactions, receipts, accounts).
 //! const root = try trie.trie_root(allocator, &keys, &values);
 //! ```
 
