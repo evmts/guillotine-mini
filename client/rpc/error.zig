@@ -37,3 +37,42 @@ test "jsonrpc error default messages follow eip-1474" {
     try std.testing.expectEqualStrings("Limit exceeded", JsonRpcErrorCode.limit_exceeded.defaultMessage());
     try std.testing.expectEqualStrings("JSON-RPC version not supported", JsonRpcErrorCode.jsonrpc_version_not_supported.defaultMessage());
 }
+
+test "jsonrpc error codes include nethermind extensions" {
+    try std.testing.expectEqual(@as(i32, 3), @intFromEnum(JsonRpcErrorCode.execution_reverted));
+    try std.testing.expectEqual(@as(i32, 4), @intFromEnum(JsonRpcErrorCode.tx_sync_timeout));
+    try std.testing.expectEqual(@as(i32, -32010), @intFromEnum(JsonRpcErrorCode.transaction_rejected_nethermind));
+    try std.testing.expectEqual(@as(i32, -32015), @intFromEnum(JsonRpcErrorCode.execution_error));
+    try std.testing.expectEqual(@as(i32, -32016), @intFromEnum(JsonRpcErrorCode.timeout));
+    try std.testing.expectEqual(@as(i32, -32017), @intFromEnum(JsonRpcErrorCode.module_timeout));
+    try std.testing.expectEqual(@as(i32, -32020), @intFromEnum(JsonRpcErrorCode.account_locked));
+    try std.testing.expectEqual(@as(i32, -39001), @intFromEnum(JsonRpcErrorCode.unknown_block));
+    try std.testing.expectEqual(@as(i32, -38010), @intFromEnum(JsonRpcErrorCode.nonce_too_low));
+    try std.testing.expectEqual(@as(i32, -38011), @intFromEnum(JsonRpcErrorCode.nonce_too_high));
+    try std.testing.expectEqual(@as(i32, -38013), @intFromEnum(JsonRpcErrorCode.insufficient_intrinsic_gas));
+    try std.testing.expectEqual(@as(i32, -38014), @intFromEnum(JsonRpcErrorCode.invalid_transaction));
+    try std.testing.expectEqual(@as(i32, -38015), @intFromEnum(JsonRpcErrorCode.block_gas_limit_reached));
+    try std.testing.expectEqual(@as(i32, -38020), @intFromEnum(JsonRpcErrorCode.invalid_input_blocks_out_of_order));
+    try std.testing.expectEqual(@as(i32, -38021), @intFromEnum(JsonRpcErrorCode.block_timestamp_not_increased));
+    try std.testing.expectEqual(@as(i32, -38024), @intFromEnum(JsonRpcErrorCode.sender_is_not_eoa));
+    try std.testing.expectEqual(@as(i32, -38025), @intFromEnum(JsonRpcErrorCode.max_init_code_size_exceeded));
+    try std.testing.expectEqual(@as(i32, -38026), @intFromEnum(JsonRpcErrorCode.invalid_input_too_many_blocks));
+    try std.testing.expectEqual(@as(i32, 4444), @intFromEnum(JsonRpcErrorCode.pruned_history_unavailable));
+
+    try std.testing.expectEqual(@as(i32, -32000), @intFromEnum(JsonRpcErrorCode.resource_not_found_legacy));
+    try std.testing.expectEqual(@as(i32, -32000), @intFromEnum(JsonRpcErrorCode.default));
+    try std.testing.expectEqual(@as(i32, -32000), @intFromEnum(JsonRpcErrorCode.reverted_simulate));
+    try std.testing.expectEqual(@as(i32, -32015), @intFromEnum(JsonRpcErrorCode.vm_error));
+    try std.testing.expectEqual(@as(i32, -38013), @intFromEnum(JsonRpcErrorCode.intrinsic_gas));
+    try std.testing.expectEqual(@as(i32, -38014), @intFromEnum(JsonRpcErrorCode.insufficient_funds));
+    try std.testing.expectEqual(@as(i32, -38020), @intFromEnum(JsonRpcErrorCode.block_number_invalid));
+    try std.testing.expectEqual(@as(i32, -38021), @intFromEnum(JsonRpcErrorCode.block_timestamp_invalid));
+    try std.testing.expectEqual(@as(i32, -38026), @intFromEnum(JsonRpcErrorCode.client_limit_exceeded_error));
+    try std.testing.expectEqual(@as(i32, -38026), @intFromEnum(JsonRpcErrorCode.client_limit_exceeded));
+}
+
+test "jsonrpc error default messages include nethermind extensions" {
+    try std.testing.expectEqualStrings("Execution reverted", JsonRpcErrorCode.execution_reverted.defaultMessage());
+    try std.testing.expectEqualStrings("Timeout", JsonRpcErrorCode.timeout.defaultMessage());
+    try std.testing.expectEqualStrings("Account locked", JsonRpcErrorCode.account_locked.defaultMessage());
+}
