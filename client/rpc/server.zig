@@ -4,29 +4,41 @@
 /// HTTP and WebSocket transports.
 const std = @import("std");
 
+const default_enabled = false;
+const default_host: []const u8 = "127.0.0.1";
+const default_port: u16 = 8545;
+const default_websocket_port: ?u16 = null;
+const default_ipc_unix_domain_socket_path: ?[]const u8 = null;
+const default_timeout_ms: u32 = 20_000;
+const default_request_queue_limit: usize = 500;
+const default_max_batch_size: usize = 1024;
+const default_max_request_body_size: ?usize = 30_000_000;
+const default_max_batch_response_body_size: ?usize = 33_554_432;
+const default_strict_hex_format = true;
+
 pub const RpcServerConfig = struct {
     /// Enable the JSON-RPC server.
-    enabled: bool = false,
+    enabled: bool = default_enabled,
     /// Interface to bind (IPv4/IPv6 literal or hostname).
-    host: []const u8 = "127.0.0.1",
+    host: []const u8 = default_host,
     /// HTTP JSON-RPC port.
-    port: u16 = 8545,
+    port: u16 = default_port,
     /// Optional WebSocket port override (defaults to HTTP port when null).
-    websocket_port: ?u16 = null,
+    websocket_port: ?u16 = default_websocket_port,
     /// Optional UNIX domain socket path for IPC transport.
-    ipc_unix_domain_socket_path: ?[]const u8 = null,
+    ipc_unix_domain_socket_path: ?[]const u8 = default_ipc_unix_domain_socket_path,
     /// Per-request timeout in milliseconds.
-    timeout_ms: u32 = 20_000,
+    timeout_ms: u32 = default_timeout_ms,
     /// Maximum number of queued requests.
-    request_queue_limit: usize = 500,
+    request_queue_limit: usize = default_request_queue_limit,
     /// Maximum JSON-RPC batch size.
-    max_batch_size: usize = 1024,
+    max_batch_size: usize = default_max_batch_size,
     /// Maximum request body size in bytes (null to disable the limit).
-    max_request_body_size: ?usize = 30_000_000,
+    max_request_body_size: ?usize = default_max_request_body_size,
     /// Maximum batch response body size in bytes (null to disable the limit).
-    max_batch_response_body_size: ?usize = 33_554_432,
+    max_batch_response_body_size: ?usize = default_max_batch_response_body_size,
     /// Enforce strict hex encoding (EIP-1474 Quantity/Data rules).
-    strict_hex_format: bool = true,
+    strict_hex_format: bool = default_strict_hex_format,
 
     /// Returns the WebSocket port, defaulting to the HTTP port when unset.
     pub fn effective_websocket_port(self: RpcServerConfig) u16 {
@@ -40,7 +52,7 @@ pub const RpcServerConfig = struct {
 
 test "rpc server config defaults websocket port to http port" {
     const cfg = RpcServerConfig{};
-    try std.testing.expectEqual(@as(u16, 8545), cfg.effective_websocket_port());
+    try std.testing.expectEqual(default_port, cfg.effective_websocket_port());
 }
 
 test "rpc server config respects websocket port override" {
@@ -50,15 +62,15 @@ test "rpc server config respects websocket port override" {
 
 test "rpc server config defaults ipc socket path to null" {
     const cfg = RpcServerConfig{};
-    try std.testing.expectEqual(@as(?[]const u8, null), cfg.ipc_unix_domain_socket_path);
+    try std.testing.expectEqual(default_ipc_unix_domain_socket_path, cfg.ipc_unix_domain_socket_path);
 }
 
 test "rpc server config defaults match Nethermind limits" {
     const cfg = RpcServerConfig{};
-    try std.testing.expectEqual(@as(u32, 20_000), cfg.timeout_ms);
-    try std.testing.expectEqual(@as(usize, 500), cfg.request_queue_limit);
-    try std.testing.expectEqual(@as(usize, 1024), cfg.max_batch_size);
-    try std.testing.expectEqual(@as(?usize, 30_000_000), cfg.max_request_body_size);
-    try std.testing.expectEqual(@as(?usize, 33_554_432), cfg.max_batch_response_body_size);
-    try std.testing.expectEqual(true, cfg.strict_hex_format);
+    try std.testing.expectEqual(default_timeout_ms, cfg.timeout_ms);
+    try std.testing.expectEqual(default_request_queue_limit, cfg.request_queue_limit);
+    try std.testing.expectEqual(default_max_batch_size, cfg.max_batch_size);
+    try std.testing.expectEqual(default_max_request_body_size, cfg.max_request_body_size);
+    try std.testing.expectEqual(default_max_batch_response_body_size, cfg.max_batch_response_body_size);
+    try std.testing.expectEqual(default_strict_hex_format, cfg.strict_hex_format);
 }
