@@ -7,26 +7,17 @@
 //! < 32 bytes are returned as raw RLP structures, not hashed).
 //!
 //! Uses Voltaire primitives for RLP encoding and keccak256 hashing.
-//!
-//! ## RLP List Encoding Design Note
-//!
-//! We maintain a custom `rlp_encode_tagged_list()` rather than using Voltaire's
-//! `Rlp.encodeList()` because the MPT requires mixed-mode encoding: some list
-//! items are byte strings needing RLP string encoding, while others are inline
-//! node substructures that must be embedded verbatim (already RLP-encoded).
-//! Voltaire's `encodeList` would re-encode verbatim items as byte strings,
-//! producing incorrect results. We still use Voltaire's `Rlp.encodeBytes()`
-//! for individual string items and `Rlp.encodeLength()` for list headers.
+//! Internal node encoding follows the spec's "extended" semantics: small nodes
+//! are embedded as nested RLP lists, while large nodes are replaced by their
+//! keccak256 hash.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const TriePrimitives = @import("primitives");
 const TrieError = TriePrimitives.TrieError;
 
-/// RLP encoding from Voltaire primitives
-const Rlp = @import("primitives").Rlp;
-/// Keccak256 hash function from Voltaire crypto
-const Hash = @import("crypto").Hash;
+const DefaultRlp = TriePrimitives.Rlp;
+const DefaultHash = @import("crypto").Hash;
 
 /// 32-byte hash type, imported from node.zig to avoid duplication.
 pub const Hash32 = @import("node.zig").Hash32;
@@ -41,40 +32,6 @@ pub const EMPTY_TRIE_ROOT: Hash32 = .{
     0x01, 0x62, 0x2f, 0xb5, 0xe3, 0x63, 0xb4, 0x21,
 };
 
-/// Represents the result of `encode_internal_node()` from the spec.
-///
-/// In the Python spec, `encode_internal_node` returns either:
-/// - `bytes` (a keccak256 hash, 32 bytes) for large nodes
-/// - The "unencoded" form (a tuple/list) for small nodes (< 32 bytes RLP)
-/// - `b""` for empty/None nodes
-///
-/// We represent this as:
-/// - `.hash`: 32-byte keccak hash (for large nodes)
-/// - `.raw`: the complete RLP encoding of the unencoded form (small nodes)
-/// - `.empty`: represents `b""` (None/empty node)
-const EncodedNode = union(enum) {
-    /// Complete RLP encoding of an inline node (< 32 bytes)
-    raw: []const u8,
-    /// Keccak256 hash of the RLP encoding (>= 32 bytes)
-    hash: Hash32,
-    /// Empty node (encodes to b"")
-    empty: void,
-};
-
-/// An item in an RLP list with explicit encoding tag.
-///
-/// This tagged union is necessary because the MPT spec requires mixed-mode
-/// list encoding: some items are byte strings (needing RLP string encoding)
-/// while others are already-encoded substructures (to embed verbatim).
-/// Voltaire's `Rlp.encodeList()` cannot distinguish these cases, so we use
-/// this type with our custom `rlp_encode_tagged_list()`.
-const RlpItem = union(enum) {
-    /// A byte string to be RLP-encoded as a string item
-    string: []const u8,
-    /// An already-RLP-encoded substructure to embed verbatim
-    verbatim: []const u8,
-};
-
 /// Compute the MPT root hash of a set of key-value pairs.
 ///
 /// This is the top-level entry point matching the Python spec's `root()`.
@@ -86,6 +43,28 @@ const RlpItem = union(enum) {
 /// 2. Call `patricialize()` to build the tree recursively
 /// 3. RLP-encode the root node; if < 32 bytes, hash it; otherwise use as-is
 pub fn trie_root(
+    allocator: Allocator,
+    keys: []const []const u8,
+    values: []const []const u8,
+) !Hash32 {
+    return trie_root_with(DefaultRlp, DefaultHash, allocator, keys, values);
+}
+
+/// Compute the MPT root hash for a secure trie (keys hashed with keccak256).
+///
+/// This matches the `secured=True` behavior in the Python execution-specs.
+/// Input keys are raw bytes; values should already be RLP-encoded where needed.
+pub fn secure_trie_root(
+    allocator: Allocator,
+    keys: []const []const u8,
+    values: []const []const u8,
+) !Hash32 {
+    return secure_trie_root_with(DefaultRlp, DefaultHash, allocator, keys, values);
+}
+
+fn trie_root_with(
+    comptime RlpMod: type,
+    comptime HashMod: type,
     allocator: Allocator,
     keys: []const []const u8,
     values: []const []const u8,
@@ -104,43 +83,39 @@ pub fn trie_root(
         }
     }
 
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
     // Convert keys to nibble form
-    var nibble_keys = try allocator.alloc([]u8, keys.len);
-    defer {
-        for (nibble_keys) |nk| allocator.free(nk);
-        allocator.free(nibble_keys);
-    }
-
+    var nibble_keys = try arena_alloc.alloc([]u8, keys.len);
     for (keys, 0..) |key, i| {
-        nibble_keys[i] = try TriePrimitives.keyToNibbles(allocator, key);
+        nibble_keys[i] = try TriePrimitives.keyToNibbles(arena_alloc, key);
     }
 
-    // Build the trie and get the root node encoding
-    const root_node = try patricialize(allocator, nibble_keys, values, 0);
-    defer free_encoded_node(allocator, root_node);
+    const root_node = try patricialize(RlpMod, HashMod, arena_alloc, nibble_keys, values, 0);
+    const encoded_root = try encode_data(RlpMod, arena_alloc, root_node);
 
-    // Python spec's root():
-    //   root_node = encode_internal_node(patricialize(prepared, 0))
-    //   if len(rlp.encode(root_node)) < 32:
-    //       return keccak256(rlp.encode(root_node))
-    //   else:
-    //       return Root(root_node)  # already a 32-byte hash
-    switch (root_node) {
-        .empty => return EMPTY_TRIE_ROOT,
-        .hash => |h| return h,
-        .raw => |raw| {
-            // Small root: RLP encoding < 32 bytes, but we still need to hash
-            // it to produce the 32-byte root.
-            return Hash.keccak256(raw);
+    if (encoded_root.len < 32) {
+        return HashMod.keccak256(encoded_root);
+    }
+
+    return switch (root_node) {
+        .String => |bytes| blk: {
+            if (bytes.len != @sizeOf(Hash32)) {
+                return TrieError.InvalidNode;
+            }
+            var out: Hash32 = undefined;
+            @memcpy(out[0..], bytes);
+            break :blk out;
         },
-    }
+        .List => TrieError.InvalidNode,
+    };
 }
 
-/// Compute the MPT root hash for a secure trie (keys hashed with keccak256).
-///
-/// This matches the `secured=True` behavior in the Python execution-specs.
-/// Input keys are raw bytes; values should already be RLP-encoded where needed.
-pub fn secure_trie_root(
+fn secure_trie_root_with(
+    comptime RlpMod: type,
+    comptime HashMod: type,
     allocator: Allocator,
     keys: []const []const u8,
     values: []const []const u8,
@@ -160,22 +135,11 @@ pub fn secure_trie_root(
     defer allocator.free(hashed_slices);
 
     for (keys, 0..) |key, i| {
-        hashed_keys[i] = Hash.keccak256(key);
+        hashed_keys[i] = HashMod.keccak256(key);
         hashed_slices[i] = hashed_keys[i][0..];
     }
 
-    return trie_root(allocator, hashed_slices, values);
-}
-
-/// Free memory owned by an `EncodedNode`.
-///
-/// Only the `.raw` variant owns allocated memory (the RLP-encoded bytes).
-/// `.hash` is a value type (32-byte array) and `.empty` holds no data.
-fn free_encoded_node(allocator: Allocator, node: EncodedNode) void {
-    switch (node) {
-        .raw => |r| allocator.free(r),
-        .hash, .empty => {},
-    }
+    return trie_root_with(RlpMod, HashMod, allocator, hashed_slices, values);
 }
 
 /// Recursively build the MPT from key-value pairs.
@@ -183,22 +147,24 @@ fn free_encoded_node(allocator: Allocator, node: EncodedNode) void {
 /// Matches Python's `patricialize(obj, level)`. Instead of using a dict,
 /// we pass parallel arrays of nibble-keys and values.
 ///
-/// Returns an `EncodedNode` -- the result of `encode_internal_node()` on
-/// the node built at this level.
+/// Returns the encoded node in the spec's "extended" form: either a nested
+/// list (inline node) or a string containing a 32-byte hash.
 fn patricialize(
+    comptime RlpMod: type,
+    comptime HashMod: type,
     allocator: Allocator,
     nibble_keys: []const []const u8,
     values: []const []const u8,
     level: usize,
-) !EncodedNode {
+) !RlpMod.Data {
     if (nibble_keys.len == 0) {
-        return .empty;
+        return .{ .String = &[_]u8{} };
     }
 
     // Single entry -> leaf node
     if (nibble_keys.len == 1) {
         const rest_of_key = nibble_keys[0][level..];
-        return encode_internal_leaf(allocator, rest_of_key, values[0]);
+        return encode_internal_leaf(RlpMod, HashMod, allocator, rest_of_key, values[0]);
     }
 
     // Find common prefix among all keys at current level
@@ -217,9 +183,8 @@ fn patricialize(
     // Extension node: shared prefix exists
     if (prefix_length > 0) {
         const prefix = nibble_keys[0][level .. level + prefix_length];
-        const child = try patricialize(allocator, nibble_keys, values, level + prefix_length);
-        defer free_encoded_node(allocator, child);
-        return encode_internal_extension(allocator, prefix, child);
+        const child = try patricialize(RlpMod, HashMod, allocator, nibble_keys, values, level + prefix_length);
+        return encode_internal_extension(RlpMod, HashMod, allocator, prefix, child);
     }
 
     // Branch node: split into 16 buckets by nibble at current level.
@@ -270,65 +235,61 @@ fn patricialize(
     }
 
     // Recursively patricialize each bucket
-    var subnode_encodings: [16]EncodedNode = undefined;
-    var subnode_count: usize = 0;
-    errdefer {
-        for (0..subnode_count) |si| {
-            free_encoded_node(allocator, subnode_encodings[si]);
-        }
-    }
-
+    var subnode_encodings: [16]RlpMod.Data = undefined;
     for (0..16) |bi| {
         const start = bucket_offsets[bi];
         const count = bucket_counts[bi];
         const bkeys = all_keys[start .. start + count];
         const bvals = all_vals[start .. start + count];
-        subnode_encodings[bi] = try patricialize(allocator, bkeys, bvals, level + 1);
-        subnode_count = bi + 1;
-    }
-    // All 16 done, transfer to defer
-    subnode_count = 0;
-    defer {
-        for (0..16) |si| {
-            free_encoded_node(allocator, subnode_encodings[si]);
-        }
+        subnode_encodings[bi] = try patricialize(RlpMod, HashMod, allocator, bkeys, bvals, level + 1);
     }
 
-    return encode_internal_branch(allocator, &subnode_encodings, branch_value);
+    return encode_internal_branch(RlpMod, HashMod, allocator, &subnode_encodings, branch_value);
 }
 
 /// Encode a 2-item path node (leaf or extension) with a compact-encoded path.
 fn encode_internal_path_node(
+    comptime RlpMod: type,
+    comptime HashMod: type,
     allocator: Allocator,
     path: []const u8,
     is_leaf: bool,
-    second: RlpItem,
-) !EncodedNode {
+    second: RlpMod.Data,
+) !RlpMod.Data {
     const compact_path = try TriePrimitives.encodePath(allocator, path, is_leaf);
-    defer allocator.free(compact_path);
-
-    const items = [2]RlpItem{
-        .{ .string = compact_path },
+    const items = [_]RlpMod.Data{
+        .{ .String = compact_path },
         second,
     };
-    return encode_internal_from_items(allocator, &items);
+    return encode_internal_from_items(RlpMod, HashMod, allocator, &items);
 }
 
 /// Encode a leaf node: `encode_internal_node(LeafNode(rest_of_key, value))`
 ///
-/// The unencoded form is: `(nibble_list_to_compact(rest, True), value)`
+/// The unencoded form is: `(encodePath(rest, True), value)`
 /// RLP-encoded as a 2-element list.
-fn encode_internal_leaf(allocator: Allocator, rest_of_key: []const u8, value: []const u8) !EncodedNode {
-    return encode_internal_path_node(allocator, rest_of_key, true, .{ .string = value });
+fn encode_internal_leaf(
+    comptime RlpMod: type,
+    comptime HashMod: type,
+    allocator: Allocator,
+    rest_of_key: []const u8,
+    value: []const u8,
+) !RlpMod.Data {
+    return encode_internal_path_node(RlpMod, HashMod, allocator, rest_of_key, true, .{ .String = value });
 }
 
 /// Encode an extension node: `encode_internal_node(ExtensionNode(prefix, subnode))`
 ///
-/// The unencoded form is: `(nibble_list_to_compact(segment, False), subnode)`
+/// The unencoded form is: `(encodePath(segment, False), subnode)`
 /// where `subnode` is the result of `encode_internal_node()` on the child.
-fn encode_internal_extension(allocator: Allocator, prefix: []const u8, child: EncodedNode) !EncodedNode {
-    const child_item = encoded_node_to_rlp_item(&child);
-    return encode_internal_path_node(allocator, prefix, false, child_item);
+fn encode_internal_extension(
+    comptime RlpMod: type,
+    comptime HashMod: type,
+    allocator: Allocator,
+    prefix: []const u8,
+    child: RlpMod.Data,
+) !RlpMod.Data {
+    return encode_internal_path_node(RlpMod, HashMod, allocator, prefix, false, child);
 }
 
 /// Encode a branch node: `encode_internal_node(BranchNode(subnodes, value))`
@@ -336,132 +297,116 @@ fn encode_internal_extension(allocator: Allocator, prefix: []const u8, child: En
 /// The unencoded form is: `list(subnodes) + [value]` (17 elements).
 /// `value` is `b""` (empty bytes) when no value terminates at this branch,
 /// matching the Python spec's sentinel convention.
-fn encode_internal_branch(allocator: Allocator, subnodes: *const [16]EncodedNode, value: []const u8) !EncodedNode {
-    var items: [17]RlpItem = undefined;
+fn encode_internal_branch(
+    comptime RlpMod: type,
+    comptime HashMod: type,
+    allocator: Allocator,
+    subnodes: *const [16]RlpMod.Data,
+    value: []const u8,
+) !RlpMod.Data {
+    var items: [17]RlpMod.Data = undefined;
 
     for (0..16) |i| {
-        items[i] = encoded_node_to_rlp_item(&subnodes[i]);
+        items[i] = subnodes[i];
     }
 
     // Branch value: empty bytes means "no value" per spec
-    items[16] = .{ .string = value };
+    items[16] = .{ .String = value };
 
-    return encode_internal_from_items(allocator, &items);
-}
-
-/// Convert an EncodedNode to an RlpItem for embedding in a parent list.
-///
-/// In Python, `encode_internal_node` returns:
-/// - `b""` for None -> string item
-/// - `keccak256(encoded)` for large nodes -> 32-byte string item
-/// - `unencoded` (tuple/list) for small nodes -> already-encoded substructure
-///
-/// When embedded in a parent node, strings get RLP-encoded as strings,
-/// and nested structures get embedded directly (as their RLP form).
-///
-/// IMPORTANT: Takes a pointer to avoid dangling references to stack copies.
-/// The `.hash` variant returns a slice pointing into the EncodedNode's storage,
-/// so the node must remain alive while the returned RlpItem is used.
-fn encoded_node_to_rlp_item(node: *const EncodedNode) RlpItem {
-    switch (node.*) {
-        .empty => return .{ .string = &[_]u8{} },
-        .hash => |*h| return .{ .string = h },
-        .raw => |raw| return .{ .verbatim = raw },
-    }
+    return encode_internal_from_items(RlpMod, HashMod, allocator, &items);
 }
 
 /// Encode items as an RLP list and apply the < 32 byte inlining rule.
 ///
 /// This is the core of `encode_internal_node()`:
 /// 1. RLP-encode the list of items
-/// 2. If len < 32: return the raw RLP (inline)
-/// 3. If len >= 32: return keccak256(RLP)
-fn encode_internal_from_items(allocator: Allocator, items: []const RlpItem) !EncodedNode {
-    const encoded = try rlp_encode_tagged_list(allocator, items);
+/// 2. If len < 32: return the raw list (inline)
+/// 3. If len >= 32: return keccak256(RLP) as a 32-byte string
+fn encode_internal_from_items(
+    comptime RlpMod: type,
+    comptime HashMod: type,
+    allocator: Allocator,
+    items: []const RlpMod.Data,
+) !RlpMod.Data {
+    const list_items = try allocator.alloc(RlpMod.Data, items.len);
+    @memcpy(list_items, items);
+
+    const list_data = RlpMod.Data{ .List = list_items };
+    const encoded = try encode_data(RlpMod, allocator, list_data);
 
     if (encoded.len < 32) {
-        return .{ .raw = encoded };
-    } else {
-        defer allocator.free(encoded);
-        return .{ .hash = Hash.keccak256(encoded) };
+        return list_data;
     }
+
+    const hashed = HashMod.keccak256(encoded);
+    const hash_bytes = try allocator.alloc(u8, hashed.len);
+    @memcpy(hash_bytes, hashed[0..]);
+
+    return .{ .String = hash_bytes };
 }
 
-/// RLP-encode a list of tagged items.
-///
-/// Each `.string` item is individually RLP-encoded via Voltaire's
-/// `Rlp.encodeBytes()`. Each `.verbatim` item is included as-is
-/// (already RLP-encoded). All are concatenated and wrapped with an
-/// RLP list header (using Voltaire's `Rlp.encodeLength()` for long lists).
-///
-/// NOTE: We cannot use Voltaire's `Rlp.encodeList()` here because it would
-/// re-encode verbatim items as byte strings. See module-level doc comment.
-///
-/// Allocation strategy: Two-pass approach. First pass computes total payload
-/// size by encoding string items into a fixed-size buffer of pre-encoded
-/// slices. Second pass writes directly into a single output allocation.
-fn rlp_encode_tagged_list(allocator: Allocator, items: []const RlpItem) ![]u8 {
-    // First pass: encode string items, keep verbatim as-is, compute total size.
-    // Use a stack buffer for small lists (branch nodes have 17 items).
-    var encoded_buf: [17][]const u8 = undefined;
-    var owned_mask: [17]bool = [_]bool{false} ** 17;
-    std.debug.assert(items.len <= 17);
+/// Encode RLP `Data` into its canonical byte form.
+fn encode_data(
+    comptime RlpMod: type,
+    allocator: Allocator,
+    data: RlpMod.Data,
+) RlpMod.EncodeError![]u8 {
+    return switch (data) {
+        .String => |bytes| RlpMod.encodeBytes(allocator, bytes),
+        .List => |items| encode_list(RlpMod, allocator, items),
+    };
+}
+
+fn encode_list(
+    comptime RlpMod: type,
+    allocator: Allocator,
+    items: []const RlpMod.Data,
+) RlpMod.EncodeError![]u8 {
+    const encoded_items = try allocator.alloc([]u8, items.len);
+    errdefer allocator.free(encoded_items);
 
     var total_len: usize = 0;
-    for (items, 0..) |item, i| {
-        switch (item) {
-            .string => |s| {
-                encoded_buf[i] = try Rlp.encodeBytes(allocator, s);
-                owned_mask[i] = true;
-            },
-            .verbatim => |v| {
-                encoded_buf[i] = v;
-                owned_mask[i] = false;
-            },
-        }
-        total_len += encoded_buf[i].len;
-    }
-    // Ensure we free owned encoded items on all paths.
-    // @constCast is needed because Rlp.encodeBytes returns []const u8 but
-    // allocator.free requires []u8. The cast is safe since we own the memory.
-    defer {
-        for (0..items.len) |i| {
-            if (owned_mask[i]) allocator.free(@constCast(encoded_buf[i]));
+    var i: usize = 0;
+    errdefer {
+        for (0..i) |idx| {
+            allocator.free(encoded_items[idx]);
         }
     }
 
-    // Second pass: compute header size and allocate result in one shot.
-    // Max RLP list header: 1 prefix byte + up to 8 length bytes.
+    for (items, 0..) |item, idx| {
+        const encoded_item = try encode_data(RlpMod, allocator, item);
+        encoded_items[idx] = encoded_item;
+        total_len += encoded_item.len;
+        i = idx + 1;
+    }
+
     var header_buf: [9]u8 = undefined;
     const header_len: usize = if (total_len < 56) blk: {
         header_buf[0] = 0xc0 + @as(u8, @intCast(total_len));
         break :blk 1;
     } else blk: {
-        const len_bytes = try Rlp.encodeLength(allocator, total_len);
+        const len_bytes = try RlpMod.encodeLength(allocator, total_len);
         defer allocator.free(len_bytes);
         header_buf[0] = 0xf7 + @as(u8, @intCast(len_bytes.len));
         @memcpy(header_buf[1 .. 1 + len_bytes.len], len_bytes);
         break :blk 1 + len_bytes.len;
     };
 
-    // Single allocation for the complete result
     const result = try allocator.alloc(u8, header_len + total_len);
     errdefer allocator.free(result);
 
-    // Write header
     @memcpy(result[0..header_len], header_buf[0..header_len]);
 
-    // Write payload items contiguously
     var offset: usize = header_len;
-    for (0..items.len) |i| {
-        const item_data = encoded_buf[i];
-        @memcpy(result[offset .. offset + item_data.len], item_data);
-        offset += item_data.len;
+    for (encoded_items) |item| {
+        @memcpy(result[offset .. offset + item.len], item);
+        offset += item.len;
+        allocator.free(item);
     }
+    allocator.free(encoded_items);
 
     return result;
 }
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -691,116 +636,4 @@ test "trietest - branch-value-update" {
     const root = try trie_root(allocator, &keys, &values);
     const expected = hex_to_bytes("7a320748f780ad9ad5b0837302075ce0eeba6c26e3d8562c67ccc0f1b273298a");
     try testing.expectEqualSlices(u8, &expected, &root);
-}
-
-// ---------------------------------------------------------------------------
-// Internal structure tests
-// ---------------------------------------------------------------------------
-
-test "rlp_encode_tagged_list - simple leaf" {
-    // Verify RLP encoding of a leaf node: [0x20, "reindeer"]
-    const allocator = testing.allocator;
-
-    const items = [2]RlpItem{
-        .{ .string = &[_]u8{0x20} },
-        .{ .string = "reindeer" },
-    };
-    const result = try rlp_encode_tagged_list(allocator, &items);
-    defer allocator.free(result);
-
-    const expected = hex_to_bytes("ca20887265696e64656572");
-    try testing.expectEqualSlices(u8, &expected, result);
-}
-
-test "rlp_encode_tagged_list - branch with inline and hash" {
-    // Verify RLP encoding of the branch at level 6 in the dogs test
-    const allocator = testing.allocator;
-
-    const inline_bytes = hex_to_bytes("ce89376c6573776f72746883636174");
-
-    var items: [17]RlpItem = undefined;
-    for (0..6) |i| items[i] = .{ .string = &[_]u8{} };
-    items[6] = .{ .verbatim = &inline_bytes };
-    for (7..16) |i| items[i] = .{ .string = &[_]u8{} };
-    items[16] = .{ .string = "puppy" };
-
-    const result = try rlp_encode_tagged_list(allocator, &items);
-    defer allocator.free(result);
-
-    const expected = hex_to_bytes("e4808080808080ce89376c6573776f72746883636174808080808080808080857075707079");
-    try testing.expectEqualSlices(u8, &expected, result);
-}
-
-test "rlp_encode_tagged_list - level 5 branch (dogs test)" {
-    const allocator = testing.allocator;
-
-    const inline_doe = hex_to_bytes("ca20887265696e64656572");
-    const hash_bytes = hex_to_bytes("37efd11993cb04a54048c25320e9f29c50a432d28afdf01598b2978ce1ca3068");
-
-    var items: [17]RlpItem = undefined;
-    for (0..5) |i| items[i] = .{ .string = &[_]u8{} };
-    items[5] = .{ .verbatim = &inline_doe };
-    items[6] = .{ .string = &[_]u8{} };
-    items[7] = .{ .string = &hash_bytes };
-    for (8..16) |i| items[i] = .{ .string = &[_]u8{} };
-    items[16] = .{ .string = &[_]u8{} };
-
-    const result = try rlp_encode_tagged_list(allocator, &items);
-    defer allocator.free(result);
-
-    const expected = hex_to_bytes("f83b8080808080ca20887265696e6465657280a037efd11993cb04a54048c25320e9f29c50a432d28afdf01598b2978ce1ca3068808080808080808080");
-    try testing.expectEqualSlices(u8, &expected, result);
-
-    // Also verify the hash
-    const expected_hash = hex_to_bytes("db6ae1fda66890f6693f36560d36b4dca68b4d838f17016b151efe1d4c95c453");
-    const actual_hash = Hash.keccak256(result);
-    try testing.expectEqualSlices(u8, &expected_hash, &actual_hash);
-}
-
-/// Assert that an `EncodedNode` is a `.hash` variant matching `expected`.
-/// On mismatch, prints debug info for `.raw` nodes to aid diagnosis.
-fn expect_node_hash(node: EncodedNode, expected: []const u8) !void {
-    switch (node) {
-        .hash => |h| try testing.expectEqualSlices(u8, expected, &h),
-        .raw => |raw| {
-            std.debug.print("Got raw node (len {d}): ", .{raw.len});
-            for (raw) |b| std.debug.print("{x:0>2}", .{b});
-            std.debug.print("\n", .{});
-            return error.TestExpectedEqual;
-        },
-        .empty => return error.TestExpectedEqual,
-    }
-}
-
-test "patricialize - dogs subtree at level 6 (dog + dogglesworth)" {
-    const allocator = testing.allocator;
-
-    const dog_nibbles = [_]u8{ 6, 4, 6, 0xf, 6, 7 };
-    const dogglesworth_nibbles = [_]u8{ 6, 4, 6, 0xf, 6, 7, 6, 7, 6, 0xc, 6, 5, 7, 3, 7, 7, 6, 0xf, 7, 2, 7, 4, 6, 8 };
-
-    const nibble_keys = [_][]const u8{ &dog_nibbles, &dogglesworth_nibbles };
-    const values = [_][]const u8{ "puppy", "cat" };
-
-    const node = try patricialize(allocator, &nibble_keys, &values, 6);
-    defer free_encoded_node(allocator, node);
-
-    const expected_hash = hex_to_bytes("37efd11993cb04a54048c25320e9f29c50a432d28afdf01598b2978ce1ca3068");
-    try expect_node_hash(node, &expected_hash);
-}
-
-test "patricialize - dogs at level 5 (full branch)" {
-    const allocator = testing.allocator;
-
-    const doe_nibbles = [_]u8{ 6, 4, 6, 0xf, 6, 5 };
-    const dog_nibbles = [_]u8{ 6, 4, 6, 0xf, 6, 7 };
-    const dogglesworth_nibbles = [_]u8{ 6, 4, 6, 0xf, 6, 7, 6, 7, 6, 0xc, 6, 5, 7, 3, 7, 7, 6, 0xf, 7, 2, 7, 4, 6, 8 };
-
-    const nibble_keys = [_][]const u8{ &doe_nibbles, &dog_nibbles, &dogglesworth_nibbles };
-    const values = [_][]const u8{ "reindeer", "puppy", "cat" };
-
-    const node = try patricialize(allocator, &nibble_keys, &values, 5);
-    defer free_encoded_node(allocator, node);
-
-    const expected_hash = hex_to_bytes("db6ae1fda66890f6693f36560d36b4dca68b4d838f17016b151efe1d4c95c453");
-    try expect_node_hash(node, &expected_hash);
 }
