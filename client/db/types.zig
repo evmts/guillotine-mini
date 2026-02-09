@@ -54,11 +54,14 @@ test "ReadFlags: union and contains" {
     try std.testing.expect(flags.has(ReadFlags.hint_cache_miss));
     try std.testing.expect(flags.has(ReadFlags.skip_duplicate_read));
     try std.testing.expect(!flags.has(ReadFlags.hint_read_ahead));
+    const composite = ReadFlags.hint_cache_miss.merge(ReadFlags.hint_read_ahead);
+    try std.testing.expect(!ReadFlags.hint_cache_miss.has(composite));
 }
 
 test "WriteFlags: union and contains" {
     var flags = WriteFlags.none;
     flags = flags.merge(WriteFlags.low_priority);
+    try std.testing.expect(!flags.has(WriteFlags.low_priority_and_no_wal));
     flags = flags.merge(WriteFlags.disable_wal);
 
     try std.testing.expect(flags.has(WriteFlags.low_priority));
