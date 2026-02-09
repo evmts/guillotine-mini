@@ -18,6 +18,7 @@ Planned components:
 
 Full directory listing (use as architectural reference):
 - `nethermind/src/Nethermind/Nethermind.Db/BlobTxsColumns.cs`
+- `nethermind/src/Nethermind/Nethermind.Db/Blooms/`
 - `nethermind/src/Nethermind/Nethermind.Db/CompressingDb.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/DbExtensions.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/DbNames.cs`
@@ -56,32 +57,33 @@ Full directory listing (use as architectural reference):
 - `nethermind/src/Nethermind/Nethermind.Db/RocksDbSettings.cs`
 - `nethermind/src/Nethermind/Nethermind.Db/SimpleFilePublicKeyDb.cs`
 
-## Voltaire Zig APIs (required primitives)
+## Voltaire Zig APIs
 
 Requested path: `/Users/williamcory/voltaire/packages/voltaire-zig/src/` — **not found** on disk.
 
-Available Voltaire root: `/Users/williamcory/voltaire/src/`.
+Available Voltaire Zig sources live under `/Users/williamcory/voltaire/src/`.
 
-Relevant primitives directories under `/Users/williamcory/voltaire/src/primitives/` (use these instead of custom types):
-- `Address/`
-- `Hash/`
-- `Bytes/`
-- `Bytes32/`
-- `BlockHash/`
-- `BlockNumber/`
-- `StateRoot/`
-- `StorageValue/`
-- `Slot/`
-- `TransactionHash/`
-- `Receipt/`
-- `BloomFilter/`
-- `Nonce/`
-- `Gas/`
-- `U256/`
-- `Uint64/`
-- `Rlp/`
+DB-specific primitives found at:
+- `/Users/williamcory/voltaire/src/primitives/Db/db.zig`
 
-Phase-0 note: no DB-specific primitives observed; DB keys/values should be expressed with these Voltaire primitives.
+Key types in `db.zig` (modeled after Nethermind Db/KeyValueStore):
+- `Error` (StorageError, KeyTooLarge, ValueTooLarge, DatabaseClosed, OutOfMemory, UnsupportedOperation)
+- `DbName` enum (state, storage, code, blocks, headers, block_numbers, receipts, block_infos, bad_blocks, bloom, metadata, blob_transactions, discovery_nodes, discovery_v5_nodes, peers) + `to_string()` matching `DbNames`.
+- `ReadFlags` and `WriteFlags` bitfields with merge/has helpers.
+- `DbMetric` for size/read/write metrics.
+- `DbValue` (borrowed values with optional release callback), `DbEntry`.
+- `DbIterator` and `DbSnapshot` with comptime-bound dispatch + opaque init.
+
+Other Voltaire primitives for typed keys/values (sample, not exhaustive):
+- `/Users/williamcory/voltaire/src/primitives/Address/`
+- `/Users/williamcory/voltaire/src/primitives/Hash/`
+- `/Users/williamcory/voltaire/src/primitives/Hex/`
+- `/Users/williamcory/voltaire/src/primitives/Bytes/`
+- `/Users/williamcory/voltaire/src/primitives/Bytes32/`
+- `/Users/williamcory/voltaire/src/primitives/BlockHash/`
+- `/Users/williamcory/voltaire/src/primitives/TransactionHash/`
+- `/Users/williamcory/voltaire/src/primitives/U256/`
+- `/Users/williamcory/voltaire/src/primitives/Uint64/`
 
 ## Existing Zig Host Interface (from `src/host.zig`)
 
@@ -111,4 +113,4 @@ Phase 0 uses unit tests only, but fixture directories exist for later phases:
 
 ## Summary
 
-Phase 0 is an internal DB abstraction with no external spec dependencies. Mirror Nethermind’s DB interfaces and providers, and use Voltaire primitives for all Ethereum-typed keys/values. The requested Voltaire Zig path was not present; the available primitives live under `/Users/williamcory/voltaire/src/primitives/`.
+Phase 0 is an internal DB abstraction with no external spec dependencies. Mirror Nethermind’s DB surface (IDb/IColumnsDb/etc.) and reuse Voltaire’s shared DB primitives in `primitives/Db/db.zig` for flags, names, iterator/snapshot semantics. The originally requested Voltaire Zig path does not exist; Voltaire’s Zig sources live under `/Users/williamcory/voltaire/src/`.
