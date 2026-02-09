@@ -6,7 +6,7 @@ const std = @import("std");
 
 pub const RpcServerConfig = struct {
     /// Enable the JSON-RPC server.
-    enabled: bool = true,
+    enabled: bool = false,
     /// Interface to bind (IPv4/IPv6 literal or hostname).
     host: []const u8 = "127.0.0.1",
     /// HTTP JSON-RPC port.
