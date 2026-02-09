@@ -44,6 +44,8 @@ pub fn Handlers(FrameType: type) type {
 
             // Read init code from memory
             var init_code: []const u8 = &.{};
+            var init_code_buf: ?[]u8 = null;
+            defer if (init_code_buf) |buf| frame.allocator.free(buf);
             if (length > 0 and length <= std.math.maxInt(u32)) {
                 const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
 
@@ -57,6 +59,7 @@ pub fn Handlers(FrameType: type) type {
                 if (aligned > frame.memory_size) frame.memory_size = aligned;
 
                 const code = try frame.allocator.alloc(u8, len);
+                init_code_buf = code;
                 var j: u32 = 0;
                 while (j < len) : (j += 1) {
                     const addr = try add_u32(off, j);
@@ -223,6 +226,8 @@ pub fn Handlers(FrameType: type) type {
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
+            var input_data_buf: ?[]u8 = null;
+            defer if (input_data_buf) |buf| frame.allocator.free(buf);
             if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                 const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                 const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
@@ -231,6 +236,7 @@ pub fn Handlers(FrameType: type) type {
                 const end_offset = in_off +% in_len;
                 if (end_offset >= in_off) {
                     const data = try frame.allocator.alloc(u8, in_len);
+                    input_data_buf = data;
                     var j: u32 = 0;
                     while (j < in_len) : (j += 1) {
                         const addr = try add_u32(in_off, j);
@@ -240,7 +246,6 @@ pub fn Handlers(FrameType: type) type {
                 }
                 // else: overflow occurred, use empty input data
             }
-            // Note: No defer free needed - arena allocator will clean up
 
             // Perform the inner call (regular CALL)
             const params = CallParams{ .call = .{
@@ -366,6 +371,8 @@ pub fn Handlers(FrameType: type) type {
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
+            var input_data_buf: ?[]u8 = null;
+            defer if (input_data_buf) |buf| frame.allocator.free(buf);
             if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                 const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                 const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
@@ -374,6 +381,7 @@ pub fn Handlers(FrameType: type) type {
                 const end_offset = in_off +% in_len;
                 if (end_offset >= in_off) {
                     const data = try frame.allocator.alloc(u8, in_len);
+                    input_data_buf = data;
                     var j: u32 = 0;
                     while (j < in_len) : (j += 1) {
                         const addr = try add_u32(in_off, j);
@@ -383,7 +391,6 @@ pub fn Handlers(FrameType: type) type {
                 }
                 // else: overflow occurred, use empty input data
             }
-            // Note: No defer free needed - arena allocator will clean up
 
             // Perform the inner call (CALLCODE)
             const params = CallParams{ .callcode = .{
@@ -499,6 +506,8 @@ pub fn Handlers(FrameType: type) type {
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
+            var input_data_buf: ?[]u8 = null;
+            defer if (input_data_buf) |buf| frame.allocator.free(buf);
             if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                 const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                 const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
@@ -507,6 +516,7 @@ pub fn Handlers(FrameType: type) type {
                 const end_offset = in_off +% in_len;
                 if (end_offset >= in_off) {
                     const data = try frame.allocator.alloc(u8, in_len);
+                    input_data_buf = data;
                     var j: u32 = 0;
                     while (j < in_len) : (j += 1) {
                         const addr = try add_u32(in_off, j);
@@ -516,7 +526,6 @@ pub fn Handlers(FrameType: type) type {
                 }
                 // else: overflow occurred, use empty input data
             }
-            // Note: No defer free needed - arena allocator will clean up
 
             // Perform the inner call (DELEGATECALL)
             const params = CallParams{ .delegatecall = .{
@@ -631,6 +640,8 @@ pub fn Handlers(FrameType: type) type {
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
+            var input_data_buf: ?[]u8 = null;
+            defer if (input_data_buf) |buf| frame.allocator.free(buf);
             if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                 const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                 const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
@@ -639,6 +650,7 @@ pub fn Handlers(FrameType: type) type {
                 const end_offset = in_off +% in_len;
                 if (end_offset >= in_off) {
                     const data = try frame.allocator.alloc(u8, in_len);
+                    input_data_buf = data;
                     var j: u32 = 0;
                     while (j < in_len) : (j += 1) {
                         const addr = try add_u32(in_off, j);
@@ -648,7 +660,6 @@ pub fn Handlers(FrameType: type) type {
                 }
                 // else: overflow occurred, use empty input data
             }
-            // Note: No defer free needed - arena allocator will clean up
 
             // Perform the inner call (STATICCALL)
             const params = CallParams{ .staticcall = .{
@@ -713,6 +724,8 @@ pub fn Handlers(FrameType: type) type {
 
             // Read init code from memory
             var init_code: []const u8 = &.{};
+            var init_code_buf: ?[]u8 = null;
+            defer if (init_code_buf) |buf| frame.allocator.free(buf);
             if (length > 0 and length <= std.math.maxInt(u32)) {
                 const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
 
@@ -726,6 +739,7 @@ pub fn Handlers(FrameType: type) type {
                 if (aligned > frame.memory_size) frame.memory_size = aligned;
 
                 const code = try frame.allocator.alloc(u8, len);
+                init_code_buf = code;
                 var j: u32 = 0;
                 while (j < len) : (j += 1) {
                     const addr = try add_u32(off, j);
