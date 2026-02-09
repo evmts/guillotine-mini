@@ -149,7 +149,42 @@ pub fn run(
 // Tests
 // ============================================================================
 
-test "main is a no-op placeholder" {
-    try main();
-    try std.testing.expect(true);
+test "runner parses CLI flags and emits config" {
+    const allocator = std.testing.allocator;
+    const EvmType = evm_mod.Evm(evm_mod.EvmConfig{});
+
+    var buffer: [512]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+    const args = &[_][]const u8{
+        "guillotine-mini",
+        "--chain-id",
+        "11155111",
+        "--network-id",
+        "5",
+        "--hardfork",
+        "Shanghai",
+        "--trace",
+        "--trace-tracer",
+        "callTracer",
+        "--trace-timeout",
+        "5s",
+    };
+
+    try run(EvmType, allocator, args, stream.writer());
+
+    const output = stream.getWritten();
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "chain_id=11155111"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "network_id=5"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "hardfork=SHANGHAI"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "trace=enabled"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "tracer=callTracer"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "timeout=5s"));
+
+    var help_buffer: [256]u8 = undefined;
+    var help_stream = std.io.fixedBufferStream(&help_buffer);
+    const help_args = &[_][]const u8{ "guillotine-mini", "--help" };
+    try run(EvmType, allocator, help_args, help_stream.writer());
+
+    const help_output = help_stream.getWritten();
+    try std.testing.expect(std.mem.containsAtLeast(u8, help_output, 1, "Usage:"));
 }
