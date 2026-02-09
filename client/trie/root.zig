@@ -28,10 +28,10 @@
 //! const root = try trie.trie_root(allocator, &keys, &values);
 //! ```
 
-/// Hashing and patricialize implementation details.
-pub const hash = @import("hash.zig");
-/// Voltaire trie node types re-export module.
-pub const node = @import("node.zig");
+// Hashing and patricialize implementation details.
+const hash = @import("hash.zig");
+// Voltaire trie node types re-export module.
+const node = @import("node.zig");
 
 // Re-export primary API
 /// Compute the Merkle Patricia Trie root hash for key-value pairs.
