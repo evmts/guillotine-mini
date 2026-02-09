@@ -1,122 +1,145 @@
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
-import { Bytes } from "voltaire-effect/primitives";
-import { DbMemoryTest, get, put, writeBatch } from "./Db";
-import type { BytesType, DbWriteOp } from "./Db";
+import { pipe } from "effect/Function";
+import { Hex } from "voltaire-effect/primitives";
+import {
+  clear,
+  DbMemoryTest,
+  get,
+  put,
+  startWriteBatch,
+  writeBatch,
+  type BytesType,
+  type DbWriteOp,
+} from "./Db";
 
-interface BenchResult {
+type BenchResult = {
   readonly label: string;
-  readonly operations: number;
-  readonly durationMs: number;
-  readonly opsPerSecond: number;
-}
-
-const makeData = (count: number, size: number) => {
-  const keys = new Array<BytesType>(count);
-  const values = new Array<BytesType>(count);
-
-  for (let i = 0; i < count; i += 1) {
-    keys[i] = Bytes.random(32) as BytesType;
-    values[i] = Bytes.random(size) as BytesType;
-  }
-
-  return { keys, values } as const;
+  readonly count: number;
+  readonly ms: number;
+  readonly opsPerSec: number;
+  readonly msPerOp: number;
 };
 
-const measure = <E, R>(
+type BenchEntry = {
+  readonly key: BytesType;
+  readonly value: BytesType;
+};
+
+const makeBytes = (value: number, byteLength = 32): BytesType =>
+  Hex.toBytes(
+    `0x${value.toString(16).padStart(byteLength * 2, "0")}`,
+  ) as BytesType;
+
+const makeDataset = (count: number) => {
+  const entries: BenchEntry[] = [];
+  for (let i = 0; i < count; i += 1) {
+    entries.push({ key: makeBytes(i), value: makeBytes(i + count) });
+  }
+  return entries;
+};
+
+const measure = <R, E>(
   label: string,
-  operations: number,
+  count: number,
   effect: Effect.Effect<void, E, R>,
 ): Effect.Effect<BenchResult, E, R> =>
   Effect.gen(function* () {
-    const start = performance.now();
+    const start = Date.now();
     yield* effect;
-    const durationMs = performance.now() - start;
-    const opsPerSecond = operations / (durationMs / 1000);
-
+    const ms = Date.now() - start;
+    const safeMs = ms === 0 ? 1 : ms;
     return {
       label,
-      operations,
-      durationMs,
-      opsPerSecond,
+      count,
+      ms,
+      opsPerSec: (count / safeMs) * 1000,
+      msPerOp: safeMs / count,
     } satisfies BenchResult;
   });
 
-const logResults = (title: string, results: ReadonlyArray<BenchResult>) =>
-  Effect.sync(() => {
-    console.log(`\n${title}`);
-    for (const result of results) {
-      console.log(
-        `${result.label}: ${result.operations.toLocaleString()} ops in ${result.durationMs.toFixed(
-          2,
-        )} ms (${result.opsPerSecond.toFixed(0)} ops/s)`,
-      );
+const benchPut = (entries: ReadonlyArray<BenchEntry>) =>
+  Effect.gen(function* () {
+    for (const entry of entries) {
+      yield* put(entry.key, entry.value);
     }
   });
 
-const runPutGetBench = (count: number, valueSize: number) =>
+const benchGet = (keys: ReadonlyArray<BytesType>) =>
+  Effect.gen(function* () {
+    for (const key of keys) {
+      yield* get(key);
+    }
+  });
+
+const benchWriteBatch = (ops: ReadonlyArray<DbWriteOp>) => writeBatch(ops);
+
+const benchScopedBatch = (entries: ReadonlyArray<BenchEntry>) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const { keys, values } = makeData(count, valueSize);
-
-      const putResult = yield* measure(
-        "db.put",
-        count,
-        Effect.gen(function* () {
-          for (let i = 0; i < count; i += 1) {
-            const key = keys[i]!;
-            const value = values[i]!;
-            yield* put(key, value);
-          }
-        }),
-      );
-
-      const getResult = yield* measure(
-        "db.get",
-        count,
-        Effect.gen(function* () {
-          for (let i = 0; i < count; i += 1) {
-            const key = keys[i]!;
-            yield* get(key);
-          }
-        }),
-      );
-
-      yield* logResults("In-memory DB put/get", [putResult, getResult]);
-    }).pipe(Effect.provide(DbMemoryTest())),
-  );
-
-const runWriteBatchBench = (count: number, valueSize: number) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { keys, values } = makeData(count, valueSize);
-      const ops: Array<DbWriteOp> = [];
-      for (let i = 0; i < count; i += 1) {
-        ops.push({
-          _tag: "put",
-          key: keys[i]!,
-          value: values[i]!,
-        });
+      const batch = yield* startWriteBatch();
+      for (const entry of entries) {
+        yield* batch.put(entry.key, entry.value);
       }
-
-      const batchResult = yield* measure(
-        "db.writeBatch(put)",
-        count,
-        writeBatch(ops),
-      );
-
-      yield* logResults("In-memory DB batch", [batchResult]);
-    }).pipe(Effect.provide(DbMemoryTest())),
+    }),
   );
 
-const program = Effect.gen(function* () {
-  const count = 100_000;
-  const valueSize = 32;
+const runBenchmarks = (count: number) =>
+  Effect.gen(function* () {
+    const entries = makeDataset(count);
+    const keys = entries.map((entry) => entry.key);
+    const ops: DbWriteOp[] = entries.map((entry) => ({
+      _tag: "put",
+      key: entry.key,
+      value: entry.value,
+    }));
 
-  yield* runPutGetBench(count, valueSize);
-  yield* runWriteBatchBench(count, valueSize);
+    const results: BenchResult[] = [];
+
+    yield* clear();
+    results.push(yield* measure("put", count, benchPut(entries)));
+
+    results.push(yield* measure("get", count, benchGet(keys)));
+
+    yield* clear();
+    results.push(yield* measure("writeBatch", count, benchWriteBatch(ops)));
+
+    yield* clear();
+    results.push(
+      yield* measure("scopedWriteBatch", count, benchScopedBatch(entries)),
+    );
+
+    return results;
+  });
+
+const formatResults = (results: ReadonlyArray<BenchResult>) =>
+  results.map((result) => ({
+    label: result.label,
+    count: result.count,
+    ms: result.ms,
+    msPerOp: Number(result.msPerOp.toFixed(6)),
+    opsPerSec: Math.round(result.opsPerSec),
+  }));
+
+const main = Effect.gen(function* () {
+  const count = 50_000;
+  const results = yield* runBenchmarks(count);
+
+  yield* Effect.sync(() => {
+    console.log("Db benchmark (in-memory)");
+    console.log(`Entries: ${count}`);
+    console.table(formatResults(results));
+  });
 });
 
-Effect.runPromise(program).catch((error) => {
-  console.error("Benchmark failed:", error);
-  process.exitCode = 1;
-});
+pipe(
+  main,
+  Effect.provide(DbMemoryTest()),
+  Effect.tapErrorCause((cause) =>
+    Effect.sync(() => {
+      console.error("Benchmark failed");
+      console.error(Cause.pretty(cause));
+    }),
+  ),
+  Effect.runPromise,
+);
