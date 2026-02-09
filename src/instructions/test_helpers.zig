@@ -88,7 +88,7 @@ pub const TestHelper = struct {
         var evm = try allocator.create(TestEvmType);
         errdefer allocator.destroy(evm);
 
-        evm.* = try TestEvmType.init(
+        try evm.init(
             allocator,
             null, // no host interface (self-contained)
             config.hardfork,

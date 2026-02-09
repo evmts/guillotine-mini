@@ -1039,7 +1039,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
     // Create EVM with test host and detected hardfork
     const host_interface = test_host.hostInterface();
     const Evm = evm_mod.Evm(.{}); // Use default config
-    var evm_instance = try Evm.init(allocator, host_interface, hardfork, block_ctx, null);
+    var evm_instance: Evm = undefined;
+    try evm_instance.init(allocator, host_interface, hardfork, block_ctx, null);
     defer evm_instance.deinit();
 
     // Attach tracer if provided

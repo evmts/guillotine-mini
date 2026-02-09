@@ -117,30 +117,26 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         /// Initialize a new EVM instance
         /// Config provides defaults, but hardfork can be overridden at runtime
-        pub fn init(allocator: std.mem.Allocator, h: ?host.HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext, log_level: ?log.LogLevel) !Self {
+        pub fn init(self: *Self, allocator: std.mem.Allocator, h: ?host.HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext, log_level: ?log.LogLevel) !void {
             // Set log level if provided
             if (log_level) |level| {
                 log.setLogLevel(level);
             }
 
-            // Create arena and get allocator for state HashMaps
-            var arena = std.heap.ArenaAllocator.init(allocator);
-            errdefer arena.deinit();
-            const arena_alloc = arena.allocator();
-
-            return Self{
+            self.* = Self{
                 .frames = undefined,
                 .storage = undefined,
                 .created_accounts = undefined,
                 .selfdestructed_accounts = undefined,
                 .touched_accounts = undefined,
-                .balances = std.AutoHashMap(primitives.Address, u256).init(arena_alloc),
-                .nonces = std.AutoHashMap(primitives.Address, u64).init(arena_alloc),
-                .code = std.AutoHashMap(primitives.Address, []const u8).init(arena_alloc),
+                .balances = undefined,
+                .nonces = undefined,
+                .code = undefined,
                 .access_list_manager = undefined,
                 .gas_refund = 0,
                 .balance_snapshot_stack = undefined,
                 .hardfork = hardfork orelse Hardfork.DEFAULT,
+                .fork_transition = null,
                 .block_context = block_context orelse .{
                     .chain_id = 1,
                     .block_number = 0,
@@ -155,14 +151,26 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .origin = primitives.ZERO_ADDRESS,
                 .gas_price = 0,
                 .host = h,
-                .arena = arena,
+                .arena = std.heap.ArenaAllocator.init(allocator),
                 .allocator = allocator,
                 .tracer = null,
+                .blob_versioned_hashes = &[_][32]u8{},
+                .pending_bytecode = &[_]u8{},
+                .pending_access_list = null,
+                .pending_storage_injector = null,
                 .opcode_overrides = config.opcode_overrides,
                 .precompile_overrides = config.precompile_overrides,
+                .pending_state_changes_buffer = undefined,
+                .pending_state_changes_len = 0,
                 .async_executor = null, // Initialized when needed
                 .logs = undefined,
             };
+            errdefer self.arena.deinit();
+
+            const arena_alloc = self.arena.allocator();
+            self.balances = std.AutoHashMap(primitives.Address, u256).init(arena_alloc);
+            self.nonces = std.AutoHashMap(primitives.Address, u64).init(arena_alloc);
+            self.code = std.AutoHashMap(primitives.Address, []const u8).init(arena_alloc);
         }
 
         /// Look up custom opcode handler override

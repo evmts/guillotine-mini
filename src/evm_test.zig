@@ -104,7 +104,9 @@ test "error.NeedAsyncData propagates through call stack" {
 test "Evm.async_data_request field initialized to .none" {
     const testing = std.testing;
 
-    var evm_instance = try Evm.init(testing.allocator, null, null, null, null);
+    var evm_instance: Evm = undefined;
+
+    try evm_instance.init(testing.allocator, null, null, null, null);
     defer evm_instance.deinit();
 
     try testing.expect(evm_instance.storage.async_data_request == .none);
@@ -113,7 +115,9 @@ test "Evm.async_data_request field initialized to .none" {
 test "Evm.async_data_request can write/read different request types" {
     const testing = std.testing;
 
-    var evm_instance = try Evm.init(testing.allocator, null, null, null, null);
+    var evm_instance: Evm = undefined;
+
+    try evm_instance.init(testing.allocator, null, null, null, null);
     defer evm_instance.deinit();
 
     const addr = primitives.Address.fromHex("0x1111111111111111111111111111111111111111") catch unreachable;
@@ -179,7 +183,8 @@ test "callOrContinue - returns .need_storage on cache miss" {
     const testing = std.testing;
 
     // Create EVM
-    var evm_instance = try Evm.init(testing.allocator, null, null, null, null);
+    var evm_instance: Evm = undefined;
+    try evm_instance.init(testing.allocator, null, null, null, null);
     defer evm_instance.deinit();
 
     // Set storage injector before calling

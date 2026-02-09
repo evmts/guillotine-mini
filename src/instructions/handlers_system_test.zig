@@ -23,7 +23,7 @@ fn createTestEvm(allocator: std.mem.Allocator, hardfork: Hardfork) !*Evm {
         .block_base_fee = 1,
         .blob_base_fee = 1,
     };
-    evm.* = try Evm.init(allocator, null, hardfork, block_context, null);
+    try evm.init(allocator, null, hardfork, block_context, null);
     try evm.initTransactionState(null);
     return evm;
 }

@@ -14,20 +14,20 @@ pub const MockEvm = struct {
 
     pub fn init(allocator: std.mem.Allocator, hardfork: Hardfork) !MockEvm {
         var evm = try allocator.create(Evm);
-        evm.* = try Evm.init(
-            allocator,
-            .{
-                .gas_limit = 10_000_000,
-                .base_fee_per_gas = 1,
-                .chain_id = 1,
-                .block_number = 1,
-                .timestamp = 1000,
-                .coinbase = try Address.fromHex("0x0000000000000000000000000000000000000000"),
-                .prevrandao = 0,
-                .blob_base_fee = 1,
-            },
-            hardfork,
-        );
+        const block_context = evm_mod.BlockContext{
+            .chain_id = 1,
+            .block_number = 1,
+            .block_timestamp = 1000,
+            .block_difficulty = 0,
+            .block_prevrandao = 0,
+            .block_coinbase = try Address.fromHex("0x0000000000000000000000000000000000000000"),
+            .block_gas_limit = 10_000_000,
+            .block_base_fee = 1,
+            .blob_base_fee = 1,
+            .block_hashes = &[_][32]u8{},
+        };
+        try evm.init(allocator, null, hardfork, block_context, null);
+        try evm.initTransactionState(null);
         return .{ .allocator = allocator, .evm = evm };
     }
 

@@ -40,7 +40,7 @@ export fn evm_create(log_level: u8) ?*EvmHandle {
     const log = @import("logger.zig");
     const log_level_enum: log.LogLevel = @enumFromInt(log_level);
 
-    evm_ptr.* = Evm.init(allocator, null, null, null, log_level_enum) catch {
+    Evm.init(evm_ptr, allocator, null, null, null, log_level_enum) catch {
         allocator.destroy(evm_ptr);
         allocator.destroy(ctx);
         return null;
