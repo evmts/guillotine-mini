@@ -1,10 +1,45 @@
+const std = @import("std");
+const primitives = @import("primitives");
+const GasLimit = primitives.Gas.GasLimit;
+const MaxPriorityFeePerGas = primitives.MaxPriorityFeePerGas;
+
+/// Transaction pool configuration defaults, modeled after Nethermind's
+/// `ITxPoolConfig` / `TxPoolConfig`.
+pub const TxPoolConfig = struct {
+    /// Blob transaction storage policy.
+    pub const BlobsSupportMode = enum(u8) {
+        disabled,
+        in_memory,
+        storage,
+        storage_with_reorgs,
+    };
+
+    peer_notification_threshold: u32 = 5,
+    min_base_fee_threshold: u32 = 70,
+    size: usize = 2048,
+    blobs_support: BlobsSupportMode = .storage_with_reorgs,
+    persistent_blob_storage_size: usize = 16 * 1024,
+    blob_cache_size: usize = 256,
+    in_memory_blob_pool_size: usize = 512,
+    max_pending_txs_per_sender: usize = 0,
+    max_pending_blob_txs_per_sender: usize = 16,
+    hash_cache_size: usize = 512 * 1024,
+    gas_limit: ?GasLimit = null,
+    max_tx_size: ?u64 = 128 * 1024,
+    max_blob_tx_size: ?u64 = 1024 * 1024,
+    proofs_translation_enabled: bool = false,
+    report_minutes: ?u32 = null,
+    accept_tx_when_not_synced: bool = false,
+    persistent_broadcast_enabled: bool = true,
+    current_blob_base_fee_required: bool = true,
+    min_blob_tx_priority_fee: MaxPriorityFeePerGas = MaxPriorityFeePerGas.from(0),
+};
+
 /// Transaction pool interface (minimal vtable surface).
 ///
 /// Mirrors the first two members of Nethermind's `ITxPool`:
 /// - `GetPendingTransactionsCount()`
 /// - `GetPendingBlobTransactionsCount()`
-const std = @import("std");
-
 /// Vtable-based txpool interface for dependency injection.
 ///
 /// This mirrors the HostInterface pattern used by the EVM and allows
