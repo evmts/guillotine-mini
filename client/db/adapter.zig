@@ -186,6 +186,11 @@ pub const Database = struct {
     pub fn contains(self: Database, key: []const u8) Error!bool {
         return self.vtable.contains(self.ptr, key);
     }
+
+    /// Returns true if the backend provides an atomic `write_batch` implementation.
+    pub fn supports_write_batch(self: Database) bool {
+        return self.vtable.write_batch != null;
+    }
 };
 
 /// A single write operation for use with `Database.VTable.write_batch`.
@@ -407,6 +412,48 @@ test "Database vtable dispatches contains" {
     const result = try db.contains("key");
     try std.testing.expectEqual(false, result);
     try std.testing.expectEqual(@as(usize, 1), mock.call_count);
+}
+
+test "Database supports_write_batch reports false when absent" {
+    var mock = MockDb{};
+    const db = mock.database();
+
+    try std.testing.expect(!db.supports_write_batch());
+}
+
+test "Database supports_write_batch reports true when present" {
+    const BatchDb = struct {
+        fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+            return null;
+        }
+
+        fn put_impl(_: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {}
+
+        fn delete_impl(_: *anyopaque, _: []const u8) Error!void {}
+
+        fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
+            return false;
+        }
+
+        fn write_batch_impl(_: *anyopaque, _: []const WriteBatchOp) Error!void {}
+
+        const vtable = Database.VTable{
+            .get = get_impl,
+            .put = put_impl,
+            .delete = delete_impl,
+            .contains = contains_impl,
+            .write_batch = write_batch_impl,
+        };
+
+        fn database(self: *BatchDb) Database {
+            return .{ .ptr = @ptrCast(self), .vtable = &vtable };
+        }
+    };
+
+    var db_impl = BatchDb{};
+    const db = db_impl.database();
+
+    try std.testing.expect(db.supports_write_batch());
 }
 
 test "Database vtable dispatches multiple operations" {
