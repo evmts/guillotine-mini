@@ -62,6 +62,7 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const adapter = @import("adapter.zig");
+const ByteSliceContext = @import("byte_slice_context.zig").ByteSliceContext;
 const Database = adapter.Database;
 const DbEntry = adapter.DbEntry;
 const DbIterator = adapter.DbIterator;
@@ -191,16 +192,6 @@ pub const ReadOnlyDb = struct {
     }
 
     // -- Iterators and snapshots ----------------------------------------------
-
-    const ByteSliceContext = struct {
-        pub fn hash(_: ByteSliceContext, key: []const u8) u64 {
-            return std.hash.Wyhash.hash(0, key);
-        }
-
-        pub fn eql(_: ByteSliceContext, a: []const u8, b: []const u8) bool {
-            return Bytes.equals(a, b);
-        }
-    };
 
     const ReadOnlyIterator = struct {
         overlay_iter: DbIterator,
@@ -806,13 +797,13 @@ test "ReadOnlyDb: iterator merges overlay and wrapped without duplicates" {
     var seen_c = false;
     while (try it.next()) |entry| {
         defer entry.release();
-        if (std.mem.eql(u8, entry.key.bytes, "a")) {
+        if (Bytes.equals(entry.key.bytes, "a")) {
             seen_a = true;
             try std.testing.expectEqualStrings("base_a", entry.value.bytes);
-        } else if (std.mem.eql(u8, entry.key.bytes, "b")) {
+        } else if (Bytes.equals(entry.key.bytes, "b")) {
             seen_b = true;
             try std.testing.expectEqualStrings("overlay_b", entry.value.bytes);
-        } else if (std.mem.eql(u8, entry.key.bytes, "c")) {
+        } else if (Bytes.equals(entry.key.bytes, "c")) {
             seen_c = true;
             try std.testing.expectEqualStrings("overlay_c", entry.value.bytes);
         }

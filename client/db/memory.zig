@@ -24,6 +24,7 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const adapter = @import("adapter.zig");
+const ByteSliceContext = @import("byte_slice_context.zig").ByteSliceContext;
 const Database = adapter.Database;
 const DbEntry = adapter.DbEntry;
 const DbIterator = adapter.DbIterator;
@@ -35,18 +36,6 @@ const Error = adapter.Error;
 const ReadFlags = adapter.ReadFlags;
 const WriteFlags = adapter.WriteFlags;
 const Bytes = primitives.Bytes;
-
-/// Byte-slice hash/equality context for HashMap, comparing slice contents.
-/// Private to this module — only used as the HashMap context type.
-const ByteSliceContext = struct {
-    pub fn hash(_: ByteSliceContext, key: []const u8) u64 {
-        return std.hash.Wyhash.hash(0, key);
-    }
-
-    pub fn eql(_: ByteSliceContext, a: []const u8, b: []const u8) bool {
-        return Bytes.equals(a, b);
-    }
-};
 
 /// Unmanaged HashMap type — allocator is passed explicitly to each operation,
 /// avoiding the dangling-pointer problem when the containing struct is moved.
@@ -741,10 +730,10 @@ test "MemoryDatabase: iterator yields entries (unordered)" {
     var seen: usize = 0;
     while (try it.next()) |entry| {
         defer entry.release();
-        if (std.mem.eql(u8, entry.key.bytes, "a")) {
+        if (Bytes.equals(entry.key.bytes, "a")) {
             try std.testing.expectEqualStrings("1", entry.value.bytes);
             seen += 1;
-        } else if (std.mem.eql(u8, entry.key.bytes, "b")) {
+        } else if (Bytes.equals(entry.key.bytes, "b")) {
             try std.testing.expectEqualStrings("2", entry.value.bytes);
             seen += 1;
         }
@@ -804,7 +793,7 @@ test "MemoryDatabase: snapshot isolates later writes" {
     var seen: usize = 0;
     while (try it.next()) |entry| {
         defer entry.release();
-        if (std.mem.eql(u8, entry.key.bytes, "key")) {
+        if (Bytes.equals(entry.key.bytes, "key")) {
             try std.testing.expectEqualStrings("old", entry.value.bytes);
             seen += 1;
         }
