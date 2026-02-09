@@ -19,6 +19,10 @@ const TransactionSchema = Transaction.Schema as unknown as Schema.Schema<
   Transaction.Any,
   unknown
 >;
+const GasBigIntSchema = Gas.BigInt as unknown as Schema.Schema<
+  Gas.GasType,
+  bigint
+>;
 
 export class InvalidTransactionError extends Data.TaggedError(
   "InvalidTransactionError",
@@ -34,9 +38,15 @@ export class UnsupportedIntrinsicGasFeatureError extends Data.TaggedError(
   readonly hardfork: ReleaseSpecService["hardfork"];
 }> {}
 
+export class InvalidGasError extends Data.TaggedError("InvalidGasError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
+
 export type IntrinsicGasError =
   | InvalidTransactionError
-  | UnsupportedIntrinsicGasFeatureError;
+  | UnsupportedIntrinsicGasFeatureError
+  | InvalidGasError;
 
 export interface IntrinsicGasCalculatorService {
   readonly calculateIntrinsicGas: (
@@ -59,7 +69,19 @@ const INIT_CODE_WORD_COST = 2n;
 const CALLDATA_NONZERO_MULTIPLIER_EIP2028 = 4n;
 const CALLDATA_NONZERO_MULTIPLIER_LEGACY = 17n;
 
-const toGas = (value: bigint): Gas.GasType => value as Gas.GasType;
+const decodeGas = (
+  value: bigint,
+  label: string,
+): Effect.Effect<Gas.GasType, InvalidGasError> =>
+  Schema.decode(GasBigIntSchema)(value).pipe(
+    Effect.mapError(
+      (cause) =>
+        new InvalidGasError({
+          message: `Invalid ${label} gas value`,
+          cause,
+        }),
+    ),
+  );
 
 const countZeroBytes = (data: Uint8Array): number => {
   let zeros = 0;
@@ -169,10 +191,15 @@ const ensureAuthorizationSupport = (
       )
     : Effect.succeed(undefined);
 
+type IntrinsicGasValue = {
+  readonly intrinsicGas: bigint;
+  readonly calldataFloorGas: bigint;
+};
+
 const calculateIntrinsicGasValue = (
   tx: Transaction.Any,
   spec: ReleaseSpecService,
-): IntrinsicGas => {
+): IntrinsicGasValue => {
   const nonZeroMultiplier = spec.isEip2028Enabled
     ? CALLDATA_NONZERO_MULTIPLIER_EIP2028
     : CALLDATA_NONZERO_MULTIPLIER_LEGACY;
@@ -192,10 +219,7 @@ const calculateIntrinsicGasValue = (
     accessListCost(tx, spec.isEip2930Enabled) +
     authorizationCost(tx, spec.isEip7702Enabled);
 
-  return {
-    intrinsicGas: toGas(intrinsicGas),
-    calldataFloorGas: toGas(calldataFloorGas),
-  };
+  return { intrinsicGas, calldataFloorGas };
 };
 
 const makeIntrinsicGasCalculator = Effect.gen(function* () {
@@ -206,7 +230,16 @@ const makeIntrinsicGasCalculator = Effect.gen(function* () {
         const validated = yield* validateTransaction(tx);
         yield* ensureAccessListSupport(validated, spec);
         yield* ensureAuthorizationSupport(validated, spec);
-        return calculateIntrinsicGasValue(validated, spec);
+        const gasValue = calculateIntrinsicGasValue(validated, spec);
+        const intrinsicGas = yield* decodeGas(
+          gasValue.intrinsicGas,
+          "intrinsic",
+        );
+        const calldataFloorGas = yield* decodeGas(
+          gasValue.calldataFloorGas,
+          "calldata floor",
+        );
+        return { intrinsicGas, calldataFloorGas };
       }),
   } satisfies IntrinsicGasCalculatorService;
 });
