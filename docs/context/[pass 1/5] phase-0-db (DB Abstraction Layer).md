@@ -1,63 +1,123 @@
-# [Pass 1/5] Phase 0: DB Abstraction Layer - Context
+# [Pass 1/5] Phase 0: DB Abstraction Layer — Context
 
 ## Phase Goal (from `prd/GUILLOTINE_CLIENT_PLAN.md`)
 
-Create a database abstraction layer for persistent storage.
+Create a database abstraction layer for persistent storage. This is an internal interface that underpins later phases.
 
-Key components called out by the plan:
+**Key Components (conceptual)**:
 
-- `client/db/adapter.zig` - generic database interface
-- `client/db/rocksdb.zig` - RocksDB backend implementation
-- `client/db/memory.zig` - in-memory backend for tests
+- `client/db/adapter.*` — generic DB interface
+- `client/db/rocksdb.*` — RocksDB backend implementation
+- `client/db/memory.*` — in-memory backend for tests
 
 ## Specs (from `prd/ETHEREUM_SPECS_REFERENCE.md`)
 
-- Phase 0 has no external protocol specs.
-- Tests: unit tests only.
+- Phase 0 has **no external protocol specs**.
+- Tests: **unit tests only**.
 
 ## Nethermind DB Reference (from `nethermind/src/Nethermind/Nethermind.Db/`)
 
-- `nethermind/` submodule directory is empty in this workspace.
-- The path `nethermind/src/Nethermind/Nethermind.Db/` does not exist here, so no files could be listed.
-- Action needed before implementation: initialize/update the Nethermind submodule to access DB interfaces and backends.
+Use these as architectural guidance for interfaces, providers, and backends:
 
-## Voltaire-effect APIs (from `/Users/williamcory/voltaire/voltaire-effect/src/`)
+**Core interfaces / providers**
 
-Relevant primitives to use for DB-facing types (do not create custom Ethereum types):
+- `nethermind/src/Nethermind/Nethermind.Db/IDb.cs` — main DB interface
+- `nethermind/src/Nethermind/Nethermind.Db/IReadOnlyDb.cs` — read-only DB interface
+- `nethermind/src/Nethermind/Nethermind.Db/IColumnsDb.cs` — column-family DB abstraction
+- `nethermind/src/Nethermind/Nethermind.Db/IDbFactory.cs` — factory for DB creation
+- `nethermind/src/Nethermind/Nethermind.Db/IDbProvider.cs` — named DB registry/provider
+- `nethermind/src/Nethermind/Nethermind.Db/IReadOnlyDbProvider.cs` — read-only provider
+- `nethermind/src/Nethermind/Nethermind.Db/IFullDb.cs` — extended DB interface
+- `nethermind/src/Nethermind/Nethermind.Db/IMergeOperator.cs` — merge operator abstraction
+- `nethermind/src/Nethermind/Nethermind.Db/ITunableDb.cs` — tunable DB interface
 
-- `primitives/Bytes`
-- `primitives/Hex`
-- `primitives/Hash`
-- `primitives/Address`
-- `primitives/Storage` and `primitives/StorageValue`
-- `primitives/U256` and `primitives/Uint`
-- `primitives/StateRoot`, `primitives/BlockHash`, `primitives/TransactionHash`
+**In-memory implementations / batches**
 
-Service / layer patterns to mirror for the DB abstraction:
+- `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs` — in-memory DB reference impl
+- `nethermind/src/Nethermind/Nethermind.Db/MemColumnsDb.cs` — in-memory column DB
+- `nethermind/src/Nethermind/Nethermind.Db/MemDbFactory.cs` — in-memory DB factory
+- `nethermind/src/Nethermind/Nethermind.Db/InMemoryWriteBatch.cs` — write batch impl
+- `nethermind/src/Nethermind/Nethermind.Db/InMemoryColumnBatch.cs` — column batch impl
 
-- `services/Cache/CacheService.ts` - Context.Tag service shape for key-value operations.
-- `services/Cache/MemoryCache.ts` and `services/Cache/NoopCache.ts` - Layer-based implementations.
-- `blockchain/BlockchainService.ts` - Context.Tag + Data.TaggedError + Effect-returning API shape.
-- `blockchain/Blockchain.ts` - `Layer.succeed` in-memory store pattern.
+**Wrappers / utilities**
+
+- `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDb.cs` — read-only wrapper
+- `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyColumnsDb.cs` — read-only column wrapper
+- `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDbProvider.cs` — read-only provider
+- `nethermind/src/Nethermind/Nethermind.Db/DbProvider.cs` — provider implementation
+- `nethermind/src/Nethermind/Nethermind.Db/DbProviderExtensions.cs` — provider helpers
+- `nethermind/src/Nethermind/Nethermind.Db/DbExtensions.cs` — DB helpers
+
+**Configuration / metadata / metrics**
+
+- `nethermind/src/Nethermind/Nethermind.Db/DbNames.cs` — canonical DB name constants
+- `nethermind/src/Nethermind/Nethermind.Db/MetadataDbKeys.cs` — metadata key constants
+- `nethermind/src/Nethermind/Nethermind.Db/RocksDbSettings.cs` — RocksDB settings
+- `nethermind/src/Nethermind/Nethermind.Db/Metrics.cs` — DB metrics
+
+**Pruning / maintenance (for later phases)**
+
+- `nethermind/src/Nethermind/Nethermind.Db/FullPruning/` — pruning implementation
+- `nethermind/src/Nethermind/Nethermind.Db/PruningConfig.cs` — pruning config
+- `nethermind/src/Nethermind/Nethermind.Db/PruningMode.cs` — pruning modes
+- `nethermind/src/Nethermind/Nethermind.Db/FullPruningTrigger.cs` — trigger config
+- `nethermind/src/Nethermind/Nethermind.Db/FullPruningCompletionBehavior.cs` — completion policy
+
+**Other DB helpers**
+
+- `nethermind/src/Nethermind/Nethermind.Db/NullDb.cs` — null object DB
+- `nethermind/src/Nethermind/Nethermind.Db/NullRocksDbFactory.cs` — null RocksDB factory
+- `nethermind/src/Nethermind/Nethermind.Db/CompressingDb.cs` — compression wrapper
+- `nethermind/src/Nethermind/Nethermind.Db/BlobTxsColumns.cs` — blob tx column defs
+- `nethermind/src/Nethermind/Nethermind.Db/ReceiptsColumns.cs` — receipt column defs
+- `nethermind/src/Nethermind/Nethermind.Db/SimpleFilePublicKeyDb.cs` — key store helper
+
+## Voltaire-Effect APIs (from `/Users/williamcory/voltaire/voltaire-effect/src/`)
+
+Use voltaire-effect primitives and services instead of custom Ethereum types:
+
+**Primitives (see `voltaire-effect/src/primitives/index.ts`)**
+
+- `Address`, `Hash`, `Hex`, `Bytes`, `Bytes32`
+- `BlockHash`, `StateRoot`, `TransactionHash`
+- `Slot`, `StorageValue`, `State`, `StateDiff`, `StateProof`
+- `U256`, `Uint`, `Nonce`, `Gas`, `GasPrice`, `GasUsed`
+
+**Services (see `voltaire-effect/src/services/index.ts`)**
+
+- `CacheService` / `MemoryCache` if a small in-memory cache is needed for DB adapters
+- `BlockchainService` interfaces for future integration (not required for phase 0)
 
 ## Effect.ts Patterns (from `effect-repo/packages/effect/src/`)
 
-Core modules to reference for idioms:
+For idiomatic Effect.ts DI and resource management:
 
-- `Context.ts` for `Context.Tag` service definitions.
-- `Layer.ts` for `Layer.succeed`, `Layer.effect`, `Layer.merge` composition.
-- `Effect.ts` for `Effect.gen` sequential composition and typed error channels.
-- `Data.ts` for `Data.TaggedError` error types.
-- `Schema.ts` for validation at boundaries.
-- `Resource.ts` and `Scope.ts` for `Effect.acquireRelease` patterns.
+- `Context.ts` — `Context.Tag` for service definitions
+- `Layer.ts` — `Layer.succeed`, `Layer.effect`, `Layer.merge`
+- `Effect.ts` — `Effect.gen`, `Effect.acquireRelease`, `Effect.tryPromise`
+- `Schema.ts` — boundary validation schemas
+- `Resource.ts`, `Scope.ts` — lifetime management for DB connections
 
 ## Existing TypeScript Client Code
 
-- `client-ts/` directory is not present in this workspace.
-- Only `ts/exex/manager.ts` and `ts/exex/types.ts` exist; they use Promise/async generator patterns and define custom Ethereum types (not Effect.ts, not voltaire-effect).
-- Action needed: locate or initialize the intended `client-ts/` source tree before implementation work.
+`client-ts/` does not exist in this repo. Relevant TS code is located here:
+
+- `src/README_TYPESCRIPT.md` — TS setup and Voltaire integration notes
+- `src/utils/voltaire-imports.ts` — placeholder Voltaire primitives (not voltaire-effect)
+- `ts/exex/manager.ts` — async generator manager (Promise-based)
+- `ts/exex/types.ts` — custom Ethereum types (Address/Hash/Hex) that must be replaced by voltaire-effect primitives later
 
 ## Ethereum Test Fixtures (from `ethereum-tests/`)
 
-- `ethereum-tests/` submodule only contains `.git` in this workspace; no fixtures are available yet.
-- Action needed: initialize/update the `ethereum-tests` submodule to access fixture directories.
+Phase 0 does not consume external fixtures, but these are available for later phases:
+
+- `ethereum-tests/TrieTests/`
+- `ethereum-tests/BlockchainTests/`
+- `ethereum-tests/TransactionTests/`
+- `ethereum-tests/BasicTests/`
+- `ethereum-tests/GenesisTests/`
+- `ethereum-tests/RLPTests/`
+- `ethereum-tests/EOFTests/`
+- `ethereum-tests/LegacyTests/`
+- `ethereum-tests/fixtures_blockchain_tests.tgz`
+- `ethereum-tests/fixtures_general_state_tests.tgz`
