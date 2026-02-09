@@ -71,8 +71,9 @@ test "DbValue: release invokes callback" {
     var ctx = Ctx{};
 
     const release_fn = struct {
-        fn call(ptr: *anyopaque, _: []const u8) void {
-            const c: *Ctx = @ptrCast(@alignCast(ptr));
+        fn call(ptr: ?*anyopaque, _: []const u8) void {
+            const ctx_ptr = ptr orelse return;
+            const c: *Ctx = @ptrCast(@alignCast(ctx_ptr));
             c.called = true;
         }
     }.call;
@@ -100,8 +101,9 @@ test "DbEntry: release invokes key and value callbacks" {
     var val_ctx = Ctx{};
 
     const release_fn = struct {
-        fn call(ptr: *anyopaque, _: []const u8) void {
-            const c: *Ctx = @ptrCast(@alignCast(ptr));
+        fn call(ptr: ?*anyopaque, _: []const u8) void {
+            const ctx_ptr = ptr orelse return;
+            const c: *Ctx = @ptrCast(@alignCast(ctx_ptr));
             c.called = true;
         }
     }.call;

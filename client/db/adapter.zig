@@ -449,8 +449,9 @@ const ValueDb = struct {
         };
     }
 
-    fn release_impl(ctx: *anyopaque, _: []const u8) void {
-        const self: *ValueDb = @ptrCast(@alignCast(ctx));
+    fn release_impl(ctx: ?*anyopaque, _: []const u8) void {
+        const ctx_ptr = ctx orelse return;
+        const self: *ValueDb = @ptrCast(@alignCast(ctx_ptr));
         self.released = true;
     }
 
