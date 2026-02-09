@@ -109,9 +109,6 @@ pub const BlocksRequest = struct {
     }
 
     fn headers_to_hashes(headers: []const BlockHeader.BlockHeader, allocator: std.mem.Allocator) ![]const Hash.Hash {
-        if (headers.len == 0) {
-            return &[_]Hash.Hash{};
-        }
         var hashes = try allocator.alloc(Hash.Hash, headers.len);
         for (headers, 0..) |_, index| {
             hashes[index] = try BlockHeader.hash(&headers[index], allocator);
@@ -177,6 +174,14 @@ test "BlocksRequest.body_hashes returns ordered hashes" {
     try std.testing.expectEqual(@as(usize, headers.len), hashes.len);
     try std.testing.expect(Hash.equals(&hashes[0], &expected1));
     try std.testing.expect(Hash.equals(&hashes[1], &expected2));
+}
+
+test "BlocksRequest.body_hashes returns owned empty slice" {
+    const req = BlocksRequest.empty();
+    const allocator = std.testing.allocator;
+    const hashes = try req.body_hashes(allocator);
+    try std.testing.expectEqual(@as(usize, 0), hashes.len);
+    allocator.free(hashes);
 }
 
 test "BlocksRequest.set_bodies enforces alignment and allows missing entries" {
