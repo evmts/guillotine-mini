@@ -1,117 +1,156 @@
 # [Pass 1/5] Phase 3: EVM ↔ WorldState Integration (Transaction/Block Processing) — Context
 
-## Goal (from `prd/GUILLOTINE_CLIENT_PLAN.md`)
+## Goal
 
-Connect the EVM to WorldState for transaction and block processing.
+Connect the EVM to WorldState for transaction and block processing. This phase binds execution to state mutation, using guillotine-mini as the EVM reference while reimplementing behavior in Effect.ts.
 
-Key components (TypeScript client mirrors these responsibilities):
+**Key deliverables (from `prd/GUILLOTINE_CLIENT_PLAN.md`):**
+- `client/evm/host_adapter.zig` — Implement HostInterface using WorldState
+- `client/evm/processor.zig` — Transaction processor
 
-- Host adapter service that exposes WorldState to the EVM.
-- Transaction processor that validates, executes, and applies receipts/state updates.
+---
 
-References listed in plan:
+## Specs to Implement (Authoritative)
 
-- Nethermind: `nethermind/src/Nethermind/Nethermind.Evm/`
-- guillotine-mini: `src/` (EVM behavior reference)
+**Primary execution spec paths (phase-3):**
+- `execution-specs/src/ethereum/forks/*/vm/__init__.py`
+- `execution-specs/src/ethereum/forks/*/fork.py` (transaction + block processing)
 
-## Specs (execution-specs)
-
-Primary fork reference used for this pass: Prague.
-
-Files and roles:
-
+**Prague fork reference (latest):**
 - `execution-specs/src/ethereum/forks/prague/vm/__init__.py`
-  Defines `BlockEnvironment`, `BlockOutput`, `TransactionEnvironment`, `Message`, and `Evm` structures for EVM execution context.
+  - Defines `BlockEnvironment`, `TransactionEnvironment`, `Message`, `Evm` dataclasses.
+  - Tracks access list warm sets, transient storage, blob versioned hashes, authorizations (EIP-7702).
+  - `incorporate_child_on_success/error` defines how child call results aggregate into parent.
 - `execution-specs/src/ethereum/forks/prague/fork.py`
-  `state_transition` and `process_transaction` are the top-level transaction/block processing flow (system txs, tx loop, withdrawals, requests).
-- `execution-specs/src/ethereum/forks/prague/transactions.py`
-  `validate_transaction` and `calculate_intrinsic_cost` implement intrinsic gas, calldata floor gas, init-code size checks, and nonce overflow rules.
-- `execution-specs/src/ethereum/forks/prague/vm/interpreter.py`
-  `process_message` and `process_create_message` show snapshot, rollback, commit boundaries around calls and contract creation.
+  - `state_transition()` validates header, applies block body, computes roots, compares against header.
+  - `apply_body()` runs system txs, loops transactions, processes withdrawals and requests.
+  - `process_transaction()` handles intrinsic gas, sender checks, fee payment/refund, access list/authorization setup, message execution, gas refund (EIP-7623), receipts/logs, selfdestruct handling.
 
-Notes:
+**Related spec modules referenced by fork.py (Prague):**
+- `execution-specs/src/ethereum/forks/prague/transactions.py` (decode/validate tx, recover sender)
+- `execution-specs/src/ethereum/forks/prague/vm/interpreter.py` (message execution)
+- `execution-specs/src/ethereum/forks/prague/vm/gas.py` (blob gas, fees)
+- `execution-specs/src/ethereum/forks/prague/state.py` (state, transient storage, account/storage helpers)
 
-- Fork-specific behavior changes across `execution-specs/src/ethereum/forks/*/`.
-- This checkout has an empty `EIPs/` directory; if EIP text is needed (1559/2930/4844/7702, etc.), the submodule must be populated.
+**Notes for phase 3:**
+- Access list warm-up is explicit in `process_transaction` (coinbase + access list entries).
+- Gas accounting includes EIP-1559 fee logic + EIP-7623 calldata floor.
+- System transactions (beacon roots, history storage, requests) are part of block body.
 
-## Nethermind Architecture (structural reference)
+---
 
-Nethermind EVM implementation lives in `nethermind/src/Nethermind/Nethermind.Evm/`.
-Key areas to mirror structurally in the TypeScript client:
+## guillotine-mini EVM (Behavioral Reference)
 
-- `TransactionProcessing/` (transaction processor, system tx path, receipts)
-- `VirtualMachine.cs`, `IVirtualMachine.cs` (execution entrypoints)
-- `ExecutionEnvironment.cs`, `BlockExecutionContext.cs`, `TxExecutionContext.cs` (per-call/per-tx context)
-- `IntrinsicGasCalculator.cs`, `GasCostOf.cs` (intrinsic gas and constant lookups)
-- `RefundHelper.cs`, `RefundOf.cs` (refund logic)
-- `State/` (world state integration interfaces)
+Key local files to mirror behavior (Zig EVM reference):
+- `src/evm.zig` — EVM orchestration, call stack, access list, refunds, storage handling.
+- `src/host.zig` — Minimal `HostInterface` vtable for balance/nonce/code/storage access (not used for nested calls).
+- `src/storage.zig` — Storage model (persistent/original/transient).
+- `src/frame.zig`, `src/call_params.zig`, `src/call_result.zig` — Call execution contracts.
 
-Nethermind DB layer (from `nethermind/src/Nethermind/Nethermind.Db/`), useful for naming parity with client-ts DB:
+Important behavior notes:
+- `HostInterface` is only for external state access (nested calls handled internally in EVM).
+- EVM tracks access list, refund counter, created/selfdestructed/touched accounts, and has snapshot stacks.
 
-- `IDb.cs`, `IColumnsDb.cs`, `IReadOnlyDb.cs`, `ITunableDb.cs`
-- `IDbProvider.cs`, `DbProvider.cs`, `DbNames.cs`
+---
+
+## Existing Effect.ts Client (client-ts/)
+
+### EVM Integration (in-progress)
+- `client-ts/evm/HostAdapter.ts`
+  - `HostAdapter` Context.Tag + Layer bridging `WorldState` to EVM host calls.
+  - Local `codes` map caches runtime code by address; `setCode` updates account `codeHash` via `Hash.keccak256`.
+  - Exposes `getBalance/setBalance`, `getNonce/setNonce`, `getCode/setCode`, `getStorage/setStorage` functions.
+- `client-ts/evm/IntrinsicGasCalculator.ts`
+  - Calculates intrinsic gas + calldata floor, gated by hardfork flags (`ReleaseSpec`).
+  - Supports access lists (EIP-2930), init code cost (EIP-3860), calldata floor (EIP-7623), authorization list (EIP-7702).
+  - Uses `Schema.decode` at boundaries; error channel is typed (`InvalidTransactionError`, etc.).
+- `client-ts/evm/ReleaseSpec.ts`
+  - `ReleaseSpec` Context.Tag with `Hardfork` gating feature flags (EIP-2028, 2930, 3860, 7623, 7702).
+
+### World State
+- `client-ts/state/State.ts`
+  - `WorldState` Context.Tag with account + storage maps, journaled snapshot/restore/commit.
+  - `MissingAccountError` for storage writes to non-existent accounts.
+  - Tracks `createdAccountFrames` for “account created in tx” checks.
+- `client-ts/state/Journal.ts`
+  - Generic change-list journal w/ `ChangeTag` and snapshot restore/commit behavior.
+- `client-ts/state/Account.ts`
+  - Uses `AccountState` from `voltaire-effect`, defines `EMPTY_ACCOUNT`, `EMPTY_CODE_HASH`, `EMPTY_STORAGE_ROOT`.
+
+### Tests (Effect + @effect/vitest)
+- `client-ts/evm/HostAdapter.test.ts`
+- `client-ts/evm/IntrinsicGasCalculator.test.ts`
+- `client-ts/state/*.test.ts` — journaling, state, account behavior
+
+---
+
+## Voltaire-Effect Primitives (MUST USE)
+
+Relevant exports from `voltaire-effect/src/primitives/index.ts`:
+- `Address`, `Hash`, `Hex`, `RuntimeCode`, `Storage`, `StorageValue`
+- `AccountState`, `Transaction`, `Gas`, `Hardfork`
+- `State`, `StateRoot`, `AccessList`, `Authorization` (for EIP-7702)
+
+Path references:
+- `/Users/williamcory/voltaire/voltaire-effect/src/primitives/Address/*`
+- `/Users/williamcory/voltaire/voltaire-effect/src/primitives/Hash/*`
+- `/Users/williamcory/voltaire/voltaire-effect/src/primitives/Transaction/*`
+- `/Users/williamcory/voltaire/voltaire-effect/src/primitives/AccountState/*`
+- `/Users/williamcory/voltaire/voltaire-effect/src/primitives/Storage/*`
+- `/Users/williamcory/voltaire/voltaire-effect/src/primitives/StorageValue/*`
+- `/Users/williamcory/voltaire/voltaire-effect/src/primitives/RuntimeCode/*`
+- `/Users/williamcory/voltaire/voltaire-effect/src/primitives/Gas/*`
+- `/Users/williamcory/voltaire/voltaire-effect/src/primitives/Hardfork/*`
+
+---
+
+## Effect.ts Patterns (Reference)
+
+Relevant Effect modules (see `effect-repo/packages/effect/src/`):
+- `Effect.ts` — core Effect API, `Effect.gen`, `Effect.acquireRelease`
+- `Context.ts` — `Context.Tag` for DI
+- `Layer.ts` — `Layer.effect`, `Layer.succeed`, `Layer.provide`
+- `Schema.ts` — boundary validation
+- `Data.ts` — typed errors (`Data.TaggedError`)
+- `Option.ts`, `Either.ts`, `Cause.ts` — common effect patterns
+
+---
+
+## Nethermind Reference (Architecture)
+
+### DB Layer inventory (required listing)
+`nethermind/src/Nethermind/Nethermind.Db/`:
+- `DbProvider.cs`, `IDb.cs`, `IDbProvider.cs`, `IColumnsDb.cs`, `IFullDb.cs`
 - `RocksDbSettings.cs`, `RocksDbMergeEnumerator.cs`, `NullDb.cs`, `MemDb.cs`
-- `BlobTxsColumns.cs`, `ReceiptsColumns.cs`, `MetadataDbKeys.cs`
+- `PruningConfig.cs`, `PruningMode.cs`, `FullPruning/*`
+- `ReadOnlyDb*.cs`, `DbExtensions.cs`, `DbNames.cs`
 
-## voltaire-effect APIs (must-use primitives)
+### EVM/State architecture to consult (not yet opened)
+- `nethermind/src/Nethermind/Nethermind.Evm/`
+- `nethermind/src/Nethermind/Nethermind.State/`
 
-Source: `/Users/williamcory/voltaire/voltaire-effect/src/`.
+---
 
-Primitives relevant for Phase 3:
+## Test Fixtures
 
-- `primitives/Address`, `primitives/Hash`, `primitives/Hex`, `primitives/Bytes`
-- `primitives/AccountState`, `primitives/State`, `primitives/Storage`, `primitives/StorageValue`, `primitives/StateRoot`
-- `primitives/Transaction`, `primitives/Receipt`, `primitives/Log`, `primitives/BloomFilter`
-- `primitives/Gas`, `primitives/GasPrice`, `primitives/EffectiveGasPrice`, `primitives/Nonce`
-- `primitives/Block`, `primitives/BlockHeader`, `primitives/Withdrawal`, `primitives/Blob`
+**ethereum-tests** (present directories):
+- `ethereum-tests/BasicTests/`
+- `ethereum-tests/BlockchainTests/`
+- `ethereum-tests/TrieTests/`
+- `ethereum-tests/TransactionTests/`
+- `ethereum-tests/LegacyTests/`
+- `ethereum-tests/EOFTests/`
+- `ethereum-tests/fixtures_general_state_tests.tgz` (GeneralStateTests are not checked out as a directory)
 
-Services (Effect Context.Tag + Layer oriented):
+**execution-spec-tests**
+- `execution-spec-tests/` (empty in current checkout)
 
-- `services/Provider`, `services/Signer`, `services/TransactionSerializer`, `services/Kzg`
-- `services/Contract`, `services/RawProvider`, `services/RpcBatch`
+---
 
-## Effect.ts reference patterns
+## Implementation Implications for Phase 3
 
-Source: `effect-repo/packages/effect/src/`.
-Important modules used in client-ts:
+- The EVM host adapter already exists in TS (`client-ts/evm/HostAdapter.ts`) and mirrors the minimal `HostInterface` behavior from Zig; it should be the bridge for world state access.
+- The transaction processing logic needs to follow `execution-specs` fork.py semantics: intrinsic gas, sender balance adjustments, gas refunds, access list warming, receipts/logs, and account deletion.
+- Use Voltaire primitives at boundaries (`Transaction`, `AccountState`, `Storage`, `StorageValue`) with `Schema.decode` for validation.
+- DI wiring is via `Context.Tag` + `Layer` (no `Effect.runPromise` except at app edge).
 
-- `Context.ts`, `Layer.ts`, `Effect.ts` (DI and effect composition)
-- `Schema.ts` (boundary validation)
-- `Data.ts` (error data types)
-- `Option.ts`, `Scope.ts` (optional values, resource lifetime)
-
-## Existing client-ts implementation (Effect.ts)
-
-Location: `client-ts/`.
-
-World state and journaling:
-
-- `client-ts/state/State.ts` defines `WorldState` service with account + storage maps, snapshot stack, and journal integration.
-- `client-ts/state/Journal.ts` defines `Journal` service with snapshot/restore/commit semantics.
-- `client-ts/state/Account.ts` re-exports `AccountState` and helpers (EMPTY_ACCOUNT, isEmpty, etc.).
-
-Trie and hashing:
-
-- `client-ts/trie/Node.ts`, `client-ts/trie/hash.ts`, `client-ts/trie/encoding.ts` implement MPT nodes and hashing using voltaire-effect primitives.
-
-DB abstraction:
-
-- `client-ts/db/Db.ts` defines a DB service with `Context.Tag`, `Schema`-validated names, read/write flags, snapshots, and batched writes.
-
-Tests already present:
-
-- `client-ts/state/*.test.ts` covers world state + journal behavior.
-- `client-ts/db/*.test.ts` and `client-ts/trie/*.test.ts` cover DB and trie primitives.
-
-## Test fixtures (local paths)
-
-- `ethereum-tests/fixtures_general_state_tests.tgz` (GeneralStateTests tarball)
-- `ethereum-tests/fixtures_blockchain_tests.tgz` (BlockchainTests tarball)
-- `ethereum-tests/BlockchainTests/`, `ethereum-tests/TransactionTests/`, `ethereum-tests/TrieTests/` (existing dirs)
-- `execution-spec-tests/` is empty in this checkout (fixtures not present).
-
-## Phase 3 Integration Notes
-
-- Mirror `process_transaction` and message-call snapshot/rollback/commit flow from `execution-specs`.
-- Bridge `WorldState` service to the EVM via a Host adapter using voltaire-effect primitives only.
-- Keep tx/block processing logic in small Effect services with explicit error channels.
