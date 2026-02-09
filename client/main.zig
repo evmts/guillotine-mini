@@ -194,7 +194,7 @@ test "runner parses CLI flags and emits config" {
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "tracer=callTracer"));
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "timeout=5s"));
 
-    var help_buffer: [256]u8 = undefined;
+    var help_buffer: [1024]u8 = undefined;
     var help_stream = std.io.fixedBufferStream(&help_buffer);
     const help_args = &[_][]const u8{ "guillotine-mini", "--help" };
     try run(EvmType, allocator, help_args, help_stream.writer());
