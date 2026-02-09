@@ -1,8 +1,10 @@
+import type { BrandedRlp } from "@tevm/voltaire/Rlp";
 import type * as Schema from "effect/Schema";
 import { Bytes, Hash } from "voltaire-effect/primitives";
 
 export type BytesType = Schema.Schema.Type<typeof Bytes.Hex>;
 export type HashType = Schema.Schema.Type<typeof Hash.Hex>;
+export type RlpType = BrandedRlp;
 
 export type NibbleList = BytesType;
 
@@ -13,7 +15,7 @@ export type EncodedNode =
     }
   | {
       readonly _tag: "raw";
-      readonly value: BytesType;
+      readonly value: RlpType;
     }
   | {
       readonly _tag: "empty";
