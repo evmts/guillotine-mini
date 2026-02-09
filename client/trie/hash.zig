@@ -312,20 +312,29 @@ fn patricialize(
     return encode_internal_branch(allocator, &subnode_encodings, branch_value);
 }
 
+/// Encode a 2-item path node (leaf or extension) with a compact-encoded path.
+fn encode_internal_path_node(
+    allocator: Allocator,
+    path: []const u8,
+    is_leaf: bool,
+    second: RlpItem,
+) !EncodedNode {
+    const compact_path = try nibble_list_to_compact(allocator, path, is_leaf);
+    defer allocator.free(compact_path);
+
+    const items = [2]RlpItem{
+        .{ .string = compact_path },
+        second,
+    };
+    return encode_internal_from_items(allocator, &items);
+}
+
 /// Encode a leaf node: `encode_internal_node(LeafNode(rest_of_key, value))`
 ///
 /// The unencoded form is: `(nibble_list_to_compact(rest, True), value)`
 /// RLP-encoded as a 2-element list.
 fn encode_internal_leaf(allocator: Allocator, rest_of_key: []const u8, value: []const u8) !EncodedNode {
-    const compact_path = try nibble_list_to_compact(allocator, rest_of_key, true);
-    defer allocator.free(compact_path);
-
-    // RLP encode the list [compact_path, value]
-    const items = [2]RlpItem{
-        .{ .string = compact_path },
-        .{ .string = value },
-    };
-    return encode_internal_from_items(allocator, &items);
+    return encode_internal_path_node(allocator, rest_of_key, true, .{ .string = value });
 }
 
 /// Encode an extension node: `encode_internal_node(ExtensionNode(prefix, subnode))`
@@ -333,16 +342,8 @@ fn encode_internal_leaf(allocator: Allocator, rest_of_key: []const u8, value: []
 /// The unencoded form is: `(nibble_list_to_compact(segment, False), subnode)`
 /// where `subnode` is the result of `encode_internal_node()` on the child.
 fn encode_internal_extension(allocator: Allocator, prefix: []const u8, child: EncodedNode) !EncodedNode {
-    const compact_path = try nibble_list_to_compact(allocator, prefix, false);
-    defer allocator.free(compact_path);
-
     const child_item = encoded_node_to_rlp_item(&child);
-
-    const items = [2]RlpItem{
-        .{ .string = compact_path },
-        child_item,
-    };
-    return encode_internal_from_items(allocator, &items);
+    return encode_internal_path_node(allocator, prefix, false, child_item);
 }
 
 /// Encode a branch node: `encode_internal_node(BranchNode(subnodes, value))`
