@@ -6,10 +6,13 @@ const std = @import("std");
 const jsonrpc = @import("jsonrpc");
 
 const ExchangeCapabilitiesMethod = @FieldType(jsonrpc.engine.EngineMethod, "engine_exchangeCapabilities");
+/// Parameters for `engine_exchangeCapabilities` requests.
 pub const ExchangeCapabilitiesParams = @FieldType(ExchangeCapabilitiesMethod, "params");
+/// Result payload for `engine_exchangeCapabilities` responses.
 pub const ExchangeCapabilitiesResult = @FieldType(ExchangeCapabilitiesMethod, "result");
 
 const exchange_capabilities_method = "engine_exchangeCapabilities";
+const engine_method_prefix = "engine_";
 
 /// Vtable-based Engine API interface.
 ///
@@ -107,6 +110,7 @@ fn validateJsonCapabilities(value: std.json.Value, comptime invalid_err: EngineA
 }
 
 fn validateMethodName(method: []const u8, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+    if (!std.mem.startsWith(u8, method, engine_method_prefix)) return invalid_err;
     if (std.mem.eql(u8, method, exchange_capabilities_method)) return invalid_err;
     if (!isVersionedMethod(method)) return invalid_err;
 }
@@ -165,26 +169,33 @@ fn makeMethodsPayload(comptime MethodsType: type, allocator: std.mem.Allocator, 
     @compileError("Unsupported Engine API capability list type");
 }
 
+const ConsensusType = @FieldType(ExchangeCapabilitiesParams, "consensus_client_methods");
+const ResultType = @FieldType(ExchangeCapabilitiesResult, "value");
+
+const DummyEngine = struct {
+    const Self = @This();
+    result: ExchangeCapabilitiesResult,
+    called: bool = false,
+
+    fn exchange_capabilities(
+        ptr: *anyopaque,
+        params: ExchangeCapabilitiesParams,
+    ) EngineApi.Error!ExchangeCapabilitiesResult {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        _ = params;
+        self.called = true;
+        return self.result;
+    }
+};
+
+const dummy_vtable = EngineApi.VTable{ .exchange_capabilities = DummyEngine.exchange_capabilities };
+
+fn makeApi(dummy: *DummyEngine) EngineApi {
+    return EngineApi{ .ptr = dummy, .vtable = &dummy_vtable };
+}
+
 test "engine api dispatches capabilities exchange" {
-    const DummyEngine = struct {
-        const Self = @This();
-        result: ExchangeCapabilitiesResult,
-        called: bool = false,
-
-        fn exchange_capabilities(
-            ptr: *anyopaque,
-            params: ExchangeCapabilitiesParams,
-        ) EngineApi.Error!ExchangeCapabilitiesResult {
-            const self: *Self = @ptrCast(@alignCast(ptr));
-            _ = params;
-            self.called = true;
-            return self.result;
-        }
-    };
-
     const allocator = std.testing.allocator;
-    const ConsensusType = @FieldType(ExchangeCapabilitiesParams, "consensus_client_methods");
-    const ResultType = @FieldType(ExchangeCapabilitiesResult, "value");
 
     var consensus_payload = try makeMethodsPayload(ConsensusType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
@@ -205,8 +216,7 @@ test "engine api dispatches capabilities exchange" {
     };
 
     var dummy = DummyEngine{ .result = result_value };
-    const vtable = EngineApi.VTable{ .exchange_capabilities = DummyEngine.exchange_capabilities };
-    const api = EngineApi{ .ptr = &dummy, .vtable = &vtable };
+    const api = makeApi(&dummy);
 
     const result = try api.exchange_capabilities(params);
     try std.testing.expect(dummy.called);
@@ -214,25 +224,7 @@ test "engine api dispatches capabilities exchange" {
 }
 
 test "engine api rejects unversioned consensus capabilities" {
-    const DummyEngine = struct {
-        const Self = @This();
-        result: ExchangeCapabilitiesResult,
-        called: bool = false,
-
-        fn exchange_capabilities(
-            ptr: *anyopaque,
-            params: ExchangeCapabilitiesParams,
-        ) EngineApi.Error!ExchangeCapabilitiesResult {
-            const self: *Self = @ptrCast(@alignCast(ptr));
-            _ = params;
-            self.called = true;
-            return self.result;
-        }
-    };
-
     const allocator = std.testing.allocator;
-    const ConsensusType = @FieldType(ExchangeCapabilitiesParams, "consensus_client_methods");
-    const ResultType = @FieldType(ExchangeCapabilitiesResult, "value");
 
     var consensus_payload = try makeMethodsPayload(ConsensusType, allocator, &[_][]const u8{
         "engine_newPayload",
@@ -252,33 +244,41 @@ test "engine api rejects unversioned consensus capabilities" {
     };
 
     var dummy = DummyEngine{ .result = result_value };
-    const vtable = EngineApi.VTable{ .exchange_capabilities = DummyEngine.exchange_capabilities };
-    const api = EngineApi{ .ptr = &dummy, .vtable = &vtable };
+    const api = makeApi(&dummy);
+
+    try std.testing.expectError(EngineApi.Error.InvalidParams, api.exchange_capabilities(params));
+    try std.testing.expect(!dummy.called);
+}
+
+test "engine api rejects non-engine consensus capabilities" {
+    const allocator = std.testing.allocator;
+
+    var consensus_payload = try makeMethodsPayload(ConsensusType, allocator, &[_][]const u8{
+        "eth_getBlockByNumberV1",
+    });
+    defer if (consensus_payload.array) |*array| array.deinit();
+
+    var result_payload = try makeMethodsPayload(ResultType, allocator, &[_][]const u8{
+        "engine_newPayloadV1",
+    });
+    defer if (result_payload.array) |*array| array.deinit();
+
+    const params = ExchangeCapabilitiesParams{
+        .consensus_client_methods = consensus_payload.value,
+    };
+    const result_value = ExchangeCapabilitiesResult{
+        .value = result_payload.value,
+    };
+
+    var dummy = DummyEngine{ .result = result_value };
+    const api = makeApi(&dummy);
 
     try std.testing.expectError(EngineApi.Error.InvalidParams, api.exchange_capabilities(params));
     try std.testing.expect(!dummy.called);
 }
 
 test "engine api rejects response containing exchangeCapabilities" {
-    const DummyEngine = struct {
-        const Self = @This();
-        result: ExchangeCapabilitiesResult,
-        called: bool = false,
-
-        fn exchange_capabilities(
-            ptr: *anyopaque,
-            params: ExchangeCapabilitiesParams,
-        ) EngineApi.Error!ExchangeCapabilitiesResult {
-            const self: *Self = @ptrCast(@alignCast(ptr));
-            _ = params;
-            self.called = true;
-            return self.result;
-        }
-    };
-
     const allocator = std.testing.allocator;
-    const ConsensusType = @FieldType(ExchangeCapabilitiesParams, "consensus_client_methods");
-    const ResultType = @FieldType(ExchangeCapabilitiesResult, "value");
 
     var consensus_payload = try makeMethodsPayload(ConsensusType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
@@ -298,8 +298,7 @@ test "engine api rejects response containing exchangeCapabilities" {
     };
 
     var dummy = DummyEngine{ .result = result_value };
-    const vtable = EngineApi.VTable{ .exchange_capabilities = DummyEngine.exchange_capabilities };
-    const api = EngineApi{ .ptr = &dummy, .vtable = &vtable };
+    const api = makeApi(&dummy);
 
     try std.testing.expectError(EngineApi.Error.InternalError, api.exchange_capabilities(params));
     try std.testing.expect(dummy.called);
