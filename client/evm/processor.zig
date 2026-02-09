@@ -65,6 +65,45 @@ pub fn validate_transaction(
     return intrinsic;
 }
 
+/// Calculate the effective gas price for a transaction, enforcing base fee rules.
+///
+/// For EIP-1559 style transactions, this applies:
+/// `effective = base_fee + min(max_priority_fee, max_fee - base_fee)`.
+/// For legacy/EIP-2930 transactions, `effective = gas_price` and must be
+/// >= the base fee (post-London).
+pub fn calculate_effective_gas_price(
+    tx: anytype,
+    base_fee_per_gas: u256,
+) error{ PriorityFeeGreaterThanMaxFee, InsufficientMaxFeePerGas, GasPriceBelowBaseFee, UnsupportedTransactionType }!u256 {
+    const Tx = @TypeOf(tx);
+    comptime {
+        if (Tx != tx_mod.LegacyTransaction and
+            Tx != tx_mod.Eip2930Transaction and
+            Tx != tx_mod.Eip1559Transaction and
+            Tx != tx_mod.Eip4844Transaction and
+            Tx != tx_mod.Eip7702Transaction)
+        {
+            @compileError("Unsupported transaction type for calculate_effective_gas_price");
+        }
+    }
+
+    if (comptime Tx == tx_mod.LegacyTransaction or Tx == tx_mod.Eip2930Transaction) {
+        if (tx.gas_price < base_fee_per_gas) return error.GasPriceBelowBaseFee;
+        return tx.gas_price;
+    }
+
+    if (tx.max_fee_per_gas < tx.max_priority_fee_per_gas) return error.PriorityFeeGreaterThanMaxFee;
+    if (tx.max_fee_per_gas < base_fee_per_gas) return error.InsufficientMaxFeePerGas;
+
+    const max_priority_allowed = tx.max_fee_per_gas - base_fee_per_gas;
+    const priority_fee = if (tx.max_priority_fee_per_gas < max_priority_allowed)
+        tx.max_priority_fee_per_gas
+    else
+        max_priority_allowed;
+
+    return base_fee_per_gas + priority_fee;
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -405,4 +444,105 @@ test "validate_transaction — eip7702 authorization intrinsic gas" {
 
     const intrinsic = try validate_transaction(tx, .PRAGUE);
     try std.testing.expectEqual(@as(u64, expected), intrinsic);
+}
+
+test "calculate_effective_gas_price — legacy ok" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = 100,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x10} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const effective = try calculate_effective_gas_price(tx, 10);
+    try std.testing.expectEqual(@as(u256, 100), effective);
+}
+
+test "calculate_effective_gas_price — legacy rejects below base fee" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = 5,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x11} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.GasPriceBelowBaseFee, calculate_effective_gas_price(tx, 10));
+}
+
+test "calculate_effective_gas_price — eip1559 caps priority fee" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 20,
+        .max_fee_per_gas = 15,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x12} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const effective = try calculate_effective_gas_price(tx, 10);
+    try std.testing.expectEqual(@as(u256, 15), effective);
+}
+
+test "calculate_effective_gas_price — eip1559 priority fee above max fee" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 12,
+        .max_fee_per_gas = 10,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x13} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.PriorityFeeGreaterThanMaxFee, calculate_effective_gas_price(tx, 1));
+}
+
+test "calculate_effective_gas_price — eip1559 max fee below base fee" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 9,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x14} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.InsufficientMaxFeePerGas, calculate_effective_gas_price(tx, 10));
 }
