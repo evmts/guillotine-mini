@@ -174,6 +174,28 @@ pub fn build(b: *std.Build) void {
     const client_state_test_step = b.step("test-state", "Run world state journal tests");
     client_state_test_step.dependOn(&run_client_state_tests.step);
 
+    // Client Network module (devp2p networking)
+    const client_network_mod = b.addModule("client_network", .{
+        .root_source_file = b.path("client/network/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+        },
+    });
+
+    const client_network_tests = b.addTest(.{
+        .root_module = client_network_mod,
+    });
+
+    const run_client_network_tests = b.addRunArtifact(client_network_tests);
+    test_step.dependOn(&run_client_network_tests.step);
+    unit_test_step.dependOn(&run_client_network_tests.step);
+
+    const client_network_test_step = b.step("test-network", "Run devp2p networking tests");
+    client_network_test_step.dependOn(&run_client_network_tests.step);
+
     // Client Blockchain module (chain management)
     const client_blockchain_mod = b.addModule("client_blockchain", .{
         .root_source_file = b.path("client/blockchain/root.zig"),
@@ -288,11 +310,20 @@ pub fn build(b: *std.Build) void {
     const bench_evm_step = b.step("bench-evm", "Run EVM ↔ WorldState integration benchmarks");
     bench_evm_step.dependOn(&run_client_evm_bench.step);
 
+    const bench_utils_mod = b.addModule("bench_utils", .{
+        .root_source_file = b.path("client/bench_utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Client State benchmark executable
     const client_state_bench_mod = b.addModule("client_state_bench", .{
         .root_source_file = b.path("client/state/bench.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+        },
     });
 
     const client_state_bench = b.addExecutable(.{
@@ -305,12 +336,6 @@ pub fn build(b: *std.Build) void {
     bench_state_step.dependOn(&run_client_state_bench.step);
 
     // Client Blockchain benchmark executable
-    const bench_utils_mod = b.addModule("bench_utils", .{
-        .root_source_file = b.path("client/bench_utils.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     const client_blockchain_bench_mod = b.addModule("client_blockchain_bench", .{
         .root_source_file = b.path("client/blockchain/bench.zig"),
         .target = target,
