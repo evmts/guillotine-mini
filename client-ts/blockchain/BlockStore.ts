@@ -7,8 +7,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Block, BlockHash, BlockNumber, Hex } from "voltaire-effect/primitives";
 
+/** Block type handled by the block store. */
 export type BlockType = Block.BlockType;
+/** Hash type for identifying blocks. */
 export type BlockHashType = BlockHash.BlockHashType;
+/** Block number type used for canonical indexing. */
 export type BlockNumberType = BlockNumber.BlockNumberType;
 
 type BlockHashKey = string;

@@ -55,21 +55,27 @@ const BlockSchema = Block.Schema as unknown as Schema.Schema<
 const bytes = (length: number, fill: number) =>
   new Uint8Array(length).fill(fill);
 
+/** Build a hash from a repeated byte. */
 export const hashFromByte = (byte: number) =>
   Schema.decodeSync(HashBytesSchema)(bytes(32, byte));
 
+/** Build a block hash from a repeated byte. */
 export const blockHashFromByte = (byte: number) =>
   Schema.decodeSync(BlockHashBytesSchema)(bytes(32, byte));
 
+/** Build an address from a repeated byte. */
 export const addressFromByte = (byte: number) =>
   Schema.decodeSync(AddressBytesSchema)(bytes(20, byte));
 
+/** Build a uint256 from a bigint. */
 export const uint256FromBigInt = (value: bigint) =>
   Schema.decodeSync(UintBigIntSchema)(value);
 
+/** Build a block number from a bigint. */
 export const blockNumberFromBigInt = (value: bigint) =>
   Schema.decodeSync(BlockNumberBigIntSchema)(value);
 
+/** Build a minimal block for tests. */
 export const makeBlock = (params: {
   readonly number: bigint;
   readonly hash: BlockHash.BlockHashType;

@@ -17,22 +17,28 @@ import {
   CannotSetOrphanAsHeadError,
 } from "./BlockStore";
 
+/** Block type used by the blockchain service. */
 export type BlockType = Block.BlockType;
+/** Hash type for identifying blocks. */
 export type BlockHashType = BlockHash.BlockHashType;
+/** Block number type used for chain state. */
 export type BlockNumberType = BlockNumber.BlockNumberType;
 
+/** Current fork-choice pointers. */
 export type ForkChoiceState = {
   readonly head: Option.Option<BlockHashType>;
   readonly safe: Option.Option<BlockHashType>;
   readonly finalized: Option.Option<BlockHashType>;
 };
 
+/** Fork-choice update request. */
 export type ForkChoiceUpdate = {
   readonly head: BlockHashType;
   readonly safe: Option.Option<BlockHashType>;
   readonly finalized: Option.Option<BlockHashType>;
 };
 
+/** Blockchain event emitted by the chain manager. */
 export type BlockchainEvent =
   | {
       readonly _tag: "GenesisInitialized";
@@ -55,6 +61,7 @@ export type BlockchainEvent =
       readonly update: ForkChoiceUpdate;
     };
 
+/** Constructors for blockchain events. */
 export const BlockchainEvent = {
   genesisInitialized: (block: BlockType): BlockchainEvent => ({
     _tag: "GenesisInitialized",
