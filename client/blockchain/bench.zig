@@ -70,25 +70,9 @@ fn build_blocks(n: usize, allocator: std.mem.Allocator) ![]Block.Block {
 
 /// Benchmark: process N blocks through Chain (putBlock + setCanonicalHead).
 fn bench_block_processing(n: usize) !u64 {
-    // Warmup
-    for (0..WARMUP_ITERS) |_| {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-
-        var chain = try Chain.init(allocator, null);
-        defer chain.deinit();
-
-        const blocks = try build_blocks(n, allocator);
-        for (blocks) |block| {
-            try chain.putBlock(block);
-            try chain.setCanonicalHead(block.hash);
-        }
-    }
-
-    // Timed
     var total_ns: u64 = 0;
-    for (0..BENCH_ITERS) |_| {
+    const total_iters = WARMUP_ITERS + BENCH_ITERS;
+    for (0..total_iters) |iter| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
@@ -98,12 +82,17 @@ fn bench_block_processing(n: usize) !u64 {
 
         const blocks = try build_blocks(n, allocator);
 
-        var timer = try std.time.Timer.start();
+        var timer: ?std.time.Timer = null;
+        if (iter >= WARMUP_ITERS) {
+            timer = try std.time.Timer.start();
+        }
         for (blocks) |block| {
             try chain.putBlock(block);
             try chain.setCanonicalHead(block.hash);
         }
-        total_ns += timer.read();
+        if (timer) |*active| {
+            total_ns += active.read();
+        }
     }
     return total_ns / BENCH_ITERS;
 }
