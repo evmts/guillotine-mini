@@ -15,7 +15,34 @@ pub const HeaderValidator = struct {
     vtable: *const VTable,
 
     /// Error set for header validation failures.
-    pub const Error = error{InvalidHeader};
+    pub const Error = error{
+        InvalidHeaderHash,
+        InvalidExtraData,
+        InvalidGenesisBlock,
+        InvalidParentHash,
+        InvalidAncestor,
+        InvalidTotalDifficulty,
+        InvalidSealParameters,
+        NegativeBlockNumber,
+        NegativeGasLimit,
+        NegativeGasUsed,
+        ExceededGasLimit,
+        InvalidGasLimit,
+        InvalidBlockNumber,
+        InvalidBaseFeePerGas,
+        InvalidTimestamp,
+        InvalidDifficulty,
+        InvalidNonce,
+        InvalidOmmersHash,
+        MissingBlobGasUsed,
+        MissingExcessBlobGas,
+        IncorrectExcessBlobGas,
+        NotAllowedBlobGasUsed,
+        NotAllowedExcessBlobGas,
+        MissingRequests,
+        RequestsNotEnabled,
+        InvalidRequestsHash,
+    };
 
     /// Virtual function table for header validation operations.
     pub const VTable = struct {
