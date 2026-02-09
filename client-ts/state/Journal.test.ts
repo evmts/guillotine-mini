@@ -24,6 +24,12 @@ const makeAccount = (
   ...overrides,
 });
 
+const makeAddress = (lastByte: number): Address.AddressType => {
+  const addr = Address.zero();
+  addr[addr.length - 1] = lastByte;
+  return addr;
+};
+
 const makeEntry = (
   key: Address.AddressType,
   value: AccountStateType | null,
@@ -82,17 +88,26 @@ describe("Journal", () => {
   it.effect("restore truncates and preserves just-cache entries", () =>
     provideJournal(
       Effect.gen(function* () {
-        const address = Address.zero();
+        const addrA = makeAddress(0);
+        const addrB = makeAddress(1);
 
         yield* append(
-          makeEntry(address, makeAccount({ nonce: 1n }), ChangeTag.Create),
+          makeEntry(addrA, makeAccount({ nonce: 1n }), ChangeTag.Create),
         );
         const snapshot = yield* takeSnapshot();
         yield* append(
-          makeEntry(address, makeAccount({ nonce: 2n }), ChangeTag.Update),
+          makeEntry(addrA, makeAccount({ nonce: 2n }), ChangeTag.Update),
         );
-        yield* append(makeEntry(address, makeAccount(), ChangeTag.JustCache));
-        yield* append(makeEntry(address, null, ChangeTag.Delete));
+        yield* append(
+          makeEntry(addrA, makeAccount({ nonce: 9n }), ChangeTag.JustCache),
+        );
+        yield* append(
+          makeEntry(addrB, makeAccount({ nonce: 4n }), ChangeTag.JustCache),
+        );
+        yield* append(
+          makeEntry(addrB, makeAccount({ nonce: 5n }), ChangeTag.JustCache),
+        );
+        yield* append(makeEntry(addrA, null, ChangeTag.Delete));
 
         const reverted: Array<(typeof ChangeTag)[keyof typeof ChangeTag]> = [];
         const onRevert = (
@@ -115,6 +130,8 @@ describe("Journal", () => {
 
         assert.strictEqual(first.tag, ChangeTag.Create);
         assert.strictEqual(second.tag, ChangeTag.JustCache);
+        assert.isTrue(Address.equals(second.key, addrB));
+        assert.strictEqual(second.value?.nonce, 5n);
 
         assert.strictEqual(reverted.length, 2);
         const firstReverted = reverted[0];

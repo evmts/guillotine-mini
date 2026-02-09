@@ -105,28 +105,15 @@ const makeJournal = <K, V>(): JournalService<K, V> => {
         return;
       }
 
-      let keptCount = 0;
-      for (let i = currentLength - 1; i >= targetLength; i -= 1) {
+      const changedKeys = new Set<K>();
+      for (let i = targetLength; i < currentLength; i += 1) {
         const entry = entries[i];
-        if (entry && entry.tag === ChangeTag.JustCache) {
-          keptCount += 1;
+        if (entry && entry.tag !== ChangeTag.JustCache) {
+          changedKeys.add(entry.key);
         }
       }
 
-      if (keptCount === 0) {
-        if (onRevert) {
-          for (let i = currentLength - 1; i >= targetLength; i -= 1) {
-            const entry = entries[i];
-            if (entry) {
-              yield* onRevert(entry);
-            }
-          }
-        }
-
-        entries.length = targetLength;
-        return;
-      }
-
+      const keptKeys = new Set<K>();
       const kept: Array<JournalEntry<K, V>> = [];
       for (let i = currentLength - 1; i >= targetLength; i -= 1) {
         const entry = entries[i];
@@ -135,8 +122,16 @@ const makeJournal = <K, V>(): JournalService<K, V> => {
         }
 
         if (entry.tag === ChangeTag.JustCache) {
+          if (changedKeys.has(entry.key) || keptKeys.has(entry.key)) {
+            continue;
+          }
+
+          keptKeys.add(entry.key);
           kept.push(entry);
-        } else if (onRevert) {
+          continue;
+        }
+
+        if (onRevert) {
           yield* onRevert(entry);
         }
       }
