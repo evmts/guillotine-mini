@@ -158,6 +158,11 @@ const mergeUnsupportedError = () =>
 
 const failMergeUnsupported = () => Effect.fail(mergeUnsupportedError());
 
+const nullDbWriteError = () =>
+  new DbError({ message: "NullDb does not support writes" });
+
+const failNullDbWrite = () => Effect.fail(nullDbWriteError());
+
 const listEntries = (
   store: Map<string, BytesType>,
   ordered = false,
@@ -198,6 +203,30 @@ const makeReader = (store: Map<string, BytesType>): DbSnapshot => {
       const keyHex = yield* encodeKey(key);
       return store.has(keyHex);
     });
+
+  return {
+    get,
+    getAll,
+    getAllKeys,
+    getAllValues,
+    has,
+  };
+};
+
+const makeNullSnapshot = (): DbSnapshot => {
+  const get = (_key: BytesType, _flags?: ReadFlags) =>
+    Effect.succeed(Option.none());
+
+  const getAll = (_ordered?: boolean) =>
+    Effect.succeed<ReadonlyArray<DbEntry>>([]);
+
+  const getAllKeys = (_ordered?: boolean) =>
+    Effect.succeed<ReadonlyArray<BytesType>>([]);
+
+  const getAllValues = (_ordered?: boolean) =>
+    Effect.succeed<ReadonlyArray<BytesType>>([]);
+
+  const has = (_key: BytesType) => Effect.succeed(false);
 
   return {
     get,
@@ -386,6 +415,84 @@ const makeMemoryDb = (config: DbConfig) =>
     } satisfies DbService;
   });
 
+const makeNullDb = (config: DbConfig) =>
+  Effect.gen(function* () {
+    const validated = yield* validateConfig(config);
+    const snapshot = makeNullSnapshot();
+
+    const put = (_key: BytesType, _value: BytesType, _flags?: WriteFlags) =>
+      failNullDbWrite();
+
+    const merge = (_key: BytesType, _value: BytesType, _flags?: WriteFlags) =>
+      failNullDbWrite();
+
+    const remove = (_key: BytesType) => failNullDbWrite();
+
+    const createSnapshot = () =>
+      Effect.acquireRelease(
+        Effect.sync(() => makeNullSnapshot()),
+        () =>
+          Effect.sync(() => {
+            // no-op for null snapshot release
+          }),
+      );
+
+    const flush = (_onlyWal?: boolean) =>
+      Effect.sync(() => {
+        // no-op for null DB
+      });
+
+    const clear = () =>
+      Effect.sync(() => {
+        // no-op for null DB
+      });
+
+    const compact = () =>
+      Effect.sync(() => {
+        // no-op for null DB
+      });
+
+    const gatherMetric = () =>
+      Effect.sync(
+        (): DbMetric => ({
+          size: 0,
+          cacheSize: 0,
+          indexSize: 0,
+          memtableSize: 0,
+          totalReads: 0,
+          totalWrites: 0,
+        }),
+      );
+
+    const writeBatch = (_ops: ReadonlyArray<DbWriteOp>) => failNullDbWrite();
+
+    const startWriteBatch = () =>
+      Effect.acquireRelease(Effect.fail(nullDbWriteError()), () =>
+        Effect.sync(() => {
+          // no-op for null DB batch disposal
+        }),
+      );
+
+    return {
+      name: validated.name,
+      get: snapshot.get,
+      getAll: snapshot.getAll,
+      getAllKeys: snapshot.getAllKeys,
+      getAllValues: snapshot.getAllValues,
+      put,
+      merge,
+      remove,
+      has: snapshot.has,
+      createSnapshot,
+      flush,
+      clear,
+      compact,
+      gatherMetric,
+      writeBatch,
+      startWriteBatch,
+    } satisfies DbService;
+  });
+
 /** In-memory production DB layer. */
 export const DbMemoryLive = (config: DbConfig): Layer.Layer<Db, DbError> =>
   Layer.scoped(Db, makeMemoryDb(config));
@@ -394,6 +501,15 @@ export const DbMemoryLive = (config: DbConfig): Layer.Layer<Db, DbError> =>
 export const DbMemoryTest = (
   config: DbConfig = { name: DbNames.state },
 ): Layer.Layer<Db, DbError> => Layer.scoped(Db, makeMemoryDb(config));
+
+/** Null object DB layer (read-only, writes fail). */
+export const DbNullLive = (config: DbConfig): Layer.Layer<Db, DbError> =>
+  Layer.scoped(Db, makeNullDb(config));
+
+/** Null object DB layer for tests. */
+export const DbNullTest = (
+  config: DbConfig = { name: DbNames.state },
+): Layer.Layer<Db, DbError> => Layer.scoped(Db, makeNullDb(config));
 
 /** Retrieve a value by key. */
 export const get = (key: BytesType, flags?: ReadFlags) =>
