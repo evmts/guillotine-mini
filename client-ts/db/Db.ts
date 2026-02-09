@@ -8,8 +8,10 @@ import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import { Bytes, Hex } from "voltaire-effect/primitives";
 
+/** Byte array type used for DB keys and values. */
 export type BytesType = ReturnType<typeof Bytes.random>;
 
+/** Canonical DB names used by the execution client. */
 export const DbNames = {
   storage: "storage",
   state: "state",
@@ -28,6 +30,7 @@ export const DbNames = {
   peers: "peers",
 } as const;
 
+/** Schema for validating DB names at boundaries. */
 export const DbNameSchema = Schema.Union(
   Schema.Literal(DbNames.storage),
   Schema.Literal(DbNames.state),
@@ -46,6 +49,7 @@ export const DbNameSchema = Schema.Union(
   Schema.Literal(DbNames.peers),
 );
 
+/** DB name union derived from the DB name schema. */
 export type DbName = Schema.Schema.Type<typeof DbNameSchema>;
 
 /** Configuration for a DB layer. */
