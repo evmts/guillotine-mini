@@ -58,6 +58,7 @@ pub const HeaderValidator = struct {
 
 test "HeaderValidator dispatches validate" {
     const Dummy = struct {
+        const Self = @This();
         called: bool = false,
         saw_uncle: bool = false,
 
@@ -67,7 +68,7 @@ test "HeaderValidator dispatches validate" {
             parent: *const BlockHeader.BlockHeader,
             is_uncle: bool,
         ) HeaderValidator.Error!void {
-            const self: *Dummy = @ptrCast(@alignCast(ptr));
+            const self: *Self = @ptrCast(@alignCast(ptr));
             self.called = true;
             self.saw_uncle = is_uncle;
             _ = header;
@@ -78,7 +79,7 @@ test "HeaderValidator dispatches validate" {
             ptr: *anyopaque,
             header: *const BlockHeader.BlockHeader,
         ) HeaderValidator.Error!void {
-            const self: *Dummy = @ptrCast(@alignCast(ptr));
+            const self: *Self = @ptrCast(@alignCast(ptr));
             self.called = true;
             _ = header;
         }
@@ -101,6 +102,7 @@ test "HeaderValidator dispatches validate" {
 
 test "HeaderValidator dispatches validate_orphaned" {
     const Dummy = struct {
+        const Self = @This();
         orphaned_called: bool = false,
 
         fn validate(
@@ -109,7 +111,7 @@ test "HeaderValidator dispatches validate_orphaned" {
             parent: *const BlockHeader.BlockHeader,
             is_uncle: bool,
         ) HeaderValidator.Error!void {
-            const self: *Dummy = @ptrCast(@alignCast(ptr));
+            const self: *Self = @ptrCast(@alignCast(ptr));
             _ = header;
             _ = parent;
             _ = is_uncle;
@@ -120,7 +122,7 @@ test "HeaderValidator dispatches validate_orphaned" {
             ptr: *anyopaque,
             header: *const BlockHeader.BlockHeader,
         ) HeaderValidator.Error!void {
-            const self: *Dummy = @ptrCast(@alignCast(ptr));
+            const self: *Self = @ptrCast(@alignCast(ptr));
             self.orphaned_called = true;
             _ = header;
         }
