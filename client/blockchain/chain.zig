@@ -14,7 +14,6 @@ const ChainId = primitives.ChainId;
 pub const Chain = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
-    chain_id: ChainId.ChainId,
 
     pub const ChainError = anyerror;
 
@@ -24,17 +23,11 @@ pub const Chain = struct {
     };
 
     /// Create a Chain view over a Voltaire Blockchain backend.
-    pub fn fromVoltaire(chain_id: ChainId.ChainId, store: *blockchain.Blockchain) Chain {
+    pub fn fromVoltaire(store: *blockchain.Blockchain) Chain {
         return .{
             .ptr = @ptrCast(store),
             .vtable = &voltaire_vtable,
-            .chain_id = chain_id,
         };
-    }
-
-    /// Return the EIP-155 chain id.
-    pub fn chainId(self: Chain) ChainId.ChainId {
-        return self.chain_id;
     }
 
     /// Get block by hash (local store, then fork cache if configured).
@@ -67,21 +60,12 @@ const voltaire_vtable = Chain.VTable{
 // Tests
 // =============================================================================
 
-test "Chain - fromVoltaire exposes chain id" {
-    const allocator = std.testing.allocator;
-    var store = try blockchain.Blockchain.init(allocator, null);
-    defer store.deinit();
-
-    const chain = Chain.fromVoltaire(ChainId.MAINNET, &store);
-    try std.testing.expectEqual(ChainId.MAINNET, chain.chainId());
-}
-
 test "Chain - getBlockByHash returns stored block" {
     const allocator = std.testing.allocator;
     var store = try blockchain.Blockchain.init(allocator, null);
     defer store.deinit();
 
-    const chain = Chain.fromVoltaire(ChainId.MAINNET, &store);
+    const chain = Chain.fromVoltaire(&store);
     const genesis = try Block.genesis(ChainId.MAINNET, allocator);
     try store.putBlock(genesis);
 
@@ -95,7 +79,7 @@ test "Chain - getBlockByNumber returns canonical block" {
     var store = try blockchain.Blockchain.init(allocator, null);
     defer store.deinit();
 
-    const chain = Chain.fromVoltaire(ChainId.MAINNET, &store);
+    const chain = Chain.fromVoltaire(&store);
     const genesis = try Block.genesis(ChainId.MAINNET, allocator);
     try store.putBlock(genesis);
     try store.setCanonicalHead(genesis.hash);
