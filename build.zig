@@ -245,6 +245,29 @@ pub fn build(b: *std.Build) void {
     const client_rpc_test_step = b.step("test-rpc", "Run JSON-RPC server tests");
     client_rpc_test_step.dependOn(&run_client_rpc_tests.step);
 
+    // Client Engine API module (Consensus Layer interface)
+    const client_engine_mod = b.addModule("client_engine", .{
+        .root_source_file = b.path("client/engine/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "jsonrpc", .module = jsonrpc_mod },
+        },
+    });
+
+    const client_engine_tests = b.addTest(.{
+        .root_module = client_engine_mod,
+    });
+
+    const run_client_engine_tests = b.addRunArtifact(client_engine_tests);
+    test_step.dependOn(&run_client_engine_tests.step);
+    unit_test_step.dependOn(&run_client_engine_tests.step);
+
+    const client_engine_test_step = b.step("test-engine", "Run Engine API tests");
+    client_engine_test_step.dependOn(&run_client_engine_tests.step);
+
     // Client EVM module (EVM ↔ WorldState integration)
     const state_manager_mod = primitives_dep.module("state-manager");
 
