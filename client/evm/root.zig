@@ -7,6 +7,7 @@
 ///
 /// - `HostAdapter` — Adapts Voltaire `StateManager` to guillotine-mini `HostInterface` vtable.
 /// - `IntrinsicGas` — Intrinsic gas calculation for transactions (pre-execution gas charging).
+/// - `TransactionValidation` — Static transaction validation (intrinsic gas + limits).
 ///
 /// ## Architecture (Nethermind parity)
 ///
@@ -35,6 +36,7 @@
 /// ```
 const host_adapter = @import("host_adapter.zig");
 const intrinsic_gas = @import("intrinsic_gas.zig");
+const processor = @import("processor.zig");
 
 // -- Public API: flat re-exports -------------------------------------------
 
@@ -49,6 +51,9 @@ pub const initCodeCost = intrinsic_gas.initCodeCost;
 
 /// Parameters for intrinsic gas calculation.
 pub const IntrinsicGasParams = intrinsic_gas.IntrinsicGasParams;
+
+/// Validate a transaction and return its intrinsic gas.
+pub const validateTransaction = processor.validateTransaction;
 
 // -- Gas constants re-exports ----------------------------------------------
 
