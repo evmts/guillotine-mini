@@ -1,7 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
-import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { Block, BlockHash } from "voltaire-effect/primitives";
 import { BlockStoreMemoryLive, putBlock, setCanonicalHead } from "./BlockStore";
