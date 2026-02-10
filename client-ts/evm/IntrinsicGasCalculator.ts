@@ -164,6 +164,56 @@ const validateTransaction = (
           cause,
         }),
     ),
+    Effect.flatMap((validated) =>
+      Effect.gen(function* () {
+        if (!(validated.data instanceof Uint8Array)) {
+          return yield* Effect.fail(
+            new InvalidTransactionError({
+              message:
+                "Invalid transaction shape for intrinsic gas calculation",
+            }),
+          );
+        }
+        if (typeof validated.gasLimit !== "bigint") {
+          return yield* Effect.fail(
+            new InvalidTransactionError({
+              message:
+                "Invalid transaction shape for intrinsic gas calculation",
+            }),
+          );
+        }
+
+        if (
+          Transaction.isEIP2930(validated) ||
+          Transaction.isEIP1559(validated) ||
+          Transaction.isEIP4844(validated) ||
+          Transaction.isEIP7702(validated)
+        ) {
+          if (!Array.isArray(validated.accessList)) {
+            return yield* Effect.fail(
+              new InvalidTransactionError({
+                message:
+                  "Invalid transaction shape for intrinsic gas calculation",
+              }),
+            );
+          }
+        }
+
+        if (
+          Transaction.isEIP7702(validated) &&
+          !Array.isArray(validated.authorizationList)
+        ) {
+          return yield* Effect.fail(
+            new InvalidTransactionError({
+              message:
+                "Invalid transaction shape for intrinsic gas calculation",
+            }),
+          );
+        }
+
+        return validated;
+      }),
+    ),
   );
 
 const requiresAccessListSupport = (tx: Transaction.Any): boolean =>

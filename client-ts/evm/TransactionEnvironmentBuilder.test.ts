@@ -6,20 +6,37 @@ import * as Schema from "effect/Schema";
 import {
   Address,
   GasPrice,
+  Hardfork,
   Hex,
   Transaction,
 } from "voltaire-effect/primitives";
-import { AccessListBuilderTest } from "./AccessListBuilder";
+import {
+  AccessListBuilderLive,
+  AccessListBuilderTest,
+} from "./AccessListBuilder";
 import { IntrinsicGasCalculatorTest } from "./IntrinsicGasCalculator";
 import {
+  IntrinsicGasCalculatorLive,
+  InvalidTransactionError as IntrinsicGasInvalidTransactionError,
+  UnsupportedIntrinsicGasFeatureError,
+} from "./IntrinsicGasCalculator";
+import { ReleaseSpecLive } from "./ReleaseSpec";
+import {
+  TransactionEnvironmentBuilderLive,
   TransactionEnvironmentBuilderTest,
   buildTransactionEnvironment,
   InsufficientTransactionGasError,
+  InvalidTransactionGasError,
 } from "./TransactionEnvironmentBuilder";
+import { TransientStorageFactoryTest } from "../state/TransientStorage";
 import type { TransientStorageService } from "../state/TransientStorage";
 
 const LegacySchema = Transaction.LegacySchema as unknown as Schema.Schema<
   Transaction.Legacy,
+  unknown
+>;
+const Eip2930Schema = Transaction.EIP2930Schema as unknown as Schema.Schema<
+  Transaction.EIP2930,
   unknown
 >;
 const Eip4844Schema = Transaction.EIP4844Schema as unknown as Schema.Schema<
@@ -90,6 +107,28 @@ const makeEip4844Tx = (
     s: EMPTY_SIGNATURE.s,
   });
 
+const makeEip2930Tx = (
+  gasLimit: bigint,
+  accessList: Transaction.EIP2930["accessList"] = [],
+): Transaction.EIP2930 =>
+  Schema.decodeSync(Eip2930Schema)({
+    type: Transaction.Type.EIP2930,
+    chainId: 1n,
+    nonce: 0n,
+    gasPrice: 1n,
+    gasLimit,
+    to: encodeAddress(Address.zero()),
+    value: 0n,
+    data: new Uint8Array(0),
+    accessList: accessList.map((entry) => ({
+      address: encodeAddress(entry.address),
+      storageKeys: entry.storageKeys,
+    })),
+    yParity: 0,
+    r: EMPTY_SIGNATURE.r,
+    s: EMPTY_SIGNATURE.s,
+  });
+
 type StorageSlotType = Parameters<TransientStorageService["get"]>[1];
 type StorageValueType = Parameters<TransientStorageService["set"]>[2];
 
@@ -114,9 +153,24 @@ const BaseLayer = Layer.merge(
 const TestLayer = TransactionEnvironmentBuilderTest.pipe(
   Layer.provide(BaseLayer),
 );
+const FrontierLayer = TransactionEnvironmentBuilderLive.pipe(
+  Layer.provide(TransientStorageFactoryTest),
+  Layer.provide(
+    Layer.merge(
+      AccessListBuilderLive.pipe(
+        Layer.provide(ReleaseSpecLive(Hardfork.FRONTIER)),
+      ),
+      IntrinsicGasCalculatorLive.pipe(
+        Layer.provide(ReleaseSpecLive(Hardfork.FRONTIER)),
+      ),
+    ),
+  ),
+);
 
 const provideBuilder = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(TestLayer));
+const provideFrontierBuilder = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.provide(FrontierLayer));
 
 describe("TransactionEnvironmentBuilder", () => {
   it.effect("builds environment and clears transient storage", () =>
@@ -180,6 +234,73 @@ describe("TransactionEnvironmentBuilder", () => {
         if (Either.isLeft(outcome)) {
           assert.isTrue(
             outcome.left instanceof InsufficientTransactionGasError,
+          );
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails on invalid transaction shape", () =>
+    provideBuilder(
+      Effect.gen(function* () {
+        const origin = makeAddress(0x03);
+        const coinbase = makeAddress(0xcc);
+        const gasPrice = Schema.decodeSync(GasPriceSchema)(1n);
+        const tx = {
+          type: Transaction.Type.Legacy,
+        } as unknown as Transaction.Any;
+
+        const outcome = yield* Effect.either(
+          buildTransactionEnvironment({ tx, origin, coinbase, gasPrice }),
+        );
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(
+            outcome.left instanceof IntrinsicGasInvalidTransactionError,
+          );
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when available gas is out of range", () =>
+    provideBuilder(
+      Effect.gen(function* () {
+        const origin = makeAddress(0x04);
+        const coinbase = makeAddress(0xdd);
+        const gasPrice = Schema.decodeSync(GasPriceSchema)(1n);
+        const gasLimit = 1n << 257n;
+        const tx = makeLegacyTx(gasLimit);
+
+        const outcome = yield* Effect.either(
+          buildTransactionEnvironment({ tx, origin, coinbase, gasPrice }),
+        );
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof InvalidTransactionGasError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when access lists are unsupported", () =>
+    provideFrontierBuilder(
+      Effect.gen(function* () {
+        const origin = makeAddress(0x05);
+        const coinbase = makeAddress(0xee);
+        const gasPrice = Schema.decodeSync(GasPriceSchema)(1n);
+        const tx = makeEip2930Tx(50_000n);
+
+        const outcome = yield* Effect.either(
+          buildTransactionEnvironment({ tx, origin, coinbase, gasPrice }),
+        );
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(
+            outcome.left instanceof UnsupportedIntrinsicGasFeatureError,
           );
         }
       }),
