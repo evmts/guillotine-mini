@@ -15,18 +15,18 @@ const BUILD_COMMIT_ENV_NAMES = [
   "VERCEL_GIT_COMMIT_SHA",
 ] as const;
 
-export type HexType = Parameters<typeof Hex.equals>[0];
-
 /** The Engine API `ClientVersionV1` structure. */
 export interface ClientVersionV1 {
   readonly code: string;
   readonly name: string;
   readonly version: string;
-  readonly commit: HexType;
+  readonly commit: ReturnType<typeof Hex.fromBytes>;
 }
 
+/** Source location of a client-version payload being validated. */
 export type ClientVersionSource = "request" | "response";
 
+/** Validation reasons for malformed `ClientVersionV1` payloads. */
 export type InvalidClientVersionReason =
   | "InvalidCode"
   | "EmptyName"
@@ -85,7 +85,9 @@ const readBuildCommit = (): string => {
   return "";
 };
 
-const normalizeBuildCommitHex = (rawCommit: string): HexType => {
+const normalizeBuildCommitHex = (
+  rawCommit: string,
+): ClientVersionV1["commit"] => {
   const normalized = rawCommit
     .replace(/^0x/i, "")
     .replace(/[^0-9a-f]/gi, "")
