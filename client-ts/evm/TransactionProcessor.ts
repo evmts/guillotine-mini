@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import {
@@ -10,6 +11,13 @@ import {
   GasPrice,
   Transaction,
 } from "voltaire-effect/primitives";
+import {
+  beginTransaction,
+  commitTransaction,
+  rollbackTransaction,
+  type TransactionBoundary,
+  type TransactionBoundaryError,
+} from "../state/TransactionBoundary";
 
 /** Effective gas price breakdown for transaction execution. */
 export type EffectiveGasPrice = {
@@ -162,6 +170,22 @@ export type MaxGasFeeCheckError =
   | InvalidBlobVersionedHashError
   | TransactionTypeContractCreationError;
 
+const runWithinBoundary = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E | TransactionBoundaryError, R | TransactionBoundary> =>
+  Effect.gen(function* () {
+    yield* beginTransaction();
+    const exit = yield* Effect.exit(effect);
+
+    if (Exit.isSuccess(exit)) {
+      yield* commitTransaction();
+      return exit.value;
+    }
+
+    yield* rollbackTransaction();
+    return yield* Effect.failCause(exit.cause);
+  });
+
 /** Transaction processor service interface (fee calculations). */
 export interface TransactionProcessorService {
   readonly calculateEffectiveGasPrice: (
@@ -174,6 +198,12 @@ export interface TransactionProcessorService {
     blobGasPrice: bigint,
     senderBalance: bigint,
   ) => Effect.Effect<MaxGasFeeCheck, MaxGasFeeCheckError>;
+  readonly runInTransactionBoundary: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | TransactionBoundaryError, R | TransactionBoundary>;
+  readonly runInCallFrameBoundary: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | TransactionBoundaryError, R | TransactionBoundary>;
 }
 
 /** Context tag for transaction processor service. */
@@ -182,8 +212,8 @@ export class TransactionProcessor extends Context.Tag("TransactionProcessor")<
   TransactionProcessorService
 >() {}
 
-const withTransactionProcessor = <A, E>(
-  f: (service: TransactionProcessorService) => Effect.Effect<A, E>,
+const withTransactionProcessor = <A, E, R>(
+  f: (service: TransactionProcessorService) => Effect.Effect<A, E, R>,
 ) => Effect.flatMap(TransactionProcessor, f);
 
 const decodeBaseFee = (value: bigint) =>
@@ -435,9 +465,17 @@ const makeTransactionProcessor = Effect.gen(function* () {
       return { maxGasFee, blobGasFee, blobGasUsed };
     });
 
+  const runInTransactionBoundary = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    runWithinBoundary(effect);
+
+  const runInCallFrameBoundary = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    runWithinBoundary(effect);
+
   return {
     calculateEffectiveGasPrice,
     checkMaxGasFeeAndBalance,
+    runInTransactionBoundary,
+    runInCallFrameBoundary,
   } satisfies TransactionProcessorService;
 });
 
@@ -472,3 +510,17 @@ export const checkMaxGasFeeAndBalance = (
       senderBalance,
     ),
   );
+
+/** Execute a transaction-scoped effect with begin/commit/rollback semantics. */
+export const runInTransactionBoundary = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+) =>
+  withTransactionProcessor((service) =>
+    service.runInTransactionBoundary(effect),
+  );
+
+/** Execute a call-frame effect with begin/commit/rollback semantics. */
+export const runInCallFrameBoundary = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+) =>
+  withTransactionProcessor((service) => service.runInCallFrameBoundary(effect));

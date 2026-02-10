@@ -1,6 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { Address, Blob, Hex, Transaction } from "voltaire-effect/primitives";
 import {
@@ -13,12 +15,41 @@ import {
   InvalidBlobVersionedHashError,
   NoBlobDataError,
   PriorityFeeGreaterThanMaxFeeError,
+  runInCallFrameBoundary,
+  runInTransactionBoundary,
   TransactionTypeContractCreationError,
   TransactionProcessorTest,
 } from "./TransactionProcessor";
+import { EMPTY_ACCOUNT, type AccountStateType } from "../state/Account";
+import {
+  getAccountOptional,
+  getStorage,
+  setAccount,
+  setStorage,
+  WorldStateTest,
+} from "../state/State";
+import {
+  getTransientStorage,
+  setTransientStorage,
+  TransientStorageTest,
+} from "../state/TransientStorage";
+import {
+  transactionDepth,
+  TransactionBoundaryTest,
+} from "../state/TransactionBoundary";
 
 const provideProcessor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(TransactionProcessorTest));
+
+const TransactionProcessorExecutionTest = Layer.mergeAll(
+  TransactionProcessorTest,
+  TransactionBoundaryTest,
+  WorldStateTest,
+  TransientStorageTest,
+);
+
+const provideExecutionProcessor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.provide(TransactionProcessorExecutionTest));
 
 const toBigInt = (value: bigint | number): bigint =>
   typeof value === "bigint" ? value : BigInt(value);
@@ -43,6 +74,38 @@ const EMPTY_SIGNATURE = {
 
 const encodeAddress = (address: Address.AddressType): string =>
   Hex.fromBytes(address);
+
+const makeAddress = (lastByte: number): Address.AddressType => {
+  const address = Address.zero();
+  address[address.length - 1] = lastByte;
+  return address;
+};
+
+const makeSlot = (lastByte: number) => {
+  const slot = new Uint8Array(32);
+  slot[slot.length - 1] = lastByte;
+  return slot as Parameters<typeof setStorage>[1];
+};
+
+const makeStorageValue = (byte: number) => {
+  const value = new Uint8Array(32);
+  value.fill(byte);
+  return value as Parameters<typeof setStorage>[2];
+};
+
+const makeAccount = (
+  overrides: Partial<Omit<AccountStateType, "__tag">> = {},
+): AccountStateType => ({
+  ...EMPTY_ACCOUNT,
+  ...overrides,
+});
+
+const storageValueHex = (value: Uint8Array) => Hex.fromBytes(value);
+const ZERO_STORAGE_VALUE = makeStorageValue(0);
+
+class ExecutionFailedError extends Data.TaggedError("ExecutionFailedError")<{
+  readonly scope: "transaction" | "call-frame";
+}> {}
 
 const makeLegacyTx = (gasPrice: bigint): Transaction.Legacy =>
   Schema.validateSync(LegacySchema)({
@@ -284,6 +347,190 @@ describe("TransactionProcessor.checkMaxGasFeeAndBalance", () => {
             outcome.left instanceof InsufficientMaxFeePerBlobGasError,
           );
         }
+      }),
+    ),
+  );
+});
+
+describe("TransactionProcessor execution boundaries", () => {
+  it.effect(
+    "runInTransactionBoundary commits world and transient changes",
+    () =>
+      provideExecutionProcessor(
+        Effect.gen(function* () {
+          const address = makeAddress(0xa1);
+          const slot = makeSlot(0xa1);
+          const value = makeStorageValue(0x11);
+
+          yield* setAccount(address, makeAccount({ nonce: 1n }));
+          assert.strictEqual(yield* transactionDepth(), 0);
+
+          const result = yield* runInTransactionBoundary(
+            Effect.gen(function* () {
+              assert.strictEqual(yield* transactionDepth(), 1);
+              yield* setAccount(address, makeAccount({ nonce: 2n }));
+              yield* setStorage(address, slot, value);
+              yield* setTransientStorage(address, slot, value);
+              return "ok";
+            }),
+          );
+
+          assert.strictEqual(result, "ok");
+          assert.strictEqual(yield* transactionDepth(), 0);
+
+          const account = yield* getAccountOptional(address);
+          assert.strictEqual(account?.nonce, 2n);
+          assert.strictEqual(
+            storageValueHex(yield* getStorage(address, slot)),
+            storageValueHex(value),
+          );
+          assert.strictEqual(
+            storageValueHex(yield* getTransientStorage(address, slot)),
+            storageValueHex(value),
+          );
+        }),
+      ),
+  );
+
+  it.effect("runInTransactionBoundary rolls back on failure", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const address = makeAddress(0xa2);
+        const slot = makeSlot(0xa2);
+        const value = makeStorageValue(0x22);
+
+        yield* setAccount(address, makeAccount({ nonce: 3n }));
+        const outcome = yield* Effect.either(
+          runInTransactionBoundary(
+            Effect.gen(function* () {
+              yield* setAccount(address, makeAccount({ nonce: 4n }));
+              yield* setStorage(address, slot, value);
+              yield* setTransientStorage(address, slot, value);
+              return yield* Effect.fail(
+                new ExecutionFailedError({ scope: "transaction" }),
+              );
+            }),
+          ),
+        );
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof ExecutionFailedError);
+        }
+        assert.strictEqual(yield* transactionDepth(), 0);
+
+        const account = yield* getAccountOptional(address);
+        assert.strictEqual(account?.nonce, 3n);
+        assert.strictEqual(
+          storageValueHex(yield* getStorage(address, slot)),
+          storageValueHex(ZERO_STORAGE_VALUE),
+        );
+        assert.strictEqual(
+          storageValueHex(yield* getTransientStorage(address, slot)),
+          storageValueHex(ZERO_STORAGE_VALUE),
+        );
+      }),
+    ),
+  );
+
+  it.effect("runInCallFrameBoundary commits nested call-frame changes", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const address = makeAddress(0xa3);
+        const slot = makeSlot(0xa3);
+        const value = makeStorageValue(0x33);
+
+        yield* setAccount(address, makeAccount({ nonce: 5n }));
+        yield* runInTransactionBoundary(
+          Effect.gen(function* () {
+            assert.strictEqual(yield* transactionDepth(), 1);
+            yield* runInCallFrameBoundary(
+              Effect.gen(function* () {
+                assert.strictEqual(yield* transactionDepth(), 2);
+                yield* setAccount(address, makeAccount({ nonce: 6n }));
+                yield* setStorage(address, slot, value);
+                yield* setTransientStorage(address, slot, value);
+              }),
+            );
+            assert.strictEqual(yield* transactionDepth(), 1);
+          }),
+        );
+
+        assert.strictEqual(yield* transactionDepth(), 0);
+        const account = yield* getAccountOptional(address);
+        assert.strictEqual(account?.nonce, 6n);
+        assert.strictEqual(
+          storageValueHex(yield* getStorage(address, slot)),
+          storageValueHex(value),
+        );
+        assert.strictEqual(
+          storageValueHex(yield* getTransientStorage(address, slot)),
+          storageValueHex(value),
+        );
+      }),
+    ),
+  );
+
+  it.effect("runInCallFrameBoundary rolls back failed inner call frame", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const address = makeAddress(0xa4);
+        const slot = makeSlot(0xa4);
+        const outerValue = makeStorageValue(0x44);
+        const innerValue = makeStorageValue(0x45);
+
+        yield* setAccount(address, makeAccount({ nonce: 7n }));
+        yield* runInTransactionBoundary(
+          Effect.gen(function* () {
+            assert.strictEqual(yield* transactionDepth(), 1);
+            yield* setAccount(address, makeAccount({ nonce: 8n }));
+            yield* setStorage(address, slot, outerValue);
+            yield* setTransientStorage(address, slot, outerValue);
+
+            const callResult = yield* Effect.either(
+              runInCallFrameBoundary(
+                Effect.gen(function* () {
+                  assert.strictEqual(yield* transactionDepth(), 2);
+                  yield* setAccount(address, makeAccount({ nonce: 9n }));
+                  yield* setStorage(address, slot, innerValue);
+                  yield* setTransientStorage(address, slot, innerValue);
+                  return yield* Effect.fail(
+                    new ExecutionFailedError({ scope: "call-frame" }),
+                  );
+                }),
+              ),
+            );
+
+            assert.isTrue(Either.isLeft(callResult));
+            if (Either.isLeft(callResult)) {
+              assert.isTrue(callResult.left instanceof ExecutionFailedError);
+            }
+
+            assert.strictEqual(yield* transactionDepth(), 1);
+            const innerRolledBackAccount = yield* getAccountOptional(address);
+            assert.strictEqual(innerRolledBackAccount?.nonce, 8n);
+            assert.strictEqual(
+              storageValueHex(yield* getStorage(address, slot)),
+              storageValueHex(outerValue),
+            );
+            assert.strictEqual(
+              storageValueHex(yield* getTransientStorage(address, slot)),
+              storageValueHex(outerValue),
+            );
+          }),
+        );
+
+        assert.strictEqual(yield* transactionDepth(), 0);
+        const account = yield* getAccountOptional(address);
+        assert.strictEqual(account?.nonce, 8n);
+        assert.strictEqual(
+          storageValueHex(yield* getStorage(address, slot)),
+          storageValueHex(outerValue),
+        );
+        assert.strictEqual(
+          storageValueHex(yield* getTransientStorage(address, slot)),
+          storageValueHex(outerValue),
+        );
       }),
     ),
   );
