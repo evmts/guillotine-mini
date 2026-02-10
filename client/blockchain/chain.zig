@@ -369,3 +369,91 @@ test "Chain - head helpers reflect new head after reorg" {
     try std.testing.expect(hh != null);
     try std.testing.expectEqualSlices(u8, &b1.hash, &hh.?);
 }
+
+test "Chain - safe_head_hash_of forwards forkchoice value" {
+    const Fc = struct {
+        safe: ?Hash.Hash,
+        finalized: ?Hash.Hash,
+        pub fn getSafeHash(self: @This()) ?Hash.Hash {
+            return self.safe;
+        }
+        pub fn getFinalizedHash(self: @This()) ?Hash.Hash {
+            return self.finalized;
+        }
+    };
+
+    const fc = Fc{ .safe = Hash.ZERO, .finalized = null };
+    const h = safe_head_hash_of(fc);
+    try std.testing.expect(h != null);
+    try std.testing.expectEqualSlices(u8, &Hash.ZERO, &h.?);
+}
+
+test "Chain - finalized_head_hash_of forwards forkchoice value" {
+    const Fc = struct {
+        safe: ?Hash.Hash,
+        finalized: ?Hash.Hash,
+        pub fn getSafeHash(self: @This()) ?Hash.Hash {
+            return self.safe;
+        }
+        pub fn getFinalizedHash(self: @This()) ?Hash.Hash {
+            return self.finalized;
+        }
+    };
+
+    const fc = Fc{ .safe = null, .finalized = Hash.ZERO };
+    const h = finalized_head_hash_of(fc);
+    try std.testing.expect(h != null);
+    try std.testing.expectEqualSlices(u8, &Hash.ZERO, &h.?);
+}
+
+test "Chain - safe/finalized head block helpers return local blocks" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+
+    const Fc = struct {
+        safe: ?Hash.Hash,
+        finalized: ?Hash.Hash,
+        pub fn getSafeHash(self: @This()) ?Hash.Hash {
+            return self.safe;
+        }
+        pub fn getFinalizedHash(self: @This()) ?Hash.Hash {
+            return self.finalized;
+        }
+    };
+
+    const fc = Fc{ .safe = genesis.hash, .finalized = genesis.hash };
+
+    const sb = safe_head_block_of(&chain, fc);
+    try std.testing.expect(sb != null);
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &sb.?.hash);
+
+    const fb = finalized_head_block_of(&chain, fc);
+    try std.testing.expect(fb != null);
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &fb.?.hash);
+}
+
+test "Chain - safe/finalized head block helpers return null when missing locally" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const Fc = struct {
+        safe: ?Hash.Hash,
+        finalized: ?Hash.Hash,
+        pub fn getSafeHash(self: @This()) ?Hash.Hash {
+            return self.safe;
+        }
+        pub fn getFinalizedHash(self: @This()) ?Hash.Hash {
+            return self.finalized;
+        }
+    };
+
+    // Some non-existent hash (all zeros is fine since store is empty)
+    const fc = Fc{ .safe = Hash.ZERO, .finalized = Hash.ZERO };
+    try std.testing.expect(safe_head_block_of(&chain, fc) == null);
+    try std.testing.expect(finalized_head_block_of(&chain, fc) == null);
+}
