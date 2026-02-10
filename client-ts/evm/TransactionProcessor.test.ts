@@ -20,6 +20,7 @@ import {
   InvalidBlobVersionedHashError,
   InvalidSenderAccountCodeError,
   NoBlobDataError,
+  processTransaction,
   PriorityFeeGreaterThanMaxFeeError,
   runInCallFrameBoundary,
   runInTransactionBoundary,
@@ -556,6 +557,78 @@ describe("TransactionProcessor.buyGasAndIncrementNonce", () => {
         if (Either.isLeft(outcome)) {
           assert.isTrue(outcome.left instanceof TransactionNonceTooHighError);
         }
+      }),
+    ),
+  );
+});
+
+describe("TransactionProcessor.processTransaction", () => {
+  const maxBlobGasPerBlock = 1_179_648n;
+
+  it.effect("orchestrates inclusion checks then gas purchase in one call", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xb7);
+        const tx = makeEip1559Tx(10n, 1n);
+        yield* setAccount(
+          sender,
+          makeAccount({
+            nonce: tx.nonce,
+            balance: 2_000_000n,
+          }),
+        );
+
+        const result = yield* processTransaction(
+          tx,
+          sender,
+          5n,
+          0n,
+          130_000n,
+          10_000n,
+          maxBlobGasPerBlock,
+          0n,
+        );
+
+        assert.strictEqual(result.effectiveGasPrice, 6n);
+        assert.strictEqual(result.senderNonceAfterIncrement, tx.nonce + 1n);
+        assert.strictEqual(result.txBlobGasUsed, 0n);
+        assert.strictEqual(result.senderHasDelegationCode, false);
+      }),
+    ),
+  );
+
+  it.effect("enforces inclusion validation before nonce mutation", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xb8);
+        const tx = makeLegacyTx(10n);
+        yield* setAccount(
+          sender,
+          makeAccount({
+            nonce: tx.nonce + 1n,
+            balance: 2_000_000n,
+          }),
+        );
+
+        const outcome = yield* Effect.either(
+          processTransaction(
+            tx,
+            sender,
+            5n,
+            0n,
+            90_000n,
+            0n,
+            maxBlobGasPerBlock,
+            0n,
+          ),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof BlockGasLimitExceededError);
+        }
+
+        const account = yield* getAccountOptional(sender);
+        assert.strictEqual(account?.nonce, tx.nonce + 1n);
       }),
     ),
   );

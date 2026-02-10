@@ -47,6 +47,10 @@ export type PreExecutionInclusionCheck = {
   readonly senderHasDelegationCode: boolean;
 };
 
+/** Result of process-transaction pre-execution orchestration. */
+export type ProcessTransactionPreExecution = GasPurchase &
+  PreExecutionInclusionCheck;
+
 const TransactionSchema = Transaction.Schema as unknown as Schema.Schema<
   Transaction.Any,
   unknown
@@ -294,6 +298,20 @@ export interface TransactionProcessorService {
   ) => Effect.Effect<
     PreExecutionInclusionCheck,
     PreExecutionInclusionCheckError,
+    WorldState
+  >;
+  readonly processTransaction: (
+    tx: Transaction.Any,
+    sender: Address.AddressType,
+    baseFeePerGas: bigint,
+    blobGasPrice: bigint,
+    blockGasLimit: bigint,
+    blockGasUsed: bigint,
+    maxBlobGasPerBlock: bigint,
+    blockBlobGasUsed: bigint,
+  ) => Effect.Effect<
+    ProcessTransactionPreExecution,
+    PreExecutionInclusionCheckError | GasPurchaseError,
     WorldState
   >;
   readonly runInTransactionBoundary: <A, E, R>(
@@ -726,6 +744,38 @@ const makeTransactionProcessor = Effect.gen(function* () {
       } satisfies PreExecutionInclusionCheck;
     });
 
+  const processTransaction = (
+    tx: Transaction.Any,
+    sender: Address.AddressType,
+    baseFeePerGas: bigint,
+    blobGasPrice: bigint,
+    blockGasLimit: bigint,
+    blockGasUsed: bigint,
+    maxBlobGasPerBlock: bigint,
+    blockBlobGasUsed: bigint,
+  ) =>
+    Effect.gen(function* () {
+      const inclusion = yield* checkInclusionAvailabilityAndSenderCode(
+        tx,
+        sender,
+        blockGasLimit,
+        blockGasUsed,
+        maxBlobGasPerBlock,
+        blockBlobGasUsed,
+      );
+      const gasPurchase = yield* buyGasAndIncrementNonce(
+        tx,
+        sender,
+        baseFeePerGas,
+        blobGasPrice,
+      );
+
+      return {
+        ...gasPurchase,
+        ...inclusion,
+      } satisfies ProcessTransactionPreExecution;
+    });
+
   const runInTransactionBoundary = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     runWithinBoundary(effect);
 
@@ -737,6 +787,7 @@ const makeTransactionProcessor = Effect.gen(function* () {
     checkMaxGasFeeAndBalance,
     buyGasAndIncrementNonce,
     checkInclusionAvailabilityAndSenderCode,
+    processTransaction,
     runInTransactionBoundary,
     runInCallFrameBoundary,
   } satisfies TransactionProcessorService;
@@ -798,6 +849,30 @@ export const checkInclusionAvailabilityAndSenderCode = (
     service.checkInclusionAvailabilityAndSenderCode(
       tx,
       sender,
+      blockGasLimit,
+      blockGasUsed,
+      maxBlobGasPerBlock,
+      blockBlobGasUsed,
+    ),
+  );
+
+/** Run pre-execution transaction orchestration in protocol order. */
+export const processTransaction = (
+  tx: Transaction.Any,
+  sender: Address.AddressType,
+  baseFeePerGas: bigint,
+  blobGasPrice: bigint,
+  blockGasLimit: bigint,
+  blockGasUsed: bigint,
+  maxBlobGasPerBlock: bigint,
+  blockBlobGasUsed: bigint,
+) =>
+  withTransactionProcessor((service) =>
+    service.processTransaction(
+      tx,
+      sender,
+      baseFeePerGas,
+      blobGasPrice,
       blockGasLimit,
       blockGasUsed,
       maxBlobGasPerBlock,
