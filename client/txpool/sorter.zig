@@ -175,6 +175,60 @@ test "compare_fee_market_priority — EIP-1559 ties on effective gas price use m
     );
 }
 
+test "compare_fee_market_priority — EIP-1559 caps priority by max fee minus base fee" {
+    const base_fee = BaseFeePerGas.fromGwei(25);
+
+    const x_max_fee = MaxFeePerGas.fromGwei(27);
+    const x_max_priority = MaxPriorityFeePerGas.fromGwei(5);
+
+    const y_max_fee = MaxFeePerGas.fromGwei(28);
+    const y_max_priority = MaxPriorityFeePerGas.fromGwei(1);
+
+    const x_gas_price = GasPrice.fromGwei(0);
+    const y_gas_price = GasPrice.fromGwei(0);
+
+    try std.testing.expectEqual(
+        @as(i32, -1),
+        compare_fee_market_priority(
+            x_gas_price,
+            x_max_fee,
+            x_max_priority,
+            y_gas_price,
+            y_max_fee,
+            y_max_priority,
+            base_fee,
+            true,
+        ),
+    );
+}
+
+test "compare_fee_market_priority — EIP-1559 max fee below base fee uses max fee" {
+    const base_fee = BaseFeePerGas.fromGwei(30);
+
+    const x_max_fee = MaxFeePerGas.fromGwei(25);
+    const x_max_priority = MaxPriorityFeePerGas.fromGwei(2);
+
+    const y_max_fee = MaxFeePerGas.fromGwei(28);
+    const y_max_priority = MaxPriorityFeePerGas.fromGwei(1);
+
+    const x_gas_price = GasPrice.fromGwei(0);
+    const y_gas_price = GasPrice.fromGwei(0);
+
+    try std.testing.expectEqual(
+        @as(i32, 1),
+        compare_fee_market_priority(
+            x_gas_price,
+            x_max_fee,
+            x_max_priority,
+            y_gas_price,
+            y_max_fee,
+            y_max_priority,
+            base_fee,
+            true,
+        ),
+    );
+}
+
 test "compare_fee_market_priority — legacy compares gas price descending" {
     const base_fee = BaseFeePerGas.fromGwei(0);
 
