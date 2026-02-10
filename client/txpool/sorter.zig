@@ -13,7 +13,7 @@ const BaseFeePerGas = primitives.BaseFeePerGas;
 const GasPrice = primitives.GasPrice;
 const MaxFeePerGas = primitives.MaxFeePerGas;
 const MaxPriorityFeePerGas = primitives.MaxPriorityFeePerGas;
-const U256 = @import("primitives").Denomination.U256;
+const U256 = primitives.Denomination.U256;
 
 fn is_legacy_fee_fields(max_fee: MaxFeePerGas, max_priority: MaxPriorityFeePerGas) bool {
     return max_fee.isZero() and max_priority.isZero();
