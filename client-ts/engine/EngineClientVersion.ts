@@ -3,9 +3,17 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Hex } from "voltaire-effect/primitives";
+import packageJson from "../package.json";
 
 const CLIENT_CODE_PATTERN = /^[A-Za-z]{2}$/;
 const CLIENT_COMMIT_LENGTH_BYTES = 4;
+const CLIENT_COMMIT_HEX_LENGTH = CLIENT_COMMIT_LENGTH_BYTES * 2;
+const BUILD_COMMIT_ENV_NAMES = [
+  "GUILLOTINE_BUILD_COMMIT",
+  "GIT_COMMIT",
+  "COMMIT_SHA",
+  "VERCEL_GIT_COMMIT_SHA",
+] as const;
 
 export type HexType = Parameters<typeof Hex.equals>[0];
 
@@ -54,12 +62,54 @@ export class EngineClientVersion extends Context.Tag("EngineClientVersion")<
   EngineClientVersionService
 >() {}
 
+const readBuildVersion = (): string => {
+  const fromEnvironment = process.env.GUILLOTINE_BUILD_VERSION;
+  if (
+    typeof fromEnvironment === "string" &&
+    fromEnvironment.trim().length > 0
+  ) {
+    return fromEnvironment;
+  }
+
+  return packageJson.version;
+};
+
+const readBuildCommit = (): string => {
+  for (const envName of BUILD_COMMIT_ENV_NAMES) {
+    const raw = process.env[envName];
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      return raw;
+    }
+  }
+
+  return "";
+};
+
+const normalizeBuildCommitHex = (rawCommit: string): HexType => {
+  const normalized = rawCommit
+    .replace(/^0x/i, "")
+    .replace(/[^0-9a-f]/gi, "")
+    .slice(0, CLIENT_COMMIT_HEX_LENGTH)
+    .padStart(CLIENT_COMMIT_HEX_LENGTH, "0");
+
+  const commitBytes = new Uint8Array(CLIENT_COMMIT_LENGTH_BYTES);
+  for (let index = 0; index < CLIENT_COMMIT_LENGTH_BYTES; index += 1) {
+    const offset = index * 2;
+    commitBytes[index] = Number.parseInt(
+      normalized.slice(offset, offset + 2),
+      16,
+    );
+  }
+
+  return Hex.fromBytes(commitBytes);
+};
+
 /** Default single-client identity for guillotine-mini. */
 export const GuillotineMiniClientVersionV1 = {
   code: "GM",
   name: "guillotine-mini",
-  version: "0.0.0",
-  commit: Hex.fromBytes(new Uint8Array(CLIENT_COMMIT_LENGTH_BYTES)),
+  version: readBuildVersion(),
+  commit: normalizeBuildCommitHex(readBuildCommit()),
 } satisfies ClientVersionV1;
 
 /** Default `engine_getClientVersionV1` response list. */
