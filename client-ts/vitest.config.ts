@@ -6,11 +6,13 @@ export default defineConfig({
       test: "node:test",
     },
   },
-  test: {
-    environment: "node",
-    setupFiles: ["./vitest.setup.ts"],
+  server: {
     deps: {
       inline: ["@effect/vitest", "effect"],
     },
+  },
+  test: {
+    environment: "node",
+    setupFiles: ["./vitest.setup.ts"],
   },
 });

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test:prepare": "node scripts/repairVoltairePeer.mjs",
+    "test:rpc": "bun run test:prepare && vitest run rpc",
     "test": "bun run test:prepare && vitest run",
     "test:watch": "bun run test:prepare && vitest"
   },
