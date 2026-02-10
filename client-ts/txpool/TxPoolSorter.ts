@@ -14,6 +14,12 @@ type FeeTuple = Readonly<{
   maxFeePerGas: MaxFeePerGas.MaxFeePerGasType;
   maxPriorityFeePerGas: MaxPriorityFeePerGas.MaxPriorityFeePerGasType;
 }>;
+type ReplacementFeeTuple = Readonly<{
+  gasPrice: bigint;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+  supports1559: boolean;
+}>;
 
 /** Error raised when the transaction type is not supported by the sorter. */
 export class TxPoolSorterUnsupportedTransactionTypeError extends Data.TaggedError(
@@ -33,6 +39,19 @@ const compareDescending = (left: bigint, right: bigint): CompareResult => {
   }
   if (left < right) {
     return 1;
+  }
+  return 0;
+};
+
+const compareThresholdAgainstCandidate = (
+  threshold: bigint,
+  candidate: bigint,
+): CompareResult => {
+  if (threshold > candidate) {
+    return 1;
+  }
+  if (threshold < candidate) {
+    return -1;
   }
   return 0;
 };
@@ -82,6 +101,30 @@ const feeTupleFromTransaction = (tx: Transaction.Any): FeeTuple => {
       maxFeePerGas: tx.maxFeePerGas as MaxFeePerGas.MaxFeePerGasType,
       maxPriorityFeePerGas:
         tx.maxPriorityFeePerGas as MaxPriorityFeePerGas.MaxPriorityFeePerGasType,
+    };
+  }
+
+  throw new TxPoolSorterUnsupportedTransactionTypeError({ type: tx.type });
+};
+
+const replacementFeeTupleFromTransaction = (
+  tx: Transaction.Any,
+): ReplacementFeeTuple => {
+  if (Transaction.isLegacy(tx) || Transaction.isEIP2930(tx)) {
+    return {
+      gasPrice: tx.gasPrice,
+      maxFeePerGas: tx.gasPrice,
+      maxPriorityFeePerGas: tx.gasPrice,
+      supports1559: false,
+    };
+  }
+
+  if (isDynamicFeeTransaction(tx)) {
+    return {
+      gasPrice: tx.maxPriorityFeePerGas,
+      maxFeePerGas: tx.maxFeePerGas,
+      maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
+      supports1559: true,
     };
   }
 
@@ -176,4 +219,62 @@ export const compareTransactionFeeMarketPriority = (
     baseFeePerGas,
     isEip1559Enabled,
   );
+};
+
+/**
+ * Compare a newcomer transaction against an existing transaction for replacement.
+ *
+ * Returns:
+ * - `-1` when the new transaction should replace the old transaction
+ * - `0` when undecided
+ * - `1` when the existing transaction should be kept
+ *
+ * This mirrors Nethermind's `CompareReplacedTxByFee` fee bump policy:
+ * - Legacy replacement requires a 10% `gasPrice` bump.
+ * - 1559-style replacement requires a 10% bump on both `maxFeePerGas`
+ *   and `maxPriorityFeePerGas`.
+ */
+export const compareReplacedTransactionByFee = (
+  newTx: Transaction.Any,
+  oldTx: Transaction.Any,
+): CompareResult => {
+  if (newTx === oldTx) {
+    return 0;
+  }
+
+  const newcomer = replacementFeeTupleFromTransaction(newTx);
+  const existing = replacementFeeTupleFromTransaction(oldTx);
+
+  if (existing.maxFeePerGas === 0n) {
+    return -1;
+  }
+
+  if (!newcomer.supports1559 && !existing.supports1559) {
+    const bumpGasPrice = existing.gasPrice / 10n;
+    const comparison = compareThresholdAgainstCandidate(
+      existing.gasPrice + bumpGasPrice,
+      newcomer.gasPrice,
+    );
+    if (comparison !== 0) {
+      return comparison;
+    }
+
+    return bumpGasPrice > 0n ? -1 : 1;
+  }
+
+  const bumpMaxFeePerGas = existing.maxFeePerGas / 10n;
+  if (existing.maxFeePerGas + bumpMaxFeePerGas > newcomer.maxFeePerGas) {
+    return 1;
+  }
+
+  const bumpMaxPriorityFeePerGas = existing.maxPriorityFeePerGas / 10n;
+  const priorityComparison = compareThresholdAgainstCandidate(
+    existing.maxPriorityFeePerGas + bumpMaxPriorityFeePerGas,
+    newcomer.maxPriorityFeePerGas,
+  );
+  if (priorityComparison !== 0) {
+    return priorityComparison;
+  }
+
+  return bumpMaxFeePerGas > 0n && bumpMaxPriorityFeePerGas > 0n ? -1 : 1;
 };

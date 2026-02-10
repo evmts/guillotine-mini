@@ -12,6 +12,7 @@ import {
 } from "voltaire-effect/primitives";
 import {
   compareFeeMarketPriority,
+  compareReplacedTransactionByFee,
   compareTransactionFeeMarketPriority,
   TxPoolSorterUnsupportedTransactionTypeError,
 } from "./TxPoolSorter";
@@ -451,6 +452,93 @@ describe("TxPoolSorter.compareTransactionFeeMarketPriority", () => {
             baseFee,
             true,
           ),
+        TxPoolSorterUnsupportedTransactionTypeError,
+      );
+    }),
+  );
+});
+
+describe("TxPoolSorter.compareReplacedTransactionByFee", () => {
+  it.effect(
+    "requires at least a 10% gas price bump for legacy transactions",
+    () =>
+      Effect.sync(() => {
+        const oldTx = makeLegacyTx(100n);
+        const underpricedNewTx = makeLegacyTx(109n);
+
+        const result = compareReplacedTransactionByFee(underpricedNewTx, oldTx);
+
+        assert.strictEqual(result, 1);
+      }),
+  );
+
+  it.effect("accepts a legacy transaction at exactly 10% bump", () =>
+    Effect.sync(() => {
+      const oldTx = makeLegacyTx(100n);
+      const newTx = makeLegacyTx(110n);
+
+      const result = compareReplacedTransactionByFee(newTx, oldTx);
+
+      assert.strictEqual(result, -1);
+    }),
+  );
+
+  it.effect("always allows replacing zero-fee existing transactions", () =>
+    Effect.sync(() => {
+      const oldTx = makeLegacyTx(0n);
+      const newTx = makeLegacyTx(0n);
+
+      const result = compareReplacedTransactionByFee(newTx, oldTx);
+
+      assert.strictEqual(result, -1);
+    }),
+  );
+
+  it.effect(
+    "requires both max fee and priority fee bumps for EIP-1559-style transactions",
+    () =>
+      Effect.sync(() => {
+        const oldTx = makeEip1559Tx(100n, 20n);
+        const underpricedPriorityTx = makeEip1559Tx(110n, 21n);
+
+        const result = compareReplacedTransactionByFee(
+          underpricedPriorityTx,
+          oldTx,
+        );
+
+        assert.strictEqual(result, 1);
+      }),
+  );
+
+  it.effect("accepts EIP-1559 replacement at exact 10% bumps", () =>
+    Effect.sync(() => {
+      const oldTx = makeEip1559Tx(100n, 20n);
+      const newTx = makeEip1559Tx(110n, 22n);
+
+      const result = compareReplacedTransactionByFee(newTx, oldTx);
+
+      assert.strictEqual(result, -1);
+    }),
+  );
+
+  it.effect("rejects equal fee replacement when fee bumps round to zero", () =>
+    Effect.sync(() => {
+      const oldTx = makeEip1559Tx(9n, 9n);
+      const newTx = makeEip1559Tx(9n, 9n);
+
+      const result = compareReplacedTransactionByFee(newTx, oldTx);
+
+      assert.strictEqual(result, 1);
+    }),
+  );
+
+  it.effect("throws on unsupported transaction types", () =>
+    Effect.sync(() => {
+      const unknownNewTx = { type: 99 } as unknown as Transaction.Any;
+      const unknownOldTx = { type: 98 } as unknown as Transaction.Any;
+
+      assert.throws(
+        () => compareReplacedTransactionByFee(unknownNewTx, unknownOldTx),
         TxPoolSorterUnsupportedTransactionTypeError,
       );
     }),
