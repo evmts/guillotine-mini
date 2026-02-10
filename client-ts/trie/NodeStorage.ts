@@ -5,7 +5,7 @@ import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
-import { Bytes, Hash, Hex } from "voltaire-effect/primitives";
+import { Bytes, Hash, Hex, Rlp } from "voltaire-effect/primitives";
 import {
   Db,
   ReadFlags,
@@ -16,7 +16,8 @@ import {
 } from "../db/Db";
 import type { DbError } from "../db/DbError";
 import type { EncodedNode } from "./Node";
-import type { BytesType } from "./Node";
+import type { BytesType, RlpType } from "./Node";
+import { coerceEffect } from "./internal/effect";
 import { makeBytesHelpers, makeHashHelpers } from "./internal/primitives";
 import { EMPTY_TRIE_ROOT } from "./root";
 
@@ -193,6 +194,12 @@ const wrapDbCompactError = (cause: DbError) =>
     cause,
   });
 
+const wrapRlpDecodeError = (cause: unknown) =>
+  new TrieNodeStorageError({
+    message: "Failed to decode RLP-encoded trie node",
+    cause,
+  });
+
 const validateNodeHash = (
   nodeHash: Hash.HashType,
 ): Effect.Effect<Hash.HashType, TrieNodeStorageError> =>
@@ -268,6 +275,11 @@ export const EmptyNodePath: TrieNodePath = {
 
 const isEmptyTrieRoot = (nodeHash: Hash.HashType): boolean =>
   Hex.fromBytes(nodeHash) === EmptyTrieRootHex;
+
+const decodeRlp = (encodedNode: BytesType) =>
+  coerceEffect<{ data: RlpType; remainder: Uint8Array }, unknown>(
+    Rlp.decode(encodedNode),
+  ).pipe(Effect.mapError(wrapRlpDecodeError));
 
 const normalizeScheme = (
   scheme: TrieNodeStorageKeyScheme,
@@ -661,9 +673,24 @@ export const setNodeWithContext = (
 export const persistEncodedNode = (encodedNode: BytesType) =>
   Effect.gen(function* () {
     const validatedNodeData = yield* validateNodeData(encodedNode);
+
+    if (validatedNodeData.length < HashKeyLength) {
+      const decoded = yield* decodeRlp(validatedNodeData);
+      if (decoded.remainder.length !== 0) {
+        return yield* Effect.fail(invalidNodeDataError());
+      }
+      return {
+        _tag: "raw",
+        value: decoded.data,
+      } as const satisfies EncodedNode;
+    }
+
     const nodeHash = yield* Hash.keccak256(validatedNodeData);
     yield* setNode(nodeHash, validatedNodeData);
-    return nodeHash;
+    return {
+      _tag: "hash",
+      value: nodeHash,
+    } as const satisfies EncodedNode;
   });
 
 /** Check if an encoded trie node exists by hash-only context. */
