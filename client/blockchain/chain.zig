@@ -45,12 +45,11 @@ pub fn head_block(chain: *Chain) !?Block.Block {
     return hb;
 }
 
-/// Returns true if the given hash is canonical at its block number.
+/// Returns true if the given hash is canonical at its block number (local-only).
 ///
 /// Semantics:
-/// - Looks up the block locally first (never allocates); if absent and a
-///   fork cache is configured, the underlying `getBlockByHash` may return
-///   `error.RpcPending` which is propagated to the caller.
+/// - Strictly local lookup: consults the underlying local `BlockStore` only;
+///   never triggers fork‑cache RPCs and performs no heap allocations here.
 /// - If the block is present locally, checks the canonical mapping for the
 ///   block's number and compares hashes.
 /// - Blocks that exist only as orphans will return `false`.
