@@ -23,6 +23,9 @@ type Hooks = {
   readonly onWriteBatchRelease?: () => void;
 };
 
+const bytes = (...values: ReadonlyArray<number>): BytesType =>
+  new Uint8Array(values);
+
 const keyOf = (key: BytesType): string => String(key);
 
 const orderEntries = (
@@ -217,8 +220,8 @@ describe("DbAdapter", () => {
     "wires Db Context.Tag through Layer and exercises IDb + IDbMeta",
     () =>
       Effect.gen(function* () {
-        const key = "0x01" as BytesType;
-        const value = "0x02" as BytesType;
+        const key = bytes(0x01);
+        const value = bytes(0x02);
 
         const service = makeDbService();
         const program = Effect.gen(function* () {
@@ -231,16 +234,16 @@ describe("DbAdapter", () => {
 
           const read = yield* db.get(key);
           assert.isTrue(Option.isSome(read));
-          assert.strictEqual(Option.getOrNull(read), value);
+          assert.deepStrictEqual(Option.getOrNull(read), value);
 
-          const many = yield* db.getMany([key, "0xff" as BytesType]);
+          const many = yield* db.getMany([key, bytes(0xff)]);
           assert.strictEqual(many.length, 2);
           assert.isTrue(Option.isSome(many[0]!.value));
           assert.isTrue(Option.isNone(many[1]!.value));
 
           const all = yield* db.getAll();
           assert.strictEqual(all.length, 1);
-          assert.strictEqual(all[0]!.value, value);
+          assert.deepStrictEqual(all[0]!.value, value);
 
           yield* db.flush();
           yield* db.compact();
@@ -265,8 +268,8 @@ describe("DbAdapter", () => {
         let snapshotReleases = 0;
         let writeBatchReleases = 0;
 
-        const key = "0x03" as BytesType;
-        const value = "0x04" as BytesType;
+        const key = bytes(0x03);
+        const value = bytes(0x04);
 
         const service = makeDbService({
           onSnapshotRelease: () => {
@@ -303,7 +306,7 @@ describe("DbAdapter", () => {
         });
 
         const stored = yield* readProgram.pipe(Effect.provide(layer));
-        assert.strictEqual(stored, value);
+        assert.deepStrictEqual(stored, value);
       }),
   );
 });
