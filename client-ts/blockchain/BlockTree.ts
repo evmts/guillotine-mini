@@ -26,7 +26,8 @@ type BlockNumberKey = bigint;
 
 type BlockTreeState = {
   readonly canonicalChain: Map<BlockNumberKey, BlockHashType>;
-  readonly orphans: Map<BlockHashKey, BlockHashType>;
+  readonly orphans: Set<BlockHashKey>;
+  readonly orphansByParent: Map<BlockHashKey, Set<BlockHashKey>>;
 };
 
 const BlockHashSchema = BlockHash.Bytes as unknown as Schema.Schema<
@@ -134,40 +135,33 @@ const makeBlockTree = Effect.gen(function* () {
       () =>
         ({
           canonicalChain: new Map<BlockNumberKey, BlockHashType>(),
-          orphans: new Map<BlockHashKey, BlockHashType>(),
+          orphans: new Set<BlockHashKey>(),
+          orphansByParent: new Map<BlockHashKey, Set<BlockHashKey>>(),
         }) satisfies BlockTreeState,
     ),
     (tree) =>
       Effect.sync(() => {
         tree.canonicalChain.clear();
         tree.orphans.clear();
+        tree.orphansByParent.clear();
       }),
   );
 
   const resolveOrphans = (parentHash: BlockHashType) =>
-    Effect.gen(function* () {
+    Effect.sync(() => {
       const queue: Array<BlockHashKey> = [blockHashKey(parentHash)];
 
       for (let index = 0; index < queue.length; index += 1) {
-        const parentKey = queue[index];
-        const resolved: Array<BlockHashKey> = [];
-
-        for (const [orphanKey, orphanHash] of state.orphans.entries()) {
-          const orphanBlock = yield* store.getBlock(orphanHash);
-          if (Option.isNone(orphanBlock)) {
-            continue;
-          }
-          const orphanParentKey = blockHashKey(
-            Option.getOrThrow(orphanBlock).header.parentHash,
-          );
-          if (orphanParentKey === parentKey) {
-            resolved.push(orphanKey);
-            queue.push(blockHashKey(Option.getOrThrow(orphanBlock).hash));
-          }
+        const parentKey = queue[index]!;
+        const children = state.orphansByParent.get(parentKey);
+        if (!children) {
+          continue;
         }
 
-        for (const orphanKey of resolved) {
+        state.orphansByParent.delete(parentKey);
+        for (const orphanKey of children) {
           state.orphans.delete(orphanKey);
+          queue.push(orphanKey);
         }
       }
     });
@@ -209,11 +203,15 @@ const makeBlockTree = Effect.gen(function* () {
 
       const blockNumber = yield* decodeBlockNumber(block.header.number);
       const blockKey = blockHashKey(block.hash);
+      const parentKey = blockHashKey(block.header.parentHash);
       const isGenesis = blockNumberKey(blockNumber) === 0n;
       const hasParent = yield* store.hasBlock(block.header.parentHash);
 
       if (!isGenesis && !hasParent) {
-        state.orphans.set(blockKey, block.hash);
+        state.orphans.add(blockKey);
+        const children = state.orphansByParent.get(parentKey) ?? new Set();
+        children.add(blockKey);
+        state.orphansByParent.set(parentKey, children);
       }
 
       yield* store.putBlock(block);
