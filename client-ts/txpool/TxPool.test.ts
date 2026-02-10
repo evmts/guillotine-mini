@@ -13,6 +13,7 @@ import {
   TxPoolLive,
   TxPoolPriorityFeeTooLowError,
   TxPoolSenderLimitExceededError,
+  TxPoolTest,
   acceptTxWhenNotSynced,
   addTransaction,
   getPendingBlobCount,
@@ -135,6 +136,13 @@ describe("TxPool", () => {
       const count = yield* getPendingBlobCount();
       assert.strictEqual(count, 0);
     }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
+  it.effect("uses TxPoolTest defaults", () =>
+    Effect.gen(function* () {
+      const count = yield* getPendingCount();
+      assert.strictEqual(count, 0);
+    }).pipe(Effect.provide(TxPoolTest())),
   );
 
   it.effect("adds pending transactions and indexes by sender", () =>
