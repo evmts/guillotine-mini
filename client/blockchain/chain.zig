@@ -40,12 +40,9 @@ pub fn head_block(chain: *Chain) !?Block.Block {
 
 /// Returns true if the given hash is canonical at its block number (local-only).
 ///
-/// Semantics:
-/// - Strictly local lookup: consults the underlying local `BlockStore` only;
-///   never triggers fork‑cache RPCs and performs no heap allocations here.
-/// - If the block is present locally, checks the canonical mapping for the
-///   block's number and compares hashes.
-/// - Blocks that exist only as orphans will return `false`.
+/// Follows Nethermind semantics: compare the hash against the canonical mapping
+/// for the block number using the local store only (no RPC or allocations).
+/// Orphaned blocks are not canonical by definition.
 pub fn is_canonical(chain: *Chain, hash: Hash.Hash) !bool {
     // Local-only read via BlockStore to uphold allocation/remote guarantees.
     const local = chain.block_store.getBlock(hash) orelse return false;
