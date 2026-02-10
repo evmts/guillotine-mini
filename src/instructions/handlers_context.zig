@@ -222,7 +222,9 @@ pub fn Handlers(FrameType: type) type {
 
             const ext_addr = primitives.Address.fromU256(addr_int);
             const dest = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-            const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
+            // Per spec, code offset may exceed code length; reads beyond code return zero bytes.
+            // Do NOT error on large code offsets; treat them as valid but out-of-range.
+            const off_u64: u64 = std.math.cast(u64, offset) orelse std.math.maxInt(u64);
             const len = std.math.cast(u32, size) orelse return error.OutOfBounds;
 
             // Calculate ALL gas costs at once: access + copy + memory expansion
@@ -256,9 +258,11 @@ pub fn Handlers(FrameType: type) type {
             var i: u32 = 0;
             while (i < len) : (i += 1) {
                 const dst_idx = try add_u32(dest, i);
-                const src_idx = off + i;
-                // If src_idx is beyond the code length, write 0 (per EVM spec)
-                const byte = if (src_idx < code.len) code[src_idx] else 0;
+                const src_idx_u64: u64 = off_u64 +| @as(u64, i);
+                const byte = if (src_idx_u64 < code.len) blk: {
+                    const idx: usize = @intCast(src_idx_u64);
+                    break :blk code[idx];
+                } else 0;
                 try frame.writeMemory(dst_idx, byte);
             }
             frame.pc += 1;
