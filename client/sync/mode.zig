@@ -157,6 +157,7 @@ test "SyncMode helper predicates: have_not_synced_bodies_yet" {
 
 test "SyncMode helper predicates: have_not_synced_receipts_yet" {
     try std.testing.expect(have_not_synced_receipts_yet(SyncMode.fast_blocks));
+    try std.testing.expect(have_not_synced_receipts_yet(SyncMode.fast_receipts));
     try std.testing.expect(have_not_synced_receipts_yet(SyncMode.fast_sync));
     try std.testing.expect(have_not_synced_receipts_yet(SyncMode.state_nodes));
     try std.testing.expect(have_not_synced_receipts_yet(SyncMode.snap_sync));
