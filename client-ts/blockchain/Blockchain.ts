@@ -11,11 +11,11 @@ import type * as Scope from "effect/Scope";
 import { Block, BlockHash, BlockNumber, Hex } from "voltaire-effect/primitives";
 import {
   BlockNotFoundError,
-  BlockStore,
-  type BlockStoreError,
-  BlockStoreMemoryTest,
+  BlockTree,
+  type BlockTreeError,
+  BlockTreeMemoryTest,
   CannotSetOrphanAsHeadError,
-} from "./BlockStore";
+} from "./BlockTree";
 
 /** Block type used by the blockchain service. */
 export type BlockType = Block.BlockType;
@@ -123,7 +123,7 @@ export class GenesisMismatchError extends Data.TaggedError(
 
 /** Union of blockchain errors. */
 export type BlockchainError =
-  | BlockStoreError
+  | BlockTreeError
   | GenesisAlreadyInitializedError
   | GenesisNotInitializedError
   | InvalidGenesisBlockError
@@ -205,7 +205,7 @@ const EMPTY_FORK_CHOICE: ForkChoiceState = {
 };
 
 const makeBlockchain = Effect.gen(function* () {
-  const store = yield* BlockStore;
+  const store = yield* BlockTree;
   const events = yield* Effect.acquireRelease(
     PubSub.unbounded<BlockchainEvent>(),
     (pubsub) => PubSub.shutdown(pubsub),
@@ -520,12 +520,12 @@ const makeBlockchain = Effect.gen(function* () {
 });
 
 /** Production blockchain layer. */
-export const BlockchainLive: Layer.Layer<Blockchain, never, BlockStore> =
+export const BlockchainLive: Layer.Layer<Blockchain, never, BlockTree> =
   Layer.scoped(Blockchain, makeBlockchain);
 
 /** Deterministic blockchain layer for tests. */
 export const BlockchainTest = BlockchainLive.pipe(
-  Layer.provide(BlockStoreMemoryTest),
+  Layer.provide(BlockTreeMemoryTest),
 );
 
 const withBlockchain = <A, E, R>(

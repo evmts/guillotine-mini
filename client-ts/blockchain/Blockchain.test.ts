@@ -15,7 +15,7 @@ import {
   putBlock,
   setCanonicalHead,
 } from "./Blockchain";
-import { BlockNotFoundError, CannotSetOrphanAsHeadError } from "./BlockStore";
+import { BlockNotFoundError, CannotSetOrphanAsHeadError } from "./BlockTree";
 import { blockHashFromByte, makeBlock } from "./testUtils";
 
 describe("Blockchain", () => {

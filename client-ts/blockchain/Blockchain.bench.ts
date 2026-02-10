@@ -12,7 +12,7 @@ import {
   putBlock,
   setCanonicalHead,
 } from "./Blockchain";
-import { BlockStoreMemoryLive, type BlockStoreError } from "./BlockStore";
+import { BlockTreeMemoryLive, type BlockTreeError } from "./BlockTree";
 import { makeBlock } from "./testUtils";
 
 type BlockType = Block.BlockType;
@@ -39,7 +39,7 @@ const BlockHashBytesSchema = BlockHash.Bytes as unknown as Schema.Schema<
 >;
 
 const BlockchainMemoryLive = BlockchainLive.pipe(
-  Layer.provide(BlockStoreMemoryLive),
+  Layer.provide(BlockTreeMemoryLive),
 );
 
 const blockHashFromNumber = (value: number): BlockHashType => {
@@ -125,7 +125,7 @@ const measure = <R, E>(
 const withFreshChain = <A, E>(
   count: number,
   effect: (fixture: ChainFixture) => Effect.Effect<A, E, Blockchain>,
-): Effect.Effect<A, E | BlockStoreError> =>
+): Effect.Effect<A, E | BlockTreeError> =>
   Effect.scoped(
     Effect.gen(function* () {
       const fixture = makeChain(count);

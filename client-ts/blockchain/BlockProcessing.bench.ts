@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Schema from "effect/Schema";
 import { Block, BlockHash } from "voltaire-effect/primitives";
-import { BlockStoreMemoryLive, putBlock, setCanonicalHead } from "./BlockStore";
+import { BlockTreeMemoryLive, putBlock, setCanonicalHead } from "./BlockTree";
 import { makeBlock } from "./testUtils";
 
 type BlockType = Block.BlockType;
@@ -120,7 +120,7 @@ const main = Effect.gen(function* () {
 
 pipe(
   main,
-  Effect.provide(BlockStoreMemoryLive),
+  Effect.provide(BlockTreeMemoryLive),
   Effect.tapErrorCause((cause) =>
     Effect.sync(() => {
       console.error("Benchmark failed");
