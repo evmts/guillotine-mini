@@ -92,6 +92,10 @@ const validateClientVersion = (
       );
     }
 
+    if (source === "request") {
+      return;
+    }
+
     if (clientVersion.name.trim().length === 0) {
       return yield* failInvalidClientVersion(
         source,

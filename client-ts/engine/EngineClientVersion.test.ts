@@ -61,58 +61,40 @@ describe("EngineClientVersion", () => {
     ),
   );
 
-  it.effect("rejects request payloads with empty client name", () =>
+  it.effect("accepts request payloads with empty client metadata fields", () =>
     provideClientVersion([...DefaultExecutionClientVersionsV1])(
       Effect.gen(function* () {
-        const outcome = yield* getClientVersionV1(
-          makeClientVersion({ name: "   " }),
-        ).pipe(Effect.either);
+        const result = yield* getClientVersionV1(
+          makeClientVersion({ name: "   ", version: "  " }),
+        );
 
-        assert.isTrue(Either.isLeft(outcome));
-        if (Either.isLeft(outcome)) {
-          const error = outcome.left;
-          assert.isTrue(error instanceof InvalidClientVersionV1Error);
-          assert.strictEqual(error.source, "request");
-          assert.strictEqual(error.reason, "EmptyName");
-        }
+        assert.deepStrictEqual(result, [...DefaultExecutionClientVersionsV1]);
       }),
     ),
   );
 
-  it.effect("rejects request payloads with non-4-byte commit", () =>
+  it.effect("accepts request payloads with non-4-byte commit", () =>
     provideClientVersion([...DefaultExecutionClientVersionsV1])(
       Effect.gen(function* () {
-        const outcome = yield* getClientVersionV1(
+        const result = yield* getClientVersionV1(
           makeClientVersion({ commit: Hex.fromBytes(new Uint8Array([0x01])) }),
-        ).pipe(Effect.either);
+        );
 
-        assert.isTrue(Either.isLeft(outcome));
-        if (Either.isLeft(outcome)) {
-          const error = outcome.left;
-          assert.isTrue(error instanceof InvalidClientVersionV1Error);
-          assert.strictEqual(error.source, "request");
-          assert.strictEqual(error.reason, "InvalidCommitLength");
-        }
+        assert.deepStrictEqual(result, [...DefaultExecutionClientVersionsV1]);
       }),
     ),
   );
 
-  it.effect("rejects malformed commit hex in request payload", () =>
+  it.effect("accepts malformed commit hex in request payload", () =>
     provideClientVersion([...DefaultExecutionClientVersionsV1])(
       Effect.gen(function* () {
-        const outcome = yield* getClientVersionV1(
+        const result = yield* getClientVersionV1(
           makeClientVersion({
             commit: "invalid" as unknown as ClientVersionV1["commit"],
           }),
-        ).pipe(Effect.either);
+        );
 
-        assert.isTrue(Either.isLeft(outcome));
-        if (Either.isLeft(outcome)) {
-          const error = outcome.left;
-          assert.isTrue(error instanceof InvalidClientVersionV1Error);
-          assert.strictEqual(error.source, "request");
-          assert.strictEqual(error.reason, "InvalidCommitHex");
-        }
+        assert.deepStrictEqual(result, [...DefaultExecutionClientVersionsV1]);
       }),
     ),
   );
