@@ -1,15 +1,15 @@
 const std = @import("std");
 
 /// Size of the RLPx MAC (16 bytes).
-pub const MacSize: usize = 16;
+pub const MacSize: u16 = 16;
 /// Size of the encrypted RLPx header (16 bytes).
-pub const HeaderSize: usize = 16;
+pub const HeaderSize: u16 = 16;
 /// AES-CTR block size used for header/data padding (16 bytes).
-pub const BlockSize: usize = 16;
+pub const BlockSize: u16 = 16;
 /// Maximum frame-size representable by the 24-bit RLPx header.
-pub const ProtocolMaxFrameSize: usize = (@as(usize, 1) << 24) - 1;
+pub const ProtocolMaxFrameSize: u24 = 0xFF_FF_FF;
 /// Default fragmentation target for outbound frames; not a hard inbound limit.
-pub const DefaultMaxFrameSize: usize = BlockSize * 64;
+pub const DefaultMaxFrameSize: u16 = BlockSize * 64;
 
 /// Returns the zero-fill padding required to align to the AES block size.
 pub inline fn calculate_padding(size: usize) usize {
@@ -51,11 +51,11 @@ test "calculate padding returns remainder to block size" {
 }
 
 test "frame constants mirror Nethermind defaults and protocol limits" {
-    try std.testing.expectEqual(@as(usize, 16), MacSize);
-    try std.testing.expectEqual(@as(usize, 16), HeaderSize);
-    try std.testing.expectEqual(@as(usize, 16), BlockSize);
-    try std.testing.expectEqual(@as(usize, 1024), DefaultMaxFrameSize);
-    try std.testing.expectEqual(@as(usize, 0xFFFFFF), ProtocolMaxFrameSize);
+    try std.testing.expectEqual(@as(u16, 16), MacSize);
+    try std.testing.expectEqual(@as(u16, 16), HeaderSize);
+    try std.testing.expectEqual(@as(u16, 16), BlockSize);
+    try std.testing.expectEqual(@as(u16, 1024), DefaultMaxFrameSize);
+    try std.testing.expectEqual(@as(u24, 0xFF_FF_FF), ProtocolMaxFrameSize);
 }
 
 test "encodeFrameSize24: encodes boundaries" {
@@ -70,7 +70,8 @@ test "encodeFrameSize24: encodes boundaries" {
 }
 
 test "encodeFrameSize24: rejects values > 24-bit" {
-    try std.testing.expectError(FrameError.InvalidFrameSize, encodeFrameSize24(ProtocolMaxFrameSize + 1));
+    const too_big: usize = @as(usize, @intCast(ProtocolMaxFrameSize)) + 1;
+    try std.testing.expectError(FrameError.InvalidFrameSize, encodeFrameSize24(too_big));
 }
 
 test "decodeFrameSize24: decodes boundaries" {
