@@ -288,7 +288,8 @@ const normalizeScheme = (
     ? TrieNodeStorageKeyScheme.HalfPath
     : scheme;
 
-const getHashNodeStoragePath = (nodeHash: Hash.HashType): BytesType => nodeHash;
+const getHashNodeStoragePath = (nodeHash: Hash.HashType): BytesType =>
+  bytesFromUint8Array(nodeHash);
 
 const getHalfPathNodeStoragePath = (
   addressHash: Hash.HashType | null,
