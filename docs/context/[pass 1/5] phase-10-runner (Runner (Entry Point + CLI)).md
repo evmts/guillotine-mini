@@ -1,110 +1,125 @@
-# [Pass 1/5] Phase 10: Runner (Runner (Entry Point + CLI)) - Implementation Context
+# [pass 1/5] phase-10-runner (Runner (Entry Point + CLI)) - Context
 
-## Phase Goal
+## 1. Phase Goals and Scope
 
-Create the CLI entry point and configuration surface.
+Source: `prd/GUILLOTINE_CLIENT_PLAN.md`
 
-**Key Components** (from plan):
+- Phase: `phase-10-runner`
+- Goal: create the CLI entry point and configuration surface
+- Planned components:
 - `client/main.zig` - main entry point
 - `client/config.zig` - configuration management
 - `client/cli.zig` - CLI argument parsing
+- Structural reference:
+- `nethermind/src/Nethermind/Nethermind.Runner/`
 
-**Reference Architecture**:
-- Nethermind: `nethermind/src/Nethermind/Nethermind.Runner/`
+## 2. Relevant Ethereum Specs
 
----
+Source: `prd/ETHEREUM_SPECS_REFERENCE.md`
 
-## 1. Spec References (Read First)
-
-**Specs**: N/A (CLI/configuration) per `prd/ETHEREUM_SPECS_REFERENCE.md`.
-
----
-
-## 2. Nethermind Reference (Runner)
-
-Location: `nethermind/src/Nethermind/Nethermind.Runner/`
-
-Key areas to mirror structurally:
-- `Program.cs` - main entry point wiring
-- `configs/` - configuration files and templates
-- `JsonRpc/` - JSON-RPC runner wiring
-- `Logging/` - logging configuration and setup
-- `Monitoring/` - metrics/monitoring bootstrapping
-- `Ethereum/` - client bootstrap and services
-- `NethermindPlugins.cs` - plugin loading/registration
-- `ConsoleHelpers.cs` - console I/O helpers
-
-### Requested Listing: Nethermind DB Module Inventory
-
-Location: `nethermind/src/Nethermind/Nethermind.Db/`
-
-Key files (for cross-module reference):
-- `IDb.cs`, `IReadOnlyDb.cs`, `IFullDb.cs` - core DB interfaces
-- `IColumnsDb.cs`, `ITunableDb.cs` - column families and tuning
-- `DbProvider.cs`, `IDbProvider.cs`, `IDbFactory.cs` - DB providers and factories
-- `MemDb.cs`, `MemColumnsDb.cs`, `InMemoryWriteBatch.cs` - in-memory backends
-- `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs` - read-only wrappers
-- `RocksDbSettings.cs`, `RocksDbMergeEnumerator.cs` - RocksDB support
-- `Metrics.cs` - DB metrics
-
----
-
-## 3. Voltaire Primitives (Must Use)
-
-Location: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
-
-Relevant primitives and modules for runner/CLI/config:
-- `primitives/ChainId/ChainId.zig`
-- `primitives/NetworkId/NetworkId.zig`
-- `primitives/Chain/chain.zig`
-- `primitives/ForkId/ForkId.zig`
-- `primitives/Hardfork/hardfork.zig`, `primitives/Hardfork/Eips.zig`
-- `primitives/NodeInfo/NodeInfo.zig`
-- `primitives/PeerId/PeerId.zig`, `primitives/PeerInfo/PeerInfo.zig`
-- `primitives/TraceConfig/trace_config.zig`
-- `jsonrpc/` - JSON-RPC server types
-- `log.zig` - logging primitives
-
----
-
-## 4. Existing Zig EVM Integration Surface
-
-### Host Interface
-
-File: `src/host.zig`
-
-- Defines `HostInterface` (ptr + vtable) for external state access.
-- Vtable pattern is the reference for comptime DI-style polymorphism in Zig.
-
----
-
-## 5. Test Fixtures and Runner Suites
-
-Runner-related suites:
-- Integration tests
+- For phase 10 runner: **Specs are explicitly N/A** (CLI/configuration phase).
+- Test guidance still applies:
+- integration tests
 - `hive/` full node tests
+- Adjacent protocol context that runner wiring must expose correctly:
+- `devp2p/rlpx.md`
+- `devp2p/caps/eth.md`
+- `devp2p/caps/snap.md`
+- `devp2p/discv4.md`
+- `devp2p/discv5/discv5.md`
+- `devp2p/enr.md`
 
-ethereum-tests inventory (requested listing):
-- `ethereum-tests/ABITests/`
-- `ethereum-tests/BasicTests/`
-- `ethereum-tests/BlockchainTests/`
-- `ethereum-tests/DifficultyTests/`
-- `ethereum-tests/EOFTests/`
-- `ethereum-tests/GenesisTests/`
+## 3. Nethermind Structure Reference
+
+### Runner module
+
+Path: `nethermind/src/Nethermind/Nethermind.Runner/`
+
+Key files and areas:
+- `Program.cs` - primary process entry point and bootstrapping
+- `Ethereum/` - Ethereum client startup wiring
+- `JsonRpc/` - JSON-RPC hosting/wiring
+- `Logging/` - logging setup
+- `Monitoring/` - metrics/monitoring setup
+- `configs/` - packaged config profiles
+- `NethermindPlugins.cs` - plugin discovery/registration
+- `ConsoleHelpers.cs` - terminal interaction helpers
+
+### Requested DB listing
+
+Path: `nethermind/src/Nethermind/Nethermind.Db/`
+
+Notable files for architecture alignment:
+- `IDb.cs`, `IReadOnlyDb.cs`, `IFullDb.cs` - core DB contracts
+- `IColumnsDb.cs`, `ITunableDb.cs` - column/tuning contracts
+- `IDbProvider.cs`, `DbProvider.cs`, `IDbFactory.cs`, `DbProviderExtensions.cs` - provider/factory access
+- `MemDb.cs`, `MemColumnsDb.cs`, `MemDbFactory.cs`, `InMemoryWriteBatch.cs`, `InMemoryColumnBatch.cs` - in-memory implementations
+- `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs`, `ReadOnlyDbProvider.cs` - read-only wrappers
+- `RocksDbSettings.cs`, `RocksDbMergeEnumerator.cs`, `NullRocksDbFactory.cs` - RocksDB integration hooks
+- `PruningConfig.cs`, `IPruningConfig.cs`, `PruningMode.cs`, `FullPruning/` - pruning strategy
+- `DbNames.cs`, `MetadataDbKeys.cs`, `BlobTxsColumns.cs`, `ReceiptsColumns.cs` - DB naming/column metadata
+- `Metrics.cs` - DB metrics instrumentation
+
+## 4. Voltaire Zig APIs Relevant to Runner Wiring
+
+Base path: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
+
+- `root.zig`:
+- exports `Primitives` and `Crypto`
+- `jsonrpc/root.zig`:
+- exports `JsonRpc`, namespace modules `eth`, `debug`, `engine`
+- exports `types` and convenience `JsonRpcMethod`
+- `jsonrpc/JsonRpc.zig`:
+- defines `JsonRpcMethod` root union (`engine | eth | debug`)
+- exposes `methodName()` to recover full JSON-RPC method name
+- `jsonrpc/types.zig`:
+- shared JSON-RPC types (Address, Hash, Quantity, BlockTag, BlockSpec)
+- `blockchain/root.zig`:
+- exports `BlockStore`, `ForkBlockCache`, `Blockchain`
+- `state-manager/root.zig`:
+- exports `StateManager`, `JournaledState`, `ForkBackend`, `StateCache` types
+- `c_api.zig`:
+- FFI structs such as `PrimitivesAddress`, `PrimitivesHash`, `PrimitivesU256`
+- FFI error constants (`PRIMITIVES_ERROR_*`) and KZG constants used by host integrations
+- `log.zig`:
+- centralized logging utilities used by runtime setup
+
+## 5. Existing Host Interface Contract
+
+Path: `src/host.zig`
+
+`HostInterface` is a ptr + vtable abstraction for external state access, with methods:
+- `getBalance` / `setBalance`
+- `getCode` / `setCode`
+- `getStorage` / `setStorage`
+- `getNonce` / `setNonce`
+
+Important note from file header:
+- nested calls are handled directly by EVM internals; this host interface is for external state access.
+
+## 6. Ethereum Test Fixture Paths
+
+Top-level fixture suites under `ethereum-tests/`:
+- `ABITests/`
+- `BasicTests/`
+- `BlockchainTests/` (`InvalidBlocks/`, `ValidBlocks/`)
+- `DifficultyTests/`
+- `EOFTests/`
+- `GenesisTests/`
+- `KeyStoreTests/`
+- `LegacyTests/`
+- `PoWTests/`
+- `RLPTests/`
+- `TransactionTests/`
+- `TrieTests/`
+
+Additional useful paths:
+- `ethereum-tests/src/BlockchainTestsFiller/`
+- `ethereum-tests/src/TransactionTestsFiller/`
+- `ethereum-tests/src/EOFTestsFiller/`
+- `ethereum-tests/docs/test_types/`
 - `ethereum-tests/JSONSchema/`
-- `ethereum-tests/KeyStoreTests/`
-- `ethereum-tests/LegacyTests/`
-- `ethereum-tests/PoWTests/`
-- `ethereum-tests/RLPTests/`
-- `ethereum-tests/TransactionTests/`
-- `ethereum-tests/TrieTests/`
-
-Fixture tarballs:
-- `ethereum-tests/fixtures_blockchain_tests.tgz`
-- `ethereum-tests/fixtures_general_state_tests.tgz`
-
----
 
 ## Summary
 
-Collected phase-10 runner goals and Zig module targets, confirmed specs are N/A for CLI/config, mapped Nethermind runner structure and key entry points, captured the requested Nethermind DB inventory, listed relevant Voltaire primitives and subsystems for configuration, noted the HostInterface vtable DI pattern, and recorded hive plus ethereum-tests fixture locations.
+Phase-10 context confirms CLI/config goals and runner-centric architecture: follow `Nethermind.Runner` module boundaries for entrypoint and service bootstrapping, keep DB concerns aligned with `Nethermind.Db` contracts, rely on Voltaire Zig JSON-RPC/type exports for method/type modeling, preserve `src/host.zig` external state interface semantics, and target integration plus hive/full-node style validation with ethereum-tests fixture directories available for broader regression coverage.
