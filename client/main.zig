@@ -5,31 +5,13 @@ const std = @import("std");
 const primitives = @import("primitives");
 const evm_mod = @import("evm");
 const config_mod = @import("config.zig");
+const cli = @import("cli.zig");
 
-const ChainId = primitives.ChainId;
-const NetworkId = primitives.NetworkId;
-const Hardfork = primitives.Hardfork;
-const TraceConfig = primitives.TraceConfig;
 const Chain = primitives.Chain;
 const FeeMarket = primitives.FeeMarket;
 const Blob = primitives.Blob;
 const RunnerConfig = config_mod.RunnerConfig;
 const Tracer = evm_mod.Tracer;
-
-const usage =
-    \\guillotine-mini runner
-    \\Usage: guillotine-mini [options]
-    \\
-    \\Options:
-    \\  --chain-id <u64>      EIP-155 chain id (default: 1)
-    \\  --network-id <u64>    devp2p network id (default: chain id)
-    \\  --hardfork <name>     hardfork (e.g., Shanghai, Cancun, Prague)
-    \\  --trace               enable full tracing
-    \\  --trace-tracer <name> set tracer name (e.g., callTracer)
-    \\  --trace-timeout <dur> set tracer timeout (e.g., 5s)
-    \\  -h, --help            show this help
-    \\
-;
 
 /// Process entry point for the runner CLI.
 pub fn main() !void {
@@ -56,77 +38,10 @@ fn run(
 ) !void {
     var config = RunnerConfig{};
     var trace_enabled = false;
-
-    var idx: usize = 1;
-    while (idx < args.len) : (idx += 1) {
-        const arg = args[idx];
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            try writer.writeAll(usage);
-            return;
-        }
-
-        if (std.mem.eql(u8, arg, "--trace")) {
-            const tracer = config.trace_config.tracer;
-            const timeout = config.trace_config.timeout;
-            config.trace_config = TraceConfig.enableAll();
-            config.trace_config.tracer = tracer;
-            config.trace_config.timeout = timeout;
-            trace_enabled = true;
-            continue;
-        }
-
-        const is_chain_id = std.mem.eql(u8, arg, "--chain-id");
-        const is_network_id = std.mem.eql(u8, arg, "--network-id");
-        const is_hardfork = std.mem.eql(u8, arg, "--hardfork");
-        const is_trace_tracer = std.mem.eql(u8, arg, "--trace-tracer");
-        const is_trace_timeout = std.mem.eql(u8, arg, "--trace-timeout");
-
-        if (is_chain_id or is_network_id or is_hardfork or is_trace_tracer or is_trace_timeout) {
-            const missing_err = if (is_chain_id)
-                error.MissingChainId
-            else if (is_network_id)
-                error.MissingNetworkId
-            else if (is_hardfork)
-                error.MissingHardfork
-            else if (is_trace_tracer)
-                error.MissingTraceTracer
-            else
-                error.MissingTraceTimeout;
-
-            idx += 1;
-            if (idx >= args.len) return missing_err;
-            const value = args[idx];
-
-            if (is_chain_id) {
-                const parsed = std.fmt.parseInt(u64, value, 10) catch return error.InvalidChainId;
-                config.chain_id = ChainId.from(parsed);
-                continue;
-            }
-
-            if (is_network_id) {
-                const parsed = std.fmt.parseInt(u64, value, 10) catch return error.InvalidNetworkId;
-                config.network_id = NetworkId.from(parsed);
-                continue;
-            }
-
-            if (is_hardfork) {
-                config.hardfork = Hardfork.fromString(value) orelse return error.InvalidHardfork;
-                continue;
-            }
-
-            if (is_trace_tracer) {
-                config.trace_config.tracer = value;
-                trace_enabled = true;
-                continue;
-            }
-
-            config.trace_config.timeout = value;
-            trace_enabled = true;
-            continue;
-        }
-
-        return error.UnknownOption;
-    }
+    cli.parseArgs(args, &config, &trace_enabled, writer) catch |err| switch (err) {
+        error.HelpRequested => return,
+        else => return err,
+    };
 
     const network_id = config.effective_network_id();
     const chain = Chain.fromId(config.chain_id) orelse return error.UnknownChainId;
