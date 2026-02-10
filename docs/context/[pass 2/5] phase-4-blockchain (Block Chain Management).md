@@ -1,85 +1,83 @@
-# [Pass 2/5] Phase 4: Block Chain Management — Context
+# Context — [pass 2/5] Phase 4: Block Chain Management
 
-## Goal
+This document aggregates the minimal, high-signal references needed to implement Phase 4 (Block Chain Management) using Voltaire primitives and the existing guillotine-mini EVM, while following Nethermind’s architecture idiomatically in Zig.
 
-Manage the block chain structure and validation.
+## Goals (from PRD: prd/GUILLOTINE_CLIENT_PLAN.md)
+- Manage the block chain structure and validation.
+- Planned components:
+  - `client/blockchain/chain.zig` — chain management (canonical mapping, orphans, head selection).
+  - `client/blockchain/validator.zig` — block validation against spec.
+- Reference modules:
+  - Nethermind: `nethermind/src/Nethermind/Nethermind.Blockchain/`
+  - Voltaire: `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/`
+- Test fixtures: `ethereum-tests/BlockchainTests/`
 
-**Key deliverables (from `prd/GUILLOTINE_CLIENT_PLAN.md`):**
-- `client/blockchain/chain.zig` — Chain management
-- `client/blockchain/validator.zig` — Block validation
+## Spec Anchors (from prd/ETHEREUM_SPECS_REFERENCE.md)
+- execution-specs block validation logic per fork (authoritative):
+  - `execution-specs/src/ethereum/forks/frontier/fork.py`
+  - `execution-specs/src/ethereum/forks/homestead/fork.py`
+  - `execution-specs/src/ethereum/forks/byzantium/fork.py`
+  - `execution-specs/src/ethereum/forks/istanbul/fork.py`
+  - `execution-specs/src/ethereum/forks/berlin/fork.py`
+  - `execution-specs/src/ethereum/forks/london/fork.py`
+  - `execution-specs/src/ethereum/forks/paris/fork.py` (Merge)
+  - `execution-specs/src/ethereum/forks/shanghai/fork.py`
+  - `execution-specs/src/ethereum/forks/cancun/fork.py`
+  - `execution-specs/src/ethereum/forks/prague/fork.py`
+- Yellow Paper Section 11 — Block finalization (conceptual reference only).
 
-**Reference files:**
-- Nethermind: `nethermind/src/Nethermind/Nethermind.Blockchain/`
-- Voltaire: `voltaire/packages/voltaire-zig/src/blockchain/`
+## Nethermind Reference (structure and responsibilities)
+- Blockchain management (canonical chain, reorgs, head updates):
+  - `nethermind/src/Nethermind/Nethermind.Blockchain/BlockTree.cs`
+  - `nethermind/src/Nethermind/Nethermind.Blockchain/BlockTree.Initializer.cs`
+  - `nethermind/src/Nethermind/Nethermind.Blockchain/BlockTreeOverlay.cs`
+  - `nethermind/src/Nethermind/Nethermind.Blockchain/ReadOnlyBlockTree.cs`
+  - `nethermind/src/Nethermind/Nethermind.Blockchain/IBlockTree.cs`
+  - `nethermind/src/Nethermind/Nethermind.Blockchain/AddBlockResult.cs`
+  - `nethermind/src/Nethermind/Nethermind.Blockchain/GenesisBuilder.cs`
+  - `nethermind/src/Nethermind/Nethermind.Blockchain/BlockhashCache.cs`
+- DB abstractions used by blockchain layer (for persistence patterns):
+  - `nethermind/src/Nethermind/Nethermind.Db/IDb.cs`, `IDbProvider.cs`, `DbProvider.cs`, `ReadOnlyDbProvider.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs`, `MemColumnsDb.cs`, `CompressingDb.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/RocksDbSettings.cs`, `PruningConfig.cs`, `FullPruningCompletionBehavior.cs`, `Metrics.cs`
 
-**Test fixtures:** `ethereum-tests/BlockchainTests/`
+Key takeaways for Zig implementation:
+- Keep chain logic separate from persistence; use dependency injection for DB providers.
+- Model canonical mapping (number→hash), orphan handling, and head selection explicitly.
+- Keep validation pure and fork-aware per execution-specs; storage writes after validation.
 
----
+## Voltaire APIs to use (no custom primitives)
+- Blockchain utilities:
+  - `voltaire-zig/src/blockchain/Blockchain.zig` — unified read/writes over local store and optional fork cache.
+  - `voltaire-zig/src/blockchain/BlockStore.zig` — local storage, canonical mapping, orphan tracking.
+  - `voltaire-zig/src/blockchain/ForkBlockCache.zig` — remote read-through for pre-fork data.
+- Primitives (types only; never custom):
+  - `voltaire-zig/src/primitives/Block/root.zig` (imported via `primitives.Block`)
+  - `voltaire-zig/src/primitives/BlockHeader/root.zig` (via `primitives.BlockHeader`)
+  - `voltaire-zig/src/primitives/BlockBody/root.zig` (via `primitives.BlockBody`)
+  - `voltaire-zig/src/primitives/Hash/root.zig` (via `primitives.Hash`)
+  - `voltaire-zig/src/primitives/Address/root.zig`
+  - RLP/hex helpers under `voltaire-zig/src/primitives/Rlp` and `voltaire-zig/src/primitives/Hex`
 
-## Execution Specs (authoritative)
+Notes:
+- Voltaire’s `Blockchain` and `BlockStore` already model canonical chain and orphans; Phase 4 should integrate these, not re-create them.
+- Prefer comptime DI to compose a `Chain` façade over `BlockStore` with pluggable persistence.
 
-From `prd/ETHEREUM_SPECS_REFERENCE.md` (Phase 4):
-- `execution-specs/src/ethereum/forks/*/fork.py` — block validation rules
-- Yellow Paper Section 11 — Block Finalization
+## guillotine-mini Host Interface (how EVM state is accessed)
+- `src/host.zig` — Minimal HostInterface for balances, code, storage, nonces.
+  - Provides vtable for `getBalance`, `getCode`, `getStorage`, `getNonce`, and mutators.
+  - EVM nested calls are handled internally by `EVM.inner_call`; HostInterface is for external state access only.
 
-Adjacent specs worth keeping in view for later integration:
-- `execution-spec-tests/fixtures/blockchain_tests/` — spec-aligned blockchain fixtures
-- `execution-spec-tests/fixtures/blockchain_tests_engine/` — Engine API blockchain fixtures (Phase 7)
-- `devp2p/caps/eth.md` — block/header exchange (Phase 9 sync)
+Implication for Phase 4:
+- Block validation must compute header fields and state transitions using the world-state APIs (later phases) but for structural work now, wire chain management to use Voltaire primitives and keep validation surface aligned with spec functions (`state_transition` / per-fork header checks).
 
----
+## Test Fixtures
+- Classic blockchain tests:
+  - `ethereum-tests/BlockchainTests/`
+- execution-specs generated symlink:
+  - `execution-spec-tests/fixtures/blockchain_tests/` → symlink to `ethereum-tests/BlockchainTests`
 
-## Nethermind DB Layer (reference for storage contracts)
+## Immediate Implementation Targets (scope framing)
+- `client/blockchain/chain.zig` — thin wrapper over Voltaire `BlockStore` + canonical helpers and persistence DI hooks.
+- `client/blockchain/validator.zig` — fork-dispatch + header/body checks mirroring `execution-specs/*/fork.py` (no EVM reimplementation; reuse existing EVM for tx execution in later phases).
 
-Directory listing: `nethermind/src/Nethermind/Nethermind.Db/`
-
-Key files to consult when mapping chain storage/DB boundaries:
-- `IDb.cs`, `IDbProvider.cs`, `IReadOnlyDb.cs`, `IFullDb.cs` — DB interface contracts
-- `DbProvider.cs`, `DbProviderExtensions.cs` — provider composition
-- `DbNames.cs` — canonical DB names
-- `RocksDbSettings.cs`, `NullRocksDbFactory.cs` — backend config and null backend
-- `ReadOnlyDb.cs`, `ReadOnlyDbProvider.cs`, `ReadOnlyColumnsDb.cs` — read-only wrappers
-- `MemDb.cs`, `MemDbFactory.cs`, `MemColumnsDb.cs` — in-memory backend
-- `PruningConfig.cs`, `PruningMode.cs`, `FullPruning/*` — pruning controls
-- `ReceiptsColumns.cs`, `BlobTxsColumns.cs` — column families for receipts/blobs
-- `Metrics.cs` — DB metrics exposure
-
----
-
-## Voltaire Primitives (must use)
-
-From `voltaire/packages/voltaire-zig/src/`:
-- `blockchain/Blockchain.zig` — chain structure primitives
-- `blockchain/BlockStore.zig` — block storage interface/implementation
-- `blockchain/ForkBlockCache.zig` — fork-aware cache helpers
-- `blockchain/root.zig`, `blockchain/c_api.zig` — module root and C-API wrapper
-- `primitives/` — canonical types (hashes, addresses, headers, receipts, etc.)
-- `state-manager/` — state primitives used by EVM host integration
-- `evm/` — EVM primitives (do not reimplement)
-
-Directory listing for context:
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/` → `blockchain`, `crypto`, `evm`, `jsonrpc`, `log.zig`, `precompiles`, `primitives`, `state-manager`, `root.zig`, `c_api.zig`
-
----
-
-## Existing EVM Host Interface (guillotine-mini)
-
-From `src/host.zig`:
-- `HostInterface` is a minimal vtable for external state access:
-  - `getBalance/setBalance`, `getCode/setCode`, `getStorage/setStorage`, `getNonce/setNonce`
-- Note: **not used for nested calls** — `EVM.inner_call` handles nested calls internally
-
----
-
-## Test Fixtures (ethereum-tests)
-
-Directory listing: `ethereum-tests/`
-- `BlockchainTests/` (primary for this phase)
-- `GenesisTests/`, `RLPTests/`, `TransactionTests/`, `TrieTests/`, `DifficultyTests/`, `EOFTests/`, `BasicTests/`, `LegacyTests/`, `PoWTests/`, `ABITests/`
-- `fixtures_blockchain_tests.tgz`, `fixtures_general_state_tests.tgz` (local fixture archives)
-
----
-
-## Summary
-
-This pass identifies the Phase 4 blockchain goals, the authoritative block validation specs (execution-specs fork.py + Yellow Paper Section 11), the relevant Voltaire blockchain primitives to use, Nethermind DB layer contracts for storage boundaries, the existing host interface constraints, and the concrete fixture paths for blockchain validation tests.
