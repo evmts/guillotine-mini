@@ -45,6 +45,18 @@ type MinBlobTxPriorityFeeInput = Schema.Schema.Encoded<
   typeof MinBlobTxPriorityFeeInputSchema
 >;
 
+/** Runtime chain-head values used by txpool admission filters. */
+export type TxPoolHeadInfoConfig = {
+  readonly blockGasLimit: bigint | null;
+  readonly currentFeePerBlobGas: bigint;
+};
+
+/** Default chain-head values used when no live head provider is wired. */
+export const TxPoolHeadInfoDefaults: TxPoolHeadInfoConfig = {
+  blockGasLimit: null,
+  currentFeePerBlobGas: 1n,
+};
+
 /** Schema for validating txpool configuration at boundaries. */
 export const TxPoolConfigInputSchema = Schema.Struct({
   peerNotificationThreshold: NonNegativeIntSchema,
@@ -222,6 +234,14 @@ export class TxPoolPriorityFeeTooLowError extends Data.TaggedError(
   readonly maxPriorityFeePerGas: bigint;
 }> {}
 
+/** Error raised when blob fee cap is below current blob base fee. */
+export class TxPoolBlobFeeCapTooLowError extends Data.TaggedError(
+  "TxPoolBlobFeeCapTooLowError",
+)<{
+  readonly currentFeePerBlobGas: bigint;
+  readonly maxFeePerBlobGas: bigint;
+}> {}
+
 /** Error raised when the pool has reached its capacity. */
 export class TxPoolFullError extends Data.TaggedError("TxPoolFullError")<{
   readonly size: number;
@@ -263,7 +283,8 @@ export type TxPoolValidationError =
   | TxPoolMaxTxSizeExceededError
   | TxPoolMaxBlobTxSizeExceededError
   | TxPoolBlobSupportDisabledError
-  | TxPoolPriorityFeeTooLowError;
+  | TxPoolPriorityFeeTooLowError
+  | TxPoolBlobFeeCapTooLowError;
 
 /** Errors returned when adding a transaction to the pool. */
 export type TxPoolAddError =
@@ -315,6 +336,18 @@ export interface TxPoolService {
 
 /** Context tag for the transaction pool. */
 export class TxPool extends Context.Tag("TxPool")<TxPool, TxPoolService>() {}
+
+/** Runtime chain-head info used by txpool filters. */
+export interface TxPoolHeadInfoService {
+  readonly getBlockGasLimit: () => Effect.Effect<bigint | null, never>;
+  readonly getCurrentFeePerBlobGas: () => Effect.Effect<bigint, never>;
+}
+
+/** Context tag for txpool chain-head info. */
+export class TxPoolHeadInfo extends Context.Tag("TxPoolHeadInfo")<
+  TxPoolHeadInfo,
+  TxPoolHeadInfoService
+>() {}
 
 const withTxPool = <A, E>(f: (pool: TxPoolService) => Effect.Effect<A, E>) =>
   Effect.flatMap(TxPool, f);
@@ -508,9 +541,18 @@ const findCompetingTransactionBySenderAndNonce = (
   return undefined;
 };
 
+const makeTxPoolHeadInfo = (
+  config: TxPoolHeadInfoConfig = TxPoolHeadInfoDefaults,
+): TxPoolHeadInfoService =>
+  ({
+    getBlockGasLimit: () => Effect.succeed(config.blockGasLimit),
+    getCurrentFeePerBlobGas: () => Effect.succeed(config.currentFeePerBlobGas),
+  }) satisfies TxPoolHeadInfoService;
+
 const makeTxPool = (config: TxPoolConfigInput) =>
   Effect.gen(function* () {
     const validatedConfig = yield* decodeConfig(config);
+    const headInfo = yield* TxPoolHeadInfo;
     const stateRef = yield* Ref.make(emptyState);
 
     const encodeTransaction = (tx: Transaction.Any) =>
@@ -570,6 +612,19 @@ const makeTxPool = (config: TxPoolConfigInput) =>
               maxPriorityFeePerGas: parsed.maxPriorityFeePerGas,
             }),
           );
+        }
+
+        if (isBlob && validatedConfig.currentBlobBaseFeeRequired) {
+          const currentFeePerBlobGas =
+            yield* headInfo.getCurrentFeePerBlobGas();
+          if (parsed.maxFeePerBlobGas < currentFeePerBlobGas) {
+            return yield* Effect.fail(
+              new TxPoolBlobFeeCapTooLowError({
+                currentFeePerBlobGas,
+                maxFeePerBlobGas: parsed.maxFeePerBlobGas,
+              }),
+            );
+          }
         }
 
         if (validatedConfig.gasLimit !== null) {
@@ -796,13 +851,24 @@ const makeTxPool = (config: TxPoolConfigInput) =>
 /** Production txpool layer. */
 export const TxPoolLive = (
   config: TxPoolConfigInput,
+  headInfoConfig: TxPoolHeadInfoConfig = TxPoolHeadInfoDefaults,
 ): Layer.Layer<TxPool, InvalidTxPoolConfigError> =>
-  Layer.effect(TxPool, makeTxPool(config));
+  Layer.effect(TxPool, makeTxPool(config)).pipe(
+    Layer.provide(TxPoolHeadInfoLive(headInfoConfig)),
+  );
 
 /** Deterministic txpool layer for tests. */
 export const TxPoolTest = (
   config: TxPoolConfigInput = TxPoolConfigDefaults,
-): Layer.Layer<TxPool, InvalidTxPoolConfigError> => TxPoolLive(config);
+  headInfoConfig: TxPoolHeadInfoConfig = TxPoolHeadInfoDefaults,
+): Layer.Layer<TxPool, InvalidTxPoolConfigError> =>
+  TxPoolLive(config, headInfoConfig);
+
+/** Layer providing txpool chain-head admission inputs. */
+export const TxPoolHeadInfoLive = (
+  config: TxPoolHeadInfoConfig = TxPoolHeadInfoDefaults,
+): Layer.Layer<TxPoolHeadInfo> =>
+  Layer.succeed(TxPoolHeadInfo, makeTxPoolHeadInfo(config));
 
 /** Retrieve the total pending transaction count. */
 export const getPendingCount = () =>

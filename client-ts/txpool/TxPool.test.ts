@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import { Address, Hash, Hex, Transaction } from "voltaire-effect/primitives";
 import {
   BlobsSupportMode,
+  TxPoolBlobFeeCapTooLowError,
   InvalidTxPoolConfigError,
   TxPoolBlobSupportDisabledError,
   TxPoolConfigDefaults,
@@ -406,6 +407,49 @@ describe("TxPool", () => {
         }),
       ),
     ),
+  );
+
+  it.effect(
+    "rejects blob transactions below current blob base fee when required",
+    () =>
+      Effect.gen(function* () {
+        const blobTx = makeSignedEip4844Tx(0n, 1n, 2n, 9n);
+        const outcome = yield* Effect.either(addTransaction(blobTx));
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof TxPoolBlobFeeCapTooLowError);
+        }
+      }).pipe(
+        Effect.provide(
+          TxPoolLive(TxPoolConfigDefaults, {
+            blockGasLimit: null,
+            currentFeePerBlobGas: 10n,
+          }),
+        ),
+      ),
+  );
+
+  it.effect(
+    "allows blob transactions below current blob base fee when disabled",
+    () =>
+      Effect.gen(function* () {
+        const blobTx = makeSignedEip4844Tx(0n, 1n, 2n, 9n);
+        const result = yield* addTransaction(blobTx);
+        assert.strictEqual(result._tag, "Added");
+      }).pipe(
+        Effect.provide(
+          TxPoolLive(
+            {
+              ...TxPoolConfigDefaults,
+              currentBlobBaseFeeRequired: false,
+            },
+            {
+              blockGasLimit: null,
+              currentFeePerBlobGas: 10n,
+            },
+          ),
+        ),
+      ),
   );
 
   it.effect("derives blob support from configuration", () =>
