@@ -11,6 +11,7 @@ import {
   TxPoolBlobSupportDisabledError,
   TxPoolConfigDefaults,
   TxPoolFullError,
+  TxPoolGasLimitExceededError,
   TxPoolLive,
   TxPoolPriorityFeeTooLowError,
   TxPoolReplacementNotAllowedError,
@@ -371,6 +372,58 @@ describe("TxPool", () => {
         }),
       ),
     ),
+  );
+
+  it.effect(
+    "enforces current head block gas limit when lower than config",
+    () =>
+      Effect.gen(function* () {
+        const tx = makeSignedEip1559Tx(0n, 1n, 2n, 120_000n);
+        const outcome = yield* Effect.either(addTransaction(tx));
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof TxPoolGasLimitExceededError);
+        }
+      }).pipe(
+        Effect.provide(
+          TxPoolLive(
+            {
+              ...TxPoolConfigDefaults,
+              gasLimit: 200_000,
+            },
+            {
+              blockGasLimit: 100_000n,
+              currentFeePerBlobGas: 1n,
+            },
+          ),
+        ),
+      ),
+  );
+
+  it.effect(
+    "enforces configured gas limit when lower than head gas limit",
+    () =>
+      Effect.gen(function* () {
+        const tx = makeSignedEip1559Tx(0n, 1n, 2n, 120_000n);
+        const outcome = yield* Effect.either(addTransaction(tx));
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof TxPoolGasLimitExceededError);
+        }
+      }).pipe(
+        Effect.provide(
+          TxPoolLive(
+            {
+              ...TxPoolConfigDefaults,
+              gasLimit: 110_000,
+            },
+            {
+              blockGasLimit: 200_000n,
+              currentFeePerBlobGas: 1n,
+            },
+          ),
+        ),
+      ),
   );
 
   it.effect("rejects blob transactions when blobs are disabled", () =>

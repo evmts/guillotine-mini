@@ -549,6 +549,19 @@ const makeTxPoolHeadInfo = (
     getCurrentFeePerBlobGas: () => Effect.succeed(config.currentFeePerBlobGas),
   }) satisfies TxPoolHeadInfoService;
 
+const minDefinedBigInt = (
+  left: bigint | null,
+  right: bigint | null,
+): bigint | null => {
+  if (left === null) {
+    return right;
+  }
+  if (right === null) {
+    return left;
+  }
+  return left < right ? left : right;
+};
+
 const makeTxPool = (config: TxPoolConfigInput) =>
   Effect.gen(function* () {
     const validatedConfig = yield* decodeConfig(config);
@@ -590,6 +603,7 @@ const makeTxPool = (config: TxPoolConfigInput) =>
       Effect.gen(function* () {
         const parsed = yield* decodeTransaction(tx);
         const isBlob = Transaction.isEIP4844(parsed);
+        const currentBlockGasLimit = yield* headInfo.getBlockGasLimit();
 
         if (
           isBlob &&
@@ -627,13 +641,20 @@ const makeTxPool = (config: TxPoolConfigInput) =>
           }
         }
 
-        if (validatedConfig.gasLimit !== null) {
-          const gasLimit = BigInt(validatedConfig.gasLimit);
-          if (parsed.gasLimit > gasLimit) {
+        const configuredGasLimit =
+          validatedConfig.gasLimit === null
+            ? null
+            : BigInt(validatedConfig.gasLimit);
+        const effectiveGasLimit = minDefinedBigInt(
+          currentBlockGasLimit,
+          configuredGasLimit,
+        );
+        if (effectiveGasLimit !== null) {
+          if (parsed.gasLimit > effectiveGasLimit) {
             return yield* Effect.fail(
               new TxPoolGasLimitExceededError({
                 gasLimit: parsed.gasLimit,
-                configuredLimit: gasLimit,
+                configuredLimit: effectiveGasLimit,
               }),
             );
           }
