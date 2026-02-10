@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import {
   DbConfigSchema,
+  DbMetricSchema,
   DbNameSchema,
   DbNames,
   ReadFlags,
@@ -52,5 +53,37 @@ describe("DbTypes", () => {
 
   it("rejects invalid WriteFlags values", () => {
     assert.throws(() => Schema.decodeSync(WriteFlagsSchema)(4));
+  });
+
+  it("validates DbMetric payloads", () => {
+    const metric = Schema.decodeSync(DbMetricSchema)({
+      size: 1,
+      cacheSize: 2,
+      indexSize: 3,
+      memtableSize: 4,
+      totalReads: 5,
+      totalWrites: 6,
+    });
+    assert.deepStrictEqual(metric, {
+      size: 1,
+      cacheSize: 2,
+      indexSize: 3,
+      memtableSize: 4,
+      totalReads: 5,
+      totalWrites: 6,
+    });
+  });
+
+  it("rejects invalid DbMetric payloads", () => {
+    assert.throws(() =>
+      Schema.decodeSync(DbMetricSchema)({
+        size: 1,
+        cacheSize: 2,
+        indexSize: 3,
+        memtableSize: 4,
+        totalReads: 5,
+        totalWrites: "6",
+      } as any),
+    );
   });
 });

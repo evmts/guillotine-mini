@@ -155,12 +155,15 @@ export const WriteFlags = {
     WriteFlagsSchema.make(flags.reduce((acc, flag) => acc | flag, 0)),
 } as const;
 
+/** Schema for DB metrics emitted by IDbMeta-compatible backends. */
+export const DbMetricSchema = Schema.Struct({
+  size: Schema.Number,
+  cacheSize: Schema.Number,
+  indexSize: Schema.Number,
+  memtableSize: Schema.Number,
+  totalReads: Schema.Number,
+  totalWrites: Schema.Number,
+});
+
 /** DB metrics for maintenance/telemetry. */
-export interface DbMetric {
-  readonly size: number;
-  readonly cacheSize: number;
-  readonly indexSize: number;
-  readonly memtableSize: number;
-  readonly totalReads: number;
-  readonly totalWrites: number;
-}
+export type DbMetric = Schema.Schema.Type<typeof DbMetricSchema>;
