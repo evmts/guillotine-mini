@@ -107,6 +107,78 @@ pub fn is_canonical_at(chain: *Chain, number: u64, hash: Hash.Hash) bool {
     return Hash.equals(&canonical, &hash);
 }
 
+/// Returns true if the header's parent is canonical at `number - 1` (local-only).
+///
+/// Semantics:
+/// - For `header.number == 0` (genesis), returns `false` — there is no parent
+///   height to compare against and underflow must be avoided.
+/// - Otherwise compares `header.parent_hash` with the canonical hash recorded
+///   at `header.number - 1` via the local number→hash map.
+/// - Never consults the fork cache and performs no allocations.
+pub fn is_parent_canonical_local(
+    chain: *Chain,
+    header: *const BlockHeader.BlockHeader,
+) bool {
+    if (header.number == 0) return false;
+    return is_canonical_at(chain, header.number - 1, header.parent_hash);
+}
+
+test "Chain - is_parent_canonical_local returns false for genesis header" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    var hdr = BlockHeader.init();
+    hdr.number = 0;
+    hdr.parent_hash = Hash.ZERO;
+
+    try std.testing.expect(!is_parent_canonical_local(&chain, &hdr));
+}
+
+test "Chain - is_parent_canonical_local returns true when parent canonical" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+    try chain.setCanonicalHead(genesis.hash);
+
+    var hdr = BlockHeader.init();
+    hdr.number = 1;
+    hdr.parent_hash = genesis.hash;
+
+    try std.testing.expect(is_parent_canonical_local(&chain, &hdr));
+}
+
+test "Chain - is_parent_canonical_local returns false on mismatch" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+    try chain.setCanonicalHead(genesis.hash);
+
+    var hdr = BlockHeader.init();
+    hdr.number = 1;
+    hdr.parent_hash = Hash.ZERO; // not equal to canonical #0
+
+    try std.testing.expect(!is_parent_canonical_local(&chain, &hdr));
+}
+
+test "Chain - is_parent_canonical_local returns false when parent mapping missing" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    var hdr = BlockHeader.init();
+    hdr.number = 1;
+    hdr.parent_hash = Hash.ZERO;
+
+    try std.testing.expect(!is_parent_canonical_local(&chain, &hdr));
+}
+
 // ---------------------------------------------------------------------------
 // Comptime DI helpers (Nethermind-style parity)
 // ---------------------------------------------------------------------------
