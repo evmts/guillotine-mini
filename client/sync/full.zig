@@ -143,6 +143,7 @@ pub const BlocksRequest = struct {
 
     fn headers_to_hashes(headers: []const BlockHeader.BlockHeader, allocator: std.mem.Allocator) ![]const Hash.Hash {
         var hashes = try allocator.alloc(Hash.Hash, headers.len);
+        errdefer allocator.free(hashes);
         for (headers, 0..) |*header, index| {
             hashes[index] = try BlockHeader.hash(header, allocator);
         }
