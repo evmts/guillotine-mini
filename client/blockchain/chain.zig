@@ -635,16 +635,16 @@ test "Chain - safe_head_hash_of forwards forkchoice value" {
     const Fc = struct {
         safe: ?Hash.Hash,
         finalized: ?Hash.Hash,
-        pub fn getSafeHash(self: @This()) ?Hash.Hash {
+        pub fn getSafeHash(self: *const @This()) ?Hash.Hash {
             return self.safe;
         }
-        pub fn getFinalizedHash(self: @This()) ?Hash.Hash {
+        pub fn getFinalizedHash(self: *const @This()) ?Hash.Hash {
             return self.finalized;
         }
     };
 
-    const fc = Fc{ .safe = Hash.ZERO, .finalized = null };
-    const h = safe_head_hash_of(fc);
+    var fc = Fc{ .safe = Hash.ZERO, .finalized = null };
+    const h = safe_head_hash_of(&fc);
     try std.testing.expect(h != null);
     try std.testing.expectEqualSlices(u8, &Hash.ZERO, &h.?);
 }
@@ -653,16 +653,16 @@ test "Chain - finalized_head_hash_of forwards forkchoice value" {
     const Fc = struct {
         safe: ?Hash.Hash,
         finalized: ?Hash.Hash,
-        pub fn getSafeHash(self: @This()) ?Hash.Hash {
+        pub fn getSafeHash(self: *const @This()) ?Hash.Hash {
             return self.safe;
         }
-        pub fn getFinalizedHash(self: @This()) ?Hash.Hash {
+        pub fn getFinalizedHash(self: *const @This()) ?Hash.Hash {
             return self.finalized;
         }
     };
 
-    const fc = Fc{ .safe = null, .finalized = Hash.ZERO };
-    const h = finalized_head_hash_of(fc);
+    var fc = Fc{ .safe = null, .finalized = Hash.ZERO };
+    const h = finalized_head_hash_of(&fc);
     try std.testing.expect(h != null);
     try std.testing.expectEqualSlices(u8, &Hash.ZERO, &h.?);
 }
@@ -678,21 +678,21 @@ test "Chain - safe/finalized head block helpers return local blocks" {
     const Fc = struct {
         safe: ?Hash.Hash,
         finalized: ?Hash.Hash,
-        pub fn getSafeHash(self: @This()) ?Hash.Hash {
+        pub fn getSafeHash(self: *const @This()) ?Hash.Hash {
             return self.safe;
         }
-        pub fn getFinalizedHash(self: @This()) ?Hash.Hash {
+        pub fn getFinalizedHash(self: *const @This()) ?Hash.Hash {
             return self.finalized;
         }
     };
 
-    const fc = Fc{ .safe = genesis.hash, .finalized = genesis.hash };
+    var fc = Fc{ .safe = genesis.hash, .finalized = genesis.hash };
 
-    const sb = safe_head_block_of(&chain, fc);
+    const sb = safe_head_block_of(&chain, &fc);
     try std.testing.expect(sb != null);
     try std.testing.expectEqualSlices(u8, &genesis.hash, &sb.?.hash);
 
-    const fb = finalized_head_block_of(&chain, fc);
+    const fb = finalized_head_block_of(&chain, &fc);
     try std.testing.expect(fb != null);
     try std.testing.expectEqualSlices(u8, &genesis.hash, &fb.?.hash);
 }
@@ -705,16 +705,16 @@ test "Chain - safe/finalized head block helpers return null when missing locally
     const Fc = struct {
         safe: ?Hash.Hash,
         finalized: ?Hash.Hash,
-        pub fn getSafeHash(self: @This()) ?Hash.Hash {
+        pub fn getSafeHash(self: *const @This()) ?Hash.Hash {
             return self.safe;
         }
-        pub fn getFinalizedHash(self: @This()) ?Hash.Hash {
+        pub fn getFinalizedHash(self: *const @This()) ?Hash.Hash {
             return self.finalized;
         }
     };
 
     // Some non-existent hash (all zeros is fine since store is empty)
-    const fc = Fc{ .safe = Hash.ZERO, .finalized = Hash.ZERO };
-    try std.testing.expect(safe_head_block_of(&chain, fc) == null);
-    try std.testing.expect(finalized_head_block_of(&chain, fc) == null);
+    var fc = Fc{ .safe = Hash.ZERO, .finalized = Hash.ZERO };
+    try std.testing.expect(safe_head_block_of(&chain, &fc) == null);
+    try std.testing.expect(finalized_head_block_of(&chain, &fc) == null);
 }
