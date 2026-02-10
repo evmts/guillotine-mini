@@ -556,6 +556,41 @@ const findCompetingTransactionBySenderAndNonce = (
   return undefined;
 };
 
+const compareCompetingTransactionReplacement = (
+  incoming: Transaction.Any,
+  existing: Transaction.Any,
+) =>
+  Transaction.isEIP4844(incoming) && Transaction.isEIP4844(existing)
+    ? compareReplacedBlobTransactionByFee(incoming, existing)
+    : compareReplacedTransactionByFee(incoming, existing);
+
+const getPendingCountBySender = (
+  state: TxPoolState,
+  senderKey: string,
+  isBlob: boolean,
+): number =>
+  isBlob
+    ? (state.blobSenderIndex.get(senderKey)?.size ?? 0)
+    : (state.senderIndex.get(senderKey)?.size ?? 0);
+
+const makeSenderLimitExceededError = (
+  sender: Address.AddressType,
+  pending: number,
+  maxPending: number,
+  isBlob: boolean,
+): TxPoolSenderLimitExceededError | TxPoolBlobSenderLimitExceededError =>
+  isBlob
+    ? new TxPoolBlobSenderLimitExceededError({
+        sender,
+        pending,
+        maxPending,
+      })
+    : new TxPoolSenderLimitExceededError({
+        sender,
+        pending,
+        maxPending,
+      });
+
 const makeTxPoolHeadInfo = (
   config: TxPoolHeadInfoConfig = TxPoolHeadInfoDefaults,
 ): TxPoolHeadInfoService =>
@@ -838,14 +873,10 @@ const makeTxPool = (config: TxPoolConfigInput) =>
                 : removeTransactionFromState(state, competing.hashKey).next;
 
             if (competing !== undefined) {
-              const comparison =
-                Transaction.isEIP4844(validated.tx) &&
-                Transaction.isEIP4844(competing.tx)
-                  ? compareReplacedBlobTransactionByFee(
-                      validated.tx,
-                      competing.tx,
-                    )
-                  : compareReplacedTransactionByFee(validated.tx, competing.tx);
+              const comparison = compareCompetingTransactionReplacement(
+                validated.tx,
+                competing.tx,
+              );
               if (comparison !== -1) {
                 return [
                   {
@@ -880,25 +911,21 @@ const makeTxPool = (config: TxPoolConfigInput) =>
               ? validatedConfig.maxPendingBlobTxsPerSender
               : validatedConfig.maxPendingTxsPerSender;
             if (pendingLimit > 0) {
-              const pending = validated.isBlob
-                ? (stateAfterReplacement.blobSenderIndex.get(senderKey)?.size ??
-                  0)
-                : (stateAfterReplacement.senderIndex.get(senderKey)?.size ?? 0);
+              const pending = getPendingCountBySender(
+                stateAfterReplacement,
+                senderKey,
+                validated.isBlob,
+              );
               if (pending >= pendingLimit) {
                 return [
                   {
                     _tag: "Rejected",
-                    error: validated.isBlob
-                      ? new TxPoolBlobSenderLimitExceededError({
-                          sender: validated.sender,
-                          pending,
-                          maxPending: pendingLimit,
-                        })
-                      : new TxPoolSenderLimitExceededError({
-                          sender: validated.sender,
-                          pending,
-                          maxPending: pendingLimit,
-                        }),
+                    error: makeSenderLimitExceededError(
+                      validated.sender,
+                      pending,
+                      pendingLimit,
+                      validated.isBlob,
+                    ),
                   },
                   state,
                 ];
