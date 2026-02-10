@@ -20,9 +20,9 @@ const ForkBlockCache = blockchain.ForkBlockCache;
 ///   changes between calls.
 /// - Best‑effort race resilience: if the head number changes during the read,
 ///   the helper returns null instead of a potentially stale value.
-pub fn head_hash(chain: *Chain) ?Hash.Hash {
-    // Delegate to the generic helper to avoid duplication.
-    return head_hash_of(chain);
+pub fn head_hash(chain: *Chain) !?Hash.Hash {
+    // Delegate to the generic helper to avoid duplication and propagate errors.
+    return try head_hash_of(chain);
 }
 
 /// Returns the canonical head block if present.
@@ -115,9 +115,9 @@ pub fn get_block_by_number_local(chain: *Chain, number: u64) ?Block.Block {
 }
 
 /// Generic, comptime-injected head hash reader for any chain-like type.
-pub fn head_hash_of(chain: anytype) ?Hash.Hash {
+pub fn head_hash_of(chain: anytype) !?Hash.Hash {
     const before = chain.getHeadBlockNumber() orelse return null;
-    const block = chain.getBlockByNumber(before) catch return null;
+    const block = try chain.getBlockByNumber(before);
     const hb = block orelse return null;
     const after = chain.getHeadBlockNumber() orelse return null;
     if (after != before) return null;
