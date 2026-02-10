@@ -13,6 +13,7 @@ import {
   getBlockByHash,
   getBlockByNumber,
   getHead,
+  hasBlock,
   initializeGenesis,
   putBlock,
   setCanonicalHead,
@@ -44,6 +45,27 @@ describe("Blockchain", () => {
         Hex.fromBytes(Option.getOrThrow(stored).hash),
         Hex.fromBytes(block.hash),
       );
+    }).pipe(Effect.provide(BlockchainTest)),
+  );
+
+  it.effect("hasBlock returns true for existing blocks", () =>
+    Effect.gen(function* () {
+      const block = makeBlock({
+        number: 0n,
+        hash: blockHashFromByte(0x03),
+        parentHash: blockHashFromByte(0x00),
+      });
+
+      yield* putBlock(block);
+
+      assert.isTrue(yield* hasBlock(block.hash));
+    }).pipe(Effect.provide(BlockchainTest)),
+  );
+
+  it.effect("hasBlock returns false for missing blocks", () =>
+    Effect.gen(function* () {
+      const missing = blockHashFromByte(0x04);
+      assert.isFalse(yield* hasBlock(missing));
     }).pipe(Effect.provide(BlockchainTest)),
   );
 
