@@ -99,10 +99,14 @@ pub fn head_block_of(chain: anytype) !?Block.Block {
     return hb;
 }
 
-/// Forkchoice view provider interface (duck-typed via comptime DI):
-/// must expose `getSafeHash()` and `getFinalizedHash()` that return `?Hash.Hash`.
-/// These helpers intentionally do not fetch; use with `*_or_fetch` variants when
-/// remote reads are acceptable.
+/// Forkchoice view provider interface (duck-typed via comptime DI).
+///
+/// Expected minimal API:
+/// - `getSafeHash() -> ?Hash.Hash`
+/// - `getFinalizedHash() -> ?Hash.Hash`
+///
+/// These helpers intentionally do not fetch; pair with `*_or_fetch` variants if
+/// remote reads are acceptable in the call site.
 pub fn safe_head_hash_of(fc: anytype) ?Hash.Hash {
     return fc.getSafeHash();
 }
@@ -111,14 +115,16 @@ pub fn finalized_head_hash_of(fc: anytype) ?Hash.Hash {
     return fc.getFinalizedHash();
 }
 
-pub fn safe_head_block_of(chain: anytype, fc: anytype) !?Block.Block {
+/// Local-only safe head block lookup (no fork-cache fetch/allocations at this layer).
+pub fn safe_head_block_of(chain: *Chain, fc: anytype) ?Block.Block {
     const h = fc.getSafeHash() orelse return null;
-    return try chain.getBlockByHash(h);
+    return chain.block_store.getBlock(h);
 }
 
-pub fn finalized_head_block_of(chain: anytype, fc: anytype) !?Block.Block {
+/// Local-only finalized head block lookup (no fork-cache fetch/allocations at this layer).
+pub fn finalized_head_block_of(chain: *Chain, fc: anytype) ?Block.Block {
     const h = fc.getFinalizedHash() orelse return null;
-    return try chain.getBlockByHash(h);
+    return chain.block_store.getBlock(h);
 }
 
 test {
