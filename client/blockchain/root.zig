@@ -2,7 +2,6 @@
 const chain = @import("chain.zig");
 const validator = @import("validator.zig");
 const blockchain = @import("blockchain");
-const local_access = @import("local_access.zig");
 
 // -- Public API --------------------------------------------------------------
 
