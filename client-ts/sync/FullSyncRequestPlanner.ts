@@ -3,7 +3,10 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { BlockHash } from "voltaire-effect/primitives";
-import { FullSyncPeerRequestLimits } from "./FullSyncPeerRequestLimits";
+import {
+  FullSyncPeerRequestLimits,
+  type FullSyncPeerRequestLimitsValue,
+} from "./FullSyncPeerRequestLimits";
 
 type BlockHashType = BlockHash.BlockHashType;
 
@@ -107,6 +110,11 @@ export class FullSyncRequestPlanner extends Context.Tag(
 interface RequestIdState {
   readonly enabled: boolean;
   readonly next: bigint;
+}
+
+interface HashRequestPlanContext {
+  readonly maxPerRequest: number;
+  readonly requestIds: RequestIdState;
 }
 
 const failPlanner = (
@@ -320,6 +328,32 @@ const planHashBatches = <T extends FullSyncBodyRequestBatch>({
 const makeFullSyncRequestPlanner = Effect.gen(function* () {
   const limitsService = yield* FullSyncPeerRequestLimits;
 
+  const resolveHashRequestContext = ({
+    input,
+    limit,
+  }: {
+    readonly input: FullSyncHashRequestPlanInput;
+    readonly limit: (limits: FullSyncPeerRequestLimitsValue) => {
+      readonly field: "maxBodiesPerRequest" | "maxReceiptsPerRequest";
+      readonly value: number;
+    };
+  }): Effect.Effect<HashRequestPlanContext, FullSyncRequestPlannerError> =>
+    Effect.gen(function* () {
+      const requestIds = yield* initializeRequestIdState({
+        protocolVersion: input.protocolVersion,
+        initialRequestId: input.initialRequestId,
+      });
+
+      const limits = yield* limitsService.resolve(input.peerClientId);
+      const selected = limit(limits);
+      yield* validateLimit(selected.value, selected.field);
+
+      return {
+        maxPerRequest: selected.value,
+        requestIds,
+      };
+    });
+
   return {
     planHeaderRequests: (input) =>
       Effect.gen(function* () {
@@ -351,18 +385,18 @@ const makeFullSyncRequestPlanner = Effect.gen(function* () {
 
     planBodyRequests: (input) =>
       Effect.gen(function* () {
-        const limits = yield* limitsService.resolve(input.peerClientId);
-        yield* validateLimit(limits.maxBodiesPerRequest, "maxBodiesPerRequest");
-
-        const requestIds = yield* initializeRequestIdState({
-          protocolVersion: input.protocolVersion,
-          initialRequestId: input.initialRequestId,
+        const context = yield* resolveHashRequestContext({
+          input,
+          limit: (limits) => ({
+            field: "maxBodiesPerRequest",
+            value: limits.maxBodiesPerRequest,
+          }),
         });
 
         return planHashBatches({
           blockHashes: input.blockHashes,
-          maxPerRequest: limits.maxBodiesPerRequest,
-          requestIds,
+          maxPerRequest: context.maxPerRequest,
+          requestIds: context.requestIds,
           createBatch: (requestId, blockHashes) => ({
             requestId,
             blockHashes,
@@ -372,23 +406,18 @@ const makeFullSyncRequestPlanner = Effect.gen(function* () {
 
     planReceiptRequests: (input) =>
       Effect.gen(function* () {
-        yield* validateProtocolVersion(input.protocolVersion);
-
-        const limits = yield* limitsService.resolve(input.peerClientId);
-        yield* validateLimit(
-          limits.maxReceiptsPerRequest,
-          "maxReceiptsPerRequest",
-        );
-
-        const requestIds = yield* initializeRequestIdState({
-          protocolVersion: input.protocolVersion,
-          initialRequestId: input.initialRequestId,
+        const context = yield* resolveHashRequestContext({
+          input,
+          limit: (limits) => ({
+            field: "maxReceiptsPerRequest",
+            value: limits.maxReceiptsPerRequest,
+          }),
         });
 
         return planHashBatches({
           blockHashes: input.blockHashes,
-          maxPerRequest: limits.maxReceiptsPerRequest,
-          requestIds,
+          maxPerRequest: context.maxPerRequest,
+          requestIds: context.requestIds,
           createBatch: (requestId, blockHashes) =>
             supportsPartialReceipts(input.protocolVersion)
               ? {

@@ -37,6 +37,22 @@ const plannerLayer = FullSyncRequestPlannerLive.pipe(
 const providePlanner = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(plannerLayer));
 
+const assertPlannerError = (
+  outcome: Either.Either<unknown, FullSyncRequestPlannerError>,
+  reason: FullSyncRequestPlannerError["reason"],
+  field: string,
+) => {
+  assert.strictEqual(Either.isLeft(outcome), true);
+  if (Either.isLeft(outcome)) {
+    assert.strictEqual(
+      outcome.left instanceof FullSyncRequestPlannerError,
+      true,
+    );
+    assert.strictEqual(outcome.left.reason, reason);
+    assert.strictEqual(outcome.left.field, field);
+  }
+};
+
 describe("FullSyncRequestPlanner", () => {
   it.effect(
     "chunks header requests by peer limits and assigns eth/66+ request ids",
@@ -129,15 +145,11 @@ describe("FullSyncRequestPlanner", () => {
             initialRequestId: 0n,
           }).pipe(Effect.either);
 
-          assert.strictEqual(Either.isLeft(outcome), true);
-          if (Either.isLeft(outcome)) {
-            assert.strictEqual(
-              outcome.left instanceof FullSyncRequestPlannerError,
-              true,
-            );
-            assert.strictEqual(outcome.left.reason, "HeaderRangeUnderflow");
-            assert.strictEqual(outcome.left.field, "startBlockNumber");
-          }
+          assertPlannerError(
+            outcome,
+            "HeaderRangeUnderflow",
+            "startBlockNumber",
+          );
         }),
       ),
   );
@@ -200,18 +212,11 @@ describe("FullSyncRequestPlanner", () => {
             blockHashes: makeBlockHashes(1),
           }).pipe(Effect.either);
 
-          assert.strictEqual(Either.isLeft(invalidVersion), true);
-          if (Either.isLeft(invalidVersion)) {
-            assert.strictEqual(
-              invalidVersion.left instanceof FullSyncRequestPlannerError,
-              true,
-            );
-            assert.strictEqual(
-              invalidVersion.left.reason,
-              "InvalidProtocolVersion",
-            );
-            assert.strictEqual(invalidVersion.left.field, "protocolVersion");
-          }
+          assertPlannerError(
+            invalidVersion,
+            "InvalidProtocolVersion",
+            "protocolVersion",
+          );
 
           const missingRequestId = yield* planFullSyncBodyRequests({
             peerClientId: "Geth/v1.15.11",
@@ -219,18 +224,11 @@ describe("FullSyncRequestPlanner", () => {
             blockHashes: makeBlockHashes(1),
           }).pipe(Effect.either);
 
-          assert.strictEqual(Either.isLeft(missingRequestId), true);
-          if (Either.isLeft(missingRequestId)) {
-            assert.strictEqual(
-              missingRequestId.left instanceof FullSyncRequestPlannerError,
-              true,
-            );
-            assert.strictEqual(
-              missingRequestId.left.reason,
-              "MissingInitialRequestId",
-            );
-            assert.strictEqual(missingRequestId.left.field, "initialRequestId");
-          }
+          assertPlannerError(
+            missingRequestId,
+            "MissingInitialRequestId",
+            "initialRequestId",
+          );
 
           const invalidRequestId = yield* planFullSyncBodyRequests({
             peerClientId: "Geth/v1.15.11",
@@ -239,18 +237,11 @@ describe("FullSyncRequestPlanner", () => {
             initialRequestId: 1n << 64n,
           }).pipe(Effect.either);
 
-          assert.strictEqual(Either.isLeft(invalidRequestId), true);
-          if (Either.isLeft(invalidRequestId)) {
-            assert.strictEqual(
-              invalidRequestId.left instanceof FullSyncRequestPlannerError,
-              true,
-            );
-            assert.strictEqual(
-              invalidRequestId.left.reason,
-              "InvalidInitialRequestId",
-            );
-            assert.strictEqual(invalidRequestId.left.field, "initialRequestId");
-          }
+          assertPlannerError(
+            invalidRequestId,
+            "InvalidInitialRequestId",
+            "initialRequestId",
+          );
         }),
       ),
   );
@@ -303,11 +294,11 @@ describe("FullSyncRequestPlanner", () => {
           initialRequestId: 1n,
         }).pipe(Effect.either);
 
-        assert.strictEqual(Either.isLeft(outcome), true);
-        if (Either.isLeft(outcome)) {
-          assert.strictEqual(outcome.left.reason, "InvalidProtocolVersion");
-          assert.strictEqual(outcome.left.field, "protocolVersion");
-        }
+        assertPlannerError(
+          outcome,
+          "InvalidProtocolVersion",
+          "protocolVersion",
+        );
       }),
     ),
   );
@@ -333,11 +324,7 @@ describe("FullSyncRequestPlanner", () => {
           initialRequestId: 0n,
         }).pipe(Effect.either);
 
-        assert.strictEqual(Either.isLeft(invalidSkip), true);
-        if (Either.isLeft(invalidSkip)) {
-          assert.strictEqual(invalidSkip.left.reason, "InvalidSkip");
-          assert.strictEqual(invalidSkip.left.field, "skip");
-        }
+        assertPlannerError(invalidSkip, "InvalidSkip", "skip");
 
         const unsafeProtocol = yield* planFullSyncBodyRequests({
           peerClientId: "Geth/v1.15.11",
@@ -346,14 +333,11 @@ describe("FullSyncRequestPlanner", () => {
           initialRequestId: 0n,
         }).pipe(Effect.either);
 
-        assert.strictEqual(Either.isLeft(unsafeProtocol), true);
-        if (Either.isLeft(unsafeProtocol)) {
-          assert.strictEqual(
-            unsafeProtocol.left.reason,
-            "InvalidProtocolVersion",
-          );
-          assert.strictEqual(unsafeProtocol.left.field, "protocolVersion");
-        }
+        assertPlannerError(
+          unsafeProtocol,
+          "InvalidProtocolVersion",
+          "protocolVersion",
+        );
       }),
     ),
   );
@@ -386,11 +370,11 @@ describe("FullSyncRequestPlanner", () => {
             initialRequestId: 5n,
           }).pipe(Effect.either);
 
-          assert.strictEqual(Either.isLeft(outcome), true);
-          if (Either.isLeft(outcome)) {
-            assert.strictEqual(outcome.left.reason, "InvalidPeerLimit");
-            assert.strictEqual(outcome.left.field, "maxBodiesPerRequest");
-          }
+          assertPlannerError(
+            outcome,
+            "InvalidPeerLimit",
+            "maxBodiesPerRequest",
+          );
         }),
       );
     },
