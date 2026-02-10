@@ -146,9 +146,7 @@ export const compareFeeMarketPriority = (
       xResolvedMaxFee,
       yResolvedMaxFee,
     );
-    if (maxFeeComparison !== 0) {
-      return maxFeeComparison;
-    }
+    return maxFeeComparison;
   }
 
   return compareDescending(xGasPrice, yGasPrice);
