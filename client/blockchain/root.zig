@@ -6,6 +6,20 @@ const validator = @import("validator.zig");
 
 /// Chain management API rooted in Voltaire's `Blockchain` primitive.
 pub const Chain = chain.Chain;
+/// Canonical head helpers.
+pub const head_hash = chain.head_hash;
+pub const head_block = chain.head_block;
+/// Canonicality checks.
+pub const is_canonical = chain.is_canonical;
+pub const is_canonical_or_fetch = chain.is_canonical_or_fetch;
+/// Generic comptime DI helpers for head reads.
+pub const head_hash_of = chain.head_hash_of;
+pub const head_block_of = chain.head_block_of;
+/// Safe/finalized head helpers (local-only).
+pub const safe_head_hash_of = chain.safe_head_hash_of;
+pub const finalized_head_hash_of = chain.finalized_head_hash_of;
+pub const safe_head_block_of = chain.safe_head_block_of;
+pub const finalized_head_block_of = chain.finalized_head_block_of;
 /// Shared header validation errors.
 pub const ValidationError = validator.ValidationError;
 /// Header validation context.
