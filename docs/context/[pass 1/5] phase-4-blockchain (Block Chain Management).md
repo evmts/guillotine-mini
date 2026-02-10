@@ -13,47 +13,32 @@ Planned modules:
 - ethereum-tests/BlockchainTests/
 - execution-spec-tests/fixtures/blockchain_tests/
 
-## execution-specs (prague fork) notes
+## execution-specs (Prague fork) highlights
 Source: execution-specs/src/ethereum/forks/prague/fork.py
+- state_transition: validate_header, reject non-empty ommers, build BlockEnvironment, apply_body, compute roots/bloom/requests hash, compare to header, append block.
+- validate_header: header.number >= 1, parent header from chain tip; compute excess_blob_gas; gas_used <= gas_limit; base_fee_per_gas computed from parent; timestamp strictly increasing; number increments by 1; extra_data length <= 32; difficulty == 0; nonce == 0; ommers_hash == EMPTY_OMMER_HASH; parent_hash matches keccak(rlp(parent_header)).
+- apply_body: executes system transactions, user transactions, withdrawals; returns block_gas_used, receipts trie, withdrawals trie, logs bloom, blob gas, and requests hash components used for header validation.
 
-Key validation and transition touchpoints:
-- state_transition validates header, enforces no ommers, builds BlockEnvironment, applies body, then checks:
-  - gas_used, transactions_root, state_root, receipt_root, logs bloom, withdrawals_root, blob_gas_used, requests_hash
-- validate_header checks parent linkage and header invariants:
-  - gas_used <= gas_limit
-  - base_fee_per_gas computed from parent
-  - timestamp strictly increases
-  - number increments by 1
-  - extra_data length <= 32
-  - difficulty == 0, nonce == 0, ommers_hash == EMPTY_OMMER_HASH
-  - parent_hash matches keccak(rlp(parent_header))
-- apply_body processes system transactions (beacon roots, history storage), user transactions, withdrawals, then requests
-
-## EIP-1559 base fee and gas limit rules
+## EIP-1559 base fee and gas limit guardrails
 Source: EIPs/EIPS/eip-1559.md
-
-Relevant checks:
-- gas_used must be <= gas_limit
-- gas_limit change bounded by parent_gas_limit / 1024
-- base_fee_per_gas adjusted by parent gas usage with BASE_FEE_MAX_CHANGE_DENOMINATOR = 8
+- gas_used must be <= gas_limit.
+- gas_limit bounded by parent_gas_limit +/- parent_gas_limit // 1024.
+- base_fee_per_gas computed from parent gas target (parent_gas_limit / ELASTICITY_MULTIPLIER), with BASE_FEE_MAX_CHANGE_DENOMINATOR = 8.
+- fork block uses INITIAL_BASE_FEE; otherwise base fee follows parent gas used vs target formula.
 
 ## Yellow Paper Section 11 (Block Finalisation)
-Source: yellowpaper/Paper.tex (Section 11)
+Source: yellowpaper/Paper.tex
+- Finalisation stages: execute withdrawals, validate transactions, verify state.
+- Withdrawals: balance increase by withdrawal amount in Gwei, no gas cost, cannot fail.
+- gasUsed in header must equal cumulative gas used after last transaction.
+- stateRoot equals trie root after executing transactions and withdrawals.
 
-Key rules:
-- finalisation stages: execute withdrawals, validate transactions, verify state
-- withdrawals increase recipient balance by the Gwei amount; no gas cost; cannot fail
-- header gasUsed must match cumulative gas used after last transaction
-- stateRoot must match the TRIE root after transactions and withdrawals
-
-## devp2p eth protocol (caps/eth.md)
+## devp2p ETH protocol notes (chain sync context)
 Source: devp2p/caps/eth.md
-
-Relevant chain sync points:
-- Status handshake required before other messages
-- enforce message size limits (protocol recommends lower than RLPx max)
-- header download via GetBlockHeaders; bodies via GetBlockBodies
-- block bodies must validate against headers before execution
+- Status must be exchanged before other ETH messages.
+- RLPx hard limit is 16.7 MiB; eth protocol practical limit ~10 MiB; enforce hard/soft message limits.
+- Sync uses GetBlockHeaders then GetBlockBodies; block bodies must validate against headers before execution.
+- Receipts are fetched separately (GetReceipts) when needed for non-executing sync paths.
 
 ## Nethermind references
 Primary architecture reference:
@@ -69,27 +54,28 @@ Nethermind.Db listing (requested for context):
 - BlobTxsColumns.cs, ReceiptsColumns.cs, MetadataDbKeys.cs
 - InMemoryColumnBatch.cs, InMemoryWriteBatch.cs
 
-## Voltaire primitives to use (never reimplement)
+## Voltaire primitives (must use; do not reimplement)
 Relevant APIs under /Users/williamcory/voltaire/packages/voltaire-zig/src:
 - blockchain/Blockchain.zig (Blockchain)
 - blockchain/BlockStore.zig (BlockStore)
 - blockchain/ForkBlockCache.zig (ForkBlockCache)
-- primitives/Block (Block, BlockHeader, BlockBody, Transactions, Receipts)
-- primitives/Hash (Hash)
-- primitives/Address (Address)
-- state-manager (world state, snapshots)
-- evm (EVM execution integration)
-- crypto (keccak256 and hashing primitives)
+- primitives/Block.zig (Block, BlockHeader, BlockBody, Transactions, Receipts)
+- primitives/Hash.zig (Hash)
+- primitives/Address.zig (Address)
+- state-manager/ (world state, snapshots)
+- evm/ (EVM execution integration)
+- crypto/ (keccak256 and hashing primitives)
 
-## Existing Zig files to integrate with
+## Existing Zig integration points
 src/host.zig
-- HostInterface vtable for get/set balance, code, storage, nonce
-- Uses primitives.Address.Address and u256
+- HostInterface vtable for get/set balance, code, storage, nonce.
+- Uses primitives.Address.Address and u256.
+- EVM inner_call does not use HostInterface for nested calls.
 
 ## Test fixtures
 - ethereum-tests/BlockchainTests/
-- execution-spec-tests/fixtures/blockchain_tests/ (from spec reference; verify presence)
-- ethereum-tests/fixtures_blockchain_tests.tgz (archived fixtures)
+- execution-spec-tests/fixtures/blockchain_tests/
+- ethereum-tests/fixtures_blockchain_tests.tgz
 
 ## Paths read in this pass
 - prd/GUILLOTINE_CLIENT_PLAN.md
@@ -103,3 +89,4 @@ src/host.zig
 - /Users/williamcory/voltaire/packages/voltaire-zig/src/
 - /Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/
 - ethereum-tests/
+- execution-spec-tests/fixtures/
