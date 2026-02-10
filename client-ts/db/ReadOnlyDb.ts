@@ -246,22 +246,42 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
               return;
             }
 
+            const prepared: Array<
+              | {
+                  readonly _tag: "put";
+                  readonly keyHex: string;
+                  readonly value: BytesType;
+                }
+              | {
+                  readonly _tag: "del";
+                  readonly keyHex: string;
+                }
+            > = [];
+
             for (const op of ops) {
               switch (op._tag) {
                 case "put": {
                   const keyHex = yield* encodeKey(op.key);
                   const stored = yield* cloneBytesEffect(op.value);
-                  overlay.set(keyHex, stored);
+                  prepared.push({ _tag: "put", keyHex, value: stored });
                   break;
                 }
                 case "del": {
                   const keyHex = yield* encodeKey(op.key);
-                  overlay.delete(keyHex);
+                  prepared.push({ _tag: "del", keyHex });
                   break;
                 }
                 case "merge": {
                   return yield* Effect.fail(mergeUnsupportedError());
                 }
+              }
+            }
+
+            for (const op of prepared) {
+              if (op._tag === "put") {
+                overlay.set(op.keyHex, op.value);
+              } else {
+                overlay.delete(op.keyHex);
               }
             }
           })
