@@ -9,6 +9,10 @@ type BlockHashType = BlockHash.BlockHashType;
 
 /** Request-id support starts at eth/66 (EIP-2481). */
 export const EthRequestIdProtocolVersion = 66;
+/** Partial receipts support starts at eth/70 (EIP-7975). */
+export const EthPartialReceiptsProtocolVersion = 70;
+/** Highest ETH protocol version supported by this planner. */
+export const EthSupportedProtocolVersionMax = EthPartialReceiptsProtocolVersion;
 
 const EthRequestIdModulo = 1n << 64n;
 const EthRequestIdMaxInclusive = EthRequestIdModulo - 1n;
@@ -68,6 +72,7 @@ export interface FullSyncBodyRequestBatch {
 /** Planned `GetReceipts` request batch. */
 export interface FullSyncReceiptsRequestBatch {
   readonly requestId?: bigint;
+  readonly firstBlockReceiptIndex?: bigint;
   readonly blockHashes: ReadonlyArray<BlockHashType>;
 }
 
@@ -117,10 +122,15 @@ const failPlanner = (
 const supportsRequestId = (protocolVersion: number): boolean =>
   protocolVersion >= EthRequestIdProtocolVersion;
 
+const supportsPartialReceipts = (protocolVersion: number): boolean =>
+  protocolVersion >= EthPartialReceiptsProtocolVersion;
+
 const validateProtocolVersion = (
   protocolVersion: number,
 ): Effect.Effect<void, FullSyncRequestPlannerError> =>
-  Number.isInteger(protocolVersion) && protocolVersion >= 0
+  Number.isInteger(protocolVersion) &&
+  protocolVersion >= 0 &&
+  protocolVersion <= EthSupportedProtocolVersionMax
     ? Effect.void
     : failPlanner("InvalidProtocolVersion", "protocolVersion");
 
@@ -357,6 +367,8 @@ const makeFullSyncRequestPlanner = Effect.gen(function* () {
 
     planReceiptRequests: (input) =>
       Effect.gen(function* () {
+        yield* validateProtocolVersion(input.protocolVersion);
+
         const limits = yield* limitsService.resolve(input.peerClientId);
         yield* validateLimit(
           limits.maxReceiptsPerRequest,
@@ -372,10 +384,17 @@ const makeFullSyncRequestPlanner = Effect.gen(function* () {
           blockHashes: input.blockHashes,
           maxPerRequest: limits.maxReceiptsPerRequest,
           requestIds,
-          createBatch: (requestId, blockHashes) => ({
-            requestId,
-            blockHashes,
-          }),
+          createBatch: (requestId, blockHashes) =>
+            supportsPartialReceipts(input.protocolVersion)
+              ? {
+                  requestId,
+                  firstBlockReceiptIndex: 0n,
+                  blockHashes,
+                }
+              : {
+                  requestId,
+                  blockHashes,
+                },
         });
       }),
   } satisfies FullSyncRequestPlannerService;
