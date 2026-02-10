@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test:prepare": "node scripts/repairVoltairePeer.mjs",
+    "test": "bun run test:prepare && vitest run",
+    "test:watch": "bun run test:prepare && vitest"
   },
   "dependencies": {
-    "@tevm/voltaire": "file:../../voltaire",
+    "@tevm/voltaire": "0.2.27",
     "effect": "^3.12.0",
     "voltaire-effect": "^0.2.27"
   },
