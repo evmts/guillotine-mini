@@ -98,10 +98,12 @@ pub fn head_block_of(chain: anytype) !?Block.Block {
 /// These helpers intentionally do not fetch; pair with `*_or_fetch` variants if
 /// remote reads are acceptable in the call site.
 pub fn safe_head_hash_of(fc: anytype) ?Hash.Hash {
+    // Intentionally a thin wrapper to keep DI surface consistent.
     return fc.getSafeHash();
 }
 
 pub fn finalized_head_hash_of(fc: anytype) ?Hash.Hash {
+    // Intentionally a thin wrapper to keep DI surface consistent.
     return fc.getFinalizedHash();
 }
 
