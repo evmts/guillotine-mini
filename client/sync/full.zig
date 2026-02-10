@@ -44,8 +44,11 @@ pub const BlocksRequest = struct {
     /// Missing receipts are represented as null entries.
     /// Responses may be shorter than the request; missing tail entries are treated as unavailable.
     receipts: ?[]const ?[]const Receipt.Receipt = null,
-    /// Optional arena owning response buffers. Must be deinit'd by caller.
-    response_arena: ?std.heap.ArenaAllocator = null,
+    /// Optional arena owning response buffers. Stored via pointer to avoid arena copies.
+    /// Must be deinit'd by caller.
+    response_arena: ?*std.heap.ArenaAllocator = null,
+    /// Allocator used to create the owned arena (if any).
+    response_arena_allocator: ?std.mem.Allocator = null,
 
     /// Errors returned when response slices do not align with requested headers.
     pub const ResponseAlignmentError = error{
@@ -61,22 +64,27 @@ pub const BlocksRequest = struct {
             .bodies = null,
             .receipts = null,
             .response_arena = null,
+            .response_arena_allocator = null,
         };
     }
 
     /// Initialize a request that owns response buffers via an arena allocator.
     /// Call `deinit` when the response data is no longer needed.
+    /// Do not copy the returned struct; treat it as move-only when owning an arena.
     pub fn init_owned(
         body_headers: []const BlockHeader.BlockHeader,
         receipt_headers: []const BlockHeader.BlockHeader,
         allocator: std.mem.Allocator,
-    ) BlocksRequest {
+    ) !BlocksRequest {
+        const arena = try allocator.create(std.heap.ArenaAllocator);
+        arena.* = std.heap.ArenaAllocator.init(allocator);
         return .{
             .body_headers = body_headers,
             .receipt_headers = receipt_headers,
             .bodies = null,
             .receipts = null,
-            .response_arena = std.heap.ArenaAllocator.init(allocator),
+            .response_arena = arena,
+            .response_arena_allocator = allocator,
         };
     }
 
@@ -93,7 +101,7 @@ pub const BlocksRequest = struct {
 
     /// Return the allocator backing the owned response arena, if present.
     pub fn response_allocator(self: *BlocksRequest) ?std.mem.Allocator {
-        if (self.response_arena) |*arena| {
+        if (self.response_arena) |arena| {
             return arena.allocator();
         }
         return null;
@@ -101,10 +109,14 @@ pub const BlocksRequest = struct {
 
     /// Release owned response buffers and clear response slices.
     pub fn deinit(self: *BlocksRequest) void {
-        if (self.response_arena) |*arena| {
+        if (self.response_arena) |arena| {
             arena.deinit();
+            if (self.response_arena_allocator) |alloc| {
+                alloc.destroy(arena);
+            }
         }
         self.response_arena = null;
+        self.response_arena_allocator = null;
         self.bodies = null;
         self.receipts = null;
     }
@@ -261,7 +273,7 @@ test "BlocksRequest.response_allocator is null for unowned requests" {
 
 test "BlocksRequest.init_owned provisions response arena and deinit clears it" {
     const headers = &[_]BlockHeader.BlockHeader{BlockHeader.init()};
-    var req = BlocksRequest.init_owned(headers, &[_]BlockHeader.BlockHeader{}, std.testing.allocator);
+    var req = try BlocksRequest.init_owned(headers, &[_]BlockHeader.BlockHeader{}, std.testing.allocator);
     const arena_alloc = req.response_allocator().?;
     const buffer = try arena_alloc.alloc(u8, 4);
     buffer[0] = 1;
