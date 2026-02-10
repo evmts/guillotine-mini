@@ -345,7 +345,7 @@ test "Chain - is_canonical returns false for missing block" {
     defer chain.deinit();
 
     const some = Hash.ZERO;
-    const result = try is_canonical(&chain, some);
+    const result = is_canonical(&chain, some);
     try std.testing.expect(!result);
 }
 
@@ -358,7 +358,7 @@ test "Chain - is_canonical returns true for canonical block" {
     try chain.putBlock(genesis);
     try chain.setCanonicalHead(genesis.hash);
 
-    const result = try is_canonical(&chain, genesis.hash);
+    const result = is_canonical(&chain, genesis.hash);
     try std.testing.expect(result);
 }
 
@@ -375,7 +375,7 @@ test "Chain - is_canonical returns false for orphan block" {
     const orphan = try Block.from(&header, &body, allocator);
     try chain.putBlock(orphan);
 
-    const result = try is_canonical(&chain, orphan.hash);
+    const result = is_canonical(&chain, orphan.hash);
     try std.testing.expect(!result);
 }
 
@@ -399,7 +399,7 @@ test "Chain - is_canonical local-only does not fetch and returns false" {
     defer chain.deinit();
 
     const some = Hash.ZERO;
-    const result = try is_canonical(&chain, some);
+    const result = is_canonical(&chain, some);
     try std.testing.expect(!result);
 }
 
@@ -587,7 +587,7 @@ test "Chain - is_canonical reflects reorgs" {
     try chain.putBlock(b1a);
 
     try chain.setCanonicalHead(b1a.hash);
-    var is_a1_canon = try is_canonical(&chain, b1a.hash);
+    var is_a1_canon = is_canonical(&chain, b1a.hash);
     try std.testing.expect(is_a1_canon);
 
     // Competing child (B1)
@@ -602,9 +602,9 @@ test "Chain - is_canonical reflects reorgs" {
     try chain.setCanonicalHead(b1b.hash);
 
     // Now A1 should be non-canonical, B1 canonical
-    is_a1_canon = try is_canonical(&chain, b1a.hash);
+    is_a1_canon = is_canonical(&chain, b1a.hash);
     try std.testing.expect(!is_a1_canon);
-    const is_b1_canon = try is_canonical(&chain, b1b.hash);
+    const is_b1_canon = is_canonical(&chain, b1b.hash);
     try std.testing.expect(is_b1_canon);
 }
 
