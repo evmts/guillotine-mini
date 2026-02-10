@@ -3,6 +3,7 @@ const primitives = @import("primitives");
 
 const tx_mod = primitives.Transaction;
 const TxPoolConfig = @import("pool.zig").TxPoolConfig;
+const U256 = primitives.Denomination.U256;
 
 /// Validate a transaction's `gas_limit` against optional pool cap.
 ///
@@ -438,6 +439,54 @@ pub fn fits_size_limits(
 
     if (cfg.max_tx_size) |max| {
         if (len > max) return error.MaxTxSizeExceeded;
+    }
+}
+
+/// Enforce EIP-4844-specific fee admission rules.
+///
+/// - If the transaction is not an EIP-4844 blob transaction, this is a no-op.
+/// - When `cfg.min_blob_tx_priority_fee > 0`, require
+///   `tx.max_priority_fee_per_gas >= cfg.min_blob_tx_priority_fee`.
+/// - When `cfg.current_blob_base_fee_required` is true, require
+///   `tx.max_fee_per_blob_gas >= current_blob_base_fee`.
+///
+/// Uses only Voltaire primitives. This helper is intentionally strict and
+/// does not attempt to coerce types beyond primitives' own conversions.
+pub fn enforce_min_priority_fee_for_blobs(
+    tx: anytype,
+    cfg: TxPoolConfig,
+    current_blob_base_fee: U256,
+) error{ BlobPriorityFeeTooLow, InsufficientMaxFeePerBlobGas }!void {
+    const T = @TypeOf(tx);
+    comptime {
+        if (!(T == tx_mod.LegacyTransaction or
+            T == tx_mod.Eip2930Transaction or
+            T == tx_mod.Eip1559Transaction or
+            T == tx_mod.Eip4844Transaction or
+            T == tx_mod.Eip7702Transaction))
+        {
+            @compileError("Unsupported transaction type for enforce_min_priority_fee_for_blobs: " ++ @typeName(T));
+        }
+    }
+
+    // Only applies to blob transactions (EIP-4844, type-3)
+    if (comptime T != tx_mod.Eip4844Transaction) return;
+
+    // Check min priority fee for blob txs (if configured > 0)
+    if (!cfg.min_blob_tx_priority_fee.eq(U256.ZERO)) {
+        // Convert native u256 tip into Voltaire U256 for comparison.
+        const tx_tip_wei: U256 = U256.from_u256(tx.max_priority_fee_per_gas);
+        if (tx_tip_wei.cmp(cfg.min_blob_tx_priority_fee) == .lt) {
+            return error.BlobPriorityFeeTooLow;
+        }
+    }
+
+    // Require max_fee_per_blob_gas ≥ current blob base fee if enabled.
+    if (cfg.current_blob_base_fee_required) {
+        const tx_blob_max_wei: U256 = U256.from_u256(tx.max_fee_per_blob_gas);
+        if (tx_blob_max_wei.cmp(current_blob_base_fee) == .lt) {
+            return error.InsufficientMaxFeePerBlobGas;
+        }
     }
 }
 
@@ -947,4 +996,120 @@ test "fits_gas_limit — works for typed txs (1559, 4844, 7702)" {
         .s = [_]u8{0} ** 32,
     };
     try fits_gas_limit(tx7702, cfg);
+}
+
+test "enforce_min_priority_fee_for_blobs — no-op for non-blob txs" {
+    const Address = primitives.Address;
+    const tx = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
+        .gas_limit = 21_000,
+        .to = Address{ .bytes = [_]u8{0xE1} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const cfg = TxPoolConfig{};
+    try enforce_min_priority_fee_for_blobs(tx, cfg, U256.ZERO);
+}
+
+test "enforce_min_priority_fee_for_blobs — blob base fee required enforced" {
+    const Address = primitives.Address;
+    const VersionedHash = primitives.Blob.VersionedHash;
+    const hashes = [_]VersionedHash{.{ .bytes = [_]u8{0xB1} ++ [_]u8{0} ** 31 }};
+
+    // Tx with max_fee_per_blob_gas below the supplied base fee.
+    var cfg = TxPoolConfig{};
+    cfg.current_blob_base_fee_required = true;
+
+    const tx_low = tx_mod.Eip4844Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 2,
+        .gas_limit = 21_000,
+        .to = Address{ .bytes = [_]u8{0xE2} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .max_fee_per_blob_gas = 4,
+        .blob_versioned_hashes = &hashes,
+        .y_parity = 1,
+        .r = [_]u8{3} ** 32,
+        .s = [_]u8{4} ** 32,
+    };
+
+    const base_fee = U256.from_u64(5);
+    try std.testing.expectError(error.InsufficientMaxFeePerBlobGas, enforce_min_priority_fee_for_blobs(tx_low, cfg, base_fee));
+
+    const tx_ok = tx_mod.Eip4844Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 2,
+        .gas_limit = 21_000,
+        .to = Address{ .bytes = [_]u8{0xE3} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .max_fee_per_blob_gas = 5,
+        .blob_versioned_hashes = &hashes,
+        .y_parity = 1,
+        .r = [_]u8{5} ** 32,
+        .s = [_]u8{6} ** 32,
+    };
+    try enforce_min_priority_fee_for_blobs(tx_ok, cfg, base_fee);
+}
+
+test "enforce_min_priority_fee_for_blobs — min priority tip enforced for blob txs" {
+    const Address = primitives.Address;
+    const VersionedHash = primitives.Blob.VersionedHash;
+    const hashes = [_]VersionedHash{.{ .bytes = [_]u8{0xB2} ++ [_]u8{0} ** 31 }};
+
+    var cfg = TxPoolConfig{};
+    cfg.current_blob_base_fee_required = false; // isolate priority fee check
+    const MaxPriorityFeePerGas = primitives.MaxPriorityFeePerGas;
+    cfg.min_blob_tx_priority_fee = MaxPriorityFeePerGas.from(3).toWei();
+
+    const tx_low = tx_mod.Eip4844Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 2, // below min (3)
+        .max_fee_per_gas = 10,
+        .gas_limit = 21_000,
+        .to = Address{ .bytes = [_]u8{0xE4} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .max_fee_per_blob_gas = 1,
+        .blob_versioned_hashes = &hashes,
+        .y_parity = 1,
+        .r = [_]u8{7} ** 32,
+        .s = [_]u8{8} ** 32,
+    };
+    try std.testing.expectError(error.BlobPriorityFeeTooLow, enforce_min_priority_fee_for_blobs(tx_low, cfg, U256.ZERO));
+
+    const tx_ok = tx_mod.Eip4844Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 3, // equal to min
+        .max_fee_per_gas = 10,
+        .gas_limit = 21_000,
+        .to = Address{ .bytes = [_]u8{0xE5} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .max_fee_per_blob_gas = 1,
+        .blob_versioned_hashes = &hashes,
+        .y_parity = 1,
+        .r = [_]u8{9} ** 32,
+        .s = [_]u8{10} ** 32,
+    };
+    try enforce_min_priority_fee_for_blobs(tx_ok, cfg, U256.ZERO);
 }
