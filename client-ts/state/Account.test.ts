@@ -4,6 +4,7 @@ import {
   EMPTY_ACCOUNT,
   hasCodeOrNonce,
   isAccountAlive,
+  isContract,
   isEmpty,
   isTotallyEmpty,
   type AccountStateType,
@@ -51,6 +52,14 @@ describe("Account helpers", () => {
     Effect.gen(function* () {
       const account = makeAccount({ codeHash: customBytes32(0xcd) });
       assert.isTrue(hasCodeOrNonce(account));
+    }),
+  );
+
+  it.effect("detects contracts by code hash", () =>
+    Effect.gen(function* () {
+      assert.isFalse(isContract(EMPTY_ACCOUNT));
+      const account = makeAccount({ codeHash: customBytes32(0xaa) });
+      assert.isTrue(isContract(account));
     }),
   );
 

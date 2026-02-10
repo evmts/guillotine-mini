@@ -37,3 +37,7 @@ export const isAccountAlive = (
 /** True when the account has non-zero nonce or non-empty code. */
 export const hasCodeOrNonce = (account: AccountStateType): boolean =>
   account.nonce !== 0n || !bytes32Equals(account.codeHash, EMPTY_CODE_HASH);
+
+/** True when the account represents a contract (non-empty code hash). */
+export const isContract = (account: AccountStateType): boolean =>
+  !bytes32Equals(account.codeHash, EMPTY_CODE_HASH);
