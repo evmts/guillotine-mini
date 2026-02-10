@@ -29,6 +29,45 @@ const Database = adapter.Database;
 const DbName = adapter.DbName;
 const Error = adapter.Error;
 
+/// Configuration settings for a RocksDB-backed database instance.
+///
+/// Mirrors Nethermind's `DbSettings` (Nethermind.Db/RocksDbSettings.cs),
+/// simplified for Zig and kept allocation-free. `path` is a caller-owned
+/// slice that must outlive any use of the settings struct.
+pub const DbSettings = struct {
+    /// Logical database name (maps to column family or DB partition).
+    name: DbName,
+    /// Filesystem path for the RocksDB instance (caller-owned).
+    path: []const u8,
+    /// Whether to delete the DB on startup.
+    delete_on_start: bool = false,
+    /// Whether the DB folder can be deleted (safety guard).
+    can_delete_folder: bool = true,
+
+    /// Create settings for a named database at `path`.
+    pub fn init(name: DbName, path: []const u8) DbSettings {
+        return .{
+            .name = name,
+            .path = path,
+        };
+    }
+
+    /// Clone the settings (value-copy).
+    pub fn clone(self: DbSettings) DbSettings {
+        return self;
+    }
+
+    /// Clone with a new name/path while preserving flags.
+    pub fn clone_with(self: DbSettings, name: DbName, path: []const u8) DbSettings {
+        return .{
+            .name = name,
+            .path = path,
+            .delete_on_start = self.delete_on_start,
+            .can_delete_folder = self.can_delete_folder,
+        };
+    }
+};
+
 /// Stub RocksDB database implementing the `Database` vtable interface.
 ///
 /// Identified by a `DbName` enum variant (e.g., `.state`, `.code`),
@@ -154,4 +193,36 @@ test "RocksDatabase: multiple instances with different names" {
 
     try std.testing.expectEqual(DbName.state, db1.name);
     try std.testing.expectEqual(DbName.code, db2.name);
+}
+
+test "DbSettings: init sets name/path and defaults flags" {
+    const settings = DbSettings.init(.state, "/tmp/guillotine-state");
+    try std.testing.expectEqual(DbName.state, settings.name);
+    try std.testing.expectEqualStrings("/tmp/guillotine-state", settings.path);
+    try std.testing.expectEqual(false, settings.delete_on_start);
+    try std.testing.expectEqual(true, settings.can_delete_folder);
+}
+
+test "DbSettings: clone copies flags" {
+    var settings = DbSettings.init(.code, "/tmp/guillotine-code");
+    settings.delete_on_start = true;
+    settings.can_delete_folder = false;
+
+    const cloned = settings.clone();
+    try std.testing.expectEqual(DbName.code, cloned.name);
+    try std.testing.expectEqualStrings("/tmp/guillotine-code", cloned.path);
+    try std.testing.expectEqual(true, cloned.delete_on_start);
+    try std.testing.expectEqual(false, cloned.can_delete_folder);
+}
+
+test "DbSettings: clone_with overrides name/path but keeps flags" {
+    var settings = DbSettings.init(.blocks, "/tmp/blocks");
+    settings.delete_on_start = true;
+    settings.can_delete_folder = false;
+
+    const cloned = settings.clone_with(.headers, "/tmp/headers");
+    try std.testing.expectEqual(DbName.headers, cloned.name);
+    try std.testing.expectEqualStrings("/tmp/headers", cloned.path);
+    try std.testing.expectEqual(true, cloned.delete_on_start);
+    try std.testing.expectEqual(false, cloned.can_delete_folder);
 }
