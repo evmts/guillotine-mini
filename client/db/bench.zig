@@ -95,7 +95,7 @@ const BenchResult = struct {
     ops_per_sec: f64,
 };
 
-fn run_bench(name: []const u8, n: usize, func: *const fn (usize) !u64) !BenchResult {
+fn run_bench(name: []const u8, n: usize, func: anytype) !BenchResult {
     const elapsed = try func(n);
     const per_op = if (n > 0) elapsed / n else 0;
     const ops_sec = if (elapsed > 0) @as(f64, @floatFromInt(n)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0) else 0;
