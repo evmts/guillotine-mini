@@ -40,6 +40,12 @@ const ZERO_STORAGE_VALUE = makeStorageValue(0);
 const provideTransientStorage = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(TransientStorageTest));
 
+const flipByte = (value: StorageValueType, index: number) => {
+  const bytes = value as Uint8Array;
+  const current = bytes[index] ?? 0;
+  bytes[index] = current ^ 0xff;
+};
+
 describe("TransientStorage", () => {
   it.effect("returns zero for missing transient storage", () =>
     provideTransientStorage(
@@ -184,6 +190,39 @@ describe("TransientStorage", () => {
         if (Either.isLeft(outcome)) {
           assert.isTrue(outcome.left instanceof UnknownTransientSnapshotError);
         }
+      }),
+    ),
+  );
+
+  it.effect("fails to commit unknown snapshots", () =>
+    provideTransientStorage(
+      Effect.gen(function* () {
+        const outcome = yield* Effect.either(commitSnapshot(12));
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof UnknownTransientSnapshotError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("defensively clones stored values", () =>
+    provideTransientStorage(
+      Effect.gen(function* () {
+        const addr = makeAddress(8);
+        const slot = makeSlot(9);
+        const stored = makeStorageValue(11);
+        const storedHex = storageValueHex(stored);
+
+        yield* setTransientStorage(addr, slot, stored);
+        flipByte(stored, 0);
+
+        const fetched = yield* getTransientStorage(addr, slot);
+        assert.strictEqual(storageValueHex(fetched), storedHex);
+
+        flipByte(fetched, 1);
+        const fetchedAgain = yield* getTransientStorage(addr, slot);
+        assert.strictEqual(storageValueHex(fetchedAgain), storedHex);
       }),
     ),
   );
