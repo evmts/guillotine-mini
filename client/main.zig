@@ -8,6 +8,7 @@ const config_mod = @import("config.zig");
 const cli = @import("cli.zig");
 
 const Chain = primitives.Chain;
+const Hex = primitives.Hex;
 const FeeMarket = primitives.FeeMarket;
 const Blob = primitives.Blob;
 const RunnerConfig = config_mod.RunnerConfig;
@@ -46,37 +47,33 @@ fn run(
     const network_id = config.effective_network_id();
     const chain = Chain.fromId(config.chain_id) orelse return error.UnknownChainId;
 
-    const gas_limit = Chain.getGasLimit(chain);
-    const is_merge = config.hardfork.isAtLeast(.MERGE);
-    const block_number: u64 = 0;
-    const block_timestamp: u64 = 0;
-    const block_prevrandao: u256 = if (is_merge) blk: {
-        const chain_component: u256 = @as(u256, config.chain_id) << 192;
-        const number_component: u256 = @as(u256, block_number) << 128;
-        const gas_component: u256 = @as(u256, gas_limit) << 64;
-        break :blk chain_component | number_component | gas_component | 1;
-    } else 0;
-    const block_difficulty: u256 = if (is_merge) 0 else @as(u256, gas_limit);
-    const block_base_fee: u256 = if (config.hardfork.isAtLeast(.LONDON))
-        @as(u256, FeeMarket.initialBaseFee(0, gas_limit))
-    else
-        0;
-    const blob_base_fee: u256 = if (config.hardfork.isAtLeast(.CANCUN))
-        @as(u256, Blob.calculateBlobGasPrice(0))
-    else
-        0;
-
-    const block_context = evm_mod.BlockContext{
-        .chain_id = @as(u256, config.chain_id),
-        .block_number = block_number,
-        .block_timestamp = block_timestamp,
-        .block_difficulty = block_difficulty,
-        .block_prevrandao = block_prevrandao,
-        .block_coinbase = primitives.ZERO_ADDRESS,
-        .block_gas_limit = gas_limit,
-        .block_base_fee = block_base_fee,
-        .blob_base_fee = blob_base_fee,
+    const genesis_block_context = try loadGenesisBlockContext(config.chain_id, config.hardfork);
+    const block_context = if (genesis_block_context) |ctx| ctx else blk: {
+        const fallback_gas_limit = Chain.getGasLimit(chain);
+        const fallback_base_fee: u256 = if (config.hardfork.isAtLeast(.LONDON))
+            @as(u256, FeeMarket.initialBaseFee(0, fallback_gas_limit))
+        else
+            0;
+        const fallback_blob_base_fee: u256 = if (config.hardfork.isAtLeast(.CANCUN))
+            @as(u256, Blob.calculateBlobGasPrice(0))
+        else
+            0;
+        const now = std.time.timestamp();
+        const fallback_timestamp: u64 = if (now >= 0) @as(u64, @intCast(now)) else 0;
+        const is_merge = config.hardfork.isAtLeast(.MERGE);
+        break :blk evm_mod.BlockContext{
+            .chain_id = @as(u256, config.chain_id),
+            .block_number = 0,
+            .block_timestamp = fallback_timestamp,
+            .block_difficulty = if (is_merge) 0 else 1,
+            .block_prevrandao = 0,
+            .block_coinbase = primitives.ZERO_ADDRESS,
+            .block_gas_limit = fallback_gas_limit,
+            .block_base_fee = fallback_base_fee,
+            .blob_base_fee = fallback_blob_base_fee,
+        };
     };
+    const gas_limit = block_context.block_gas_limit;
 
     var tracer_instance: Tracer = undefined;
     if (trace_enabled) {
@@ -106,6 +103,96 @@ fn run(
     } else {
         try writer.writeAll("trace=disabled\n");
     }
+}
+
+fn loadGenesisBlockContext(chain_id: u64, hardfork: primitives.Hardfork) !?evm_mod.BlockContext {
+    const genesis_path = switch (chain_id) {
+        1 => "execution-specs/src/ethereum/assets/mainnet.json",
+        11155111 => "execution-specs/src/ethereum/assets/sepolia.json",
+        1337803 => "execution-specs/src/ethereum/assets/zhejiang.json",
+        else => return null,
+    };
+
+    const file = try std.fs.cwd().openFile(genesis_path, .{});
+    defer file.close();
+
+    var reader = file.deprecatedReader();
+
+    var timestamp: ?u64 = null;
+    var gas_limit: ?u64 = null;
+    var difficulty: ?u256 = null;
+    var mix_hash: ?u256 = null;
+    var coinbase: ?primitives.Address = null;
+
+    var line_buf: [1024]u8 = undefined;
+    while (try reader.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
+        if (timestamp == null and std.mem.indexOf(u8, line, "\"timestamp\"") != null) {
+            timestamp = try parseGenesisValue(u64, line);
+        } else if (gas_limit == null and std.mem.indexOf(u8, line, "\"gasLimit\"") != null) {
+            gas_limit = try parseGenesisValue(u64, line);
+        } else if (difficulty == null and std.mem.indexOf(u8, line, "\"difficulty\"") != null) {
+            difficulty = try parseGenesisValue(u256, line);
+        } else if (mix_hash == null and (std.mem.indexOf(u8, line, "\"mixHash\"") != null or std.mem.indexOf(u8, line, "\"mixhash\"") != null)) {
+            mix_hash = try parseGenesisValue(u256, line);
+        } else if (coinbase == null and std.mem.indexOf(u8, line, "\"coinbase\"") != null) {
+            coinbase = try parseGenesisValue(primitives.Address, line);
+        }
+
+        if (timestamp != null and gas_limit != null and difficulty != null and mix_hash != null and coinbase != null) {
+            break;
+        }
+    }
+
+    if (timestamp == null or gas_limit == null or difficulty == null or mix_hash == null or coinbase == null) {
+        return error.InvalidGenesis;
+    }
+
+    const is_merge = hardfork.isAtLeast(.MERGE);
+    const block_base_fee: u256 = if (hardfork.isAtLeast(.LONDON))
+        @as(u256, FeeMarket.initialBaseFee(0, gas_limit.?))
+    else
+        0;
+    const blob_base_fee: u256 = if (hardfork.isAtLeast(.CANCUN))
+        @as(u256, Blob.calculateBlobGasPrice(0))
+    else
+        0;
+
+    return evm_mod.BlockContext{
+        .chain_id = @as(u256, chain_id),
+        .block_number = 0,
+        .block_timestamp = timestamp.?,
+        .block_difficulty = if (is_merge) 0 else difficulty.?,
+        .block_prevrandao = if (is_merge) mix_hash.? else 0,
+        .block_coinbase = coinbase.?,
+        .block_gas_limit = gas_limit.?,
+        .block_base_fee = block_base_fee,
+        .blob_base_fee = blob_base_fee,
+    };
+}
+
+fn parseGenesisValue(comptime T: type, line: []const u8) !T {
+    const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidGenesis;
+    var start = colon + 1;
+    while (start < line.len and std.ascii.isWhitespace(line[start])) start += 1;
+    if (start >= line.len or line[start] != '"') return error.InvalidGenesis;
+    start += 1;
+    const end = std.mem.indexOfScalarPos(u8, line, start, '"') orelse return error.InvalidGenesis;
+    const value = line[start..end];
+
+    if (T == primitives.Address) {
+        return primitives.Address.fromHex(value);
+    }
+
+    if (value.len >= 2 and value[0] == '0' and (value[1] == 'x' or value[1] == 'X')) {
+        if (T == u64) return Hex.hexToU64(value);
+        if (T == u256) return Hex.hexToU256(value);
+        @compileError("Unsupported genesis hex value type");
+    }
+
+    if (T == u64) return std.fmt.parseInt(u64, value, 10);
+    if (T == u256) return std.fmt.parseInt(u256, value, 10);
+
+    @compileError("Unsupported genesis value type");
 }
 
 // ============================================================================
