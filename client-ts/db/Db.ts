@@ -240,7 +240,16 @@ const listEntries = (
   }));
 };
 
-const makeReader = (store: Map<string, BytesType>): DbSnapshot => {
+const makeReader = (
+  store: Map<string, BytesType>,
+  trackRead?: (count: number) => void,
+): DbSnapshot => {
+  const noteRead = (count = 1) => {
+    if (trackRead) {
+      trackRead(count);
+    }
+  };
+
   const getAll = (ordered?: boolean) =>
     Effect.sync(() => listEntries(store, Boolean(ordered)));
 
@@ -265,12 +274,16 @@ const makeReader = (store: Map<string, BytesType>): DbSnapshot => {
   const get = (key: BytesType, _flags?: ReadFlags) =>
     Effect.gen(function* () {
       const keyHex = yield* encodeKey(key);
+      noteRead();
       const value = store.get(keyHex);
       return pipe(Option.fromNullable(value), Option.map(cloneBytes));
     });
 
   const getMany = (keys: ReadonlyArray<BytesType>) =>
     Effect.gen(function* () {
+      if (keys.length > 0) {
+        noteRead(keys.length);
+      }
       const entries: Array<DbGetEntry> = [];
 
       for (const key of keys) {
@@ -288,6 +301,7 @@ const makeReader = (store: Map<string, BytesType>): DbSnapshot => {
   const has = (key: BytesType) =>
     Effect.gen(function* () {
       const keyHex = yield* encodeKey(key);
+      noteRead();
       return store.has(keyHex);
     });
 
@@ -352,15 +366,26 @@ const makeMemoryDb = (config: DbConfig) =>
       Effect.sync(() => new Map<string, BytesType>()),
       (map) => Effect.sync(() => map.clear()),
     );
+    let totalReads = 0;
+    let totalWrites = 0;
+    const trackRead = (count = 1) => {
+      totalReads += count;
+    };
+    const trackWrite = (count = 1) => {
+      totalWrites += count;
+    };
 
-    const { get, getMany, getAll, getAllKeys, getAllValues, has } =
-      makeReader(store);
+    const { get, getMany, getAll, getAllKeys, getAllValues, has } = makeReader(
+      store,
+      trackRead,
+    );
 
     const put = (key: BytesType, value: BytesType, _flags?: WriteFlags) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
         const storedValue = yield* cloneBytesEffect(value);
         store.set(keyHex, storedValue);
+        trackWrite();
       });
 
     const merge = (_key: BytesType, _value: BytesType, _flags?: WriteFlags) =>
@@ -370,6 +395,7 @@ const makeMemoryDb = (config: DbConfig) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
         store.delete(keyHex);
+        trackWrite();
       });
 
     const createSnapshot = () =>
@@ -411,8 +437,8 @@ const makeMemoryDb = (config: DbConfig) =>
           cacheSize: 0,
           indexSize: 0,
           memtableSize: 0,
-          totalReads: 0,
-          totalWrites: 0,
+          totalReads,
+          totalWrites,
         }),
       );
 
@@ -450,8 +476,10 @@ const makeMemoryDb = (config: DbConfig) =>
         for (const op of prepared) {
           if (op._tag === "put") {
             store.set(op.keyHex, op.value);
+            trackWrite();
           } else {
             store.delete(op.keyHex);
+            trackWrite();
           }
         }
       });
@@ -464,6 +492,7 @@ const makeMemoryDb = (config: DbConfig) =>
               const keyHex = yield* encodeKey(key);
               const storedValue = yield* cloneBytesEffect(value);
               store.set(keyHex, storedValue);
+              trackWrite();
             });
 
           const merge = (
@@ -476,6 +505,7 @@ const makeMemoryDb = (config: DbConfig) =>
             Effect.gen(function* () {
               const keyHex = yield* encodeKey(key);
               store.delete(keyHex);
+              trackWrite();
             });
 
           const clear = () =>

@@ -2,7 +2,15 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { Bytes } from "voltaire-effect/primitives";
-import { DbMemoryTest, get, getAllKeys, has, put, remove } from "./Db";
+import {
+  DbMemoryTest,
+  gatherMetric,
+  get,
+  getAllKeys,
+  has,
+  put,
+  remove,
+} from "./Db";
 import { toBytes } from "./testUtils";
 
 describe("Db", () => {
@@ -64,6 +72,26 @@ describe("Db", () => {
       assert.strictEqual(keys.length, 2);
       assert.isTrue(Bytes.equals(keys[0]!, longKey));
       assert.isTrue(Bytes.equals(keys[1]!, shortKey));
+    }).pipe(Effect.provide(DbMemoryTest())),
+  );
+
+  it.effect("gatherMetric tracks reads and writes", () =>
+    Effect.gen(function* () {
+      const key = toBytes("0x05");
+      const value = toBytes("0xaaaa");
+
+      yield* put(key, value);
+      yield* get(key);
+
+      const metrics = yield* gatherMetric();
+      assert.deepStrictEqual(metrics, {
+        size: 1,
+        cacheSize: 0,
+        indexSize: 0,
+        memtableSize: 0,
+        totalReads: 1,
+        totalWrites: 1,
+      });
     }).pipe(Effect.provide(DbMemoryTest())),
   );
 });
