@@ -2,6 +2,7 @@
 const std = @import("std");
 const blockchain = @import("blockchain");
 const primitives = @import("primitives");
+const validator = @import("validator.zig");
 const Block = primitives.Block;
 const Hash = primitives.Hash;
 const BlockHeader = primitives.BlockHeader;
@@ -122,6 +123,20 @@ pub fn get_block_by_number_local(chain: *Chain, number: u64) ?Block.Block {
 ///   are explicit and never trigger remote fetches.
 pub fn get_parent_block_local(chain: *Chain, header: *const BlockHeader.BlockHeader) ?Block.Block {
     return get_block_local(chain, header.parent_hash);
+}
+
+/// Returns the parent header from the local store or a typed error.
+///
+/// - Never consults the fork cache or performs allocations.
+/// - Returns `ValidationError.MissingParentHeader` when the parent is not
+///   present locally, so callers avoid nullable checks in validation paths.
+pub fn parent_header_local(
+    chain: *Chain,
+    header: *const BlockHeader.BlockHeader,
+) validator.ValidationError!BlockHeader.BlockHeader {
+    const parent = get_parent_block_local(chain, header) orelse
+        return validator.ValidationError.MissingParentHeader;
+    return parent.header;
 }
 
 /// Generic, comptime-injected head hash reader for any chain-like type.
@@ -611,6 +626,68 @@ test "Chain - get_parent_block_local ignores fork-cache-only parent" {
 
     // Local-only parent lookup must not see fork-cache entries
     try std.testing.expect(get_parent_block_local(&chain, &hdr) == null);
+}
+
+test "Chain - parent_header_local returns typed error when parent missing locally" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    var hdr = BlockHeader.init();
+    hdr.parent_hash = Hash.ZERO;
+
+    try std.testing.expectError(
+        validator.ValidationError.MissingParentHeader,
+        parent_header_local(&chain, &hdr),
+    );
+}
+
+test "Chain - parent_header_local returns local parent header" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+
+    var hdr = BlockHeader.init();
+    hdr.number = 1;
+    hdr.parent_hash = genesis.hash;
+
+    const ph = try parent_header_local(&chain, &hdr);
+    try std.testing.expectEqual(@as(u64, 0), ph.number);
+}
+
+test "Chain - parent_header_local ignores fork-cache-only parent and returns typed error" {
+    const allocator = std.testing.allocator;
+    var fork_cache = try ForkBlockCache.init(allocator, 16);
+    defer fork_cache.deinit();
+
+    var chain = try Chain.init(allocator, &fork_cache);
+    defer chain.deinit();
+
+    // Request remote block #0 and fulfill
+    try std.testing.expectError(error.RpcPending, chain.getBlockByNumber(0));
+    const req = fork_cache.nextRequest() orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    const hash_hex = "0x" ++ ("66" ** 32);
+    const response = try std.fmt.allocPrint(allocator, "{{\"hash\":\"{s}\",\"number\":\"0x0\"}}", .{hash_hex});
+    defer allocator.free(response);
+    try fork_cache.continueRequest(req.id, response);
+
+    const fetched = (try chain.getBlockByNumber(0)).?;
+
+    var hdr = BlockHeader.init();
+    hdr.number = 1;
+    hdr.parent_hash = fetched.hash;
+
+    // Helper must not see fork-cache entries and should return typed error
+    try std.testing.expectError(
+        validator.ValidationError.MissingParentHeader,
+        parent_header_local(&chain, &hdr),
+    );
 }
 
 test "Chain - generic head helpers are race-resilient" {
