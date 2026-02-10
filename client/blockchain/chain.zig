@@ -34,12 +34,8 @@ pub fn head_hash(chain: *Chain) ?Hash.Hash {
 /// - Propagates any underlying errors (e.g. `error.RpcPending` when a fork
 ///   cache is configured and the block must be fetched remotely).
 pub fn head_block(chain: *Chain) !?Block.Block {
-    const before = chain.getHeadBlockNumber() orelse return null;
-    const block = try chain.getBlockByNumber(before);
-    const hb = block orelse return null;
-    const after = chain.getHeadBlockNumber() orelse return null;
-    if (after != before) return null; // head moved; avoid TOCTOU
-    return hb;
+    // Delegate to the generic helper to avoid duplication.
+    return head_block_of(chain);
 }
 
 /// Returns true if the given hash is canonical at its block number (local-only).
