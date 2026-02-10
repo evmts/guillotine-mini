@@ -1,7 +1,6 @@
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
-import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -206,7 +205,6 @@ export class Blockchain extends Context.Tag("Blockchain")<
 type BlockchainState = {
   readonly genesisHash: Option.Option<BlockHashType>;
   readonly headHash: Option.Option<BlockHashType>;
-  readonly headNumber: Option.Option<BlockNumberType>;
   readonly bestKnownNumber: Option.Option<BlockNumberType>;
   readonly bestSuggestedHash: Option.Option<BlockHashType>;
   readonly bestSuggestedNumber: Option.Option<BlockNumberType>;
@@ -233,7 +231,6 @@ const makeBlockchain = Effect.gen(function* () {
   const state = yield* Ref.make<BlockchainState>({
     genesisHash: Option.none(),
     headHash: Option.none(),
-    headNumber: Option.none(),
     bestKnownNumber: Option.none(),
     bestSuggestedHash: Option.none(),
     bestSuggestedNumber: Option.none(),
@@ -266,15 +263,13 @@ const makeBlockchain = Effect.gen(function* () {
     });
 
   const ensureGenesisInitialized = () =>
-    pipe(
-      Ref.get(state),
-      Effect.flatMap((current) =>
-        Option.match(current.genesisHash, {
-          onNone: () => Effect.fail(new GenesisNotInitializedError()),
-          onSome: (hash) => Effect.succeed(hash),
-        }),
-      ),
-    );
+    Effect.gen(function* () {
+      const current = yield* Ref.get(state);
+      return yield* Option.match(current.genesisHash, {
+        onNone: () => Effect.fail(new GenesisNotInitializedError()),
+        onSome: (hash) => Effect.succeed(hash),
+      });
+    });
 
   const collectCanonicalChainHashes = (headHash: BlockHashType) =>
     Effect.gen(function* () {
@@ -450,7 +445,6 @@ const makeBlockchain = Effect.gen(function* () {
       yield* Ref.set(state, {
         genesisHash: Option.some(genesis.hash),
         headHash: Option.some(genesis.hash),
-        headNumber: Option.some(genesis.header.number),
         bestKnownNumber: Option.some(genesis.header.number),
         bestSuggestedHash: Option.none(),
         bestSuggestedNumber: Option.none(),
@@ -490,7 +484,6 @@ const makeBlockchain = Effect.gen(function* () {
       yield* Ref.update(state, (current) => ({
         ...current,
         headHash: Option.some(hash),
-        headNumber: Option.some(head.header.number),
         forkChoice: {
           ...current.forkChoice,
           head: Option.some(hash),

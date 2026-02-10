@@ -4,7 +4,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import {
-  Address,
   BlockHash,
   BlockHeader,
   BlockNumber,
