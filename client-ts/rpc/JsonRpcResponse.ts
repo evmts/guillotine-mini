@@ -11,6 +11,27 @@ import {
 } from "./JsonRpcErrors";
 import { JsonRpcId, JsonRpcIdSchema } from "./JsonRpcRequest";
 
+export type JsonPrimitive = string | number | boolean | null;
+
+export type JsonValue =
+  | JsonPrimitive
+  | ReadonlyArray<JsonValue>
+  | Readonly<Record<string, JsonValue>>;
+
+export const JsonValueSchema: Schema.Schema<JsonValue> = Schema.suspend(() =>
+  Schema.Union(
+    Schema.Null,
+    Schema.Boolean,
+    Schema.Number,
+    Schema.String,
+    Schema.Array(JsonValueSchema),
+    Schema.Record({
+      key: Schema.String,
+      value: JsonValueSchema,
+    }),
+  ),
+);
+
 export const JsonRpcSuccessIdSchema = JsonRpcIdSchema;
 
 export type JsonRpcSuccessId = Schema.Schema.Type<
@@ -18,12 +39,12 @@ export type JsonRpcSuccessId = Schema.Schema.Type<
 >;
 
 export const JsonRpcErrorObjectSchema = Schema.Struct({
-  code: Schema.Number,
+  code: Schema.Int,
   message: Schema.String,
-  data: Schema.optional(Schema.Unknown),
+  data: Schema.optional(JsonValueSchema),
 });
 
-export type JsonRpcErrorObject<Data = unknown> = Readonly<{
+export type JsonRpcErrorObject<Data extends JsonValue = JsonValue> = Readonly<{
   code: JsonRpcErrorCode;
   message: string;
   data?: Data;
@@ -31,7 +52,7 @@ export type JsonRpcErrorObject<Data = unknown> = Readonly<{
 
 export const JsonRpcResponseSuccessSchema = Schema.Struct({
   jsonrpc: Schema.Literal("2.0"),
-  result: Schema.Unknown,
+  result: JsonValueSchema,
   id: JsonRpcSuccessIdSchema,
 });
 
@@ -50,21 +71,24 @@ export type JsonRpcResponseInput = Schema.Schema.Encoded<
   typeof JsonRpcResponseSchema
 >;
 
-export type JsonRpcResponseSuccess<Result = unknown> = Readonly<{
-  jsonrpc: "2.0";
-  result: Result;
-  id: JsonRpcSuccessId;
-}>;
+export type JsonRpcResponseSuccess<Result extends JsonValue = JsonValue> =
+  Readonly<{
+    jsonrpc: "2.0";
+    result: Result;
+    id: JsonRpcSuccessId;
+  }>;
 
-export type JsonRpcResponseError<Data = unknown> = Readonly<{
-  jsonrpc: "2.0";
-  error: JsonRpcErrorObject<Data>;
-  id: JsonRpcId;
-}>;
+export type JsonRpcResponseError<Data extends JsonValue = JsonValue> =
+  Readonly<{
+    jsonrpc: "2.0";
+    error: JsonRpcErrorObject<Data>;
+    id: JsonRpcId;
+  }>;
 
-export type JsonRpcResponse<Result = unknown, Data = unknown> =
-  | JsonRpcResponseSuccess<Result>
-  | JsonRpcResponseError<Data>;
+export type JsonRpcResponse<
+  Result extends JsonValue = JsonValue,
+  Data extends JsonValue = JsonValue,
+> = JsonRpcResponseSuccess<Result> | JsonRpcResponseError<Data>;
 
 /** Error raised when a JSON-RPC response fails validation. */
 export class InvalidJsonRpcResponseError extends Data.TaggedError(
@@ -82,7 +106,7 @@ export interface JsonRpcResponseEncoderService {
     source: Source,
     name: JsonRpcErrorNameBySource[Source],
     id: JsonRpcId,
-    data?: unknown,
+    data?: JsonValue,
   ) => Effect.Effect<JsonRpcResponseInput, InvalidJsonRpcResponseError>;
 }
 
@@ -140,7 +164,7 @@ export const encodeJsonRpcErrorByName = <Source extends JsonRpcErrorSource>(
   source: Source,
   name: JsonRpcErrorNameBySource[Source],
   id: JsonRpcId,
-  data?: unknown,
+  data?: JsonValue,
 ) =>
   Effect.gen(function* () {
     const encoder = yield* JsonRpcResponseEncoder;

@@ -91,4 +91,45 @@ describe("JsonRpcResponse", () => {
       }),
     ),
   );
+
+  it.effect("rejects non-JSON result payloads", () =>
+    provideEncoder(
+      Effect.gen(function* () {
+        const invalid = {
+          jsonrpc: "2.0",
+          result: 1n,
+          id: 1,
+        } as JsonRpcResponse;
+
+        const outcome = yield* Effect.either(encodeJsonRpcResponse(invalid));
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof InvalidJsonRpcResponseError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("rejects non-integer error codes", () =>
+    provideEncoder(
+      Effect.gen(function* () {
+        const invalid = {
+          jsonrpc: "2.0",
+          error: {
+            code: 1.5,
+            message: "nope",
+          },
+          id: 1,
+        } as JsonRpcResponse;
+
+        const outcome = yield* Effect.either(encodeJsonRpcResponse(invalid));
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof InvalidJsonRpcResponseError);
+        }
+      }),
+    ),
+  );
 });
