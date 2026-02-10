@@ -1,10 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import {
+  BlobTxsColumns,
+  ColumnDbNameSchema,
   DbConfigSchema,
   DbMetricSchema,
   DbNameSchema,
   DbNames,
+  ReceiptsColumns,
   ReadFlags,
   ReadFlagsSchema,
   WriteFlags,
@@ -21,6 +24,32 @@ describe("DbTypes", () => {
     assert.throws(() =>
       Schema.decodeSync(DbNameSchema)(
         "not-a-db" as unknown as Schema.Schema.Type<typeof DbNameSchema>,
+      ),
+    );
+  });
+
+  it("matches Nethermind ReceiptsColumns names", () => {
+    assert.deepStrictEqual(Object.values(ReceiptsColumns), [
+      "Default",
+      "Transactions",
+      "Blocks",
+    ]);
+  });
+
+  it("matches Nethermind BlobTxsColumns names", () => {
+    assert.deepStrictEqual(Object.values(BlobTxsColumns), [
+      "FullBlobTxs",
+      "LightBlobTxs",
+      "ProcessedTxs",
+    ]);
+  });
+
+  it("rejects invalid column DB names", () => {
+    assert.throws(() =>
+      Schema.decodeSync(ColumnDbNameSchema)(
+        "not-a-column-db" as unknown as Schema.Schema.Type<
+          typeof ColumnDbNameSchema
+        >,
       ),
     );
   });

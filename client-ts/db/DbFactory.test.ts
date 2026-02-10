@@ -105,6 +105,25 @@ describe("DbFactory", () => {
     ).pipe(Effect.provide(DbFactoryRocksStubTest)),
   );
 
+  it.effect(
+    "fails with DbError for invalid column DB names at runtime boundary",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const invalidConfig = {
+            name: "not-a-column-db",
+          } as unknown as { readonly name: typeof DbNames.receipts };
+
+          const error = yield* Effect.flip(createColumnsDb(invalidConfig));
+          assert.strictEqual(error._tag, "DbError");
+          assert.strictEqual(
+            error.message.includes("Invalid column DB name"),
+            true,
+          );
+        }),
+      ).pipe(Effect.provide(DbFactoryMemoryTest)),
+  );
+
   it.effect("returns db name when path settings are omitted", () =>
     Effect.gen(function* () {
       const fullPath = yield* getFullDbPath({
