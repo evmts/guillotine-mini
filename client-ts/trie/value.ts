@@ -124,6 +124,14 @@ const isReceipt = Schema.is(
   Receipt.Schema as unknown as Schema.Schema<Receipt.ReceiptType, unknown>,
 );
 
+const receiptTypePrefix: Record<Receipt.ReceiptType["type"], number | null> = {
+  legacy: null,
+  eip2930: 1,
+  eip1559: 2,
+  eip4844: 3,
+  eip7702: 4,
+};
+
 const encodeTransaction = (tx: Transaction.Any) =>
   Effect.try({
     try: () => Schema.encodeSync(TransactionSerializedSchema)(tx),
@@ -163,7 +171,16 @@ const encodeReceipt = (receipt: Receipt.ReceiptType) =>
       bloom,
       logs,
     ]);
-    return yield* toBytes(encoded);
+
+    const prefix = receiptTypePrefix[receipt.type];
+    if (prefix === null) {
+      return yield* toBytes(encoded);
+    }
+
+    const prefixed = new Uint8Array(encoded.length + 1);
+    prefixed[0] = prefix;
+    prefixed.set(encoded, 1);
+    return yield* toBytes(prefixed);
   });
 
 const encodeU256 = (value: U256Type) =>
