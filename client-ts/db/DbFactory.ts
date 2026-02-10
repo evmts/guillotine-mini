@@ -276,13 +276,15 @@ export function createColumnsDb(config: {
   Scope.Scope | DbFactory
 >;
 export function createColumnsDb(config: { readonly name: ColumnDbName }) {
-  if (config.name === DbNames.receipts) {
-    return withDbFactory((factory) =>
-      factory.createColumnsDb({ name: DbNames.receipts }),
-    );
-  }
-
   return withDbFactory((factory) =>
-    factory.createColumnsDb({ name: DbNames.blobTransactions }),
+    Effect.gen(function* () {
+      const validatedName = yield* validateColumnDbName(config.name);
+
+      if (validatedName === DbNames.receipts) {
+        return yield* factory.createColumnsDb({ name: DbNames.receipts });
+      }
+
+      return yield* factory.createColumnsDb({ name: DbNames.blobTransactions });
+    }),
   );
 }
