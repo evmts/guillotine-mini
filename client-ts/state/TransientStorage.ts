@@ -2,7 +2,7 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
+import type * as Schema from "effect/Schema";
 import {
   Address,
   Hex,
@@ -83,7 +83,7 @@ const cloneStorageValue = (value: StorageValueType): StorageValueType =>
 const isZeroStorageValue = (value: Uint8Array): boolean =>
   bytes32Equals(value, ZERO_STORAGE_VALUE);
 
-const makeTransientStorage = Effect.gen(function* () {
+const makeTransientStorage = Effect.sync(() => {
   const storage = new Map<AddressKey, Map<StorageKey, StorageValueType>>();
   const journal: Array<TransientStorageJournalEntry> = [];
   const snapshotStack: Array<SnapshotEntry> = [];
