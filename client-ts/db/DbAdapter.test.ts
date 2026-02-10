@@ -1,113 +1,309 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import {
   Db,
+  type DbEntry,
+  type DbGetEntry,
   type DbService,
   type DbSnapshot,
+  type DbWriteOp,
   type WriteBatch,
 } from "./DbAdapter";
 import type { BytesType } from "./DbTypes";
 
-const makeSnapshot = (): DbSnapshot => ({
-  get: (_key, _flags) => Effect.succeed(Option.none()),
-  getMany: (keys) =>
-    Effect.succeed(keys.map((key) => ({ key, value: Option.none() }))),
-  getAll: (_ordered) => Effect.succeed([]),
-  getAllKeys: (_ordered) => Effect.succeed([]),
-  getAllValues: (_ordered) => Effect.succeed([]),
-  has: (_key) => Effect.succeed(false),
-});
+type StoreEntry = {
+  readonly key: BytesType;
+  readonly value: BytesType;
+};
 
-const makeWriteBatch = (): WriteBatch => ({
-  put: (_key, _value, _flags) => Effect.void,
-  merge: (_key, _value, _flags) => Effect.void,
-  remove: (_key) => Effect.void,
-  clear: () => Effect.void,
-});
+type Hooks = {
+  readonly onSnapshotRelease?: () => void;
+  readonly onWriteBatchRelease?: () => void;
+};
 
-const makeDbService = (): DbService =>
-  ({
-    name: "state",
-    get: (_key, _flags) => Effect.succeed(Option.none()),
-    getMany: (keys) =>
-      Effect.succeed(keys.map((key) => ({ key, value: Option.none() }))),
-    getAll: (_ordered) => Effect.succeed([]),
-    getAllKeys: (_ordered) => Effect.succeed([]),
-    getAllValues: (_ordered) => Effect.succeed([]),
-    put: (_key, _value, _flags) => Effect.void,
-    merge: (_key, _value, _flags) => Effect.void,
-    remove: (_key) => Effect.void,
-    has: (_key) => Effect.succeed(false),
-    createSnapshot: () =>
-      Effect.acquireRelease(Effect.sync(makeSnapshot), () =>
-        Effect.sync(() => {
-          // no-op release for test snapshot
+const keyOf = (key: BytesType): string => String(key);
+
+const orderEntries = (
+  entries: ReadonlyArray<StoreEntry>,
+): ReadonlyArray<StoreEntry> => {
+  return [...entries].sort((left, right) =>
+    keyOf(left.key).localeCompare(keyOf(right.key)),
+  );
+};
+
+const makeSnapshot = (store: Map<string, StoreEntry>): DbSnapshot => {
+  const get = (key: BytesType) => {
+    const entry = store.get(keyOf(key));
+    return Effect.succeed(Option.fromNullable(entry?.value));
+  };
+
+  const getMany = (keys: ReadonlyArray<BytesType>) =>
+    Effect.succeed(
+      keys.map(
+        (key): DbGetEntry => ({
+          key,
+          value: Option.fromNullable(store.get(keyOf(key))?.value),
         }),
       ),
-    flush: (_onlyWal) => Effect.void,
-    clear: () => Effect.void,
-    compact: () => Effect.void,
-    gatherMetric: () =>
-      Effect.succeed({
-        size: 0,
-        cacheSize: 0,
-        indexSize: 0,
-        memtableSize: 0,
-        totalReads: 0,
-        totalWrites: 0,
+    );
+
+  const getAll = (ordered = false) =>
+    Effect.succeed<ReadonlyArray<DbEntry>>(
+      (ordered ? orderEntries([...store.values()]) : [...store.values()]).map(
+        ({ key, value }) => ({ key, value }),
+      ),
+    );
+
+  const getAllKeys = (ordered = false) =>
+    Effect.succeed(
+      (ordered ? orderEntries([...store.values()]) : [...store.values()]).map(
+        ({ key }) => key,
+      ),
+    );
+
+  const getAllValues = (ordered = false) =>
+    Effect.succeed(
+      (ordered ? orderEntries([...store.values()]) : [...store.values()]).map(
+        ({ value }) => value,
+      ),
+    );
+
+  const has = (key: BytesType) => Effect.succeed(store.has(keyOf(key)));
+
+  return {
+    get,
+    getMany,
+    getAll,
+    getAllKeys,
+    getAllValues,
+    has,
+  };
+};
+
+const makeDbService = (hooks: Hooks = {}): DbService => {
+  const store = new Map<string, StoreEntry>();
+  let totalReads = 0;
+  let totalWrites = 0;
+
+  const snapshotView = () => makeSnapshot(store);
+
+  const get = (key: BytesType) => {
+    totalReads += 1;
+    const entry = store.get(keyOf(key));
+    return Effect.succeed(Option.fromNullable(entry?.value));
+  };
+
+  const getMany = (keys: ReadonlyArray<BytesType>) => {
+    totalReads += keys.length;
+    return Effect.succeed(
+      keys.map(
+        (key): DbGetEntry => ({
+          key,
+          value: Option.fromNullable(store.get(keyOf(key))?.value),
+        }),
+      ),
+    );
+  };
+
+  const getAll = (ordered?: boolean) => snapshotView().getAll(ordered);
+  const getAllKeys = (ordered?: boolean) => snapshotView().getAllKeys(ordered);
+  const getAllValues = (ordered?: boolean) =>
+    snapshotView().getAllValues(ordered);
+
+  const put = (key: BytesType, value: BytesType) =>
+    Effect.sync(() => {
+      store.set(keyOf(key), { key, value });
+      totalWrites += 1;
+    });
+
+  const merge = (key: BytesType, value: BytesType) => put(key, value);
+
+  const remove = (key: BytesType) =>
+    Effect.sync(() => {
+      store.delete(keyOf(key));
+      totalWrites += 1;
+    });
+
+  const has = (key: BytesType) => {
+    totalReads += 1;
+    return Effect.succeed(store.has(keyOf(key)));
+  };
+
+  const createSnapshot = () =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        const snapshotStore = new Map<string, StoreEntry>(
+          [...store.entries()].map(([key, entry]) => [key, { ...entry }]),
+        );
+        return makeSnapshot(snapshotStore);
       }),
-    writeBatch: (_ops) => Effect.void,
-    startWriteBatch: () =>
-      Effect.acquireRelease(Effect.sync(makeWriteBatch), () =>
+      () =>
         Effect.sync(() => {
-          // no-op release for test batch
+          hooks.onSnapshotRelease?.();
+        }),
+    );
+
+  const flush = (_onlyWal?: boolean) => Effect.void;
+  const clear = () =>
+    Effect.sync(() => {
+      store.clear();
+    });
+  const compact = () => Effect.void;
+
+  const gatherMetric = () =>
+    Effect.succeed({
+      size: store.size,
+      cacheSize: 0,
+      indexSize: 0,
+      memtableSize: 0,
+      totalReads,
+      totalWrites,
+    });
+
+  const writeBatch = (ops: ReadonlyArray<DbWriteOp>) =>
+    Effect.gen(function* () {
+      for (const op of ops) {
+        if (op._tag === "del") {
+          yield* remove(op.key);
+          continue;
+        }
+        yield* put(op.key, op.value);
+      }
+    });
+
+  const startWriteBatch = () =>
+    Effect.acquireRelease(
+      Effect.sync(
+        (): WriteBatch => ({
+          put: (key: BytesType, value: BytesType) => put(key, value),
+          merge: (key: BytesType, value: BytesType) => merge(key, value),
+          remove: (key: BytesType) => remove(key),
+          clear: () => Effect.void,
         }),
       ),
-  }) satisfies DbService;
+      () =>
+        Effect.sync(() => {
+          hooks.onWriteBatchRelease?.();
+        }),
+    );
+
+  return {
+    name: "state",
+    get,
+    getMany,
+    getAll,
+    getAllKeys,
+    getAllValues,
+    put,
+    merge,
+    remove,
+    has,
+    createSnapshot,
+    flush,
+    clear,
+    compact,
+    gatherMetric,
+    writeBatch,
+    startWriteBatch,
+  } satisfies DbService;
+};
+
+const provideDb = (service: DbService) => Layer.succeed(Db, service);
 
 describe("DbAdapter", () => {
-  it.effect("keeps IDb + IDbMeta boundary methods available", () =>
-    Effect.gen(function* () {
-      const service = makeDbService();
-      const key = "0x01" as BytesType;
-      const value = "0x02" as BytesType;
+  it.effect(
+    "wires Db Context.Tag through Layer and exercises IDb + IDbMeta",
+    () =>
+      Effect.gen(function* () {
+        const key = "0x01" as BytesType;
+        const value = "0x02" as BytesType;
 
-      const read = yield* service.get(key);
-      assert.isTrue(Option.isNone(read));
-      assert.isFalse(yield* service.has(key));
+        const service = makeDbService();
+        const program = Effect.gen(function* () {
+          const db = yield* Db;
 
-      yield* service.put(key, value);
-      yield* service.merge(key, value);
-      yield* service.remove(key);
+          assert.isFalse(yield* db.has(key));
 
-      yield* service.flush();
-      yield* service.clear();
-      yield* service.compact();
+          yield* db.put(key, value);
+          assert.isTrue(yield* db.has(key));
 
-      const metric = yield* service.gatherMetric();
-      assert.deepStrictEqual(metric, {
-        size: 0,
-        cacheSize: 0,
-        indexSize: 0,
-        memtableSize: 0,
-        totalReads: 0,
-        totalWrites: 0,
-      });
-    }),
+          const read = yield* db.get(key);
+          assert.isTrue(Option.isSome(read));
+          assert.strictEqual(Option.getOrNull(read), value);
+
+          const many = yield* db.getMany([key, "0xff" as BytesType]);
+          assert.strictEqual(many.length, 2);
+          assert.isTrue(Option.isSome(many[0]!.value));
+          assert.isTrue(Option.isNone(many[1]!.value));
+
+          const all = yield* db.getAll();
+          assert.strictEqual(all.length, 1);
+          assert.strictEqual(all[0]!.value, value);
+
+          yield* db.flush();
+          yield* db.compact();
+
+          const metric = yield* db.gatherMetric();
+          assert.strictEqual(metric.size, 1);
+          assert.strictEqual(metric.totalReads, 5);
+          assert.strictEqual(metric.totalWrites, 1);
+
+          yield* db.clear();
+          assert.isFalse(yield* db.has(key));
+        });
+
+        yield* program.pipe(Effect.provide(provideDb(service)));
+      }),
   );
 
-  it.effect("exposes scoped snapshot and write-batch boundaries", () =>
-    Effect.gen(function* () {
-      const service = makeDbService();
-      const key = "0x03" as BytesType;
+  it.effect(
+    "scopes snapshot and write-batch boundaries with release finalizers",
+    () =>
+      Effect.gen(function* () {
+        let snapshotReleases = 0;
+        let writeBatchReleases = 0;
 
-      const snapshot = yield* Effect.scoped(service.createSnapshot());
-      assert.isFalse(yield* snapshot.has(key));
+        const key = "0x03" as BytesType;
+        const value = "0x04" as BytesType;
 
-      const batch = yield* Effect.scoped(service.startWriteBatch());
-      yield* batch.put(key, "0x04" as BytesType);
-      yield* batch.clear();
-    }),
+        const service = makeDbService({
+          onSnapshotRelease: () => {
+            snapshotReleases += 1;
+          },
+          onWriteBatchRelease: () => {
+            writeBatchReleases += 1;
+          },
+        });
+
+        const layer = provideDb(service);
+
+        const scopedProgram = Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* Db;
+
+            const snapshot = yield* db.createSnapshot();
+            assert.isFalse(yield* snapshot.has(key));
+
+            const batch = yield* db.startWriteBatch();
+            yield* batch.put(key, value);
+            yield* batch.clear();
+          }),
+        );
+
+        yield* scopedProgram.pipe(Effect.provide(layer));
+        assert.strictEqual(snapshotReleases, 1);
+        assert.strictEqual(writeBatchReleases, 1);
+
+        const readProgram = Effect.gen(function* () {
+          const db = yield* Db;
+          const result = yield* db.get(key);
+          return Option.getOrNull(result);
+        });
+
+        const stored = yield* readProgram.pipe(Effect.provide(layer));
+        assert.strictEqual(stored, value);
+      }),
   );
 });
