@@ -3,7 +3,6 @@
 /// Mirrors core settings from Nethermind's JsonRpcConfig needed for
 /// HTTP and WebSocket transports.
 const std = @import("std");
-const primitives = @import("primitives");
 
 const default_enabled = false;
 const default_host: []const u8 = "127.0.0.1";
@@ -17,6 +16,7 @@ const default_max_request_body_size: ?usize = 30_000_000;
 const default_max_batch_response_body_size: ?usize = 33_554_432;
 const default_strict_hex_format = true;
 
+/// JSON-RPC server configuration options, aligned with Nethermind defaults.
 pub const RpcServerConfig = struct {
     /// Enable the JSON-RPC server.
     enabled: bool = default_enabled,
@@ -45,25 +45,6 @@ pub const RpcServerConfig = struct {
     pub fn effective_websocket_port(self: RpcServerConfig) u16 {
         return self.websocket_port orelse self.port;
     }
-};
-
-/// JSON-RPC error codes per EIP-1474.
-pub const JsonRpcErrorCode = primitives.Int32.Int32;
-
-/// Named EIP-1474 error codes for JSON-RPC responses.
-pub const ErrorCode = struct {
-    pub const parse_error: JsonRpcErrorCode = -32700;
-    pub const invalid_request: JsonRpcErrorCode = -32600;
-    pub const method_not_found: JsonRpcErrorCode = -32601;
-    pub const invalid_params: JsonRpcErrorCode = -32602;
-    pub const internal_error: JsonRpcErrorCode = -32603;
-    pub const invalid_input: JsonRpcErrorCode = -32000;
-    pub const resource_not_found: JsonRpcErrorCode = -32001;
-    pub const resource_unavailable: JsonRpcErrorCode = -32002;
-    pub const transaction_rejected: JsonRpcErrorCode = -32003;
-    pub const method_not_supported: JsonRpcErrorCode = -32004;
-    pub const limit_exceeded: JsonRpcErrorCode = -32005;
-    pub const version_not_supported: JsonRpcErrorCode = -32006;
 };
 
 // ============================================================================
@@ -101,19 +82,4 @@ test "rpc server config defaults match Nethermind limits" {
     try std.testing.expectEqual(default_max_request_body_size, cfg.max_request_body_size);
     try std.testing.expectEqual(default_max_batch_response_body_size, cfg.max_batch_response_body_size);
     try std.testing.expectEqual(default_strict_hex_format, cfg.strict_hex_format);
-}
-
-test "rpc error codes match EIP-1474" {
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32700), ErrorCode.parse_error);
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32600), ErrorCode.invalid_request);
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32601), ErrorCode.method_not_found);
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32602), ErrorCode.invalid_params);
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32603), ErrorCode.internal_error);
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32000), ErrorCode.invalid_input);
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32001), ErrorCode.resource_not_found);
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32002), ErrorCode.resource_unavailable);
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32003), ErrorCode.transaction_rejected);
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32004), ErrorCode.method_not_supported);
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32005), ErrorCode.limit_exceeded);
-    try std.testing.expectEqual(@as(JsonRpcErrorCode, -32006), ErrorCode.version_not_supported);
 }
