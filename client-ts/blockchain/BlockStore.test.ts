@@ -72,6 +72,45 @@ describe("BlockStore", () => {
     }).pipe(Effect.provide(BlockStoreMemoryTest)),
   );
 
+  it.effect("resolves cascading orphan chains when the parent arrives", () =>
+    Effect.gen(function* () {
+      const genesis = makeBlock({
+        number: 0n,
+        hash: blockHashFromByte(0x30),
+        parentHash: blockHashFromByte(0x00),
+      });
+      const block1 = makeBlock({
+        number: 1n,
+        hash: blockHashFromByte(0x31),
+        parentHash: genesis.hash,
+      });
+      const block2 = makeBlock({
+        number: 2n,
+        hash: blockHashFromByte(0x32),
+        parentHash: block1.hash,
+      });
+      const block3 = makeBlock({
+        number: 3n,
+        hash: blockHashFromByte(0x33),
+        parentHash: block2.hash,
+      });
+
+      yield* putBlock(genesis);
+      yield* putBlock(block3);
+      yield* putBlock(block2);
+
+      assert.isTrue(yield* isOrphan(block2.hash));
+      assert.isTrue(yield* isOrphan(block3.hash));
+      assert.strictEqual(yield* orphanCount(), 2);
+
+      yield* putBlock(block1);
+
+      assert.isFalse(yield* isOrphan(block2.hash));
+      assert.isFalse(yield* isOrphan(block3.hash));
+      assert.strictEqual(yield* orphanCount(), 0);
+    }).pipe(Effect.provide(BlockStoreMemoryTest)),
+  );
+
   it.effect("setCanonicalHead updates canonical lookups", () =>
     Effect.gen(function* () {
       const genesis = makeBlock({

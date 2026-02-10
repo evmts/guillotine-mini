@@ -162,22 +162,27 @@ const makeBlockStore = Effect.gen(function* () {
 
   const resolveOrphans = (parentHash: BlockHashType) =>
     Effect.sync(() => {
-      const parentKey = blockHashKey(parentHash);
-      const resolved: Array<BlockHashKey> = [];
+      const queue: Array<BlockHashKey> = [blockHashKey(parentHash)];
 
-      for (const orphanKey of state.orphans) {
-        const orphanBlock = state.blocks.get(orphanKey);
-        if (!orphanBlock) {
-          continue;
-        }
-        const orphanParentKey = blockHashKey(orphanBlock.header.parentHash);
-        if (orphanParentKey === parentKey) {
-          resolved.push(orphanKey);
-        }
-      }
+      for (let index = 0; index < queue.length; index += 1) {
+        const parentKey = queue[index];
+        const resolved: Array<BlockHashKey> = [];
 
-      for (const orphanKey of resolved) {
-        state.orphans.delete(orphanKey);
+        for (const orphanKey of state.orphans) {
+          const orphanBlock = state.blocks.get(orphanKey);
+          if (!orphanBlock) {
+            continue;
+          }
+          const orphanParentKey = blockHashKey(orphanBlock.header.parentHash);
+          if (orphanParentKey === parentKey) {
+            resolved.push(orphanKey);
+            queue.push(blockHashKey(orphanBlock.hash));
+          }
+        }
+
+        for (const orphanKey of resolved) {
+          state.orphans.delete(orphanKey);
+        }
       }
     });
 
