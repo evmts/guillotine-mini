@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
-import { Address, Hex } from "voltaire-effect/primitives";
+import { Address, Hex, RuntimeCode } from "voltaire-effect/primitives";
 import {
   EMPTY_ACCOUNT,
   isTotallyEmpty,
@@ -16,11 +16,13 @@ import {
   destroyAccount,
   getAccount,
   getAccountOptional,
+  getCode,
   getStorage,
   getStorageOriginal,
   markAccountCreated,
   restoreSnapshot,
   setAccount,
+  setCode,
   setStorage,
   takeSnapshot,
   wasAccountCreated,
@@ -56,6 +58,13 @@ const makeStorageValue = (byte: number): StorageValueType => {
 
 const storageValueHex = (value: Uint8Array) => Hex.fromBytes(value);
 const ZERO_STORAGE_VALUE = makeStorageValue(0);
+
+const EMPTY_CODE = new Uint8Array(0) as RuntimeCode.RuntimeCodeType;
+const SAMPLE_CODE = new Uint8Array([
+  0x60, 0x00, 0x60, 0x00,
+]) as RuntimeCode.RuntimeCodeType;
+
+const codeHex = (code: Uint8Array) => Hex.fromBytes(code);
 
 const provideWorldState = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(WorldStateTest));
@@ -96,6 +105,45 @@ describe("WorldState", () => {
         yield* destroyAccount(addr);
         const deleted = yield* getAccountOptional(addr);
         assert.isNull(deleted);
+      }),
+    ),
+  );
+
+  it.effect("returns empty code for missing accounts", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const code = yield* getCode(Address.zero());
+        assert.strictEqual(codeHex(code), codeHex(EMPTY_CODE));
+      }),
+    ),
+  );
+
+  it.effect("sets and clears contract code", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(8);
+        yield* setCode(addr, SAMPLE_CODE);
+        const stored = yield* getCode(addr);
+        assert.strictEqual(codeHex(stored), codeHex(SAMPLE_CODE));
+
+        yield* setCode(addr, EMPTY_CODE);
+        const cleared = yield* getCode(addr);
+        assert.strictEqual(codeHex(cleared), codeHex(EMPTY_CODE));
+      }),
+    ),
+  );
+
+  it.effect("restores code changes on snapshot rollback", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(16);
+        yield* setCode(addr, SAMPLE_CODE);
+        const snapshot = yield* takeSnapshot();
+        yield* setCode(addr, EMPTY_CODE);
+
+        yield* restoreSnapshot(snapshot);
+        const restored = yield* getCode(addr);
+        assert.strictEqual(codeHex(restored), codeHex(SAMPLE_CODE));
       }),
     ),
   );

@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import {
   Address,
   Hex,
+  RuntimeCode,
   Storage,
   StorageValue,
 } from "voltaire-effect/primitives";
@@ -36,10 +37,15 @@ type StorageSlotType = Schema.Schema.Type<typeof Storage.StorageSlotSchema>;
 type StorageValueType = Schema.Schema.Type<
   typeof StorageValue.StorageValueSchema
 >;
+/** Canonical runtime code type. */
+type CodeValueType = RuntimeCode.RuntimeCodeType;
 /** Journal key format for world state changes. */
 type WorldStateJournalKey = string;
 /** Journal value union for world state changes. */
-type WorldStateJournalValue = AccountStateType | StorageValueType;
+type WorldStateJournalValue =
+  | AccountStateType
+  | StorageValueType
+  | CodeValueType;
 type OriginalStorageJournalEntry = {
   readonly accountKey: AccountKey;
   readonly slotKey: StorageKey;
@@ -76,9 +82,16 @@ export interface WorldStateService {
   readonly getAccount: (
     address: Address.AddressType,
   ) => Effect.Effect<AccountStateType>;
+  readonly getCode: (
+    address: Address.AddressType,
+  ) => Effect.Effect<RuntimeCode.RuntimeCodeType>;
   readonly setAccount: (
     address: Address.AddressType,
     account: AccountStateType | null,
+  ) => Effect.Effect<void>;
+  readonly setCode: (
+    address: Address.AddressType,
+    code: RuntimeCode.RuntimeCodeType,
   ) => Effect.Effect<void>;
   readonly destroyAccount: (
     address: Address.AddressType,
@@ -129,10 +142,14 @@ const storageSlotKey = (slot: StorageSlotType): StorageKey =>
   Hex.fromBytes(slot);
 
 const accountJournalPrefix = "account:";
+const codeJournalPrefix = "code:";
 const storageJournalPrefix = "storage:";
 
 const accountJournalKey = (key: AccountKey): WorldStateJournalKey =>
   `${accountJournalPrefix}${key}`;
+
+const codeJournalKey = (key: AccountKey): WorldStateJournalKey =>
+  `${codeJournalPrefix}${key}`;
 
 const storageJournalKey = (
   key: AccountKey,
@@ -165,6 +182,26 @@ const cloneAccount = (account: AccountStateType): AccountStateType => ({
 });
 
 const ZERO_STORAGE_VALUE = zeroBytes32() as StorageValueType;
+const EMPTY_CODE = new Uint8Array(0) as RuntimeCode.RuntimeCodeType;
+
+const cloneRuntimeCode = (
+  code: RuntimeCode.RuntimeCodeType,
+): RuntimeCode.RuntimeCodeType =>
+  (code.length === 0
+    ? EMPTY_CODE
+    : new Uint8Array(code)) as RuntimeCode.RuntimeCodeType;
+
+const bytesEqual = (left: Uint8Array, right: Uint8Array): boolean => {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) {
+      return false;
+    }
+  }
+  return true;
+};
 
 const accountsEqual = (
   left: AccountStateType,
@@ -181,6 +218,7 @@ const makeWorldState = Effect.gen(function* () {
     WorldStateJournalValue
   >;
   const accounts = new Map<AccountKey, AccountStateType>();
+  const codes = new Map<AccountKey, RuntimeCode.RuntimeCodeType>();
   const storage = new Map<AccountKey, Map<StorageKey, StorageValueType>>();
   const createdAccounts = new Set<AccountKey>();
   const originalStorage = new Map<
@@ -235,6 +273,12 @@ const makeWorldState = Effect.gen(function* () {
       account ? account : cloneAccount(EMPTY_ACCOUNT),
     );
 
+  const getCode = (address: Address.AddressType) =>
+    Effect.sync(() => {
+      const code = codes.get(addressKey(address)) ?? EMPTY_CODE;
+      return cloneRuntimeCode(code);
+    });
+
   const markAccountCreated = (address: Address.AddressType) =>
     Effect.sync(() => {
       if (snapshotStack.length === 0) {
@@ -285,6 +329,51 @@ const makeWorldState = Effect.gen(function* () {
       return cloneStorageValue(currentValue);
     });
 
+  const setCode = (
+    address: Address.AddressType,
+    code: RuntimeCode.RuntimeCodeType,
+  ) =>
+    Effect.gen(function* () {
+      const key = addressKey(address);
+      const previous = codes.get(key) ?? null;
+
+      if (code.length === 0) {
+        if (previous === null) {
+          return;
+        }
+        yield* journal.append({
+          key: codeJournalKey(key),
+          value: cloneRuntimeCode(previous),
+          tag: ChangeTag.Delete,
+        });
+        codes.delete(key);
+        return;
+      }
+
+      const next = cloneRuntimeCode(code);
+
+      if (previous === null) {
+        yield* journal.append({
+          key: codeJournalKey(key),
+          value: null,
+          tag: ChangeTag.Create,
+        });
+        codes.set(key, next);
+        return;
+      }
+
+      if (bytesEqual(previous, next)) {
+        return;
+      }
+
+      yield* journal.append({
+        key: codeJournalKey(key),
+        value: cloneRuntimeCode(previous),
+        tag: ChangeTag.Update,
+      });
+      codes.set(key, next);
+    });
+
   const clearStorageForKey = (key: AccountKey) =>
     Effect.gen(function* () {
       const slots = storage.get(key);
@@ -299,6 +388,20 @@ const makeWorldState = Effect.gen(function* () {
         });
       }
       storage.delete(key);
+    });
+
+  const clearCodeForKey = (key: AccountKey) =>
+    Effect.gen(function* () {
+      const previous = codes.get(key);
+      if (!previous) {
+        return;
+      }
+      yield* journal.append({
+        key: codeJournalKey(key),
+        value: cloneRuntimeCode(previous),
+        tag: ChangeTag.Delete,
+      });
+      codes.delete(key);
     });
 
   const setStorage = (
@@ -374,6 +477,7 @@ const makeWorldState = Effect.gen(function* () {
 
       if (account === null) {
         if (previous === null) {
+          yield* clearCodeForKey(key);
           return;
         }
         yield* journal.append({
@@ -382,6 +486,7 @@ const makeWorldState = Effect.gen(function* () {
           tag: ChangeTag.Delete,
         });
         accounts.delete(key);
+        yield* clearCodeForKey(key);
         return;
       }
 
@@ -442,6 +547,19 @@ const makeWorldState = Effect.gen(function* () {
           accounts.delete(key);
         } else {
           accounts.set(key, cloneAccount(entry.value as AccountStateType));
+        }
+        return;
+      }
+
+      if (entry.key.startsWith(codeJournalPrefix)) {
+        const key = entry.key.slice(codeJournalPrefix.length) as AccountKey;
+        if (entry.value === null) {
+          codes.delete(key);
+        } else {
+          codes.set(
+            key,
+            cloneRuntimeCode(entry.value as RuntimeCode.RuntimeCodeType),
+          );
         }
         return;
       }
@@ -532,6 +650,7 @@ const makeWorldState = Effect.gen(function* () {
   const clear = () =>
     Effect.gen(function* () {
       accounts.clear();
+      codes.clear();
       storage.clear();
       createdAccounts.clear();
       originalStorage.clear();
@@ -543,7 +662,9 @@ const makeWorldState = Effect.gen(function* () {
   return {
     getAccountOptional,
     getAccount,
+    getCode,
     setAccount,
+    setCode,
     destroyAccount,
     markAccountCreated,
     wasAccountCreated,
@@ -574,11 +695,21 @@ export const getAccountOptional = (address: Address.AddressType) =>
 export const getAccount = (address: Address.AddressType) =>
   withWorldState((state) => state.getAccount(address));
 
+/** Read contract code (empty if unset). */
+export const getCode = (address: Address.AddressType) =>
+  withWorldState((state) => state.getCode(address));
+
 /** Set or delete an account. */
 export const setAccount = (
   address: Address.AddressType,
   account: AccountStateType | null,
 ) => withWorldState((state) => state.setAccount(address, account));
+
+/** Set contract code (empty clears). */
+export const setCode = (
+  address: Address.AddressType,
+  code: RuntimeCode.RuntimeCodeType,
+) => withWorldState((state) => state.setCode(address, code));
 
 /** Remove an account and its data from state. */
 export const destroyAccount = (address: Address.AddressType) =>

@@ -5,7 +5,6 @@ import * as Schema from "effect/Schema";
 import {
   Address,
   Hash,
-  Hex,
   RuntimeCode,
   Storage,
   StorageValue,
@@ -17,20 +16,12 @@ import {
   WorldStateTest,
 } from "../state/State";
 import { coerceEffect } from "../trie/internal/effect";
-
-/** Hex-encoded key for account map storage. */
-type AccountKey = Parameters<typeof Hex.equals>[0];
 /** Canonical storage slot type. */
 type StorageSlotType = Schema.Schema.Type<typeof Storage.StorageSlotSchema>;
 /** Canonical storage value type. */
 type StorageValueType = Schema.Schema.Type<
   typeof StorageValue.StorageValueSchema
 >;
-
-const addressKey = (address: Address.AddressType): AccountKey =>
-  Hex.fromBytes(address);
-
-const EMPTY_CODE = new Uint8Array(0) as RuntimeCode.RuntimeCodeType;
 
 const keccak256 = (data: Uint8Array) =>
   coerceEffect<Hash.HashType, never>(Hash.keccak256(data));
@@ -88,7 +79,6 @@ const withHostAdapter = <A, E>(
 
 const makeHostAdapter = Effect.gen(function* () {
   const worldState = yield* WorldState;
-  const codes = new Map<AccountKey, RuntimeCode.RuntimeCodeType>();
 
   const updateAccount = (
     address: Address.AddressType,
@@ -115,20 +105,14 @@ const makeHostAdapter = Effect.gen(function* () {
     nonce: AccountStateType["nonce"],
   ) => updateAccount(address, (account) => ({ ...account, nonce }));
 
-  const getCode = (address: Address.AddressType) =>
-    Effect.sync(() => codes.get(addressKey(address)) ?? EMPTY_CODE);
+  const getCode = (address: Address.AddressType) => worldState.getCode(address);
 
   const setCode = (
     address: Address.AddressType,
     code: RuntimeCode.RuntimeCodeType,
   ) =>
     Effect.gen(function* () {
-      const key = addressKey(address);
-      if (code.length === 0) {
-        codes.delete(key);
-      } else {
-        codes.set(key, code);
-      }
+      yield* worldState.setCode(address, code);
       const codeHash = yield* codeHashFor(code);
       yield* updateAccount(address, (account) => ({ ...account, codeHash }));
     });
