@@ -251,7 +251,7 @@ const makeMemoryDb = (config: DbConfig) =>
       });
 
     const createSnapshot = () =>
-      pipe(
+      Effect.map(
         Effect.acquireRelease(
           Effect.sync(() => {
             const snapshotStore = new Map<string, BytesType>();
@@ -262,9 +262,7 @@ const makeMemoryDb = (config: DbConfig) =>
           }),
           (snapshotStore) => Effect.sync(() => snapshotStore.clear()),
         ),
-        Effect.map((snapshotStore) => {
-          return makeReader(snapshotStore);
-        }),
+        (snapshotStore) => makeReader(snapshotStore),
       );
 
     const flush = (_onlyWal?: boolean) =>
@@ -572,114 +570,61 @@ export const DbRocksStubTest = (
   config: DbConfig = { name: DbNames.state },
 ): Layer.Layer<Db, DbError> => Layer.effect(Db, makeRocksDb(config));
 
+const withDb = <A, E, R>(
+  f: (db: DbService) => Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R | Db> => Effect.flatMap(Db, f);
+
 /** Retrieve a value by key. */
 export const get = (key: BytesType, flags?: ReadFlags) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    return yield* db.get(key, flags);
-  });
+  withDb((db) => db.get(key, flags));
 
 /** Retrieve values for multiple keys. */
 export const getMany = (keys: ReadonlyArray<BytesType>) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    return yield* db.getMany(keys);
-  });
+  withDb((db) => db.getMany(keys));
 
 /** Return all entries. */
-export const getAll = (ordered?: boolean) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    return yield* db.getAll(ordered);
-  });
+export const getAll = (ordered?: boolean) => withDb((db) => db.getAll(ordered));
 
 /** Return all keys. */
 export const getAllKeys = (ordered?: boolean) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    return yield* db.getAllKeys(ordered);
-  });
+  withDb((db) => db.getAllKeys(ordered));
 
 /** Return all values. */
 export const getAllValues = (ordered?: boolean) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    return yield* db.getAllValues(ordered);
-  });
+  withDb((db) => db.getAllValues(ordered));
 
 /** Store a value by key. */
 export const put = (key: BytesType, value: BytesType, flags?: WriteFlags) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* db.put(key, value, flags);
-  });
+  withDb((db) => db.put(key, value, flags));
 
 /** Merge a value by key. */
 export const merge = (key: BytesType, value: BytesType, flags?: WriteFlags) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* db.merge(key, value, flags);
-  });
+  withDb((db) => db.merge(key, value, flags));
 
 /** Remove a value by key. */
-export const remove = (key: BytesType) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* db.remove(key);
-  });
+export const remove = (key: BytesType) => withDb((db) => db.remove(key));
 
 /** Check whether a key exists. */
-export const has = (key: BytesType) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    return yield* db.has(key);
-  });
+export const has = (key: BytesType) => withDb((db) => db.has(key));
 
 /** Create a read-only snapshot of the DB. */
-export const createSnapshot = () =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    return yield* db.createSnapshot();
-  });
+export const createSnapshot = () => withDb((db) => db.createSnapshot());
 
 /** Flush underlying storage buffers. */
-export const flush = (onlyWal?: boolean) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* db.flush(onlyWal);
-  });
+export const flush = (onlyWal?: boolean) => withDb((db) => db.flush(onlyWal));
 
 /** Clear all data from the database. */
-export const clear = () =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* db.clear();
-  });
+export const clear = () => withDb((db) => db.clear());
 
 /** Compact underlying storage. */
-export const compact = () =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* db.compact();
-  });
+export const compact = () => withDb((db) => db.compact());
 
 /** Gather DB metrics. */
-export const gatherMetric = () =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    return yield* db.gatherMetric();
-  });
+export const gatherMetric = () => withDb((db) => db.gatherMetric());
 
 /** Apply a batch of write operations. */
 export const writeBatch = (ops: ReadonlyArray<DbWriteOp>) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* db.writeBatch(ops);
-  });
+  withDb((db) => db.writeBatch(ops));
 
 /** Start a write batch scope. */
-export const startWriteBatch = () =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    return yield* db.startWriteBatch();
-  });
+export const startWriteBatch = () => withDb((db) => db.startWriteBatch());
