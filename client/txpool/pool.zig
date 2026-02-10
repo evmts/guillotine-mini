@@ -70,7 +70,6 @@ pub const TxPoolConfig = struct {
     persistent_broadcast_enabled: bool = true,
     /// Require max fee per blob gas to meet current blob base fee.
     current_blob_base_fee_required: bool = true,
-    /// Minimum priority fee required for blob transactions.
     /// Minimum priority fee required for blob transactions (semantic type).
     min_blob_tx_priority_fee: primitives.MaxPriorityFeePerGas = primitives.MaxPriorityFeePerGas.from(0),
 };
