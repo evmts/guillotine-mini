@@ -206,7 +206,7 @@ test "Chain - head_hash returns null for empty chain" {
     var chain = try Chain.init(allocator, null);
     defer chain.deinit();
 
-    try std.testing.expect(head_hash(&chain) == null);
+    try std.testing.expect((try head_hash(&chain)) == null);
 }
 
 test "Chain - head_hash returns canonical head hash" {
@@ -218,7 +218,7 @@ test "Chain - head_hash returns canonical head hash" {
     try chain.putBlock(genesis);
     try chain.setCanonicalHead(genesis.hash);
 
-    const hash = head_hash(&chain);
+    const hash = try head_hash(&chain);
     try std.testing.expect(hash != null);
     try std.testing.expectEqualSlices(u8, &genesis.hash, &hash.?);
 }
@@ -553,7 +553,7 @@ test "Chain - generic head helpers are race-resilient" {
     try chain.setCanonicalHead(genesis.hash);
 
     // Snapshot helpers must return a consistent value
-    const h1 = head_hash_of(&chain);
+    const h1 = try head_hash_of(&chain);
     try std.testing.expect(h1 != null);
     const b1 = try head_block_of(&chain);
     try std.testing.expect(b1 != null);
@@ -607,7 +607,7 @@ test "Chain - head helpers reflect new head after reorg" {
     try chain.putBlock(genesis);
     try chain.setCanonicalHead(genesis.hash);
 
-    try std.testing.expectEqualSlices(u8, &genesis.hash, &head_hash(&chain).?);
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &(try head_hash(&chain)).?);
 
     var h1 = primitives.BlockHeader.init();
     h1.number = 1;
@@ -616,7 +616,7 @@ test "Chain - head helpers reflect new head after reorg" {
     try chain.putBlock(b1);
     try chain.setCanonicalHead(b1.hash);
 
-    const hh = head_hash(&chain);
+    const hh = try head_hash(&chain);
     try std.testing.expect(hh != null);
     try std.testing.expectEqualSlices(u8, &b1.hash, &hh.?);
 }
