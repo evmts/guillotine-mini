@@ -91,6 +91,8 @@ export class InvalidTxPoolConfigError extends Data.TaggedError(
 export interface TxPoolService {
   readonly getPendingCount: () => Effect.Effect<number, never>;
   readonly getPendingBlobCount: () => Effect.Effect<number, never>;
+  readonly supportsBlobs: () => Effect.Effect<boolean, never>;
+  readonly acceptTxWhenNotSynced: () => Effect.Effect<boolean, never>;
 }
 
 /** Context tag for the transaction pool. */
@@ -109,14 +111,25 @@ const decodeConfig = (config: TxPoolConfigInput) =>
 
 const makeTxPool = (config: TxPoolConfigInput) =>
   Effect.gen(function* () {
-    yield* decodeConfig(config);
+    const validatedConfig = yield* decodeConfig(config);
     const pendingRef = yield* Ref.make(0);
     const pendingBlobRef = yield* Ref.make(0);
 
     const getPendingCount = () => Ref.get(pendingRef);
     const getPendingBlobCount = () => Ref.get(pendingBlobRef);
+    const supportsBlobs = () =>
+      Effect.succeed(
+        validatedConfig.blobsSupport !== BlobsSupportMode.Disabled,
+      );
+    const acceptTxWhenNotSynced = () =>
+      Effect.succeed(validatedConfig.acceptTxWhenNotSynced);
 
-    return { getPendingCount, getPendingBlobCount } satisfies TxPoolService;
+    return {
+      getPendingCount,
+      getPendingBlobCount,
+      supportsBlobs,
+      acceptTxWhenNotSynced,
+    } satisfies TxPoolService;
   });
 
 /** Production txpool layer. */
@@ -142,4 +155,18 @@ export const getPendingBlobCount = () =>
   Effect.gen(function* () {
     const pool = yield* TxPool;
     return yield* pool.getPendingBlobCount();
+  });
+
+/** Check whether blob transactions are supported by configuration. */
+export const supportsBlobs = () =>
+  Effect.gen(function* () {
+    const pool = yield* TxPool;
+    return yield* pool.supportsBlobs();
+  });
+
+/** Check whether txs are accepted when the node is not synced. */
+export const acceptTxWhenNotSynced = () =>
+  Effect.gen(function* () {
+    const pool = yield* TxPool;
+    return yield* pool.acceptTxWhenNotSynced();
   });
