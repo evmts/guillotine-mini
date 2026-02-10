@@ -35,6 +35,10 @@ type StorageValueType = Schema.Schema.Type<
 type WorldStateJournalKey = string;
 /** Journal value union for world state changes. */
 type WorldStateJournalValue = AccountStateType | StorageValueType;
+type SnapshotEntry = {
+  readonly id: WorldStateSnapshot;
+  readonly journalSnapshot: JournalSnapshot;
+};
 
 /** Snapshot identifier for world state journaling. */
 export type WorldStateSnapshot = JournalSnapshot;
@@ -179,7 +183,8 @@ const makeWorldState = Effect.gen(function* () {
     AccountKey,
     Map<StorageKey, StorageValueType>
   >();
-  const snapshotStack: Array<WorldStateSnapshot> = [];
+  const snapshotStack: Array<SnapshotEntry> = [];
+  let nextSnapshotId: WorldStateSnapshot = 0;
 
   const clearTransactionTrackingIfNoSnapshots = () => {
     if (snapshotStack.length === 0) {
@@ -406,11 +411,13 @@ const makeWorldState = Effect.gen(function* () {
 
   const takeSnapshot = () =>
     Effect.gen(function* () {
-      const snapshot = yield* journal.takeSnapshot();
+      const journalSnapshot = yield* journal.takeSnapshot();
       if (snapshotStack.length === 0) {
         clearTransactionTrackingIfNoSnapshots();
       }
-      snapshotStack.push(snapshot);
+      const snapshot = nextSnapshotId;
+      nextSnapshotId += 1;
+      snapshotStack.push({ id: snapshot, journalSnapshot });
       return snapshot;
     });
 
@@ -457,18 +464,20 @@ const makeWorldState = Effect.gen(function* () {
       }
     });
 
-  const lookupSnapshotIndex = (snapshot: WorldStateSnapshot) =>
+  const lookupSnapshot = (snapshot: WorldStateSnapshot) =>
     Effect.gen(function* () {
-      const index = snapshotStack.lastIndexOf(snapshot);
-      if (index < 0) {
-        return yield* Effect.fail(
-          new UnknownSnapshotError({
-            snapshot,
-            depth: snapshotStack.length,
-          }),
-        );
+      for (let i = snapshotStack.length - 1; i >= 0; i -= 1) {
+        const entry = snapshotStack[i];
+        if (entry && entry.id === snapshot) {
+          return { index: i, entry };
+        }
       }
-      return index;
+      return yield* Effect.fail(
+        new UnknownSnapshotError({
+          snapshot,
+          depth: snapshotStack.length,
+        }),
+      );
     });
 
   const dropSnapshotsFrom = (index: number) => {
@@ -478,15 +487,15 @@ const makeWorldState = Effect.gen(function* () {
 
   const restoreSnapshot = (snapshot: WorldStateSnapshot) =>
     Effect.gen(function* () {
-      const index = yield* lookupSnapshotIndex(snapshot);
-      yield* journal.restore(snapshot, applyRevert);
+      const { index, entry } = yield* lookupSnapshot(snapshot);
+      yield* journal.restore(entry.journalSnapshot, applyRevert);
       dropSnapshotsFrom(index);
     });
 
   const commitSnapshot = (snapshot: WorldStateSnapshot) =>
     Effect.gen(function* () {
-      const index = yield* lookupSnapshotIndex(snapshot);
-      yield* journal.commit(snapshot);
+      const { index, entry } = yield* lookupSnapshot(snapshot);
+      yield* journal.commit(entry.journalSnapshot);
       dropSnapshotsFrom(index);
     });
 
