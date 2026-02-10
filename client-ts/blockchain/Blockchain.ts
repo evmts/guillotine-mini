@@ -138,6 +138,9 @@ export interface BlockchainService {
   readonly getBlockByNumber: (
     number: BlockNumberType,
   ) => Effect.Effect<Option.Option<BlockType>, BlockchainError>;
+  readonly getCanonicalHash: (
+    number: BlockNumberType,
+  ) => Effect.Effect<Option.Option<BlockHashType>, BlockchainError>;
   readonly putBlock: (block: BlockType) => Effect.Effect<void, BlockchainError>;
   readonly insertBlock: (
     block: BlockType,
@@ -361,6 +364,9 @@ const makeBlockchain = Effect.gen(function* () {
   const getBlockByNumber = (number: BlockNumberType) =>
     store.getBlockByNumber(number);
 
+  const getCanonicalHash = (number: BlockNumberType) =>
+    store.getCanonicalHash(number);
+
   const getBestKnownNumber = () =>
     Ref.get(state).pipe(Effect.map((current) => current.bestKnownNumber));
 
@@ -505,6 +511,7 @@ const makeBlockchain = Effect.gen(function* () {
   return {
     getBlockByHash,
     getBlockByNumber,
+    getCanonicalHash,
     putBlock,
     insertBlock,
     suggestBlock,
@@ -540,6 +547,10 @@ export const getBlockByHash = (hash: BlockHashType) =>
 /** Retrieve a canonical block by number. */
 export const getBlockByNumber = (number: BlockNumberType) =>
   withBlockchain((service) => service.getBlockByNumber(number));
+
+/** Retrieve the canonical block hash by number. */
+export const getCanonicalHash = (number: BlockNumberType) =>
+  withBlockchain((service) => service.getCanonicalHash(number));
 
 /** Put a block into local storage. */
 export const putBlock = (block: BlockType) =>

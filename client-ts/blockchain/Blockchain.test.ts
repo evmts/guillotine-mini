@@ -9,6 +9,7 @@ import {
   GenesisMismatchError,
   GenesisNotInitializedError,
   InvalidGenesisBlockError,
+  getCanonicalHash,
   getBlockByHash,
   getBlockByNumber,
   getHead,
@@ -70,6 +71,38 @@ describe("Blockchain", () => {
         Hex.fromBytes(block1.hash),
       );
     }).pipe(Effect.provide(BlockchainTest)),
+  );
+
+  it.effect(
+    "getCanonicalHash returns canonical hash and None for missing level",
+    () =>
+      Effect.gen(function* () {
+        const genesis = makeBlock({
+          number: 0n,
+          hash: blockHashFromByte(0x12),
+          parentHash: blockHashFromByte(0x00),
+        });
+        const block1 = makeBlock({
+          number: 1n,
+          hash: blockHashFromByte(0x13),
+          parentHash: genesis.hash,
+        });
+
+        yield* initializeGenesis(genesis);
+        yield* putBlock(block1);
+        yield* setCanonicalHead(block1.hash);
+
+        const canonical = yield* getCanonicalHash(block1.header.number);
+        assert.isTrue(Option.isSome(canonical));
+        assert.strictEqual(
+          Hex.fromBytes(Option.getOrThrow(canonical)),
+          Hex.fromBytes(block1.hash),
+        );
+
+        const missingNumber = 42n as unknown as typeof block1.header.number;
+        const missing = yield* getCanonicalHash(missingNumber);
+        assert.isTrue(Option.isNone(missing));
+      }).pipe(Effect.provide(BlockchainTest)),
   );
 
   it.effect("initializeGenesis sets head and prevents re-initialization", () =>
