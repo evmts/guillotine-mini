@@ -19,6 +19,7 @@ pub const ClientVersionV1Result = @FieldType(ClientVersionV1Method, "result");
 const ClientVersionV1 = @FieldType(ClientVersionV1Params, "consensus_client");
 
 const exchange_capabilities_method = "engine_exchangeCapabilities";
+const get_client_version_v1_method = "engine_getClientVersionV1";
 const engine_method_prefix = "engine_";
 
 /// Vtable-based Engine API interface.
@@ -124,6 +125,27 @@ pub const EngineApi = struct {
         const result = try self.vtable.get_client_version_v1(self.ptr, params);
         try validate_client_version_v1_result(result, Error.InternalError);
         return result;
+    }
+
+    /// Generic dispatcher for EngineMethod calls using Voltaire's EngineMethod schema.
+    ///
+    /// Only `engine_exchangeCapabilities` and `engine_getClientVersionV1` are
+    /// handled at this stage; others return `Error.MethodNotFound`.
+    ///
+    /// Example:
+    /// const Result = try api.dispatch("engine_exchangeCapabilities", params);
+    pub fn dispatch(
+        self: EngineApi,
+        comptime Method: type,
+        params: @FieldType(Method, "params"),
+    ) Error!@FieldType(Method, "result") {
+        if (comptime Method == ExchangeCapabilitiesMethod) {
+            return self.exchange_capabilities(params);
+        } else if (comptime Method == ClientVersionV1Method) {
+            return self.get_client_version_v1(params);
+        } else {
+            return Error.MethodNotFound;
+        }
     }
 };
 
@@ -505,6 +527,53 @@ test "engine api dispatches client version exchange" {
     const result = try api.get_client_version_v1(params);
     try std.testing.expect(dummy.client_version_called);
     try std.testing.expectEqualDeep(result_value, result);
+}
+
+test "engine api generic dispatcher routes exchangeCapabilities" {
+    const allocator = std.testing.allocator;
+
+    var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
+        "engine_newPayloadV1",
+    });
+    defer deinit_methods_payload(&consensus_payload);
+
+    var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
+        "engine_newPayloadV1",
+    });
+    defer deinit_methods_payload(&result_payload);
+
+    const params = ExchangeCapabilitiesParams{ .consensus_client_methods = consensus_payload.value };
+    const result_value = ExchangeCapabilitiesResult{ .value = result_payload.value };
+
+    var dummy = DummyEngine{ .result = result_value };
+    const api = make_api(&dummy);
+
+    const out = try api.dispatch(ExchangeCapabilitiesMethod, params);
+    try std.testing.expectEqualDeep(result_value, out);
+}
+
+test "engine api generic dispatcher routes getClientVersionV1" {
+    const params = ClientVersionV1Params{ .consensus_client = dummy_client_version };
+    const result_value = ClientVersionV1Result{ .value = &[_]ClientVersionV1{dummy_client_version} };
+    const exchange_result = ExchangeCapabilitiesResult{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } };
+
+    var dummy = DummyEngine{ .result = exchange_result, .client_version_result = result_value };
+    const api = make_api(&dummy);
+
+    const out = try api.dispatch(ClientVersionV1Method, params);
+    try std.testing.expectEqualDeep(result_value, out);
+}
+
+test "engine api generic dispatcher rejects unknown method" {
+    const GetPayloadV1 = @FieldType(jsonrpc.engine.EngineMethod, "engine_getPayloadV1");
+    const GetPayloadV1Params = @FieldType(GetPayloadV1, "params");
+    const params = GetPayloadV1Params{ .payload_id = jsonrpc.types.Quantity{ .value = .{ .string = "0x01" } } };
+    const exchange_result = ExchangeCapabilitiesResult{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } };
+
+    var dummy = DummyEngine{ .result = exchange_result };
+    const api = make_api(&dummy);
+
+    try std.testing.expectError(EngineApi.Error.MethodNotFound, api.dispatch(GetPayloadV1, params));
 }
 
 test "engine api rejects invalid client version params" {
