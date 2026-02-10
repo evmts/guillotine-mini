@@ -117,8 +117,8 @@ pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
         return .{ .err = .invalid_request };
     }
     if (first != '{') {
-        // Not a valid JSON object at the top level
-        return .{ .err = .parse_error };
+        // Valid JSON but not a Request object -> invalid_request (EIP-1474)
+        return .{ .err = .invalid_request };
     }
 
     const key = "\"method\"";
@@ -186,7 +186,7 @@ pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
         }
         if (ch == '"') break;
     }
-    if (end >= request.len or request[end] != '"') return .{ .err = .invalid_request };
+    if (end >= request.len or request[end] != '"') return .{ .err = .parse_error };
     const start = i + 1;
 
     const method_name = request[start..end];
