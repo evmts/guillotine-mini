@@ -28,6 +28,10 @@ import FinalReviewPrompt from "./steps/7_final-review.mdx";
 const MAX_PASSES = 5;
 const MAX_ITERATIONS_PER_PASS = phases.length * 50;
 
+const skipPhases = new Set(
+  (process.env.SKIP_PHASES ?? "").split(",").map((s) => s.trim()).filter(Boolean)
+);
+
 export default smithers(db, (ctx) => {
   const passTracker = ctx.outputMaybe(schema.output, { nodeId: "pass-tracker" }) as OutputRow | undefined;
   const currentPass = passTracker?.totalIterations ?? 0;
@@ -56,9 +60,10 @@ export default smithers(db, (ctx) => {
             const latestBenchmark = ctx.outputMaybe(schema.benchmark, { nodeId: `${id}:benchmark` }) as BenchmarkRow | undefined;
 
             const isPhaseComplete = latestFinalReview?.readyToMoveOn ?? false;
+            const isPhaseSkipped = skipPhases.has(id);
 
             return (
-              <Sequence key={id} skipIf={isPhaseComplete}>
+              <Sequence key={id} skipIf={isPhaseComplete || isPhaseSkipped}>
                 <Task id={`${id}:context`} output={schema.context} outputSchema={contextOutputSchema} agent={codex}>
                   {render(ContextPrompt, {
                     phase,
