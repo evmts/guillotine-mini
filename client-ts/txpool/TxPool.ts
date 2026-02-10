@@ -4,20 +4,80 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import { MaxPriorityFeePerGas } from "voltaire-effect/primitives";
 
-/** Configuration for the transaction pool. */
-export interface TxPoolConfig {
-  readonly pendingCount: number;
-  readonly pendingBlobCount: number;
-}
+/** Blob transaction support modes (Nethermind BlobsSupportMode parity). */
+export const BlobsSupportMode = {
+  Disabled: "Disabled",
+  InMemory: "InMemory",
+  Storage: "Storage",
+  StorageWithReorgs: "StorageWithReorgs",
+} as const;
 
-const PendingCountSchema = Schema.NonNegativeInt;
+export type BlobsSupportMode =
+  (typeof BlobsSupportMode)[keyof typeof BlobsSupportMode];
+
+export const BlobsSupportModeSchema = Schema.Union(
+  Schema.Literal(BlobsSupportMode.Disabled),
+  Schema.Literal(BlobsSupportMode.InMemory),
+  Schema.Literal(BlobsSupportMode.Storage),
+  Schema.Literal(BlobsSupportMode.StorageWithReorgs),
+);
+
+const NonNegativeIntSchema = Schema.NonNegativeInt;
+const NullableNonNegativeIntSchema = Schema.NullOr(NonNegativeIntSchema);
 
 /** Schema for validating txpool configuration at boundaries. */
 export const TxPoolConfigSchema = Schema.Struct({
-  pendingCount: PendingCountSchema,
-  pendingBlobCount: PendingCountSchema,
+  peerNotificationThreshold: NonNegativeIntSchema,
+  minBaseFeeThreshold: NonNegativeIntSchema,
+  size: NonNegativeIntSchema,
+  blobsSupport: BlobsSupportModeSchema,
+  persistentBlobStorageSize: NonNegativeIntSchema,
+  blobCacheSize: NonNegativeIntSchema,
+  inMemoryBlobPoolSize: NonNegativeIntSchema,
+  maxPendingTxsPerSender: NonNegativeIntSchema,
+  maxPendingBlobTxsPerSender: NonNegativeIntSchema,
+  hashCacheSize: NonNegativeIntSchema,
+  gasLimit: NullableNonNegativeIntSchema,
+  maxTxSize: NullableNonNegativeIntSchema,
+  maxBlobTxSize: NullableNonNegativeIntSchema,
+  proofsTranslationEnabled: Schema.Boolean,
+  reportMinutes: NullableNonNegativeIntSchema,
+  acceptTxWhenNotSynced: Schema.Boolean,
+  persistentBroadcastEnabled: Schema.Boolean,
+  currentBlobBaseFeeRequired: Schema.Boolean,
+  minBlobTxPriorityFee: MaxPriorityFeePerGas.BigInt,
 });
+
+/** Configuration for the transaction pool. */
+export type TxPoolConfig = Schema.Schema.Type<typeof TxPoolConfigSchema>;
+export type TxPoolConfigInput = Schema.Schema.Encoded<
+  typeof TxPoolConfigSchema
+>;
+
+/** Default txpool configuration derived from Nethermind defaults. */
+export const TxPoolConfigDefaults: TxPoolConfigInput = {
+  peerNotificationThreshold: 5,
+  minBaseFeeThreshold: 70,
+  size: 2048,
+  blobsSupport: BlobsSupportMode.StorageWithReorgs,
+  persistentBlobStorageSize: 16 * 1024,
+  blobCacheSize: 256,
+  inMemoryBlobPoolSize: 512,
+  maxPendingTxsPerSender: 0,
+  maxPendingBlobTxsPerSender: 16,
+  hashCacheSize: 512 * 1024,
+  gasLimit: null,
+  maxTxSize: 128 * 1024,
+  maxBlobTxSize: 1024 * 1024,
+  proofsTranslationEnabled: false,
+  reportMinutes: null,
+  acceptTxWhenNotSynced: false,
+  persistentBroadcastEnabled: true,
+  currentBlobBaseFeeRequired: true,
+  minBlobTxPriorityFee: 0n,
+};
 
 /** Error raised when txpool configuration is invalid. */
 export class InvalidTxPoolConfigError extends Data.TaggedError(
@@ -36,7 +96,7 @@ export interface TxPoolService {
 /** Context tag for the transaction pool. */
 export class TxPool extends Context.Tag("TxPool")<TxPool, TxPoolService>() {}
 
-const decodeConfig = (config: TxPoolConfig) =>
+const decodeConfig = (config: TxPoolConfigInput) =>
   Schema.decode(TxPoolConfigSchema)(config).pipe(
     Effect.mapError(
       (cause) =>
@@ -47,11 +107,11 @@ const decodeConfig = (config: TxPoolConfig) =>
     ),
   );
 
-const makeTxPool = (config: TxPoolConfig) =>
+const makeTxPool = (config: TxPoolConfigInput) =>
   Effect.gen(function* () {
-    const validated = yield* decodeConfig(config);
-    const pendingRef = yield* Ref.make(validated.pendingCount);
-    const pendingBlobRef = yield* Ref.make(validated.pendingBlobCount);
+    yield* decodeConfig(config);
+    const pendingRef = yield* Ref.make(0);
+    const pendingBlobRef = yield* Ref.make(0);
 
     const getPendingCount = () => Ref.get(pendingRef);
     const getPendingBlobCount = () => Ref.get(pendingBlobRef);
@@ -61,13 +121,13 @@ const makeTxPool = (config: TxPoolConfig) =>
 
 /** Production txpool layer. */
 export const TxPoolLive = (
-  config: TxPoolConfig,
+  config: TxPoolConfigInput,
 ): Layer.Layer<TxPool, InvalidTxPoolConfigError> =>
   Layer.effect(TxPool, makeTxPool(config));
 
 /** Deterministic txpool layer for tests. */
 export const TxPoolTest = (
-  config: TxPoolConfig = { pendingCount: 0, pendingBlobCount: 0 },
+  config: TxPoolConfigInput = TxPoolConfigDefaults,
 ): Layer.Layer<TxPool, InvalidTxPoolConfigError> => TxPoolLive(config);
 
 /** Retrieve the total pending transaction count. */
