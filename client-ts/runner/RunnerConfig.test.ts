@@ -6,27 +6,26 @@ import {
   getRunnerConfig,
 } from "./RunnerConfig";
 
-const provideRunnerConfig =
-  (options: Parameters<typeof RunnerConfigLive>[0]) =>
-  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.provide(RunnerConfigLive(options)));
+const resolveRunnerConfigSync = (
+  options: Parameters<typeof RunnerConfigLive>[0],
+) =>
+  Effect.runSync(
+    getRunnerConfig().pipe(Effect.provide(RunnerConfigLive(options))),
+  );
 
 describe("RunnerConfig", () => {
-  it.effect("uses config defaults when CLI args and env vars are absent", () =>
-    provideRunnerConfig({
+  it("uses config defaults when CLI args and env vars are absent", () => {
+    const config = resolveRunnerConfigSync({
       argv: [],
       env: {},
       configDefaults: RunnerConfigDefaults,
-    })(
-      Effect.gen(function* () {
-        const config = yield* getRunnerConfig();
-        assert.deepStrictEqual(config, RunnerConfigDefaults);
-      }),
-    ),
-  );
+    });
 
-  it.effect("prefers env vars over config defaults/file values", () =>
-    provideRunnerConfig({
+    assert.deepStrictEqual(config, RunnerConfigDefaults);
+  });
+
+  it("prefers env vars over config defaults/file values", () => {
+    const config = resolveRunnerConfigSync({
       argv: [],
       env: {
         GUILLOTINE_CONFIG: "holesky",
@@ -36,21 +35,18 @@ describe("RunnerConfig", () => {
         configuration: "mainnet",
         dataDirectory: "./defaults-data",
       },
-    })(
-      Effect.gen(function* () {
-        const config = yield* getRunnerConfig();
-        assert.deepStrictEqual(config, {
-          configuration: "holesky",
-          configurationDirectory: "configs",
-          dataDirectory: "./env-data",
-          databaseDirectory: "./db",
-        });
-      }),
-    ),
-  );
+    });
 
-  it.effect("prefers CLI args over env vars and defaults", () =>
-    provideRunnerConfig({
+    assert.deepStrictEqual(config, {
+      configuration: "holesky",
+      configurationDirectory: "configs",
+      dataDirectory: "./env-data",
+      databaseDirectory: "./db",
+    });
+  });
+
+  it("prefers CLI args over env vars and defaults", () => {
+    const config = resolveRunnerConfigSync({
       argv: [
         "--config",
         "sepolia",
@@ -67,16 +63,13 @@ describe("RunnerConfig", () => {
         GUILLOTINE_DB_DIR: "./env-db",
       },
       configDefaults: RunnerConfigDefaults,
-    })(
-      Effect.gen(function* () {
-        const config = yield* getRunnerConfig();
-        assert.deepStrictEqual(config, {
-          configuration: "sepolia",
-          configurationDirectory: "./cli-configs",
-          dataDirectory: "./cli-data",
-          databaseDirectory: "./cli-db",
-        });
-      }),
-    ),
-  );
+    });
+
+    assert.deepStrictEqual(config, {
+      configuration: "sepolia",
+      configurationDirectory: "./cli-configs",
+      dataDirectory: "./cli-data",
+      databaseDirectory: "./cli-db",
+    });
+  });
 });
