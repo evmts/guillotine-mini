@@ -15,25 +15,25 @@ Reference architecture:
 
 ---
 
-## 1. Spec References (status in this workspace)
+## 1. Spec References (read in this pass)
 
 ### OpenRPC Ethereum JSON-RPC (execution-apis)
 Location: `execution-apis/src/eth/`
-- `block.yaml`
-- `client.yaml`
-- `execute.yaml`
-- `fee_market.yaml`
-- `filter.yaml`
-- `sign.yaml`
-- `state.yaml`
-- `submit.yaml`
-- `transaction.yaml`
+- `block.yaml` (block queries + hydrated tx toggle)
+- `client.yaml` (chainId, syncing, accounts, blockNumber, net_version)
+- `execute.yaml` (eth_call, estimateGas, createAccessList, simulate)
+- `fee_market.yaml` (gasPrice, maxPriorityFee, feeHistory, blobBaseFee)
+- `filter.yaml` (filters + polling)
+- `sign.yaml` (eth_sign, eth_signTransaction)
+- `state.yaml` (balance, storage, code, proof)
+- `submit.yaml` (sendTransaction, sendRawTransaction)
+- `transaction.yaml` (tx lookups + receipts)
 
 ### EIP-1474 (Remote procedure call specification)
 Location: `EIPs/EIPS/eip-1474.md`
 
 ### Execution specs (execution-specs)
-- `execution-specs/` does not define JSON-RPC methods; use for execution semantics only.
+- `execution-specs/` provides execution semantics; JSON-RPC method behavior comes from OpenRPC + EIPs.
 
 ---
 
@@ -42,8 +42,8 @@ Location: `EIPs/EIPS/eip-1474.md`
 ### JSON-RPC module (structural reference)
 Location: `nethermind/src/Nethermind/Nethermind.JsonRpc/`
 Notable responsibilities (per Nethermind layout):
-- Request/response models
-- Module dispatch and method resolution
+- Request/response models and JSON-RPC dispatch
+- Module routing and method resolution
 - Error code mapping and JSON-RPC 2.0 error payloads
 - WebSocket transport plumbing
 
@@ -101,15 +101,15 @@ Expected path: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
 ### Actual Zig JSON-RPC types in Voltaire
 Observed Zig JSON-RPC sources at: `/Users/williamcory/voltaire/src/jsonrpc/`
 Relevant Zig APIs:
-- `/Users/williamcory/voltaire/src/jsonrpc/root.zig` - `JsonRpc` union and `eth`, `debug`, `engine` namespace exports.
-- `/Users/williamcory/voltaire/src/jsonrpc/JsonRpc.zig` - `JsonRpcMethod` union with `.methodName()`.
-- `/Users/williamcory/voltaire/src/jsonrpc/types.zig` - shared base types: `Address`, `Hash`, `Quantity`, `BlockTag`, `BlockSpec`.
-- `/Users/williamcory/voltaire/src/jsonrpc/eth/methods.zig` - `EthMethod` union (per-method types under `eth/*`).
+- `/Users/williamcory/voltaire/src/jsonrpc/root.zig` - exports `JsonRpc`, plus `eth`, `debug`, `engine` namespaces.
+- `/Users/williamcory/voltaire/src/jsonrpc/JsonRpc.zig` - `JsonRpcMethod` union with `.methodName()` dispatch.
+- `/Users/williamcory/voltaire/src/jsonrpc/types.zig` - `Address`, `Hash`, `Quantity`, `BlockTag`, `BlockSpec` re-exports.
+- `/Users/williamcory/voltaire/src/jsonrpc/eth/methods.zig` - `EthMethod` union (per-method params/results).
 - `/Users/williamcory/voltaire/src/jsonrpc/debug/methods.zig` - `DebugMethod` union.
 - `/Users/williamcory/voltaire/src/jsonrpc/engine/methods.zig` - `EngineMethod` union.
 
 Namespace gaps:
-- `/Users/williamcory/voltaire/src/jsonrpc/net/` and `/Users/williamcory/voltaire/src/jsonrpc/web3/` contain JS-only `methods.js`; no Zig method unions found.
+- `/Users/williamcory/voltaire/src/jsonrpc/net/` and `/Users/williamcory/voltaire/src/jsonrpc/web3/` have JS-only method definitions (`methods.js`); no Zig method unions found.
 
 ---
 
@@ -118,16 +118,16 @@ Namespace gaps:
 ### Host Interface
 File: `src/host.zig`
 - `HostInterface` is a vtable-based external state bridge: balances, code, storage, nonce.
-- EVM nested calls are handled internally; `HostInterface` remains minimal.
-- Vtable pattern is a canonical DI-style polymorphism reference for Zig.
+- Nested calls are handled internally by the EVM; `HostInterface` remains minimal.
+- Vtable pattern is a canonical DI-style reference for Zig interop.
 
 ---
 
 ## 5. Test Fixtures and RPC Suites
 
-### RPC-oriented suites
-- `hive/` is empty (RPC/Engine API suites not present in this workspace).
-- `execution-spec-tests/` is empty (no RPC fixtures present).
+### RPC-oriented suites (from spec reference)
+- `hive/` exists but is empty in this workspace.
+- `execution-spec-tests/fixtures/` exists but contains a single symlink: `blockchain_tests` -> `ethereum-tests/BlockchainTests`.
 
 ### ethereum-tests inventory (requested listing)
 Top-level directories:
@@ -152,4 +152,4 @@ Fixture tarballs:
 ---
 
 ## Summary
-Captured Phase 6 JSON-RPC goals and component targets from the plan. Confirmed OpenRPC specs under `execution-apis/src/eth/` and EIP-1474 at `EIPs/EIPS/eip-1474.md`. Noted Nethermind JSON-RPC module location and inventoried the Nethermind DB module. The requested Voltaire Zig path does not exist, but Zig JSON-RPC types are present under `/Users/williamcory/voltaire/src/jsonrpc/` (eth/debug/engine), while `net` and `web3` are JS-only. Recorded the existing `src/host.zig` host interface and available `ethereum-tests/` fixture directories; RPC-focused suites (`hive`, `execution-spec-tests`) are empty in this workspace.
+Captured Phase 6 JSON-RPC goals and component targets from the plan. Read OpenRPC specs under `execution-apis/src/eth/` and EIP-1474 (`EIPs/EIPS/eip-1474.md`) for method definitions and encoding rules. Noted Nethermind JSON-RPC module location and inventoried the Nethermind DB module. The requested Voltaire Zig path does not exist; however, Zig JSON-RPC types are present under `/Users/williamcory/voltaire/src/jsonrpc/` (eth/debug/engine unions and shared types), while `net`/`web3` are JS-only. Recorded the existing `src/host.zig` host interface and current RPC-oriented test fixture availability (`hive` empty, `execution-spec-tests/fixtures` symlinked to `ethereum-tests/BlockchainTests`).
