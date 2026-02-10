@@ -129,7 +129,7 @@ const supportsPartialReceipts = (protocolVersion: number): boolean =>
 const validateProtocolVersion = (
   protocolVersion: number,
 ): Effect.Effect<void, FullSyncRequestPlannerError> =>
-  Number.isInteger(protocolVersion) &&
+  Number.isSafeInteger(protocolVersion) &&
   protocolVersion >= 0 &&
   protocolVersion <= EthSupportedProtocolVersionMax
     ? Effect.void
@@ -144,7 +144,7 @@ const validatePositiveInteger = (
     | "InvalidPeerLimit"
     | "InvalidProtocolVersion",
 ): Effect.Effect<void, FullSyncRequestPlannerError> =>
-  Number.isInteger(value) && value >= 0
+  Number.isSafeInteger(value) && value >= 0
     ? Effect.void
     : failPlanner(reason, field);
 
@@ -206,7 +206,7 @@ const validateLimit = (
   limit: number,
   field: string,
 ): Effect.Effect<void, FullSyncRequestPlannerError> =>
-  Number.isInteger(limit) && limit > 0
+  Number.isSafeInteger(limit) && limit > 0
     ? Effect.void
     : failPlanner("InvalidPeerLimit", field);
 
