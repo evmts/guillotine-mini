@@ -16,6 +16,18 @@ pub fn head_hash(chain: *Chain) ?Hash.Hash {
     return chain.getCanonicalHash(head_number);
 }
 
+/// Returns the canonical head block if present.
+///
+/// Semantics:
+/// - Reads the current head block number; if none is set, returns null.
+/// - Delegates to `getBlockByNumber(head_number)` to fetch the canonical block.
+/// - Propagates any underlying errors (e.g. `error.RpcPending` when a fork
+///   cache is configured and the block must be fetched remotely).
+pub fn head_block(chain: *Chain) !?Block.Block {
+    const head_number = chain.getHeadBlockNumber() orelse return null;
+    return try chain.getBlockByNumber(head_number);
+}
+
 /// Returns true if the given hash is canonical at its block number.
 ///
 /// Semantics:
@@ -82,6 +94,41 @@ test "Chain - head_hash returns canonical head hash" {
     const hash = head_hash(&chain);
     try std.testing.expect(hash != null);
     try std.testing.expectEqualSlices(u8, &genesis.hash, &hash.?);
+}
+
+test "Chain - head_block returns null for empty chain" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const hb = try head_block(&chain);
+    try std.testing.expect(hb == null);
+}
+
+test "Chain - head_block returns canonical head block" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+    try chain.setCanonicalHead(genesis.hash);
+
+    const hb = try head_block(&chain);
+    try std.testing.expect(hb != null);
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &hb.?.hash);
+}
+
+test "Chain - head_block with fork cache and no head returns null (no fetch)" {
+    const allocator = std.testing.allocator;
+    var fork_cache = try ForkBlockCache.init(allocator, 16);
+    defer fork_cache.deinit();
+
+    var chain = try Chain.init(allocator, &fork_cache);
+    defer chain.deinit();
+
+    const hb = try head_block(&chain);
+    try std.testing.expect(hb == null);
 }
 
 test "Chain - is_canonical returns false for missing block" {
