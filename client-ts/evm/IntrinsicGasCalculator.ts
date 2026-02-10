@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { Gas, Transaction } from "voltaire-effect/primitives";
+import { requiresAccessListSupport } from "./internal/accessListSupport";
 import {
   ReleaseSpec,
   ReleaseSpecPrague,
@@ -215,12 +216,6 @@ const validateTransaction = (
       }),
     ),
   );
-
-const requiresAccessListSupport = (tx: Transaction.Any): boolean =>
-  tx.type === Transaction.Type.EIP2930 ||
-  tx.type === Transaction.Type.EIP1559 ||
-  tx.type === Transaction.Type.EIP4844 ||
-  tx.type === Transaction.Type.EIP7702;
 
 const ensureAccessListSupport = (
   tx: Transaction.Any,

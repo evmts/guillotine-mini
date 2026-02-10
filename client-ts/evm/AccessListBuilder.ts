@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { Address, Hex, Storage, Transaction } from "voltaire-effect/primitives";
+import { requiresAccessListSupport } from "./internal/accessListSupport";
 import {
   ReleaseSpec,
   ReleaseSpecPrague,
@@ -77,12 +78,6 @@ const decodeTransaction = (tx: Transaction.Any) =>
         }),
     ),
   );
-
-const requiresAccessListSupport = (tx: Transaction.Any): boolean =>
-  Transaction.isEIP2930(tx) ||
-  Transaction.isEIP1559(tx) ||
-  Transaction.isEIP4844(tx) ||
-  Transaction.isEIP7702(tx);
 
 const ensureAccessListSupport = (
   tx: Transaction.Any,
