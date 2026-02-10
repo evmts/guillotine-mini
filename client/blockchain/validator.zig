@@ -48,7 +48,6 @@ fn validate_pos_header_constants(header: *const BlockHeader.BlockHeader) Validat
         return ValidationError.InvalidExtraDataLength;
     }
     if (header.difficulty != 0) return ValidationError.InvalidDifficulty;
-    if (!Hash.equals(&header.mix_hash, &Hash.ZERO)) return ValidationError.InvalidMixHash;
     if (!std.mem.allEqual(u8, header.nonce[0..], 0)) return ValidationError.InvalidNonce;
     if (!Hash.equals(&header.ommers_hash, &BlockHeader.EMPTY_OMMERS_HASH)) {
         return ValidationError.InvalidOmmersHash;
