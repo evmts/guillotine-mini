@@ -629,8 +629,24 @@ const makeTransactionProcessor = Effect.gen(function* () {
           senderAccount.balance,
         );
 
+      const effectiveGasFee = yield* decodeBalance(
+        tx.gasLimit * effectiveGasPrice,
+        "effective gas fee",
+      );
+      const normalizedBlobGasPrice = yield* decodeGasPrice(
+        blobGasPrice,
+        "blob",
+      );
+      const currentBlobGasFee = yield* decodeBalance(
+        blobGasUsed * normalizedBlobGasPrice,
+        "current blob gas fee",
+      );
+      const totalGasPrecharge = yield* decodeBalance(
+        effectiveGasFee + currentBlobGasFee,
+        "total gas precharge",
+      );
       const senderBalanceAfterGasBuy = yield* decodeBalance(
-        senderAccount.balance - maxGasFee,
+        senderAccount.balance - totalGasPrecharge,
         "sender post-buy-gas",
       );
       const senderNonceAfterIncrement = senderAccount.nonce + 1n;

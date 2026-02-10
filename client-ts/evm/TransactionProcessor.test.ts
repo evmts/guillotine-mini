@@ -449,7 +449,7 @@ describe("TransactionProcessor.checkMaxGasFeeAndBalance", () => {
 });
 
 describe("TransactionProcessor.buyGasAndIncrementNonce", () => {
-  it.effect("reserves max gas fee and increments sender nonce", () =>
+  it.effect("precharges effective gas fee and increments sender nonce", () =>
     provideExecutionProcessor(
       Effect.gen(function* () {
         const sender = makeAddress(0xb1);
@@ -465,12 +465,45 @@ describe("TransactionProcessor.buyGasAndIncrementNonce", () => {
         const result = yield* buyGasAndIncrementNonce(tx, sender, 5n, 0n);
         assert.strictEqual(result.maxGasFee, tx.gasLimit * tx.maxFeePerGas);
         assert.strictEqual(result.effectiveGasPrice, 6n);
-        assert.strictEqual(result.senderBalanceAfterGasBuy, 1_000_000n);
+        assert.strictEqual(result.senderBalanceAfterGasBuy, 1_400_000n);
         assert.strictEqual(result.senderNonceAfterIncrement, tx.nonce + 1n);
 
         const account = yield* getAccountOptional(sender);
-        assert.strictEqual(account?.balance, 1_000_000n);
+        assert.strictEqual(account?.balance, 1_400_000n);
         assert.strictEqual(account?.nonce, tx.nonce + 1n);
+      }),
+    ),
+  );
+
+  it.effect("precharges current blob fee instead of max blob reservation", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xb6);
+        const blobHash = makeBlobHash(0x01);
+        const tx = makeEip4844Tx(10n, 1n, 5n, [blobHash]);
+        const gasPerBlob = toBigInt(Blob.GAS_PER_BLOB);
+        yield* setAccount(
+          sender,
+          makeAccount({
+            nonce: tx.nonce,
+            balance: 2_000_000n,
+          }),
+        );
+
+        const result = yield* buyGasAndIncrementNonce(tx, sender, 5n, 2n);
+        const expectedBlobGasUsed = gasPerBlob;
+        const expectedGasPrecharge =
+          tx.gasLimit * 6n + expectedBlobGasUsed * 2n;
+        const expectedBalance = 2_000_000n - expectedGasPrecharge;
+
+        assert.strictEqual(
+          result.maxGasFee,
+          tx.gasLimit * tx.maxFeePerGas + 5n * gasPerBlob,
+        );
+        assert.strictEqual(result.blobGasUsed, expectedBlobGasUsed);
+        assert.strictEqual(result.senderBalanceAfterGasBuy, expectedBalance);
+        const account = yield* getAccountOptional(sender);
+        assert.strictEqual(account?.balance, expectedBalance);
       }),
     ),
   );
