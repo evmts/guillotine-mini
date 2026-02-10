@@ -22,7 +22,8 @@
     "trie/**/*.ts",
     "state/**/*.ts",
     "evm/**/*.ts",
-    "blockchain/**/*.ts"
+    "blockchain/**/*.ts",
+    "engine/**/*.ts"
   ],
   "exclude": ["node_modules"]
 }
