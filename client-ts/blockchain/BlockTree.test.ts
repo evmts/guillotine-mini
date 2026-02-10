@@ -4,12 +4,14 @@ import * as Option from "effect/Option";
 import { Hex } from "voltaire-effect/primitives";
 import {
   BlockNotFoundError,
+  type BlockNumberType,
   BlockTreeMemoryTest,
   canonicalChainLength,
   CannotSetOrphanAsHeadError,
   getBlockByNumber,
   getCanonicalHash,
   getHeadBlockNumber,
+  InvalidBlockNumberError,
   isOrphan,
   orphanCount,
   putBlock,
@@ -207,6 +209,42 @@ describe("BlockTree", () => {
       assert.isFalse(yield* isOrphan(block1.hash));
       assert.isFalse(yield* isOrphan(block2.hash));
       assert.isTrue(yield* isOrphan(side.hash));
+    }).pipe(Effect.provide(BlockTreeMemoryTest)),
+  );
+
+  it.effect(
+    "setCanonicalHead fails when ancestry is missing without partial updates",
+    () =>
+      Effect.gen(function* () {
+        const missingParent = blockHashFromByte(0xe0);
+        const block1 = makeBlock({
+          number: 1n,
+          hash: blockHashFromByte(0xe1),
+          parentHash: missingParent,
+        });
+        const block2 = makeBlock({
+          number: 2n,
+          hash: blockHashFromByte(0xe2),
+          parentHash: block1.hash,
+        });
+
+        yield* putBlock(block1);
+        yield* putBlock(block2);
+
+        const error = yield* Effect.flip(setCanonicalHead(block2.hash));
+        assert.instanceOf(error, BlockNotFoundError);
+
+        const canonicalHash = yield* getCanonicalHash(block2.header.number);
+        assert.isTrue(Option.isNone(canonicalHash));
+        assert.strictEqual(yield* canonicalChainLength(), 0);
+      }).pipe(Effect.provide(BlockTreeMemoryTest)),
+  );
+
+  it.effect("rejects invalid block number inputs", () =>
+    Effect.gen(function* () {
+      const invalidNumber = -1n as unknown as BlockNumberType;
+      const error = yield* Effect.flip(getCanonicalHash(invalidNumber));
+      assert.instanceOf(error, InvalidBlockNumberError);
     }).pipe(Effect.provide(BlockTreeMemoryTest)),
   );
 });
