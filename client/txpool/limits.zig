@@ -4,6 +4,7 @@ const primitives = @import("primitives");
 const tx_mod = primitives.Transaction;
 const TxPoolConfig = @import("pool.zig").TxPoolConfig;
 const U256 = primitives.Denomination.U256;
+const GasLimit = primitives.Gas.GasLimit;
 
 /// Validate a transaction's `gas_limit` against optional pool cap.
 ///
@@ -27,9 +28,10 @@ pub fn fits_gas_limit(tx: anytype, cfg: TxPoolConfig) error{TxGasLimitExceeded}!
 
     const cap_opt = cfg.gas_limit;
     if (cap_opt) |cap| {
-        // All Voltaire tx types expose .gas_limit as an integer scalar.
-        const tx_limit: u64 = @intCast(tx.gas_limit);
-        if (tx_limit > cap) return error.TxGasLimitExceeded;
+        // Compare using Voltaire GasLimit semantics without lossy casts.
+        // Convert tx.gas_limit (u64) into a GasLimit and compare underlying Uint.
+        const tx_limit_gl = GasLimit.from_u64(@intCast(tx.gas_limit));
+        if (tx_limit_gl.value.gt(cap.value)) return error.TxGasLimitExceeded;
     }
 }
 /// Validate the RLP-encoded size of a transaction against pool limits.
@@ -930,10 +932,10 @@ test "fits_gas_limit — passes when under/equal, errors when over (legacy)" {
     try fits_gas_limit(tx, TxPoolConfig{});
 
     var cfg = TxPoolConfig{};
-    cfg.gas_limit = 21_000;
+    cfg.gas_limit = GasLimit.from_u64(21_000);
     try fits_gas_limit(tx, cfg); // equal → OK
 
-    cfg.gas_limit = 20_999;
+    cfg.gas_limit = GasLimit.from_u64(20_999);
     try std.testing.expectError(error.TxGasLimitExceeded, fits_gas_limit(tx, cfg));
 }
 
@@ -943,7 +945,7 @@ test "fits_gas_limit — works for typed txs (1559, 4844, 7702)" {
     const Authorization = primitives.Authorization.Authorization;
 
     var cfg = TxPoolConfig{};
-    cfg.gas_limit = 50_000;
+    cfg.gas_limit = GasLimit.from_u64(50_000);
 
     const tx1559 = tx_mod.Eip1559Transaction{
         .chain_id = 1,
