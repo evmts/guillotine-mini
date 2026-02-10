@@ -68,6 +68,24 @@ const makeJsonRpcProcessor = () =>
     const invalidRequestResponse = () =>
       responseEncoder.errorByName("EIP-1474", "InvalidRequest", null);
 
+    const internalErrorResponse = (id: string | number | null) =>
+      responseEncoder.errorByName("EIP-1474", "InternalError", id);
+
+    const recoverUnexpectedDefect = (
+      effect: Effect.Effect<
+        Option.Option<JsonRpcResponseInput>,
+        InvalidJsonRpcResponseError
+      >,
+      id: string | number | null | undefined,
+    ) =>
+      effect.pipe(
+        Effect.catchAllDefect(() =>
+          id === undefined
+            ? Effect.succeed(Option.none<JsonRpcResponseInput>())
+            : internalErrorResponse(id).pipe(Effect.map(Option.some)),
+        ),
+      );
+
     const processSinglePayloadObject = (
       payloadObject: Readonly<Record<string, unknown>>,
     ) =>
@@ -80,8 +98,15 @@ const makeJsonRpcProcessor = () =>
           return Option.some(yield* invalidRequestResponse());
         }
 
-        return yield* jsonRpcService.sendRequest(decodedRequestOrError.right);
-      });
+        return yield* recoverUnexpectedDefect(
+          jsonRpcService.sendRequest(decodedRequestOrError.right),
+          decodedRequestOrError.right.id,
+        );
+      }).pipe(
+        Effect.catchAllDefect(() =>
+          internalErrorResponse(null).pipe(Effect.map(Option.some)),
+        ),
+      );
 
     const processBatchPayload = (batchPayload: ReadonlyArray<unknown>) =>
       Effect.gen(function* () {
@@ -136,7 +161,11 @@ const makeJsonRpcProcessor = () =>
         }
 
         return Option.some(yield* invalidRequestResponse());
-      });
+      }).pipe(
+        Effect.catchAllDefect(() =>
+          internalErrorResponse(null).pipe(Effect.map(Option.some)),
+        ),
+      );
 
     return {
       process,
