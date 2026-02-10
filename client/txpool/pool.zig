@@ -1,7 +1,6 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const GasLimit = primitives.Gas.GasLimit;
-const U256 = primitives.Denomination.U256;
 
 /// Transaction pool configuration defaults, modeled after Nethermind's
 /// `ITxPoolConfig` / `TxPoolConfig`.
