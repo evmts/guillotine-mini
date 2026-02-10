@@ -197,6 +197,34 @@ pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
     }
 }
 
+// ============================================================================
+// Additional tests for debug_* mapping and batch input handling
+// ============================================================================
+
+test "resolveNamespace returns .debug for debug_*" {
+    const tag = resolveNamespace("debug_getRawBlock");
+    try std.testing.expect(tag != null);
+    try std.testing.expectEqual(std.meta.Tag(jsonrpc.JsonRpcMethod).debug, tag.?);
+}
+
+test "parseRequestNamespace returns invalid_request for batch array input" {
+    const req =
+        "[\n" ++
+        "  {\n" ++
+        "    \"jsonrpc\": \"2.0\",\n" ++
+        "    \"id\": 1,\n" ++
+        "    \"method\": \"eth_blockNumber\",\n" ++
+        "    \"params\": []\n" ++
+        "  }\n" ++
+        "]";
+
+    const res = parseRequestNamespace(req);
+    switch (res) {
+        .namespace => |_| return error.UnexpectedSuccess,
+        .err => |code| try std.testing.expectEqual(primitives.JsonRpcErrorCode.invalid_request, code),
+    }
+}
+
 test "parseRequestNamespace returns namespace tag for known eth method" {
     const req =
         "{\n" ++
