@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// Size of the RLPx header and frame MACs (16 bytes).
+/// Size of the RLPx MAC (16 bytes).
 pub const MacSize: usize = 16;
 /// Size of the encrypted RLPx header (16 bytes).
 pub const HeaderSize: usize = 16;
