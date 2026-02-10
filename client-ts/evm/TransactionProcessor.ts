@@ -238,8 +238,8 @@ const decodeGasPrice = (value: bigint, label: string) =>
     ),
   );
 
-const decodeTransaction = (tx: Transaction.Any) =>
-  Schema.validate(TransactionSchema)(tx).pipe(
+const decodeTransaction = (tx: unknown) =>
+  Schema.decodeUnknown(TransactionSchema)(tx).pipe(
     Effect.mapError(
       (cause) =>
         new InvalidTransactionError({
