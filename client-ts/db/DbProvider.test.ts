@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import {
   DbProviderMemoryTest,
+  DbProviderRocksStubTest,
   badBlocksDb,
   blockInfosDb,
   blockNumbersDb,
@@ -132,5 +133,19 @@ describe("DbProvider", () => {
       assert.isTrue(Option.isSome(fullResult));
       assert.isTrue(Option.isNone(lightResult));
     }).pipe(Effect.provide(DbProviderMemoryTest)),
+  );
+
+  it.effect(
+    "can be configured with rocksdb stub backend through DbFactory",
+    () =>
+      Effect.gen(function* () {
+        const state = yield* stateDb();
+        const key = toBytes("0x04");
+
+        assert.strictEqual(state.name, DbNames.state);
+        const error = yield* Effect.flip(state.get(key));
+        assert.strictEqual(error._tag, "DbError");
+        assert.isTrue(error.message.includes("does not implement get"));
+      }).pipe(Effect.provide(DbProviderRocksStubTest)),
   );
 });

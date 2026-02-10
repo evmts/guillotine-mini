@@ -1,7 +1,11 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { Db, DbMemoryLive } from "./Db";
+import {
+  DbFactory,
+  DbFactoryMemoryLive,
+  DbFactoryRocksStubLive,
+} from "./DbFactory";
 import type { DbError, DbService } from "./Db";
 import {
   BlobTxsColumns,
@@ -49,11 +53,6 @@ const blobTxsColumns = Object.values(
   BlobTxsColumns,
 ) as ReadonlyArray<BlobTxsColumn>;
 
-const buildMemoryDb = (name: DbName) =>
-  Layer.build(DbMemoryLive({ name })).pipe(
-    Effect.map((context) => Context.get(context, Db)),
-  );
-
 const buildDbRecord = <Key extends string, R>(
   keys: ReadonlyArray<Key>,
   build: (key: Key) => Effect.Effect<DbService, DbError, R>,
@@ -69,12 +68,13 @@ const buildDbRecord = <Key extends string, R>(
     return Object.fromEntries(entries) as Record<Key, DbService>;
   });
 
-const makeMemoryColumnsDb = <Column extends string>(
+const makeColumnsDb = <Column extends string, R>(
   name: DbName,
   columns: ReadonlyArray<Column>,
+  buildDb: (name: DbName) => Effect.Effect<DbService, DbError, R>,
 ) =>
   Effect.gen(function* () {
-    const columnDbs = yield* buildDbRecord(columns, () => buildMemoryDb(name));
+    const columnDbs = yield* buildDbRecord(columns, () => buildDb(name));
 
     return {
       name,
@@ -83,15 +83,20 @@ const makeMemoryColumnsDb = <Column extends string>(
     } satisfies ColumnsDbService<Column>;
   });
 
-const makeMemoryProvider = Effect.gen(function* () {
-  const dbs = yield* buildDbRecord(dbNames, (name) => buildMemoryDb(name));
-  const receiptsDb = yield* makeMemoryColumnsDb(
+const makeDbProvider = Effect.gen(function* () {
+  const dbFactory = yield* DbFactory;
+  const buildDb = (name: DbName) => dbFactory.createDb({ name });
+
+  const dbs = yield* buildDbRecord(dbNames, buildDb);
+  const receiptsDb = yield* makeColumnsDb(
     DbNames.receipts,
     receiptsColumns,
+    buildDb,
   );
-  const blobTransactionsDb = yield* makeMemoryColumnsDb(
+  const blobTransactionsDb = yield* makeColumnsDb(
     DbNames.blobTransactions,
     blobTxsColumns,
+    buildDb,
   );
   const columnDbs: ColumnDbServices = {
     receipts: receiptsDb,
@@ -104,18 +109,25 @@ const makeMemoryProvider = Effect.gen(function* () {
   } satisfies DbProviderService;
 });
 
-const DbProviderMemoryLayer: Layer.Layer<DbProvider, DbError> = Layer.scoped(
-  DbProvider,
-  makeMemoryProvider,
-);
+/** Backend-agnostic provider layer. */
+export const DbProviderLive: Layer.Layer<DbProvider, DbError, DbFactory> =
+  Layer.scoped(DbProvider, makeDbProvider);
 
 /** In-memory provider layer for production. */
 export const DbProviderMemoryLive: Layer.Layer<DbProvider, DbError> =
-  DbProviderMemoryLayer;
+  DbProviderLive.pipe(Layer.provide(DbFactoryMemoryLive));
 
 /** In-memory provider layer for tests. */
 export const DbProviderMemoryTest: Layer.Layer<DbProvider, DbError> =
-  DbProviderMemoryLayer;
+  DbProviderMemoryLive;
+
+/** RocksDB-stub-backed provider layer for production. */
+export const DbProviderRocksStubLive: Layer.Layer<DbProvider, DbError> =
+  DbProviderLive.pipe(Layer.provide(DbFactoryRocksStubLive));
+
+/** RocksDB-stub-backed provider layer for tests. */
+export const DbProviderRocksStubTest: Layer.Layer<DbProvider, DbError> =
+  DbProviderRocksStubLive;
 
 const withProvider = <A, E, R>(
   f: (provider: DbProviderService) => Effect.Effect<A, E, R>,
