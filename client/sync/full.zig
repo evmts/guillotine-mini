@@ -16,49 +16,70 @@ fn has_prefix_ci(name: []const u8, prefix: []const u8) bool {
     return name.len >= prefix.len and std.ascii.eqlIgnoreCase(name[0..prefix.len], prefix);
 }
 
+const LimitCase = struct { prefix: []const u8, value: usize };
+
+/// Lookup utility for per-client request limits.
+/// Iterates a small compile-time case table and returns the matching value
+/// by case-insensitive prefix on the peer's client name. Falls back to
+/// `default_value` when no prefix matches.
+fn limit_by_client_name(name: []const u8, cases: []const LimitCase, default_value: usize) usize {
+    var i: usize = 0;
+    while (i < cases.len) : (i += 1) {
+        const case = cases[i];
+        if (has_prefix_ci(name, case.prefix)) return case.value;
+    }
+    return default_value;
+}
+
 /// Return the maximum number of block bodies to request from a peer.
 /// Mirrors Nethermind per-client sync limits for GetBlockBodies.
 pub fn max_bodies_per_request(peer: PeerInfo) usize {
     const name = peer.name;
-    if (has_prefix_ci(name, "Besu")) return 128;
-    if (has_prefix_ci(name, "Geth")) return 128;
-    if (has_prefix_ci(name, "Nethermind")) return 256;
-    if (has_prefix_ci(name, "Parity")) return 256;
-    if (has_prefix_ci(name, "OpenEthereum")) return 256;
-    if (has_prefix_ci(name, "Trinity")) return 128;
-    if (has_prefix_ci(name, "Erigon")) return 128;
-    if (has_prefix_ci(name, "Reth")) return 128;
-    return 32;
+    const table = [_]LimitCase{
+        .{ .prefix = "Besu", .value = 128 },
+        .{ .prefix = "Geth", .value = 128 },
+        .{ .prefix = "Nethermind", .value = 256 },
+        .{ .prefix = "Parity", .value = 256 },
+        .{ .prefix = "OpenEthereum", .value = 256 },
+        .{ .prefix = "Trinity", .value = 128 },
+        .{ .prefix = "Erigon", .value = 128 },
+        .{ .prefix = "Reth", .value = 128 },
+    };
+    return limit_by_client_name(name, &table, 32);
 }
 
 /// Return the maximum number of block receipts to request from a peer.
 /// Mirrors Nethermind per-client sync limits for GetReceipts.
 pub fn max_receipts_per_request(peer: PeerInfo) usize {
     const name = peer.name;
-    if (has_prefix_ci(name, "Besu")) return 256;
-    if (has_prefix_ci(name, "Geth")) return 256;
-    if (has_prefix_ci(name, "Nethermind")) return 256;
-    if (has_prefix_ci(name, "Parity")) return 256;
-    if (has_prefix_ci(name, "OpenEthereum")) return 256;
-    if (has_prefix_ci(name, "Trinity")) return 256;
-    if (has_prefix_ci(name, "Erigon")) return 256;
-    if (has_prefix_ci(name, "Reth")) return 256;
-    return 128;
+    const table = [_]LimitCase{
+        .{ .prefix = "Besu", .value = 256 },
+        .{ .prefix = "Geth", .value = 256 },
+        .{ .prefix = "Nethermind", .value = 256 },
+        .{ .prefix = "Parity", .value = 256 },
+        .{ .prefix = "OpenEthereum", .value = 256 },
+        .{ .prefix = "Trinity", .value = 256 },
+        .{ .prefix = "Erigon", .value = 256 },
+        .{ .prefix = "Reth", .value = 256 },
+    };
+    return limit_by_client_name(name, &table, 128);
 }
 
 /// Return the maximum number of block headers to request from a peer.
 /// Mirrors Nethermind per-client sync limits for GetBlockHeaders.
 pub fn max_headers_per_request(peer: PeerInfo) usize {
     const name = peer.name;
-    if (has_prefix_ci(name, "Besu")) return 512;
-    if (has_prefix_ci(name, "Geth")) return 192;
-    if (has_prefix_ci(name, "Nethermind")) return 512;
-    if (has_prefix_ci(name, "Parity")) return 1024;
-    if (has_prefix_ci(name, "OpenEthereum")) return 1024;
-    if (has_prefix_ci(name, "Trinity")) return 192;
-    if (has_prefix_ci(name, "Erigon")) return 192;
-    if (has_prefix_ci(name, "Reth")) return 192;
-    return 192;
+    const table = [_]LimitCase{
+        .{ .prefix = "Besu", .value = 512 },
+        .{ .prefix = "Geth", .value = 192 },
+        .{ .prefix = "Nethermind", .value = 512 },
+        .{ .prefix = "Parity", .value = 1024 },
+        .{ .prefix = "OpenEthereum", .value = 1024 },
+        .{ .prefix = "Trinity", .value = 192 },
+        .{ .prefix = "Erigon", .value = 192 },
+        .{ .prefix = "Reth", .value = 192 },
+    };
+    return limit_by_client_name(name, &table, 192);
 }
 
 /// Block body + receipt request/response container.
