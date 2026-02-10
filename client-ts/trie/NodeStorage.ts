@@ -4,10 +4,12 @@ import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { Bytes, Hash } from "voltaire-effect/primitives";
+import { Bytes, Hash, Hex } from "voltaire-effect/primitives";
 import { Db, type DbService } from "../db/Db";
 import type { DbError } from "../db/DbError";
 import type { BytesType } from "./Node";
+import { makeBytesHelpers } from "./internal/primitives";
+import { EMPTY_TRIE_ROOT } from "./root";
 
 /** Error raised when trie node storage operations fail. */
 export class TrieNodeStorageError extends Data.TaggedError(
@@ -91,12 +93,22 @@ const validateNodeData = (
     : Effect.fail(invalidNodeDataError());
 
 const cloneBytes = (value: BytesType): BytesType => Bytes.concat(value);
+const { bytesFromHex } = makeBytesHelpers(
+  (message) => new TrieNodeStorageError({ message }),
+);
+const EmptyTrieNode = bytesFromHex("0x80");
+const EmptyTrieRootHex = Hex.fromBytes(EMPTY_TRIE_ROOT);
+const isEmptyTrieRoot = (nodeHash: Hash.HashType): boolean =>
+  Hex.fromBytes(nodeHash) === EmptyTrieRootHex;
 
 const makeTrieNodeStorage = (db: DbService) =>
   ({
     get: (nodeHash: Hash.HashType) =>
       Effect.gen(function* () {
         const validatedHash = yield* validateNodeHash(nodeHash);
+        if (isEmptyTrieRoot(validatedHash)) {
+          return Option.some(cloneBytes(EmptyTrieNode));
+        }
         return yield* pipe(
           db.get(validatedHash),
           Effect.mapError(wrapDbGetError),
@@ -105,6 +117,9 @@ const makeTrieNodeStorage = (db: DbService) =>
     set: (nodeHash: Hash.HashType, encodedNode: BytesType) =>
       Effect.gen(function* () {
         const validatedHash = yield* validateNodeHash(nodeHash);
+        if (isEmptyTrieRoot(validatedHash)) {
+          return;
+        }
         const validatedNodeData = yield* validateNodeData(encodedNode);
         yield* pipe(
           db.put(validatedHash, cloneBytes(validatedNodeData)),
@@ -114,6 +129,9 @@ const makeTrieNodeStorage = (db: DbService) =>
     has: (nodeHash: Hash.HashType) =>
       Effect.gen(function* () {
         const validatedHash = yield* validateNodeHash(nodeHash);
+        if (isEmptyTrieRoot(validatedHash)) {
+          return true;
+        }
         return yield* pipe(
           db.has(validatedHash),
           Effect.mapError(wrapDbHasError),
@@ -122,6 +140,9 @@ const makeTrieNodeStorage = (db: DbService) =>
     remove: (nodeHash: Hash.HashType) =>
       Effect.gen(function* () {
         const validatedHash = yield* validateNodeHash(nodeHash);
+        if (isEmptyTrieRoot(validatedHash)) {
+          return;
+        }
         yield* pipe(
           db.remove(validatedHash),
           Effect.mapError(wrapDbRemoveError),
