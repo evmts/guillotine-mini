@@ -6,6 +6,38 @@ const TxPoolConfig = @import("pool.zig").TxPoolConfig;
 const U256 = primitives.Denomination.U256;
 const GasLimit = primitives.Gas.GasLimit;
 
+// -----------------------------------------------------------------------------
+// Internal helpers (no allocations)
+// -----------------------------------------------------------------------------
+/// Return true when a typed transaction contains a signature (y_parity,r,s).
+inline fn has_signature(y_parity: anytype, r: [32]u8, s: [32]u8) bool {
+    comptime {
+        if (!(@typeInfo(@TypeOf(y_parity)) == .int and @typeInfo(@TypeOf(y_parity)).int.signedness == .unsigned))
+            @compileError("has_signature expects an unsigned integer y_parity");
+    }
+    const zeros = [_]u8{0} ** 32;
+    return !(y_parity == 0 and std.mem.eql(u8, &r, &zeros) and std.mem.eql(u8, &s, &zeros));
+}
+
+/// Compute RLP-encoded length of an AccessList without allocations.
+inline fn rlpLenOfAccessList(list: []const tx_mod.AccessListItem) usize {
+    var items_total: usize = 0;
+    for (list) |it| {
+        // AccessListItem = [ address: B_20, storage_keys: [B_32, ...] ]
+        const addr_len = rlpLenOfBytes(20, null);
+
+        var keys_items_total: usize = 0;
+        for (it.storage_keys) |_| {
+            keys_items_total += rlpLenOfBytes(32, null);
+        }
+        const keys_list_len = rlpLenOfList(keys_items_total);
+
+        const item_payload = addr_len + keys_list_len;
+        items_total += rlpLenOfList(item_payload);
+    }
+    return rlpLenOfList(items_total);
+}
+
 /// Validate a transaction's `gas_limit` against optional pool cap.
 ///
 /// - If `cfg.gas_limit` is `null`, this check is a no-op.
@@ -115,90 +147,36 @@ pub fn fits_size_limits(
         defer allocator.free(bytes);
         len = bytes.len;
     } else if (comptime T == tx_mod.Eip2930Transaction) {
-        // Construct EIP-2930 list per spec and encode via RLP
-        const rlp = primitives.Rlp;
-        var list = std.array_list.AlignedManaged(u8, null).init(allocator);
-        defer list.deinit();
-
-        // chain_id, nonce, gas_price, gas_limit
-        {
-            const enc = try rlp.encode(allocator, tx.chain_id);
-            defer allocator.free(enc);
-            try list.appendSlice(enc);
-        }
-        {
-            const enc = try rlp.encode(allocator, tx.nonce);
-            defer allocator.free(enc);
-            try list.appendSlice(enc);
-        }
-        {
-            const enc = try rlp.encode(allocator, tx.gas_price);
-            defer allocator.free(enc);
-            try list.appendSlice(enc);
-        }
-        {
-            const enc = try rlp.encode(allocator, tx.gas_limit);
-            defer allocator.free(enc);
-            try list.appendSlice(enc);
-        }
+        // Allocation-free length calculation for EIP-2930 typed transaction (0x01)
+        var payload_len: usize = 0;
+        payload_len += rlpLenOfUInt(tx.chain_id);
+        payload_len += rlpLenOfUInt(tx.nonce);
+        payload_len += rlpLenOfUInt(tx.gas_price);
+        payload_len += rlpLenOfUInt(tx.gas_limit);
 
         // to (nullable)
-        if (tx.to) |to_addr| {
-            const enc = try rlp.encodeBytes(allocator, &to_addr.bytes);
-            defer allocator.free(enc);
-            try list.appendSlice(enc);
+        if (tx.to) |_| {
+            payload_len += rlpLenOfBytes(20, null);
         } else {
-            try list.append(0x80);
+            payload_len += rlpLenOfBytes(0, null);
         }
 
-        // value, data
-        {
-            const enc = try rlp.encode(allocator, tx.value);
-            defer allocator.free(enc);
-            try list.appendSlice(enc);
-        }
-        {
-            const enc = try rlp.encodeBytes(allocator, tx.data);
-            defer allocator.free(enc);
-            try list.appendSlice(enc);
-        }
+        payload_len += rlpLenOfUInt(tx.value);
+        const first2930: ?u8 = if (tx.data.len == 1) tx.data[0] else null;
+        payload_len += rlpLenOfBytes(tx.data.len, first2930);
 
         // access_list
-        {
-            const enc = try tx_mod.encodeAccessList(allocator, tx.access_list);
-            defer allocator.free(enc);
-            try list.appendSlice(enc);
+        payload_len += rlpLenOfAccessList(tx.access_list);
+
+        // Optional signature: y_parity, r, s
+        if (has_signature(tx.y_parity, tx.r, tx.s)) {
+            payload_len += rlpLenOfUInt(tx.y_parity);
+            payload_len += rlpLenOfBytes(32, null);
+            payload_len += rlpLenOfBytes(32, null);
         }
 
-        // Optional signature: y_parity, r, s if present
-        const zeros = [_]u8{0} ** 32;
-        if (!(tx.y_parity == 0 and std.mem.eql(u8, &tx.r, &zeros) and std.mem.eql(u8, &tx.s, &zeros))) {
-            {
-                const enc = try rlp.encode(allocator, tx.y_parity);
-                defer allocator.free(enc);
-                try list.appendSlice(enc);
-            }
-            {
-                const enc = try rlp.encodeBytes(allocator, &tx.r);
-                defer allocator.free(enc);
-                try list.appendSlice(enc);
-            }
-            {
-                const enc = try rlp.encodeBytes(allocator, &tx.s);
-                defer allocator.free(enc);
-                try list.appendSlice(enc);
-            }
-        }
-
-        // Wrap list and add type byte 0x01
-        const list_len_2930 = list.items.len;
-        const header_len_2930: usize = if (list_len_2930 <= 55) 1 else blk: {
-            var tmp = list_len_2930;
-            var n: usize = 0;
-            while (tmp > 0) : (tmp >>= 8) n += 1;
-            break :blk 1 + n;
-        };
-        len = 1 + header_len_2930 + list_len_2930;
+        // Typed envelope size = 1 (type) + rlp(list(payload))
+        len = 1 + rlpLenOfList(payload_len);
     } else if (comptime T == tx_mod.Eip4844Transaction) {
         // Length-only sizing for EIP-4844 to minimize allocations.
         var payload_len: usize = 0;
@@ -207,19 +185,15 @@ pub fn fits_size_limits(
         payload_len += rlpLenOfUInt(tx.max_priority_fee_per_gas);
         payload_len += rlpLenOfUInt(tx.max_fee_per_gas);
         payload_len += rlpLenOfUInt(tx.gas_limit);
-        // to (20 bytes)
+        // to (always present for EIP-4844)
         payload_len += rlpLenOfBytes(20, null);
         // value
         payload_len += rlpLenOfUInt(tx.value);
         // data
         const first: ?u8 = if (tx.data.len == 1) tx.data[0] else null;
         payload_len += rlpLenOfBytes(tx.data.len, first);
-        // access_list (compute once via encoder)
-        {
-            const enc = try tx_mod.encodeAccessList(allocator, tx.access_list);
-            defer allocator.free(enc);
-            payload_len += enc.len;
-        }
+        // access_list (length-only)
+        payload_len += rlpLenOfAccessList(tx.access_list);
         // max_fee_per_blob_gas
         payload_len += rlpLenOfUInt(tx.max_fee_per_blob_gas);
         // blob_versioned_hashes: each hash is 32 bytes → RLP item length fixed
@@ -228,8 +202,7 @@ pub fn fits_size_limits(
         payload_len += rlpLenOfList(hashes_items_len);
 
         // Optional signature: y_parity, r, s
-        const zeros = [_]u8{0} ** 32;
-        if (!(tx.y_parity == 0 and std.mem.eql(u8, &tx.r, &zeros) and std.mem.eql(u8, &tx.s, &zeros))) {
+        if (has_signature(tx.y_parity, tx.r, tx.s)) {
             payload_len += rlpLenOfUInt(tx.y_parity);
             payload_len += rlpLenOfBytes(32, null);
             payload_len += rlpLenOfBytes(32, null);
@@ -259,12 +232,8 @@ pub fn fits_size_limits(
         const first7702: ?u8 = if (tx.data.len == 1) tx.data[0] else null;
         payload_len += rlpLenOfBytes(tx.data.len, first7702);
 
-        // access_list (compute once via encoder)
-        {
-            const enc = try tx_mod.encodeAccessList(allocator, tx.access_list);
-            defer allocator.free(enc);
-            payload_len += enc.len;
-        }
+        // access_list (length-only)
+        payload_len += rlpLenOfAccessList(tx.access_list);
 
         // authorization_list — compute length-only with y_parity derived from v
         var auth_items_encoded_total: usize = 0;
@@ -282,8 +251,7 @@ pub fn fits_size_limits(
         payload_len += rlpLenOfList(auth_items_encoded_total);
 
         // Optional transaction signature (y_parity, r, s)
-        const zeros = [_]u8{0} ** 32;
-        if (!(tx.y_parity == 0 and std.mem.eql(u8, &tx.r, &zeros) and std.mem.eql(u8, &tx.s, &zeros))) {
+        if (has_signature(tx.y_parity, tx.r, tx.s)) {
             payload_len += rlpLenOfUInt(tx.y_parity);
             payload_len += rlpLenOfBytes(32, null);
             payload_len += rlpLenOfBytes(32, null);
