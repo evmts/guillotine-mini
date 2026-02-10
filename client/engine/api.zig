@@ -26,7 +26,6 @@ pub const ExchangeTransitionConfigurationV1Params = @FieldType(ExchangeTransitio
 pub const ExchangeTransitionConfigurationV1Result = @FieldType(ExchangeTransitionConfigurationV1Method, "result");
 
 const exchange_capabilities_method = "engine_exchangeCapabilities";
-const get_client_version_v1_method = "engine_getClientVersionV1";
 const engine_method_prefix = "engine_";
 
 /// Vtable-based Engine API interface.
@@ -112,6 +111,7 @@ pub const EngineApi = struct {
             params: ClientVersionV1Params,
         ) Error!ClientVersionV1Result,
         /// Exchange transition configuration for Paris (EIP-3675).
+        /// Note: Deprecated since Cancun; retained for compatibility per execution-apis.
         exchange_transition_configuration_v1: *const fn (
             ptr: *anyopaque,
             params: ExchangeTransitionConfigurationV1Params,
