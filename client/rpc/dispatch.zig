@@ -165,8 +165,12 @@ pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
             },
             '[' => depth += 1,
             ']' => if (depth == 0) break else depth -= 1,
-            58 => { if (depth == 1) expecting_key = false; },
-            44 => { if (depth == 1) expecting_key = true; },
+            58 => {
+                if (depth == 1) expecting_key = false;
+            },
+            44 => {
+                if (depth == 1) expecting_key = true;
+            },
             else => {},
         }
     }
