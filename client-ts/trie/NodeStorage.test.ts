@@ -9,11 +9,13 @@ import {
   compactNodeStorage,
   flushNodeStorage,
   getNode,
+  getNodeStorageScheme,
   getNodeWithContext,
   hasNode,
   hasNodeWithContext,
   persistEncodedNode,
   removeNode,
+  removeNodeWithContext,
   setNode,
   setNodeStorageScheme,
   setNodeWithContext,
@@ -378,6 +380,46 @@ describe("TrieNodeStorage", () => {
       if (Option.isSome(loaded)) {
         assert.isTrue(Bytes.equals(loaded.value, encodedNode));
       }
+    }).pipe(Effect.provide(TestLayer)),
+  );
+
+  it.effect(
+    "setNodeStorageScheme updates and getNodeStorageScheme reads it",
+    () =>
+      Effect.gen(function* () {
+        yield* setNodeStorageScheme(TrieNodeStorageKeyScheme.Hash);
+        const hashScheme = yield* getNodeStorageScheme();
+        assert.strictEqual(hashScheme, TrieNodeStorageKeyScheme.Hash);
+
+        yield* setNodeStorageScheme(TrieNodeStorageKeyScheme.HalfPath);
+        const halfPathScheme = yield* getNodeStorageScheme();
+        assert.strictEqual(halfPathScheme, TrieNodeStorageKeyScheme.HalfPath);
+      }).pipe(Effect.provide(TestLayer)),
+  );
+
+  it.effect("removeNodeWithContext removes contextual node entries", () =>
+    Effect.gen(function* () {
+      const addressHash = hashFromHex(
+        "0xabababababababababababababababababababababababababababababababab",
+      );
+      const path: TrieNodePath = {
+        bytes: hashFromHex(
+          "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        ),
+        length: 8,
+      };
+      const nodeHash = hashFromHex(
+        "0x9999999999999999999999999999999999999999999999999999999999999999",
+      );
+      const encodedNode = bytesFromHex("0xc22009");
+
+      yield* setNodeWithContext(addressHash, path, nodeHash, encodedNode);
+      yield* removeNodeWithContext(addressHash, path, nodeHash);
+
+      const loaded = yield* getNodeWithContext(addressHash, path, nodeHash);
+      const exists = yield* hasNodeWithContext(addressHash, path, nodeHash);
+      assert.isTrue(Option.isNone(loaded));
+      assert.isFalse(exists);
     }).pipe(Effect.provide(TestLayer)),
   );
 });

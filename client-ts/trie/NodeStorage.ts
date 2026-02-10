@@ -317,6 +317,64 @@ const getHalfPathNodeStoragePath = (
     catch: (cause) => invalidNodePathError(cause),
   });
 
+interface ValidatedNodeContext {
+  readonly addressHash: Hash.HashType | null;
+  readonly path: TrieNodePath;
+  readonly nodeHash: Hash.HashType;
+}
+
+interface TrieNodeLookupKeys {
+  readonly hashKey: BytesType;
+  readonly halfPathKey: BytesType;
+}
+
+const validateNodeContext = (
+  addressHash: Hash.HashType | null,
+  path: TrieNodePath,
+  nodeHash: Hash.HashType,
+): Effect.Effect<ValidatedNodeContext, TrieNodeStorageError> =>
+  Effect.gen(function* () {
+    return {
+      addressHash: yield* validateAddressHash(addressHash),
+      path: yield* validateNodePath(path),
+      nodeHash: yield* validateNodeHash(nodeHash),
+    } as const satisfies ValidatedNodeContext;
+  });
+
+const resolveNodeStorageKey = (
+  scheme: TrieNodeStorageKeyScheme,
+  context: ValidatedNodeContext,
+): Effect.Effect<BytesType, TrieNodeStorageError> =>
+  scheme === TrieNodeStorageKeyScheme.HalfPath
+    ? getHalfPathNodeStoragePath(
+        context.addressHash,
+        context.path,
+        context.nodeHash,
+      )
+    : Effect.succeed(getHashNodeStoragePath(context.nodeHash));
+
+const resolveLookupKeys = (
+  context: ValidatedNodeContext,
+): Effect.Effect<TrieNodeLookupKeys, TrieNodeStorageError> =>
+  Effect.gen(function* () {
+    return {
+      hashKey: getHashNodeStoragePath(context.nodeHash),
+      halfPathKey: yield* getHalfPathNodeStoragePath(
+        context.addressHash,
+        context.path,
+        context.nodeHash,
+      ),
+    } as const satisfies TrieNodeLookupKeys;
+  });
+
+const getOrderedLookupKeys = (
+  scheme: TrieNodeStorageKeyScheme,
+  keys: TrieNodeLookupKeys,
+): readonly [BytesType, BytesType] =>
+  scheme === TrieNodeStorageKeyScheme.HalfPath
+    ? [keys.halfPathKey, keys.hashKey]
+    : [keys.hashKey, keys.halfPathKey];
+
 const adjustReadFlagsForHalfPath = (
   addressHash: Hash.HashType | null,
   path: TrieNodePath,
@@ -340,15 +398,11 @@ const adjustReadFlagsForHalfPath = (
 const readWithFallback = (
   db: DbService,
   scheme: TrieNodeStorageKeyScheme,
-  hashKey: BytesType,
-  halfPathKey: BytesType,
+  lookupKeys: TrieNodeLookupKeys,
   readFlags: DbReadFlags,
 ): Effect.Effect<Option.Option<BytesType>, TrieNodeStorageError> =>
   Effect.gen(function* () {
-    const firstKey =
-      scheme === TrieNodeStorageKeyScheme.HalfPath ? halfPathKey : hashKey;
-    const secondKey =
-      scheme === TrieNodeStorageKeyScheme.HalfPath ? hashKey : halfPathKey;
+    const [firstKey, secondKey] = getOrderedLookupKeys(scheme, lookupKeys);
 
     const firstResult = yield* pipe(
       db.get(firstKey, readFlags),
@@ -368,14 +422,10 @@ const readWithFallback = (
 const keyExistsWithFallback = (
   db: DbService,
   scheme: TrieNodeStorageKeyScheme,
-  hashKey: BytesType,
-  halfPathKey: BytesType,
+  lookupKeys: TrieNodeLookupKeys,
 ): Effect.Effect<boolean, TrieNodeStorageError> =>
   Effect.gen(function* () {
-    const firstKey =
-      scheme === TrieNodeStorageKeyScheme.HalfPath ? halfPathKey : hashKey;
-    const secondKey =
-      scheme === TrieNodeStorageKeyScheme.HalfPath ? hashKey : halfPathKey;
+    const [firstKey, secondKey] = getOrderedLookupKeys(scheme, lookupKeys);
 
     const firstExists = yield* pipe(
       db.has(firstKey),
@@ -402,24 +452,14 @@ const makeWriteBatch = (
       writeFlags?: DbWriteFlags,
     ) =>
       Effect.gen(function* () {
-        const validatedAddressHash = yield* validateAddressHash(addressHash);
-        const validatedPath = yield* validateNodePath(path);
-        const validatedHash = yield* validateNodeHash(nodeHash);
+        const context = yield* validateNodeContext(addressHash, path, nodeHash);
         const validatedNodeData = yield* validateNodeData(encodedNode);
 
-        if (isEmptyTrieRoot(validatedHash)) {
+        if (isEmptyTrieRoot(context.nodeHash)) {
           return;
         }
 
-        const scheme = resolveScheme();
-        const key =
-          scheme === TrieNodeStorageKeyScheme.HalfPath
-            ? yield* getHalfPathNodeStoragePath(
-                validatedAddressHash,
-                validatedPath,
-                validatedHash,
-              )
-            : getHashNodeStoragePath(validatedHash);
+        const key = yield* resolveNodeStorageKey(resolveScheme(), context);
 
         yield* pipe(
           batch.put(key, validatedNodeData, writeFlags),
@@ -432,23 +472,13 @@ const makeWriteBatch = (
       nodeHash: Hash.HashType,
     ) =>
       Effect.gen(function* () {
-        const validatedAddressHash = yield* validateAddressHash(addressHash);
-        const validatedPath = yield* validateNodePath(path);
-        const validatedHash = yield* validateNodeHash(nodeHash);
+        const context = yield* validateNodeContext(addressHash, path, nodeHash);
 
-        if (isEmptyTrieRoot(validatedHash)) {
+        if (isEmptyTrieRoot(context.nodeHash)) {
           return;
         }
 
-        const scheme = resolveScheme();
-        const key =
-          scheme === TrieNodeStorageKeyScheme.HalfPath
-            ? yield* getHalfPathNodeStoragePath(
-                validatedAddressHash,
-                validatedPath,
-                validatedHash,
-              )
-            : getHashNodeStoragePath(validatedHash);
+        const key = yield* resolveNodeStorageKey(resolveScheme(), context);
 
         yield* pipe(batch.remove(key), Effect.mapError(wrapDbWriteBatchError));
       }),
@@ -475,27 +505,20 @@ const makeTrieNodeStorage = (db: DbService) => {
       readFlags: DbReadFlags = ReadFlags.None,
     ) =>
       Effect.gen(function* () {
-        const validatedAddressHash = yield* validateAddressHash(addressHash);
-        const validatedPath = yield* validateNodePath(path);
-        const validatedHash = yield* validateNodeHash(nodeHash);
+        const context = yield* validateNodeContext(addressHash, path, nodeHash);
 
-        if (isEmptyTrieRoot(validatedHash)) {
+        if (isEmptyTrieRoot(context.nodeHash)) {
           return Option.some(cloneBytes(EmptyTrieNode));
         }
 
         const effectiveScheme = resolveScheme();
-        const hashKey = getHashNodeStoragePath(validatedHash);
-        const halfPathKey = yield* getHalfPathNodeStoragePath(
-          validatedAddressHash,
-          validatedPath,
-          validatedHash,
-        );
+        const lookupKeys = yield* resolveLookupKeys(context);
 
         const adjustedReadFlags =
           effectiveScheme === TrieNodeStorageKeyScheme.HalfPath
             ? adjustReadFlagsForHalfPath(
-                validatedAddressHash,
-                validatedPath,
+                context.addressHash,
+                context.path,
                 readFlags,
               )
             : readFlags;
@@ -503,8 +526,7 @@ const makeTrieNodeStorage = (db: DbService) => {
         return yield* readWithFallback(
           db,
           effectiveScheme,
-          hashKey,
-          halfPathKey,
+          lookupKeys,
           adjustedReadFlags,
         );
       }),
@@ -516,24 +538,14 @@ const makeTrieNodeStorage = (db: DbService) => {
       writeFlags?: DbWriteFlags,
     ) =>
       Effect.gen(function* () {
-        const validatedAddressHash = yield* validateAddressHash(addressHash);
-        const validatedPath = yield* validateNodePath(path);
-        const validatedHash = yield* validateNodeHash(nodeHash);
+        const context = yield* validateNodeContext(addressHash, path, nodeHash);
         const validatedNodeData = yield* validateNodeData(encodedNode);
 
-        if (isEmptyTrieRoot(validatedHash)) {
+        if (isEmptyTrieRoot(context.nodeHash)) {
           return;
         }
 
-        const effectiveScheme = resolveScheme();
-        const key =
-          effectiveScheme === TrieNodeStorageKeyScheme.HalfPath
-            ? yield* getHalfPathNodeStoragePath(
-                validatedAddressHash,
-                validatedPath,
-                validatedHash,
-              )
-            : getHashNodeStoragePath(validatedHash);
+        const key = yield* resolveNodeStorageKey(resolveScheme(), context);
 
         yield* pipe(
           db.put(key, validatedNodeData, writeFlags),
@@ -546,28 +558,16 @@ const makeTrieNodeStorage = (db: DbService) => {
       nodeHash: Hash.HashType,
     ) =>
       Effect.gen(function* () {
-        const validatedAddressHash = yield* validateAddressHash(addressHash);
-        const validatedPath = yield* validateNodePath(path);
-        const validatedHash = yield* validateNodeHash(nodeHash);
+        const context = yield* validateNodeContext(addressHash, path, nodeHash);
 
-        if (isEmptyTrieRoot(validatedHash)) {
+        if (isEmptyTrieRoot(context.nodeHash)) {
           return true;
         }
 
         const effectiveScheme = resolveScheme();
-        const hashKey = getHashNodeStoragePath(validatedHash);
-        const halfPathKey = yield* getHalfPathNodeStoragePath(
-          validatedAddressHash,
-          validatedPath,
-          validatedHash,
-        );
+        const lookupKeys = yield* resolveLookupKeys(context);
 
-        return yield* keyExistsWithFallback(
-          db,
-          effectiveScheme,
-          hashKey,
-          halfPathKey,
-        );
+        return yield* keyExistsWithFallback(db, effectiveScheme, lookupKeys);
       }),
     remove: (
       addressHash: Hash.HashType | null,
@@ -575,23 +575,13 @@ const makeTrieNodeStorage = (db: DbService) => {
       nodeHash: Hash.HashType,
     ) =>
       Effect.gen(function* () {
-        const validatedAddressHash = yield* validateAddressHash(addressHash);
-        const validatedPath = yield* validateNodePath(path);
-        const validatedHash = yield* validateNodeHash(nodeHash);
+        const context = yield* validateNodeContext(addressHash, path, nodeHash);
 
-        if (isEmptyTrieRoot(validatedHash)) {
+        if (isEmptyTrieRoot(context.nodeHash)) {
           return;
         }
 
-        const effectiveScheme = resolveScheme();
-        const key =
-          effectiveScheme === TrieNodeStorageKeyScheme.HalfPath
-            ? yield* getHalfPathNodeStoragePath(
-                validatedAddressHash,
-                validatedPath,
-                validatedHash,
-              )
-            : getHashNodeStoragePath(validatedHash);
+        const key = yield* resolveNodeStorageKey(resolveScheme(), context);
 
         yield* pipe(db.remove(key), Effect.mapError(wrapDbRemoveError));
       }),
