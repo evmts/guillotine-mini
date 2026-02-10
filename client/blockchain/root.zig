@@ -26,6 +26,8 @@ pub const has_block = chain.has_block;
 pub const get_block_local = chain.get_block_local;
 /// Local-only canonical block lookup by number (no fork-cache fetch/allocations).
 pub const get_block_by_number_local = chain.get_block_by_number_local;
+/// Local-only parent block lookup (no fork-cache fetch/allocations).
+pub const get_parent_block_local = chain.get_parent_block_local;
 /// Canonical hash lookup by number (local-only read).
 pub const canonical_hash = chain.canonical_hash;
 /// Generic comptime DI helpers for head reads.
