@@ -418,36 +418,40 @@ const emptyState: TxPoolState = {
   senderByHash: new Map(),
 };
 
-const addToIndex = (
+const addToIndexInPlace = (
   index: Map<string, Set<string>>,
   senderKey: string,
   hashKey: string,
 ) => {
-  const next = new Map(index);
-  const set = new Set(next.get(senderKey) ?? []);
-  set.add(hashKey);
-  next.set(senderKey, set);
-  return next;
+  const current = index.get(senderKey);
+  if (!current) {
+    index.set(senderKey, new Set([hashKey]));
+    return;
+  }
+  if (current.has(hashKey)) {
+    return;
+  }
+  const updated = new Set(current);
+  updated.add(hashKey);
+  index.set(senderKey, updated);
 };
 
-const removeFromIndex = (
+const removeFromIndexInPlace = (
   index: Map<string, Set<string>>,
   senderKey: string,
   hashKey: string,
 ) => {
-  const next = new Map(index);
-  const set = next.get(senderKey);
-  if (!set) {
-    return next;
+  const set = index.get(senderKey);
+  if (!set || !set.has(hashKey)) {
+    return;
+  }
+  if (set.size === 1) {
+    index.delete(senderKey);
+    return;
   }
   const updated = new Set(set);
   updated.delete(hashKey);
-  if (updated.size === 0) {
-    next.delete(senderKey);
-  } else {
-    next.set(senderKey, updated);
-  }
-  return next;
+  index.set(senderKey, updated);
 };
 
 const addTransactionToState = (
@@ -459,15 +463,19 @@ const addTransactionToState = (
   const transactions = new Map(state.transactions);
   transactions.set(hashKey, validated.tx);
 
-  const blobTransactions = new Map(state.blobTransactions);
+  let blobTransactions = state.blobTransactions;
   if (validated.isBlob) {
+    blobTransactions = new Map(state.blobTransactions);
     blobTransactions.set(hashKey, validated.tx as Transaction.EIP4844);
   }
 
-  const senderIndex = addToIndex(state.senderIndex, senderKey, hashKey);
-  const blobSenderIndex = validated.isBlob
-    ? addToIndex(state.blobSenderIndex, senderKey, hashKey)
-    : state.blobSenderIndex;
+  const senderIndex = new Map(state.senderIndex);
+  addToIndexInPlace(senderIndex, senderKey, hashKey);
+  let blobSenderIndex = state.blobSenderIndex;
+  if (validated.isBlob) {
+    blobSenderIndex = new Map(state.blobSenderIndex);
+    addToIndexInPlace(blobSenderIndex, senderKey, hashKey);
+  }
 
   const senderByHash = new Map(state.senderByHash);
   senderByHash.set(hashKey, senderKey);
@@ -493,21 +501,28 @@ const removeTransactionFromState = (
   const transactions = new Map(state.transactions);
   transactions.delete(hashKey);
 
-  const blobTransactions = new Map(state.blobTransactions);
-  const isBlob = blobTransactions.delete(hashKey);
+  const isBlob = state.blobTransactions.has(hashKey);
+  let blobTransactions = state.blobTransactions;
+  if (isBlob) {
+    blobTransactions = new Map(state.blobTransactions);
+    blobTransactions.delete(hashKey);
+  }
 
+  const senderKey = state.senderByHash.get(hashKey);
   const senderByHash = new Map(state.senderByHash);
-  const senderKey = senderByHash.get(hashKey);
   senderByHash.delete(hashKey);
 
-  const senderIndex =
-    senderKey !== undefined
-      ? removeFromIndex(state.senderIndex, senderKey, hashKey)
-      : state.senderIndex;
-  const blobSenderIndex =
-    senderKey !== undefined && isBlob
-      ? removeFromIndex(state.blobSenderIndex, senderKey, hashKey)
-      : state.blobSenderIndex;
+  let senderIndex = state.senderIndex;
+  if (senderKey !== undefined) {
+    senderIndex = new Map(state.senderIndex);
+    removeFromIndexInPlace(senderIndex, senderKey, hashKey);
+  }
+
+  let blobSenderIndex = state.blobSenderIndex;
+  if (senderKey !== undefined && isBlob) {
+    blobSenderIndex = new Map(state.blobSenderIndex);
+    removeFromIndexInPlace(blobSenderIndex, senderKey, hashKey);
+  }
 
   return {
     removed: true,
