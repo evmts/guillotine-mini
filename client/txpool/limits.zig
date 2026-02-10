@@ -50,7 +50,7 @@ pub fn fits_gas_limit(tx: anytype, cfg: TxPoolConfig) error{TxGasLimitExceeded}!
 pub fn enforce_nonce_gap(
     tx_nonce: u64,
     current_nonce: u64,
-    pending_sender_txs: usize,
+    pending_sender_txs: u32,
 ) error{NonceGap}!void {
     // If tx is not ahead of current nonce, gap filter is satisfied.
     if (tx_nonce <= current_nonce) return;
