@@ -12,7 +12,7 @@
 /// - `NullDb` — Null object backend (reads return null, writes error).
 /// - `ReadOnlyDb` — Read-only wrapper with optional in-memory overlay.
 /// - `RocksDatabase` — RocksDB backend stub (not yet implemented).
-/// - `DbSettings` — RocksDB configuration settings (name/path + flags).
+/// - `DbSettings` — RocksDB configuration settings (name/path + flags + merge operators).
 /// - `DbName` — Standard database partition names (matches Nethermind).
 ///
 /// ## Architecture (Nethermind parity)
@@ -61,7 +61,7 @@ pub const MemoryDatabase = memory.MemoryDatabase;
 pub const NullDb = null_db.NullDb;
 /// RocksDB backend stub (not yet implemented).
 pub const RocksDatabase = rocksdb.RocksDatabase;
-/// RocksDB configuration settings (name/path + flags).
+/// RocksDB configuration settings (name/path + flags + merge operators).
 pub const DbSettings = rocksdb.DbSettings;
 /// Read-only wrapper with optional in-memory overlay.
 pub const ReadOnlyDb = read_only.ReadOnlyDb;

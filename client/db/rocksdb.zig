@@ -32,8 +32,8 @@ const Error = adapter.Error;
 /// Configuration settings for a RocksDB-backed database instance.
 ///
 /// Mirrors Nethermind's `DbSettings` (Nethermind.Db/RocksDbSettings.cs),
-/// simplified for Zig and kept allocation-free. `path` is a caller-owned
-/// slice that must outlive any use of the settings struct.
+/// simplified for Zig and kept allocation-free. `path` and any merge
+/// operator references are caller-owned and must outlive the settings.
 pub const DbSettings = struct {
     /// Logical database name (maps to column family or DB partition).
     name: DbName,
@@ -43,6 +43,10 @@ pub const DbSettings = struct {
     delete_on_start: bool = false,
     /// Whether the DB folder can be deleted (safety guard).
     can_delete_folder: bool = true,
+    /// Optional merge operator for the default column family (caller-owned).
+    merge_operator: ?*const anyopaque = null,
+    /// Optional per-column merge operators (caller-owned map).
+    columns_merge_operators: ?*const std.StringHashMapUnmanaged(*const anyopaque) = null,
 
     /// Create settings for a named database at `path`.
     pub fn init(name: DbName, path: []const u8) DbSettings {
@@ -64,6 +68,8 @@ pub const DbSettings = struct {
             .path = path,
             .delete_on_start = self.delete_on_start,
             .can_delete_folder = self.can_delete_folder,
+            .merge_operator = self.merge_operator,
+            .columns_merge_operators = self.columns_merge_operators,
         };
     }
 };
@@ -215,28 +221,63 @@ test "DbSettings: init sets name/path and defaults flags" {
     try std.testing.expectEqualStrings("/tmp/guillotine-state", settings.path);
     try std.testing.expectEqual(false, settings.delete_on_start);
     try std.testing.expectEqual(true, settings.can_delete_folder);
+    try std.testing.expectEqual(@as(?*const anyopaque, null), settings.merge_operator);
+    try std.testing.expectEqual(
+        @as(?*const std.StringHashMapUnmanaged(*const anyopaque), null),
+        settings.columns_merge_operators,
+    );
 }
 
 test "DbSettings: clone copies flags" {
     var settings = DbSettings.init(.code, "/tmp/guillotine-code");
+    var dummy: u8 = 0;
+    var columns = std.StringHashMapUnmanaged(*const anyopaque){};
+    defer columns.deinit(std.testing.allocator);
+    const merge_ptr: *const anyopaque = @ptrCast(&dummy);
+    try columns.put(std.testing.allocator, "default", merge_ptr);
     settings.delete_on_start = true;
     settings.can_delete_folder = false;
+    settings.merge_operator = merge_ptr;
+    settings.columns_merge_operators = &columns;
 
     const cloned = settings.clone();
     try std.testing.expectEqual(DbName.code, cloned.name);
     try std.testing.expectEqualStrings("/tmp/guillotine-code", cloned.path);
     try std.testing.expectEqual(true, cloned.delete_on_start);
     try std.testing.expectEqual(false, cloned.can_delete_folder);
+    try std.testing.expectEqual(
+        @intFromPtr(settings.merge_operator.?),
+        @intFromPtr(cloned.merge_operator.?),
+    );
+    try std.testing.expectEqual(
+        @intFromPtr(settings.columns_merge_operators.?),
+        @intFromPtr(cloned.columns_merge_operators.?),
+    );
 }
 
 test "DbSettings: clone_with overrides name/path but keeps flags" {
     var settings = DbSettings.init(.blocks, "/tmp/blocks");
+    var dummy: u8 = 0;
+    var columns = std.StringHashMapUnmanaged(*const anyopaque){};
+    defer columns.deinit(std.testing.allocator);
+    const merge_ptr: *const anyopaque = @ptrCast(&dummy);
+    try columns.put(std.testing.allocator, "default", merge_ptr);
     settings.delete_on_start = true;
     settings.can_delete_folder = false;
+    settings.merge_operator = merge_ptr;
+    settings.columns_merge_operators = &columns;
 
     const cloned = settings.clone_with(.headers, "/tmp/headers");
     try std.testing.expectEqual(DbName.headers, cloned.name);
     try std.testing.expectEqualStrings("/tmp/headers", cloned.path);
     try std.testing.expectEqual(true, cloned.delete_on_start);
     try std.testing.expectEqual(false, cloned.can_delete_folder);
+    try std.testing.expectEqual(
+        @intFromPtr(settings.merge_operator.?),
+        @intFromPtr(cloned.merge_operator.?),
+    );
+    try std.testing.expectEqual(
+        @intFromPtr(settings.columns_merge_operators.?),
+        @intFromPtr(cloned.columns_merge_operators.?),
+    );
 }
