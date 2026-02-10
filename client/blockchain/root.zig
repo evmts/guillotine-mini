@@ -1,7 +1,7 @@
 /// Chain management entry point for the client.
 const chain = @import("chain.zig");
 const validator = @import("validator.zig");
-const bc = @import("blockchain");
+const blockchain = @import("blockchain");
 
 // -- Public API --------------------------------------------------------------
 
@@ -11,8 +11,8 @@ const bc = @import("blockchain");
 /// or thin helpers around them; no custom types are introduced at this layer.
 pub const Chain = chain.Chain;
 /// Direct re-exports for consumers needing raw Voltaire types.
-pub const Blockchain = bc.Blockchain;
-pub const ForkBlockCache = bc.ForkBlockCache;
+pub const Blockchain = blockchain.Blockchain;
+pub const ForkBlockCache = blockchain.ForkBlockCache;
 /// Canonical head helpers.
 pub const head_hash = chain.head_hash;
 pub const head_block = chain.head_block;
