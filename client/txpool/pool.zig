@@ -92,28 +92,31 @@ pub const TxPool = struct {
     /// Virtual function table for txpool operations.
     pub const VTable = struct {
         /// Total number of pending transactions in the pool.
-        pending_count: *const fn (ptr: *anyopaque) usize,
+        pending_count: *const fn (ptr: *anyopaque) u32,
         /// Total number of pending blob transactions in the pool.
-        pending_blob_count: *const fn (ptr: *anyopaque) usize,
+        pending_blob_count: *const fn (ptr: *anyopaque) u32,
         /// Number of pending transactions for a specific sender address.
-        get_pending_count_for_sender: *const fn (ptr: *anyopaque, sender: Address) usize,
+        get_pending_count_for_sender: *const fn (ptr: *anyopaque, sender: Address) u32,
     };
 
     /// Total number of pending transactions in the pool.
-    pub fn pending_count(self: TxPool) usize {
+    pub fn pending_count(self: TxPool) u32 {
         return self.vtable.pending_count(self.ptr);
     }
 
     /// Total number of pending blob transactions in the pool.
-    pub fn pending_blob_count(self: TxPool) usize {
+    pub fn pending_blob_count(self: TxPool) u32 {
         return self.vtable.pending_blob_count(self.ptr);
     }
 
     /// Number of pending transactions currently tracked for `sender`.
     ///
-    /// This mirrors Nethermind's per-sender pending count surface and is used
-    /// by admission logic to enforce nonce gap constraints.
-    pub fn get_pending_count_for_sender(self: TxPool, sender: Address) usize {
+    /// NOTE: This is an intentional extension beyond Nethermind's
+    ///  surface to support lightweight per-sender introspection
+    /// for admission (e.g., nonce-gap checks). For closer API parity,
+    /// prefer exposing a sender→pending-tx retrieval method from the
+    /// concrete pool and thread it through this vtable in a future pass.
+    pub fn get_pending_count_for_sender(self: TxPool, sender: Address) u32 {
         return self.vtable.get_pending_count_for_sender(self.ptr, sender);
     }
 };
@@ -124,24 +127,24 @@ pub const TxPool = struct {
 
 test "txpool interface dispatches pending counts" {
     const DummyPool = struct {
-        pending: usize,
-        pending_blobs: usize,
+        pending: u32,
+        pending_blobs: u32,
         match_sender: Address,
-        pending_for_sender: usize,
+        pending_for_sender: u32,
 
-        fn pending_count(ptr: *anyopaque) usize {
+        fn pending_count(ptr: *anyopaque) u32 {
             const Self = @This();
             const self: *Self = @ptrCast(@alignCast(ptr));
             return self.pending;
         }
 
-        fn pending_blob_count(ptr: *anyopaque) usize {
+        fn pending_blob_count(ptr: *anyopaque) u32 {
             const Self = @This();
             const self: *Self = @ptrCast(@alignCast(ptr));
             return self.pending_blobs;
         }
 
-        fn get_pending_count_for_sender(ptr: *anyopaque, sender: Address) usize {
+        fn get_pending_count_for_sender(ptr: *anyopaque, sender: Address) u32 {
             const Self = @This();
             const self: *Self = @ptrCast(@alignCast(ptr));
             return if (std.mem.eql(u8, &self.match_sender.bytes, &sender.bytes))
@@ -165,11 +168,11 @@ test "txpool interface dispatches pending counts" {
     };
 
     const pool = TxPool{ .ptr = &dummy, .vtable = &vtable };
-    try std.testing.expectEqual(@as(usize, 42), pool.pending_count());
-    try std.testing.expectEqual(@as(usize, 7), pool.pending_blob_count());
-    try std.testing.expectEqual(@as(usize, 3), pool.get_pending_count_for_sender(target));
+    try std.testing.expectEqual(@as(u32, 42), pool.pending_count());
+    try std.testing.expectEqual(@as(u32, 7), pool.pending_blob_count());
+    try std.testing.expectEqual(@as(u32, 3), pool.get_pending_count_for_sender(target));
     const other = Address{ .bytes = [_]u8{0xBA} ++ [_]u8{0} ** 19 };
-    try std.testing.expectEqual(@as(usize, 0), pool.get_pending_count_for_sender(other));
+    try std.testing.expectEqual(@as(u32, 0), pool.get_pending_count_for_sender(other));
 }
 
 test "blobs support mode helpers mirror nethermind semantics" {
