@@ -60,7 +60,7 @@ test "SyncMode bit flags uniqueness and composition" {
     var acc: u32 = 0;
     for (bases) |b| {
         // No double-set bits.
-        std.debug.assert((acc & b) == 0);
+        try std.testing.expect((acc & b) == 0);
         acc |= b;
     }
 
