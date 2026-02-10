@@ -96,6 +96,15 @@ pub fn canonical_hash(chain: *Chain, number: u64) ?Hash.Hash {
 // Comptime DI helpers (Nethermind-style parity)
 // ---------------------------------------------------------------------------
 
+/// Returns a block by hash from the local store only (no fork-cache fetch).
+///
+/// - Avoids allocations and remote requests.
+/// - Mirrors Nethermind's storage/provider split where local reads are
+///   explicit and do not cross abstraction boundaries.
+pub fn get_block_local(chain: *Chain, hash: Hash.Hash) ?Block.Block {
+    return chain.block_store.getBlock(hash);
+}
+
 /// Generic, comptime-injected head hash reader for any chain-like type.
 pub fn head_hash_of(chain: anytype) ?Hash.Hash {
     const before = chain.getHeadBlockNumber() orelse return null;
@@ -433,6 +442,49 @@ test "Chain - has_block reflects local and fork-cache presence" {
         // Verify has_block=true using the retrieved block's hash
         const fetched = (try chain.getBlockByNumber(0)).?;
         try std.testing.expect(has_block(&chain, fetched.hash));
+    }
+}
+
+test "Chain - get_block_local reads only from local store" {
+    const allocator = std.testing.allocator;
+
+    // Local-only: missing → null, after insert → block
+    {
+        var chain = try Chain.init(allocator, null);
+        defer chain.deinit();
+
+        try std.testing.expect(get_block_local(&chain, Hash.ZERO) == null);
+
+        const genesis = try Block.genesis(1, allocator);
+        try chain.putBlock(genesis);
+        const got = get_block_local(&chain, genesis.hash) orelse return error.Unreachable;
+        try std.testing.expectEqualSlices(u8, &genesis.hash, &got.hash);
+    }
+
+    // With fork cache: block present only in cache → local read returns null
+    {
+        var fork_cache = try ForkBlockCache.init(allocator, 16);
+        defer fork_cache.deinit();
+
+        var chain = try Chain.init(allocator, &fork_cache);
+        defer chain.deinit();
+
+        // Queue a remote fetch by number and fulfill
+        try std.testing.expectError(error.RpcPending, chain.getBlockByNumber(0));
+        const req = fork_cache.nextRequest() orelse {
+            try std.testing.expect(false);
+            return;
+        };
+        const hash_hex = "0x" ++ ("33" ** 32);
+        const response = try std.fmt.allocPrint(allocator, "{{\"hash\":\"{s}\",\"number\":\"0x0\"}}", .{hash_hex});
+        defer allocator.free(response);
+        try fork_cache.continueRequest(req.id, response);
+
+        const fetched = (try chain.getBlockByNumber(0)).?;
+        // Sanity: has_block should see cached remote
+        try std.testing.expect(has_block(&chain, fetched.hash));
+        // Local-only read must not see it
+        try std.testing.expect(get_block_local(&chain, fetched.hash) == null);
     }
 }
 
