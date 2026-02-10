@@ -29,6 +29,26 @@ describe("EngineCapabilities", () => {
     ),
   );
 
+  it.effect("returns an owned response array on each call", () =>
+    provideCapabilities(ParisEngineCapabilities)(
+      Effect.gen(function* () {
+        const firstResult = yield* exchangeCapabilities([
+          "engine_newPayloadV1",
+          "engine_forkchoiceUpdatedV1",
+        ]);
+
+        (firstResult as Array<string>).push("engine_newPayloadV9");
+
+        const secondResult = yield* exchangeCapabilities([
+          "engine_newPayloadV1",
+          "engine_forkchoiceUpdatedV1",
+        ]);
+
+        assert.deepStrictEqual(secondResult, [...ParisEngineCapabilities]);
+      }),
+    ),
+  );
+
   it.effect("rejects non-engine methods in request list", () =>
     provideCapabilities(ParisEngineCapabilities)(
       Effect.gen(function* () {
