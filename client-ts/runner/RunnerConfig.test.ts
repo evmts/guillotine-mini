@@ -1,0 +1,82 @@
+import { assert, describe, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import {
+  RunnerConfigDefaults,
+  RunnerConfigLive,
+  getRunnerConfig,
+} from "./RunnerConfig";
+
+const provideRunnerConfig =
+  (options: Parameters<typeof RunnerConfigLive>[0]) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(Effect.provide(RunnerConfigLive(options)));
+
+describe("RunnerConfig", () => {
+  it.effect("uses config defaults when CLI args and env vars are absent", () =>
+    provideRunnerConfig({
+      argv: [],
+      env: {},
+      configDefaults: RunnerConfigDefaults,
+    })(
+      Effect.gen(function* () {
+        const config = yield* getRunnerConfig();
+        assert.deepStrictEqual(config, RunnerConfigDefaults);
+      }),
+    ),
+  );
+
+  it.effect("prefers env vars over config defaults/file values", () =>
+    provideRunnerConfig({
+      argv: [],
+      env: {
+        GUILLOTINE_CONFIG: "holesky",
+        GUILLOTINE_DATA_DIR: "./env-data",
+      },
+      configDefaults: {
+        configuration: "mainnet",
+        dataDirectory: "./defaults-data",
+      },
+    })(
+      Effect.gen(function* () {
+        const config = yield* getRunnerConfig();
+        assert.deepStrictEqual(config, {
+          configuration: "holesky",
+          configurationDirectory: "configs",
+          dataDirectory: "./env-data",
+          databaseDirectory: "./db",
+        });
+      }),
+    ),
+  );
+
+  it.effect("prefers CLI args over env vars and defaults", () =>
+    provideRunnerConfig({
+      argv: [
+        "--config",
+        "sepolia",
+        "--configs-dir=./cli-configs",
+        "--data-dir",
+        "./cli-data",
+        "--db-dir",
+        "./cli-db",
+      ],
+      env: {
+        GUILLOTINE_CONFIG: "mainnet",
+        GUILLOTINE_CONFIGS_DIR: "./env-configs",
+        GUILLOTINE_DATA_DIR: "./env-data",
+        GUILLOTINE_DB_DIR: "./env-db",
+      },
+      configDefaults: RunnerConfigDefaults,
+    })(
+      Effect.gen(function* () {
+        const config = yield* getRunnerConfig();
+        assert.deepStrictEqual(config, {
+          configuration: "sepolia",
+          configurationDirectory: "./cli-configs",
+          dataDirectory: "./cli-data",
+          databaseDirectory: "./cli-db",
+        });
+      }),
+    ),
+  );
+});
