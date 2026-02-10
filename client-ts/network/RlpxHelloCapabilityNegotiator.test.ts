@@ -154,6 +154,54 @@ describe("RlpxHelloCapabilityNegotiator", () => {
     }
   });
 
+  it("rejects empty local capability names", () => {
+    const result = runWithNegotiator(
+      negotiateRlpxHelloCapabilities(
+        [{ name: "", version: 1, messageIdSpaceSize: 1 }],
+        [{ name: "", version: 1 }],
+      ).pipe(Effect.either),
+    );
+
+    assert.strictEqual(Either.isLeft(result), true);
+    if (!Either.isLeft(result)) {
+      assert.fail(`Expected Left result, got ${JSON.stringify(result)}`);
+    }
+
+    const error = result.left;
+    if (error instanceof RlpxHelloCapabilityValidationError) {
+      assert.strictEqual(error.reason, "CapabilityNameEmpty");
+      assert.strictEqual(error.source, "local");
+      assert.strictEqual(error.capabilityName, "");
+      assert.strictEqual(error.capabilityVersion, 1);
+    } else {
+      assert.fail(`Expected RlpxHelloCapabilityValidationError, got ${error}`);
+    }
+  });
+
+  it("rejects empty remote capability names", () => {
+    const result = runWithNegotiator(
+      negotiateRlpxHelloCapabilities(
+        [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "", version: 68 }],
+      ).pipe(Effect.either),
+    );
+
+    assert.strictEqual(Either.isLeft(result), true);
+    if (!Either.isLeft(result)) {
+      assert.fail(`Expected Left result, got ${JSON.stringify(result)}`);
+    }
+
+    const error = result.left;
+    if (error instanceof RlpxHelloCapabilityValidationError) {
+      assert.strictEqual(error.reason, "CapabilityNameEmpty");
+      assert.strictEqual(error.source, "remote");
+      assert.strictEqual(error.capabilityName, "");
+      assert.strictEqual(error.capabilityVersion, 68);
+    } else {
+      assert.fail(`Expected RlpxHelloCapabilityValidationError, got ${error}`);
+    }
+  });
+
   it("rejects non-ASCII capability names in remote Hello entries", () => {
     const result = runWithNegotiator(
       negotiateRlpxHelloCapabilities(
@@ -193,6 +241,102 @@ describe("RlpxHelloCapabilityNegotiator", () => {
     if (error instanceof RlpxHelloCapabilityValidationError) {
       assert.strictEqual(error.reason, "InvalidMessageIdSpaceSize");
       assert.strictEqual(error.source, "local");
+    } else {
+      assert.fail(`Expected RlpxHelloCapabilityValidationError, got ${error}`);
+    }
+  });
+
+  it("rejects non-integer local capability versions", () => {
+    const result = runWithNegotiator(
+      negotiateRlpxHelloCapabilities(
+        [{ name: "eth", version: 1.5, messageIdSpaceSize: 17 }],
+        [{ name: "eth", version: 1.5 }],
+      ).pipe(Effect.either),
+    );
+
+    assert.strictEqual(Either.isLeft(result), true);
+    if (!Either.isLeft(result)) {
+      assert.fail(`Expected Left result, got ${JSON.stringify(result)}`);
+    }
+
+    const error = result.left;
+    if (error instanceof RlpxHelloCapabilityValidationError) {
+      assert.strictEqual(error.reason, "InvalidVersion");
+      assert.strictEqual(error.source, "local");
+      assert.strictEqual(error.capabilityName, "eth");
+      assert.strictEqual(error.capabilityVersion, 1.5);
+    } else {
+      assert.fail(`Expected RlpxHelloCapabilityValidationError, got ${error}`);
+    }
+  });
+
+  it("rejects negative local capability versions", () => {
+    const result = runWithNegotiator(
+      negotiateRlpxHelloCapabilities(
+        [{ name: "eth", version: -1, messageIdSpaceSize: 17 }],
+        [{ name: "eth", version: -1 }],
+      ).pipe(Effect.either),
+    );
+
+    assert.strictEqual(Either.isLeft(result), true);
+    if (!Either.isLeft(result)) {
+      assert.fail(`Expected Left result, got ${JSON.stringify(result)}`);
+    }
+
+    const error = result.left;
+    if (error instanceof RlpxHelloCapabilityValidationError) {
+      assert.strictEqual(error.reason, "InvalidVersion");
+      assert.strictEqual(error.source, "local");
+      assert.strictEqual(error.capabilityName, "eth");
+      assert.strictEqual(error.capabilityVersion, -1);
+    } else {
+      assert.fail(`Expected RlpxHelloCapabilityValidationError, got ${error}`);
+    }
+  });
+
+  it("rejects non-integer remote capability versions", () => {
+    const result = runWithNegotiator(
+      negotiateRlpxHelloCapabilities(
+        [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "eth", version: 68.25 }],
+      ).pipe(Effect.either),
+    );
+
+    assert.strictEqual(Either.isLeft(result), true);
+    if (!Either.isLeft(result)) {
+      assert.fail(`Expected Left result, got ${JSON.stringify(result)}`);
+    }
+
+    const error = result.left;
+    if (error instanceof RlpxHelloCapabilityValidationError) {
+      assert.strictEqual(error.reason, "InvalidVersion");
+      assert.strictEqual(error.source, "remote");
+      assert.strictEqual(error.capabilityName, "eth");
+      assert.strictEqual(error.capabilityVersion, 68.25);
+    } else {
+      assert.fail(`Expected RlpxHelloCapabilityValidationError, got ${error}`);
+    }
+  });
+
+  it("rejects negative remote capability versions", () => {
+    const result = runWithNegotiator(
+      negotiateRlpxHelloCapabilities(
+        [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "eth", version: -68 }],
+      ).pipe(Effect.either),
+    );
+
+    assert.strictEqual(Either.isLeft(result), true);
+    if (!Either.isLeft(result)) {
+      assert.fail(`Expected Left result, got ${JSON.stringify(result)}`);
+    }
+
+    const error = result.left;
+    if (error instanceof RlpxHelloCapabilityValidationError) {
+      assert.strictEqual(error.reason, "InvalidVersion");
+      assert.strictEqual(error.source, "remote");
+      assert.strictEqual(error.capabilityName, "eth");
+      assert.strictEqual(error.capabilityVersion, -68);
     } else {
       assert.fail(`Expected RlpxHelloCapabilityValidationError, got ${error}`);
     }
