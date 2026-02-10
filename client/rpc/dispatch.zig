@@ -102,8 +102,63 @@ pub const ParseNamespaceResult = union(enum) {
 /// `.error(.method_not_found)`. If the field is missing or malformed,
 /// returns `.error(.invalid_request)` per EIP-1474.
 pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
+    // Top-level JSON type validation and batch guard
+    var i_top: usize = 0;
+    // Skip UTF-8 BOM if present
+    if (request.len >= 3 and request[0] == 0xEF and request[1] == 0xBB and request[2] == 0xBF) {
+        i_top = 3;
+    }
+    // Skip leading whitespace
+    while (i_top < request.len and std.ascii.isWhitespace(request[i_top])) : (i_top += 1) {}
+    if (i_top >= request.len) return .{ .err = .parse_error };
+    const first = request[i_top];
+    if (first == '[') {
+        // Batch request arrays are handled by upper layers; treat as invalid_request here.
+        return .{ .err = .invalid_request };
+    }
+    if (first != '{') {
+        // Not a valid JSON object at the top level
+        return .{ .err = .parse_error };
+    }
+
     const key = "\"method\"";
-    const idx_opt = std.mem.indexOf(u8, request, key);
+    // Depth-aware, scope-correct search for "method" at the top-level only.
+    var depth: u32 = 0;
+    var in_string = false;
+    var escaped = false;
+    var idx_opt: ?usize = null;
+    var i_scan: usize = i_top; // start from first '{'
+    while (i_scan < request.len) : (i_scan += 1) {
+        const c = request[i_scan];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '"') in_string = false;
+            continue;
+        }
+        switch (c) {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => if (depth == 0) break else depth -= 1,
+            '[' => depth += 1,
+            ']' => if (depth == 0) break else depth -= 1,
+            else => {},
+        }
+        if (depth == 1 and c == '"') {
+            // Potential start of a key – check for "method"
+            const rem = request[i_scan..];
+            if (rem.len >= key.len and std.mem.eql(u8, rem[0..key.len], key)) {
+                idx_opt = i_scan;
+                break;
+            }
+        }
+    }
     if (idx_opt == null) return .{ .err = .invalid_request };
 
     var i: usize = idx_opt.? + key.len;
@@ -116,12 +171,23 @@ pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
     while (i < request.len and std.ascii.isWhitespace(request[i])) : (i += 1) {}
     if (i >= request.len or request[i] != '"') return .{ .err = .invalid_request };
 
-    const start = i + 1;
-    var end = start;
+    // Extract string value with proper escape handling
+    var end = i + 1;
+    var esc = false;
     while (end < request.len) : (end += 1) {
-        if (request[end] == '"' and end > start and request[end - 1] != '\\') break;
+        const ch = request[end];
+        if (esc) {
+            esc = false;
+            continue;
+        }
+        if (ch == '\\') {
+            esc = true;
+            continue;
+        }
+        if (ch == '"') break;
     }
     if (end >= request.len or request[end] != '"') return .{ .err = .invalid_request };
+    const start = i + 1;
 
     const method_name = request[start..end];
     if (resolveNamespace(method_name)) |tag| {
