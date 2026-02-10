@@ -28,6 +28,11 @@ export type TransientStorageSnapshot = number;
 
 export const EMPTY_SNAPSHOT: TransientStorageSnapshot = -1;
 
+type SnapshotEntry = {
+  readonly id: TransientStorageSnapshot;
+  readonly journalLength: number;
+};
+
 export class UnknownTransientSnapshotError extends Data.TaggedError(
   "UnknownTransientSnapshotError",
 )<{
@@ -78,13 +83,11 @@ const cloneStorageValue = (value: StorageValueType): StorageValueType =>
 const isZeroStorageValue = (value: Uint8Array): boolean =>
   bytes32Equals(value, ZERO_STORAGE_VALUE);
 
-const snapshotToLength = (snapshot: TransientStorageSnapshot): number =>
-  snapshot === EMPTY_SNAPSHOT ? 0 : snapshot + 1;
-
 const makeTransientStorage = Effect.gen(function* () {
   const storage = new Map<AddressKey, Map<StorageKey, StorageValueType>>();
   const journal: Array<TransientStorageJournalEntry> = [];
-  const snapshotStack: Array<TransientStorageSnapshot> = [];
+  const snapshotStack: Array<SnapshotEntry> = [];
+  let nextSnapshotId: TransientStorageSnapshot = 0;
 
   const get = (address: Address.AddressType, slot: StorageSlotType) =>
     Effect.sync(() => {
@@ -145,24 +148,26 @@ const makeTransientStorage = Effect.gen(function* () {
 
   const takeSnapshot = () =>
     Effect.sync(() => {
-      const snapshot: TransientStorageSnapshot =
-        journal.length === 0 ? EMPTY_SNAPSHOT : journal.length - 1;
-      snapshotStack.push(snapshot);
+      const snapshot = nextSnapshotId;
+      nextSnapshotId += 1;
+      snapshotStack.push({ id: snapshot, journalLength: journal.length });
       return snapshot;
     });
 
-  const lookupSnapshotIndex = (snapshot: TransientStorageSnapshot) =>
+  const lookupSnapshot = (snapshot: TransientStorageSnapshot) =>
     Effect.gen(function* () {
-      const index = snapshotStack.lastIndexOf(snapshot);
-      if (index < 0) {
-        return yield* Effect.fail(
-          new UnknownTransientSnapshotError({
-            snapshot,
-            depth: snapshotStack.length,
-          }),
-        );
+      for (let i = snapshotStack.length - 1; i >= 0; i -= 1) {
+        const entry = snapshotStack[i];
+        if (entry && entry.id === snapshot) {
+          return { index: i, entry };
+        }
       }
-      return index;
+      return yield* Effect.fail(
+        new UnknownTransientSnapshotError({
+          snapshot,
+          depth: snapshotStack.length,
+        }),
+      );
     });
 
   const revertEntry = (entry: TransientStorageJournalEntry) => {
@@ -192,8 +197,8 @@ const makeTransientStorage = Effect.gen(function* () {
 
   const restoreSnapshot = (snapshot: TransientStorageSnapshot) =>
     Effect.gen(function* () {
-      const index = yield* lookupSnapshotIndex(snapshot);
-      const targetLength = snapshotToLength(snapshot);
+      const { index, entry } = yield* lookupSnapshot(snapshot);
+      const targetLength = entry.journalLength;
       for (let i = journal.length - 1; i >= targetLength; i -= 1) {
         const entry = journal[i];
         if (entry) {
@@ -206,7 +211,7 @@ const makeTransientStorage = Effect.gen(function* () {
 
   const commitSnapshot = (snapshot: TransientStorageSnapshot) =>
     Effect.gen(function* () {
-      const index = yield* lookupSnapshotIndex(snapshot);
+      const { index } = yield* lookupSnapshot(snapshot);
       dropSnapshots(index);
     });
 
