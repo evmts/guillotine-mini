@@ -19,7 +19,6 @@ import {
   InsufficientSenderBalanceError,
   InvalidBlobVersionedHashError,
   InvalidSenderAccountCodeError,
-  InvalidTransactionError,
   NoBlobDataError,
   PriorityFeeGreaterThanMaxFeeError,
   runInCallFrameBoundary,
@@ -361,7 +360,9 @@ describe("TransactionProcessor.checkMaxGasFeeAndBalance", () => {
         );
         assert.isTrue(Either.isLeft(outcome));
         if (Either.isLeft(outcome)) {
-          assert.isTrue(outcome.left instanceof InvalidTransactionError);
+          assert.isTrue(
+            outcome.left instanceof TransactionTypeContractCreationError,
+          );
         }
       }),
     ),

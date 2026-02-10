@@ -482,6 +482,12 @@ const makeTransactionProcessor = Effect.gen(function* () {
     senderBalance: bigint,
   ) =>
     Effect.gen(function* () {
+      if (Transaction.isEIP4844(tx) && tx.to == null) {
+        return yield* Effect.fail(
+          new TransactionTypeContractCreationError({ type: tx.type }),
+        );
+      }
+
       const { parsedTx, baseFee } = yield* parseTransactionAndBaseFee(
         tx,
         baseFeePerGas,
