@@ -47,7 +47,7 @@ pub const RpcServerConfig = struct {
     }
 };
 
-/// JSON-RPC error codes and messages per EIP-1474.
+/// JSON-RPC error codes per EIP-1474.
 pub const JsonRpcErrorCode = primitives.Int32.Int32;
 
 /// Named EIP-1474 error codes for JSON-RPC responses.
