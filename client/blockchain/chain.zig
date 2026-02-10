@@ -33,7 +33,8 @@ pub fn head_hash(chain: *Chain) ?Hash.Hash {
 ///
 /// Semantics:
 /// - Reads the current head block number; if none is set, returns null.
-/// - Delegates to `getBlockByNumber(head_number)` to fetch the canonical block.
+/// - Fetches the canonical block for the current head number in a single pass;
+///   returns null if the head number changes mid‑call.
 /// - Propagates any underlying errors (e.g. `error.RpcPending` when a fork
 ///   cache is configured and the block must be fetched remotely).
 pub fn head_block(chain: *Chain) !?Block.Block {
