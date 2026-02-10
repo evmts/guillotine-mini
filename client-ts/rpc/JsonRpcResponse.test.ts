@@ -36,6 +36,22 @@ describe("JsonRpcResponse", () => {
     ),
   );
 
+  it.effect("encodes success responses with null ids", () =>
+    provideEncoder(
+      Effect.gen(function* () {
+        const response = {
+          jsonrpc: "2.0",
+          id: null,
+          result: "0x1",
+        } satisfies JsonRpcResponseSuccess<string>;
+
+        const encoded = yield* encodeJsonRpcResponse(response);
+
+        assert.deepStrictEqual(encoded, response);
+      }),
+    ),
+  );
+
   it.effect("encodes EIP-1474 error responses by name", () =>
     provideEncoder(
       Effect.gen(function* () {

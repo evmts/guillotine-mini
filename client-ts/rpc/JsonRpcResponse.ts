@@ -11,10 +11,7 @@ import {
 } from "./JsonRpcErrors";
 import { JsonRpcId, JsonRpcIdSchema } from "./JsonRpcRequest";
 
-export const JsonRpcSuccessIdSchema = Schema.Union(
-  Schema.String,
-  Schema.Number,
-);
+export const JsonRpcSuccessIdSchema = JsonRpcIdSchema;
 
 export type JsonRpcSuccessId = Schema.Schema.Type<
   typeof JsonRpcSuccessIdSchema
