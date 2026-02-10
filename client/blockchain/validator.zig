@@ -144,6 +144,7 @@ fn is_post_merge(header: *const BlockHeader.BlockHeader, ctx: HeaderValidationCo
     if (ctx.terminal_total_difficulty) |ttd| {
         if (ctx.header_total_difficulty) |td| {
             if (td < ttd) return false;
+            if (header.difficulty != 0) return false;
             if (ctx.parent_total_difficulty) |parent_td| {
                 if (parent_td < ttd) return false;
             }
