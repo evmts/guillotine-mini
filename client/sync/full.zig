@@ -18,6 +18,40 @@ fn has_prefix_ci(name: []const u8, prefix: []const u8) bool {
 
 const LimitCase = struct { prefix: []const u8, value: usize };
 
+// File-scope tables to avoid re-initializing on every call.
+const bodies_limit_table = [_]LimitCase{
+    .{ .prefix = "Besu", .value = 128 },
+    .{ .prefix = "Geth", .value = 128 },
+    .{ .prefix = "Nethermind", .value = 256 },
+    .{ .prefix = "Parity", .value = 256 },
+    .{ .prefix = "OpenEthereum", .value = 256 },
+    .{ .prefix = "Trinity", .value = 128 },
+    .{ .prefix = "Erigon", .value = 128 },
+    .{ .prefix = "Reth", .value = 128 },
+};
+
+const receipts_limit_table = [_]LimitCase{
+    .{ .prefix = "Besu", .value = 256 },
+    .{ .prefix = "Geth", .value = 256 },
+    .{ .prefix = "Nethermind", .value = 256 },
+    .{ .prefix = "Parity", .value = 256 },
+    .{ .prefix = "OpenEthereum", .value = 256 },
+    .{ .prefix = "Trinity", .value = 256 },
+    .{ .prefix = "Erigon", .value = 256 },
+    .{ .prefix = "Reth", .value = 256 },
+};
+
+const headers_limit_table = [_]LimitCase{
+    .{ .prefix = "Besu", .value = 512 },
+    .{ .prefix = "Geth", .value = 192 },
+    .{ .prefix = "Nethermind", .value = 512 },
+    .{ .prefix = "Parity", .value = 1024 },
+    .{ .prefix = "OpenEthereum", .value = 1024 },
+    .{ .prefix = "Trinity", .value = 192 },
+    .{ .prefix = "Erigon", .value = 192 },
+    .{ .prefix = "Reth", .value = 192 },
+};
+
 /// Lookup utility for per-client request limits.
 /// Iterates a small compile-time case table and returns the matching value
 /// by case-insensitive prefix on the peer's client name. Falls back to
@@ -35,51 +69,21 @@ fn limit_by_client_name(name: []const u8, cases: []const LimitCase, default_valu
 /// Mirrors Nethermind per-client sync limits for GetBlockBodies.
 pub fn max_bodies_per_request(peer: PeerInfo) usize {
     const name = peer.name;
-    const table = [_]LimitCase{
-        .{ .prefix = "Besu", .value = 128 },
-        .{ .prefix = "Geth", .value = 128 },
-        .{ .prefix = "Nethermind", .value = 256 },
-        .{ .prefix = "Parity", .value = 256 },
-        .{ .prefix = "OpenEthereum", .value = 256 },
-        .{ .prefix = "Trinity", .value = 128 },
-        .{ .prefix = "Erigon", .value = 128 },
-        .{ .prefix = "Reth", .value = 128 },
-    };
-    return limit_by_client_name(name, &table, 32);
+    return limit_by_client_name(name, &bodies_limit_table, 32);
 }
 
 /// Return the maximum number of block receipts to request from a peer.
 /// Mirrors Nethermind per-client sync limits for GetReceipts.
 pub fn max_receipts_per_request(peer: PeerInfo) usize {
     const name = peer.name;
-    const table = [_]LimitCase{
-        .{ .prefix = "Besu", .value = 256 },
-        .{ .prefix = "Geth", .value = 256 },
-        .{ .prefix = "Nethermind", .value = 256 },
-        .{ .prefix = "Parity", .value = 256 },
-        .{ .prefix = "OpenEthereum", .value = 256 },
-        .{ .prefix = "Trinity", .value = 256 },
-        .{ .prefix = "Erigon", .value = 256 },
-        .{ .prefix = "Reth", .value = 256 },
-    };
-    return limit_by_client_name(name, &table, 128);
+    return limit_by_client_name(name, &receipts_limit_table, 128);
 }
 
 /// Return the maximum number of block headers to request from a peer.
 /// Mirrors Nethermind per-client sync limits for GetBlockHeaders.
 pub fn max_headers_per_request(peer: PeerInfo) usize {
     const name = peer.name;
-    const table = [_]LimitCase{
-        .{ .prefix = "Besu", .value = 512 },
-        .{ .prefix = "Geth", .value = 192 },
-        .{ .prefix = "Nethermind", .value = 512 },
-        .{ .prefix = "Parity", .value = 1024 },
-        .{ .prefix = "OpenEthereum", .value = 1024 },
-        .{ .prefix = "Trinity", .value = 192 },
-        .{ .prefix = "Erigon", .value = 192 },
-        .{ .prefix = "Reth", .value = 192 },
-    };
-    return limit_by_client_name(name, &table, 192);
+    return limit_by_client_name(name, &headers_limit_table, 192);
 }
 
 /// Block body + receipt request/response container.
