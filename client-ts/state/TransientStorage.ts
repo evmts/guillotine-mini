@@ -9,7 +9,12 @@ import {
   Storage,
   StorageValue,
 } from "voltaire-effect/primitives";
-import { bytes32Equals, cloneBytes32 } from "./internal/bytes";
+import { bytes32Equals } from "./internal/bytes";
+import {
+  cloneStorageValue,
+  isZeroStorageValue,
+  zeroBytes32,
+} from "./internal/storage";
 
 type AddressKey = Parameters<typeof Hex.equals>[0];
 type StorageKey = Parameters<typeof Hex.equals>[0];
@@ -90,13 +95,7 @@ const addressKey = (address: Address.AddressType): AddressKey =>
 const storageSlotKey = (slot: StorageSlotType): StorageKey =>
   Hex.fromBytes(slot);
 
-const ZERO_STORAGE_VALUE = new Uint8Array(32) as StorageValueType;
-
-const cloneStorageValue = (value: StorageValueType): StorageValueType =>
-  cloneBytes32(value) as StorageValueType;
-
-const isZeroStorageValue = (value: Uint8Array): boolean =>
-  bytes32Equals(value, ZERO_STORAGE_VALUE);
+const ZERO_STORAGE_VALUE = zeroBytes32() as StorageValueType;
 
 const makeTransientStorage = Effect.sync(() => {
   const storage = new Map<AddressKey, Map<StorageKey, StorageValueType>>();

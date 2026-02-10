@@ -20,6 +20,11 @@ import {
   JournalTest,
 } from "./Journal";
 import { bytes32Equals, cloneBytes32 } from "./internal/bytes";
+import {
+  cloneStorageValue,
+  isZeroStorageValue,
+  zeroBytes32,
+} from "./internal/storage";
 
 /** Hex-encoded key for account map storage. */
 type AccountKey = Parameters<typeof Hex.equals>[0];
@@ -159,13 +164,7 @@ const cloneAccount = (account: AccountStateType): AccountStateType => ({
   ) as AccountStateType["storageRoot"],
 });
 
-const ZERO_STORAGE_VALUE = new Uint8Array(32) as StorageValueType;
-
-const cloneStorageValue = (value: StorageValueType): StorageValueType =>
-  cloneBytes32(value) as StorageValueType;
-
-const isZeroStorageValue = (value: Uint8Array): boolean =>
-  bytes32Equals(value, ZERO_STORAGE_VALUE);
+const ZERO_STORAGE_VALUE = zeroBytes32() as StorageValueType;
 
 const accountsEqual = (
   left: AccountStateType,
