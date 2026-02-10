@@ -6,11 +6,11 @@ const full = @import("full.zig");
 /// Full sync block/receipt request container.
 pub const BlocksRequest = full.BlocksRequest;
 /// Full sync per-peer body request limit.
-pub const maxBodiesPerRequest = full.maxBodiesPerRequest;
+pub const max_bodies_per_request = full.max_bodies_per_request;
 /// Full sync per-peer receipt request limit.
-pub const maxReceiptsPerRequest = full.maxReceiptsPerRequest;
+pub const max_receipts_per_request = full.max_receipts_per_request;
 /// Full sync per-peer header request limit.
-pub const maxHeadersPerRequest = full.maxHeadersPerRequest;
+pub const max_headers_per_request = full.max_headers_per_request;
 
 test {
     @import("std").testing.refAllDecls(@This());

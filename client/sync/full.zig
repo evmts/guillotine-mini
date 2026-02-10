@@ -14,7 +14,7 @@ const Receipt = primitives.Receipt;
 
 /// Return the maximum number of block bodies to request from a peer.
 /// Mirrors Nethermind per-client sync limits for GetBlockBodies.
-pub fn maxBodiesPerRequest(peer: PeerInfo) usize {
+pub fn max_bodies_per_request(peer: PeerInfo) usize {
     const name = peer.name;
     if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Besu")) return 128;
     if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Geth")) return 128;
@@ -29,7 +29,7 @@ pub fn maxBodiesPerRequest(peer: PeerInfo) usize {
 
 /// Return the maximum number of block receipts to request from a peer.
 /// Mirrors Nethermind per-client sync limits for GetReceipts.
-pub fn maxReceiptsPerRequest(peer: PeerInfo) usize {
+pub fn max_receipts_per_request(peer: PeerInfo) usize {
     const name = peer.name;
     if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Besu")) return 256;
     if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Geth")) return 256;
@@ -44,7 +44,7 @@ pub fn maxReceiptsPerRequest(peer: PeerInfo) usize {
 
 /// Return the maximum number of block headers to request from a peer.
 /// Mirrors Nethermind per-client sync limits for GetBlockHeaders.
-pub fn maxHeadersPerRequest(peer: PeerInfo) usize {
+pub fn max_headers_per_request(peer: PeerInfo) usize {
     const name = peer.name;
     if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Besu")) return 512;
     if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Geth")) return 192;
@@ -315,7 +315,7 @@ test "BlocksRequest.init_owned provisions response arena and deinit clears it" {
     try std.testing.expect(req.receipts == null);
 }
 
-test "maxBodiesPerRequest uses client-specific limits" {
+test "max_bodies_per_request uses client-specific limits" {
     const peer_id: primitives.PeerId.PeerId = [_]u8{0} ** 64;
     const caps = &[_][]const u8{};
     const network = PeerInfoModule.NetworkInfo{
@@ -341,11 +341,11 @@ test "maxBodiesPerRequest uses client-specific limits" {
 
     for (cases) |case| {
         const peer = PeerInfoModule.init(peer_id, case.name, caps, network, protocols);
-        try std.testing.expectEqual(case.expected, maxBodiesPerRequest(peer));
+        try std.testing.expectEqual(case.expected, max_bodies_per_request(peer));
     }
 }
 
-test "maxReceiptsPerRequest uses client-specific limits" {
+test "max_receipts_per_request uses client-specific limits" {
     const peer_id: primitives.PeerId.PeerId = [_]u8{0} ** 64;
     const caps = &[_][]const u8{};
     const network = PeerInfoModule.NetworkInfo{
@@ -371,11 +371,11 @@ test "maxReceiptsPerRequest uses client-specific limits" {
 
     for (cases) |case| {
         const peer = PeerInfoModule.init(peer_id, case.name, caps, network, protocols);
-        try std.testing.expectEqual(case.expected, maxReceiptsPerRequest(peer));
+        try std.testing.expectEqual(case.expected, max_receipts_per_request(peer));
     }
 }
 
-test "maxHeadersPerRequest uses client-specific limits" {
+test "max_headers_per_request uses client-specific limits" {
     const peer_id: primitives.PeerId.PeerId = [_]u8{0} ** 64;
     const caps = &[_][]const u8{};
     const network = PeerInfoModule.NetworkInfo{
@@ -401,6 +401,6 @@ test "maxHeadersPerRequest uses client-specific limits" {
 
     for (cases) |case| {
         const peer = PeerInfoModule.init(peer_id, case.name, caps, network, protocols);
-        try std.testing.expectEqual(case.expected, maxHeadersPerRequest(peer));
+        try std.testing.expectEqual(case.expected, max_headers_per_request(peer));
     }
 }
