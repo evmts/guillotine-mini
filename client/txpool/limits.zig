@@ -17,16 +17,16 @@ pub fn fits_size_limits(
     cfg: TxPoolConfig,
 ) (error{ MaxTxSizeExceeded, MaxBlobTxSizeExceeded } || std.mem.Allocator.Error)!void {
     const T = @TypeOf(tx);
-
-    // Compute raw encoded length using Voltaire encoders
-    const encoded_len: usize = comptime blk: {
-        if (T == tx_mod.LegacyTransaction) break :blk 0;
-        if (T == tx_mod.Eip1559Transaction) break :blk 0;
-        if (T == tx_mod.Eip4844Transaction) break :blk 0;
-        if (T == tx_mod.Eip7702Transaction) break :blk 0;
-        @compileError("Unsupported transaction type for fits_size_limits: " ++ @typeName(T));
-    };
-    _ = encoded_len; // silence unused in comptime block
+    comptime {
+        if (!(T == tx_mod.LegacyTransaction or
+            T == tx_mod.Eip1559Transaction or
+            T == tx_mod.Eip4844Transaction or
+            T == tx_mod.Eip7702Transaction or
+            T == tx_mod.Eip2930Transaction))
+        {
+            @compileError("Unsupported transaction type for fits_size_limits: " ++ @typeName(T));
+        }
+    }
 
     const allocator = std.heap.page_allocator;
 
