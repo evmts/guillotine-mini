@@ -7,7 +7,7 @@ Implement devp2p networking for peer communication.
 **Key Components** (from plan):
 - `client/net/rlpx.zig` - RLPx transport (handshake + framing)
 - `client/net/discovery.zig` - discv4/v5 discovery
-- `client/net/eth.zig` - eth/68 protocol (note spec currently lists eth/69)
+- `client/net/eth.zig` - eth/68 protocol
 
 **Reference Architecture**:
 - Nethermind: `nethermind/src/Nethermind/Nethermind.Network/`
@@ -19,7 +19,7 @@ Implement devp2p networking for peer communication.
 
 ### Core devp2p specs
 - `devp2p/rlpx.md` - RLPx transport: ECIES handshake, key derivation, AES-CTR framing, keccak-based MACs, capability multiplexing.
-- `devp2p/caps/eth.md` - ETH protocol (current version eth/69): Status handshake, chain sync, tx exchange, message size limits.
+- `devp2p/caps/eth.md` - ETH protocol (target eth/68 per local refs): Status handshake, chain sync, tx exchange, message size limits.
 - `devp2p/caps/snap.md` - SNAP protocol (snap/1): snapshot state sync requests and Merkle-proven ranges.
 - `devp2p/discv4.md` - Discovery v4: UDP packets, Kademlia routing, ping/pong/FindNode/Neighbors, endpoint proof, 1280-byte max.
 - `devp2p/discv5/discv5.md` - Discovery v5 overview and sub-spec pointers.
@@ -63,19 +63,21 @@ Key files (for cross-module reference):
 Location: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
 
 Relevant primitives for devp2p (do not reimplement):
-- `primitives/Rlp/` - RLP encode/decode helpers
+- `primitives/Rlp/Rlp.zig` - RLP encode/decode helpers
+- `primitives/PeerId/PeerId.zig` - enode URL parsing/formatting, 64-byte node id
+- `primitives/ForkId/ForkId.zig` - EIP-2124 RLP encoding/compat checks for eth Status handshake
+- `primitives/SnappyParameters/snappy_parameters.zig` - MaxSnappyLength = 16 MiB (EIP-706 alignment)
+- `primitives/ProtocolVersion/ProtocolVersion.zig` - `ETH_66/67/68`, `SNAP_1`
+- `primitives/NetworkId/NetworkId.zig`
 - `primitives/Bytes/`, `primitives/Bytes32/`, `primitives/Hash/`, `primitives/Hex/`
 - `primitives/PublicKey/`, `primitives/PrivateKey/`, `primitives/Signature/`
-- `primitives/PeerId/`, `primitives/PeerInfo/`, `primitives/NodeInfo/`
-- `primitives/ProtocolVersion/`, `primitives/NetworkId/`, `primitives/ChainId/`
 
 Relevant crypto primitives:
 - `crypto/secp256k1.zig` - node identity keys, signatures, ECDH
 - `crypto/keccak256_accel.zig` / `crypto/keccak256_c.zig` - RLPx MACs, ENR hashing
-- `crypto/sha256_accel.zig` - ECIES/HMAC and discv5 specs
+- `crypto/sha256_accel.zig` - discv5-related hashing
 - `crypto/aes_gcm.zig` - discv5 packet encryption (AES-GCM)
-- `crypto/chacha20_poly1305.zig` - available AEAD alternative (if needed by specs)
-- `crypto/constant_time.zig` - constant-time helpers for crypto operations
+- `crypto/constant_time.zig` - constant-time helpers
 
 ---
 
