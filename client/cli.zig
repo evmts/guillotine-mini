@@ -37,7 +37,10 @@ pub fn parseArgs(
     while (idx < args.len) : (idx += 1) {
         const arg = args[idx];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            try writer.writeAll(usage);
+            writer.writeAll(usage) catch |err| {
+                const any_err: anyerror = err;
+                if (any_err != error.NoSpaceLeft) return err;
+            };
             return error.HelpRequested;
         }
 
