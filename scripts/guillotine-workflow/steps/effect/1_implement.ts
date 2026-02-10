@@ -35,10 +35,10 @@ ${props.reviewFixes ? `\nReview fixes just applied: ${props.reviewFixes}` : ""}
 GIT COMMIT RULES:
 - Make atomic commits — one logical change per commit
 - Commit EACH smallest unit of work separately, do NOT batch everything into one commit
-- Use emoji prefixes: 🐛 fix, ♻️ refactor, 🧪 test, ⚡ perf, ✨ feat
+- Use emoji prefixes: 🐛 fix, ♻️ refactor, 🧪 test, ⚡ perf
 - Format: "EMOJI type(scope): description"
 - Examples:
-  - "✨ feat(phase-0-db): add Db service with Context.Tag and memory Layer"
+  - "♻️ refactor(phase-0-db): add Db service with Context.Tag and memory Layer"
   - "🧪 test(phase-0-db): add it.effect() tests for Db service"
   - "🐛 fix(phase-0-db): handle missing key edge case in get()"
 - git add the specific files changed, then git commit with the emoji message
@@ -48,7 +48,7 @@ IMPORTANT: After completing the implementation and committing, you MUST output a
 {
   "filesCreated": ["client-ts/path/to/new_file.ts"],
   "filesModified": ["client-ts/existing_file.ts"],
-  "commitMessage": "✨ feat(phase-X): Description of what was implemented",
+  "commitMessage": "♻️ refactor(phase-X): Description of what was implemented",
   "whatWasDone": "Detailed description of what was implemented",
   "nextSmallestUnit": "Description of the next smallest atomic unit of work to implement"
 }
