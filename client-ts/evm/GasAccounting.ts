@@ -35,6 +35,7 @@ export type GasAccountingInput = {
   readonly gasLeft: bigint;
   readonly refundCounter: bigint;
   readonly effectiveGasPrice: bigint;
+  readonly calldataFloorGas: bigint;
 };
 
 /** Error raised when gas inputs cannot be decoded. */
@@ -122,9 +123,14 @@ const makeGasAccounting = Effect.gen(function* () {
       const gasLimit = yield* decodeGas(input.gasLimit, "limit");
       const gasLeft = yield* decodeGas(input.gasLeft, "left");
       const effectiveGasPrice = yield* decodeGasPrice(input.effectiveGasPrice);
+      const calldataFloorGas = yield* decodeGas(
+        input.calldataFloorGas,
+        "calldata floor",
+      );
 
       const gasLimitValue: bigint = gasLimit;
       const gasLeftValue: bigint = gasLeft;
+      const calldataFloorValue: bigint = calldataFloorGas;
       const gasUsedBeforeRefundValue = gasLimitValue - gasLeftValue;
       const gasUsedBeforeRefund = yield* decodeGas(
         gasUsedBeforeRefundValue,
@@ -137,13 +143,17 @@ const makeGasAccounting = Effect.gen(function* () {
       );
       const gasUsedAfterRefundValue =
         (gasUsedBeforeRefund as bigint) - (claimableRefund as bigint);
+      const flooredGasUsedAfterRefundValue =
+        calldataFloorValue > gasUsedAfterRefundValue
+          ? calldataFloorValue
+          : gasUsedAfterRefundValue;
       const gasUsedAfterRefund = yield* decodeGas(
-        gasUsedAfterRefundValue,
+        flooredGasUsedAfterRefundValue,
         "used after refund",
       );
 
       const gasLeftAfterRefundValue =
-        gasLimitValue - (gasUsedAfterRefund as bigint);
+        gasLimitValue - flooredGasUsedAfterRefundValue;
       yield* decodeGas(gasLeftAfterRefundValue, "left after refund");
       const refundAmountValue =
         gasLeftAfterRefundValue * (effectiveGasPrice as bigint);

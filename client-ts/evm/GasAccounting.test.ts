@@ -8,6 +8,8 @@ import {
   GasAccountingLive,
   GasAccountingTest,
   InvalidGasAccountingError,
+  InvalidEffectiveGasPriceError,
+  InvalidRefundAmountError,
 } from "./GasAccounting";
 import { RefundCalculatorLive } from "./RefundCalculator";
 import { ReleaseSpecLive } from "./ReleaseSpec";
@@ -37,6 +39,7 @@ describe("GasAccounting", () => {
           gasLeft: 20n,
           refundCounter: 50n,
           effectiveGasPrice: 2n,
+          calldataFloorGas: 0n,
         });
         assert.strictEqual(result.gasUsedAfterRefund, 40n);
         assert.strictEqual(result.senderRefundAmount, 120n);
@@ -52,9 +55,42 @@ describe("GasAccounting", () => {
           gasLeft: 20n,
           refundCounter: 50n,
           effectiveGasPrice: 2n,
+          calldataFloorGas: 0n,
         });
         assert.strictEqual(result.gasUsedAfterRefund, 64n);
         assert.strictEqual(result.senderRefundAmount, 72n);
+      }),
+    ),
+  );
+
+  it.effect("respects refund counter below the London cap", () =>
+    providePrague(
+      Effect.gen(function* () {
+        const result = yield* calculateGasSettlement({
+          gasLimit: 100n,
+          gasLeft: 70n,
+          refundCounter: 5n,
+          effectiveGasPrice: 2n,
+          calldataFloorGas: 0n,
+        });
+        assert.strictEqual(result.gasUsedAfterRefund, 25n);
+        assert.strictEqual(result.senderRefundAmount, 150n);
+      }),
+    ),
+  );
+
+  it.effect("applies calldata floor gas after refund", () =>
+    providePrague(
+      Effect.gen(function* () {
+        const result = yield* calculateGasSettlement({
+          gasLimit: 100n,
+          gasLeft: 20n,
+          refundCounter: 50n,
+          effectiveGasPrice: 2n,
+          calldataFloorGas: 70n,
+        });
+        assert.strictEqual(result.gasUsedAfterRefund, 70n);
+        assert.strictEqual(result.senderRefundAmount, 60n);
       }),
     ),
   );
@@ -68,11 +104,73 @@ describe("GasAccounting", () => {
             gasLeft: -1n,
             refundCounter: 0n,
             effectiveGasPrice: 1n,
+            calldataFloorGas: 0n,
           }),
         );
         assert.isTrue(Either.isLeft(outcome));
         if (Either.isLeft(outcome)) {
           assert.isTrue(outcome.left instanceof InvalidGasAccountingError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when gas left exceeds gas limit", () =>
+    providePrague(
+      Effect.gen(function* () {
+        const outcome = yield* Effect.either(
+          calculateGasSettlement({
+            gasLimit: 50n,
+            gasLeft: 60n,
+            refundCounter: 0n,
+            effectiveGasPrice: 1n,
+            calldataFloorGas: 0n,
+          }),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof InvalidGasAccountingError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when effective gas price is invalid", () =>
+    providePrague(
+      Effect.gen(function* () {
+        const outcome = yield* Effect.either(
+          calculateGasSettlement({
+            gasLimit: 100n,
+            gasLeft: 20n,
+            refundCounter: 0n,
+            effectiveGasPrice: -1n,
+            calldataFloorGas: 0n,
+          }),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof InvalidEffectiveGasPriceError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when sender refund amount overflows", () =>
+    providePrague(
+      Effect.gen(function* () {
+        const maxUint256 = (1n << 256n) - 1n;
+        const outcome = yield* Effect.either(
+          calculateGasSettlement({
+            gasLimit: 3n,
+            gasLeft: 2n,
+            refundCounter: 0n,
+            effectiveGasPrice: maxUint256,
+            calldataFloorGas: 0n,
+          }),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof InvalidRefundAmountError);
         }
       }),
     ),
