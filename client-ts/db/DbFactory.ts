@@ -94,64 +94,28 @@ const validateColumnDbName = (
       }),
   });
 
-const buildReceiptsColumnsDb = (
-  buildDbByName: (
-    name: typeof DbNames.receipts,
-  ) => Effect.Effect<DbService, DbError, Scope.Scope>,
-): Effect.Effect<
-  ColumnDbServices[typeof DbNames.receipts],
-  DbError,
-  Scope.Scope
-> =>
+const buildColumnsDb = <
+  Name extends ColumnDbName,
+  Column extends string,
+>(params: {
+  readonly name: Name;
+  readonly columns: ReadonlyArray<Column>;
+  readonly buildDbByName: (
+    name: Name,
+  ) => Effect.Effect<DbService, DbError, Scope.Scope>;
+}) =>
   Effect.gen(function* () {
-    const defaultDb = yield* buildDbByName(DbNames.receipts);
-    const transactionsDb = yield* buildDbByName(DbNames.receipts);
-    const blocksDb = yield* buildDbByName(DbNames.receipts);
+    const entries: Array<readonly [Column, DbService]> = [];
+    for (const column of params.columns) {
+      entries.push([column, yield* params.buildDbByName(params.name)]);
+    }
+    const columnDbs = Object.fromEntries(entries) as Record<Column, DbService>;
 
     return {
-      name: DbNames.receipts,
-      columns: receiptsColumns,
-      getColumnDb: (column: ReceiptsColumn) => {
-        switch (column) {
-          case ReceiptsColumns.Default:
-            return defaultDb;
-          case ReceiptsColumns.Transactions:
-            return transactionsDb;
-          case ReceiptsColumns.Blocks:
-            return blocksDb;
-        }
-      },
-    } satisfies ColumnDbServices[typeof DbNames.receipts];
-  });
-
-const buildBlobTxsColumnsDb = (
-  buildDbByName: (
-    name: typeof DbNames.blobTransactions,
-  ) => Effect.Effect<DbService, DbError, Scope.Scope>,
-): Effect.Effect<
-  ColumnDbServices[typeof DbNames.blobTransactions],
-  DbError,
-  Scope.Scope
-> =>
-  Effect.gen(function* () {
-    const fullBlobTxsDb = yield* buildDbByName(DbNames.blobTransactions);
-    const lightBlobTxsDb = yield* buildDbByName(DbNames.blobTransactions);
-    const processedTxsDb = yield* buildDbByName(DbNames.blobTransactions);
-
-    return {
-      name: DbNames.blobTransactions,
-      columns: blobTxsColumns,
-      getColumnDb: (column: BlobTxsColumn) => {
-        switch (column) {
-          case BlobTxsColumns.FullBlobTxs:
-            return fullBlobTxsDb;
-          case BlobTxsColumns.LightBlobTxs:
-            return lightBlobTxsDb;
-          case BlobTxsColumns.ProcessedTxs:
-            return processedTxsDb;
-        }
-      },
-    } satisfies ColumnDbServices[typeof DbNames.blobTransactions];
+      name: params.name,
+      columns: params.columns,
+      getColumnDb: (column: Column) => columnDbs[column],
+    } satisfies ColumnsDbService<Column>;
   });
 
 const makeCreateColumnsDb = (
@@ -178,10 +142,18 @@ const makeCreateColumnsDb = (
       const validatedName = yield* validateColumnDbName(config.name);
 
       if (validatedName === DbNames.receipts) {
-        return yield* buildReceiptsColumnsDb(buildDbByName);
+        return yield* buildColumnsDb({
+          name: DbNames.receipts,
+          columns: receiptsColumns,
+          buildDbByName,
+        });
       }
 
-      return yield* buildBlobTxsColumnsDb(buildDbByName);
+      return yield* buildColumnsDb({
+        name: DbNames.blobTransactions,
+        columns: blobTxsColumns,
+        buildDbByName,
+      });
     });
   }
 
@@ -213,21 +185,19 @@ const resolveDbPath = (config: DbConfig): string => {
   return Path.join(process.cwd(), basePath, dbPath);
 };
 
-const memoryDbFactory = {
-  createDb: (config: DbConfig) => buildDb(DbMemoryLive(config)),
-  getFullDbPath: (config: DbConfig) => resolveDbPath(config),
-  createColumnsDb: makeCreateColumnsDb((name) =>
-    buildDb(DbMemoryLive({ name })),
-  ),
-} satisfies DbFactoryService;
+const makeBackendFactory = (
+  buildLayer: (config: DbConfig) => Layer.Layer<Db, DbError>,
+) =>
+  ({
+    createDb: (config: DbConfig) => buildDb(buildLayer(config)),
+    getFullDbPath: resolveDbPath,
+    createColumnsDb: makeCreateColumnsDb((name) =>
+      buildDb(buildLayer({ name })),
+    ),
+  }) satisfies DbFactoryService;
 
-const rocksStubDbFactory = {
-  createDb: (config: DbConfig) => buildDb(DbRocksStubLive(config)),
-  getFullDbPath: (config: DbConfig) => resolveDbPath(config),
-  createColumnsDb: makeCreateColumnsDb((name) =>
-    buildDb(DbRocksStubLive({ name })),
-  ),
-} satisfies DbFactoryService;
+const memoryDbFactory = makeBackendFactory(DbMemoryLive);
+const rocksStubDbFactory = makeBackendFactory(DbRocksStubLive);
 
 /** Memory-backed DB factory layer. */
 export const DbFactoryMemoryLive: Layer.Layer<DbFactory> = Layer.succeed(
