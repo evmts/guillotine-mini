@@ -24,7 +24,8 @@
     "evm/**/*.ts",
     "blockchain/**/*.ts",
     "engine/**/*.ts",
-    "network/**/*.ts"
+    "network/**/*.ts",
+    "sync/**/*.ts"
   ],
   "exclude": ["node_modules"]
 }
