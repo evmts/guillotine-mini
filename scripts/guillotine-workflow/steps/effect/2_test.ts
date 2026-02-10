@@ -3,8 +3,14 @@ export default function EffectTestPrompt(props: { phase: string }): string {
 
 Run ALL of the following test categories and report results:
 
+Primary gate command for this repo:
+- If phase is "phase-3-evm-state", run:
+  \`./scripts/guillotine-workflow/test-gates/phase-3-evm-state.sh\`
+  - Optional: set \`RUN_PHASE3_SPEC_GATE=1\` to include \`zig build test\` in the gate.
+- Treat the script JSON summary as the source of truth for pass/fail.
+
 1. UNIT TESTS:
-   Run: cd client-ts && bun test
+   Run: cd client-ts && bun run test
    Check that all @effect/vitest it.effect() tests pass for the files we just created/modified.
    Verify:
    - All Effect.gen compositions resolve correctly
@@ -15,7 +21,7 @@ Run ALL of the following test categories and report results:
 2. SPEC TESTS (official Ethereum test vectors):
    Based on the phase:
    - Phase 1 (trie): Run tests against ethereum-tests/TrieTests/ data
-   - Phase 3 (evm-state): Run against ethereum-tests/GeneralStateTests/ fixtures
+   - Phase 3 (evm-state): Use the phase-3 test gate script above (or run \`RUN_PHASE3_SPEC_GATE=1 ./scripts/guillotine-workflow/test-gates/phase-3-evm-state.sh\`)
    - Phase 4 (blockchain): Run against ethereum-tests/BlockchainTests/
    If no spec tests apply to this phase yet, note "N/A" but still run unit tests.
 
