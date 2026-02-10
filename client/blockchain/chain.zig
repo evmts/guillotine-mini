@@ -95,6 +95,18 @@ pub fn canonical_hash(chain: *Chain, number: u64) ?Hash.Hash {
     return chain.getCanonicalHash(number);
 }
 
+/// Returns true if the given `(number, hash)` pair is canonical (local-only).
+///
+/// Semantics:
+/// - Compares the provided `hash` against the canonical mapping for `number`.
+/// - Never consults the fork cache; this is a pure local read.
+/// - Mirrors Nethermind usage where callers often validate canonicality using
+///   the number→hash mapping without reading the full block.
+pub fn is_canonical_at(chain: *Chain, number: u64, hash: Hash.Hash) bool {
+    const canonical = canonical_hash(chain, number) orelse return false;
+    return Hash.equals(&canonical, &hash);
+}
+
 // ---------------------------------------------------------------------------
 // Comptime DI helpers (Nethermind-style parity)
 // ---------------------------------------------------------------------------
@@ -461,6 +473,26 @@ test "Chain - canonical_hash returns hash for canonical block" {
 
     const h = canonical_hash(&chain, 0) orelse return error.Unreachable;
     try std.testing.expectEqualSlices(u8, &genesis.hash, &h);
+}
+
+test "Chain - is_canonical_at uses local canonical map" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    // Empty store → always false
+    try std.testing.expect(!is_canonical_at(&chain, 0, Hash.ZERO));
+
+    // Insert genesis and mark canonical
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+    try chain.setCanonicalHead(genesis.hash);
+
+    try std.testing.expect(is_canonical_at(&chain, 0, genesis.hash));
+    // Mismatch by number
+    try std.testing.expect(!is_canonical_at(&chain, 1, genesis.hash));
+    // Mismatch by hash
+    try std.testing.expect(!is_canonical_at(&chain, 0, Hash.ZERO));
 }
 
 test "Chain - has_block reflects local and fork-cache presence" {
