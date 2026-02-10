@@ -346,7 +346,7 @@ pub fn fits_size_limits(
                 var fields = std.array_list.AlignedManaged(u8, null).init(allocator);
                 defer fields.deinit();
 
-                // [chain_id, address, nonce, v, r, s]
+                // [chain_id, address, nonce, y_parity, r, s] per EIP-7702
                 {
                     const enc = try rlp.encode(allocator, auth.chain_id);
                     defer allocator.free(enc);
@@ -363,7 +363,8 @@ pub fn fits_size_limits(
                     try fields.appendSlice(enc);
                 }
                 {
-                    const enc = try rlp.encode(allocator, auth.v);
+                    const y_parity: u8 = if (auth.v == 27) 0 else if (auth.v == 28) 1 else @as(u8, @intCast(auth.v & 1));
+                    const enc = try rlp.encode(allocator, y_parity);
                     defer allocator.free(enc);
                     try fields.appendSlice(enc);
                 }
