@@ -115,13 +115,16 @@ test "SyncMode bit flags uniqueness and composition" {
 }
 
 /// Helper predicates for sync mode classification (Nethermind-compatible).
+/// True when node is only waiting or disconnected (not actively syncing).
+/// Mirrors Nethermind's `SyncModeExtensions.NotSyncing` semantics.
 pub fn not_syncing(mode: u32) bool {
     // Mirrors: SyncModeExtensions.NotSyncing (exact value match).
     return mode == SyncMode.waiting_for_block or mode == SyncMode.disconnected;
 }
 
+/// True if block bodies are not yet fully synchronized.
+/// Mirrors Nethermind's `HaveNotSyncedBodiesYet` (mask membership).
 pub fn have_not_synced_bodies_yet(mode: u32) bool {
-    // Mirrors: HaveNotSyncedBodiesYet (any of the listed flags present).
     const mask: u32 =
         SyncMode.fast_headers |
         SyncMode.fast_bodies |
@@ -133,8 +136,9 @@ pub fn have_not_synced_bodies_yet(mode: u32) bool {
     return (mode & mask) != 0;
 }
 
+/// True if receipts are not yet fully synchronized.
+/// Mirrors Nethermind's `HaveNotSyncedReceiptsYet` (mask membership).
 pub fn have_not_synced_receipts_yet(mode: u32) bool {
-    // Mirrors: HaveNotSyncedReceiptsYet.
     const mask: u32 =
         SyncMode.fast_blocks |
         SyncMode.fast_sync |
@@ -145,8 +149,9 @@ pub fn have_not_synced_receipts_yet(mode: u32) bool {
     return (mode & mask) != 0;
 }
 
+/// True if headers are not yet fully synchronized.
+/// Mirrors Nethermind's `HaveNotSyncedHeadersYet` (mask membership).
 pub fn have_not_synced_headers_yet(mode: u32) bool {
-    // Mirrors: HaveNotSyncedHeadersYet.
     const mask: u32 =
         SyncMode.fast_headers |
         SyncMode.beacon_headers |
@@ -154,8 +159,9 @@ pub fn have_not_synced_headers_yet(mode: u32) bool {
     return (mode & mask) != 0;
 }
 
+/// True if state (tries/snap) is not yet fully synchronized.
+/// Mirrors Nethermind's `HaveNotSyncedStateYet` (mask membership).
 pub fn have_not_synced_state_yet(mode: u32) bool {
-    // Mirrors: HaveNotSyncedStateYet.
     const mask: u32 =
         SyncMode.fast_sync |
         SyncMode.state_nodes |
