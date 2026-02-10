@@ -1,49 +1,129 @@
-# [pass 2/5] phase-8-networking (Networking (devp2p))
+# [Pass 2/5] Phase 8: Networking (devp2p) -- Implementation Context
 
-## Phase goal (prd/GUILLOTINE_CLIENT_PLAN.md)
-- Implement devp2p networking for peer communication.
-- Key components: `client/net/rlpx.zig`, `client/net/discovery.zig`, `client/net/eth.zig`.
-- Reference architecture: `nethermind/src/Nethermind/Nethermind.Network/`.
+## Phase Goal
 
-## Specs read (devp2p/ and EIPs/)
-- `devp2p/rlpx.md`: RLPx handshake (ECIES, KDF, AES-CTR, HMAC-SHA256), framing/MAC rules, Hello negotiation, Snappy compression, 16 MiB message ceiling.
-- `devp2p/caps/eth.md`: eth protocol (current eth/69), Status handshake required, size limits, block/tx propagation rules, tx validation summary.
-- `devp2p/caps/snap.md`: snap/1 protocol, account/storage range retrieval with proofs, response size rules.
-- `devp2p/discv4.md`: discovery v4 Kademlia table (k=16), endpoint proof (12h), UDP packet format, Ping/Pong/FindNode/Neighbors/ENRRequest/ENRResponse.
-- `devp2p/discv5/discv5.md`: discovery v5 overview and scope, v5.1 protocol.
-- `devp2p/discv5/discv5-wire.md`: v5 wire format, AES-CTR header masking, AES-GCM message auth, WHOAREYOU handshake, packet size bounds (min 63, max 1280).
-- `devp2p/enr.md`: ENR structure, 300-byte max, v4 identity scheme, base64 `enr:` text format.
-- `EIPs/EIPS/eip-8.md`: forward-compat rules for devp2p, discv4, RLPx handshake (ignore extra fields and version mismatch).
-- `EIPs/EIPS/eip-778.md`: ENR definition (keys, ordering, RLP encoding, signature scheme).
-- `EIPs/EIPS/eip-868.md`: discv4 ENRRequest/ENRResponse and ping/pong enr-seq extension.
+Implement devp2p networking (RLPx transport, discv4/v5 discovery, eth/68+ and snap/1 capabilities) for peer communication. This phase wires protocol framing, handshakes, capability negotiation, and message encoding.
 
-## Nethermind DB reference (nethermind/src/Nethermind/Nethermind.Db/)
-- Key files: `IDb.cs`, `IColumnsDb.cs`, `IReadOnlyDb.cs`, `IFullDb.cs`, `IDbFactory.cs`, `DbProvider.cs`, `DbProviderExtensions.cs`, `DbNames.cs`, `MemDb.cs`, `MemColumnsDb.cs`, `ReadOnlyDb.cs`, `RocksDbSettings.cs`, `NullDb.cs`.
-- Useful for later persistent peer/enr storage or network metadata DB layout.
+**Key Components (from plan)**:
+- `client/net/rlpx.zig` -- RLPx transport
+- `client/net/discovery.zig` -- discv4/v5 discovery
+- `client/net/eth.zig` -- eth protocol (status, headers, bodies, tx exchange)
 
-## Voltaire APIs (voltaire/packages/voltaire-zig/src/)
-- `crypto/crypto.zig`: secp256k1, keccak256, sha256, signing/recovery helpers.
-- `crypto/aes_gcm.zig`: AES-GCM (used by discv5 wire protocol).
-- `primitives/Rlp/Rlp.zig`: RLP encoding/decoding.
-- `primitives/PeerId/PeerId.zig`: devp2p peer identifier and enode parsing/formatting.
-- `primitives/ProtocolVersion/ProtocolVersion.zig`: capability version strings (eth/xx, snap/1).
-- `primitives/PeerInfo/PeerInfo.zig`: peer metadata for admin_peers-style views.
-- `primitives/NodeInfo/NodeInfo.zig`: local node info (enode, ports, protocols).
-- `primitives/NetworkId/NetworkId.zig`: network IDs for eth protocol.
-- `primitives/HandshakeRole/HandshakeRole.zig`: initiator/recipient role for RLPx handshake.
-- `primitives/PublicKey/PublicKey.zig`, `primitives/PrivateKey/PrivateKey.zig`, `primitives/Signature/Signature.zig`: key/signature types.
-- `primitives/Hash/Hash.zig`, `primitives/Hex/Hex.zig`, `primitives/Bytes/Bytes.zig`, `primitives/base64.zig`: supporting primitives.
+---
 
-## Existing Zig files
-- `src/host.zig`: EVM HostInterface vtable (balance/code/storage/nonce getters/setters). EVM inner calls bypass HostInterface.
+## 1. Specs (devp2p/)
 
-## Test fixtures (ethereum-tests/)
-- Top-level dirs: `ABITests/`, `BasicTests/`, `BlockchainTests/`, `DifficultyTests/`, `EOFTests/`, `GenesisTests/`, `KeyStoreTests/`, `LegacyTests/`, `PoWTests/`, `RLPTests/`, `TransactionTests/`, `TrieTests/`.
-- Networking-specific integration tests are in `hive/` (devp2p suites), not in ethereum-tests.
+### RLPx transport
+- `devp2p/rlpx.md`
+  - RLPx protocol v5 over TCP.
+  - ECIES handshake using secp256k1; derives `aes-secret` and `mac-secret`.
+  - Framing: header and frame ciphertext with per-direction MAC states.
+  - Capability multiplexing uses message ID space; hello is uncompressed; all other messages Snappy compressed.
+  - Enforce max uncompressed payload size (16 MiB) by checking Snappy length header.
 
-## Notes for implementation
-- RLPx: handshake uses ECIES over secp256k1, AES-128-CTR + HMAC-SHA256; framing MAC rules must be exact; post-Hello messages Snappy-compressed; reject uncompressed payloads > 16 MiB.
-- eth: require Status before any other messages; enforce soft/hard message size limits; eth/69 is current spec.
-- discv4: UDP packet signing, 1280-byte max, endpoint proof freshness window (12h), EIP-8 permissive decoding rules.
-- discv5: masked headers, AES-GCM authenticated payloads, WHOAREYOU handshake; packet min size 63 and max 1280; recommended timeouts (500ms/1s) per spec.
-- ENR: RLP list `[signature, seq, k, v, ...]`, keys sorted, max size 300 bytes; v4 identity uses keccak256 + secp256k1.
+### ETH capability
+- `devp2p/caps/eth.md`
+  - Current protocol version listed as eth/69.
+  - Session is active only after both sides exchange Status message.
+  - Message size limits: RLPx 16.7 MiB hard limit, typical soft limit ~10 MiB.
+  - Chain sync uses GetBlockHeaders/Bodies; receipts via GetReceipts during state sync.
+  - Post-merge note: block propagation via eth is deprecated for PoS networks.
+
+### SNAP capability
+- `devp2p/caps/snap.md`
+  - snap/1 runs side-by-side with eth, not standalone.
+  - Allows account range, storage range, and bytecode retrieval with proofs.
+  - Key requirement: peers must respond, even if returning empty data when state root is unavailable.
+
+### Discovery v4
+- `devp2p/discv4.md`
+  - UDP packets signed by secp256k1 key; packet header includes hash and signature.
+  - Kademlia routing with k-buckets (k=16), endpoint proof by recent pong (12h window).
+  - Packet types: Ping, Pong, FindNode, Neighbors, ENRRequest, ENRResponse.
+
+### Discovery v5
+- `devp2p/discv5/discv5.md`
+  - v5.1 spec overview; wire/theory/rationale split into `discv5-wire.md`, `discv5-theory.md`, `discv5-rationale.md`.
+  - Encrypted communication, topic advertisements, extensible node identity.
+
+### ENR
+- `devp2p/enr.md`
+  - ENR format: RLP list `[signature, seq, k, v, ...]` with key ordering.
+  - Max record size 300 bytes.
+  - v4 identity scheme: keccak256(content) -> secp256k1 signature.
+  - Text form `enr:` + URL-safe base64 (no padding).
+
+---
+
+## 2. Nethermind Architecture References
+
+**Primary module**:
+- `nethermind/src/Nethermind/Nethermind.Network/` (overall networking architecture and protocol handlers)
+
+**Db module (requested listing for cross-cutting storage)**:
+- `nethermind/src/Nethermind/Nethermind.Db/` files (from `ls`):
+  - `DbNames.cs` (includes `DiscoveryNodes`, `DiscoveryV5Nodes`, `Peers` DB names)
+  - `DbProvider.cs`, `IDbProvider.cs`, `IDb.cs`, `IColumnsDb.cs`, `IFullDb.cs`
+  - `MemDb.cs`, `MemDbFactory.cs`, `NullDb.cs`, `ReadOnlyDb.cs`
+  - `RocksDbSettings.cs`, `RocksDbMergeEnumerator.cs`
+  - `Metrics.cs`, `DbExtensions.cs`, `DbProviderExtensions.cs`
+  - `ReceiptsColumns.cs`, `BlobTxsColumns.cs`, `MetadataDbKeys.cs`
+
+`DbNames.cs` defines discovery and peer storage names: `discoveryNodes`, `discoveryV5Nodes`, `peers`.
+
+---
+
+## 3. Voltaire APIs (must use, no custom types)
+
+**Primitives** (`/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/`):
+- `PeerId.PeerId` -- 64-byte public key node ID; enode parsing/formatting helpers
+- `PeerInfo.PeerInfo` and `PeerInfo.NetworkInfo` -- peer metadata and connection info
+- `ProtocolVersion.ProtocolVersion` -- capability versioning (eth/xx, snap/1)
+- `HandshakeRole.HandshakeRole` -- initiator vs recipient
+- `Rlp` -- RLP encode/decode for handshake, p2p, eth, snap, discv4 packets
+- `Base64` -- ENR text encoding
+- `PublicKey`, `PrivateKey`, `Signature`, `Hash`, `Bytes`, `Bytes32` -- protocol payloads
+- `SnappyParameters.MaxSnappyLength` -- 16 MiB uncompressed cap
+
+**Crypto** (`/Users/williamcory/voltaire/packages/voltaire-zig/src/crypto/`):
+- `secp256k1.zig` -- node identity and signatures
+- `hash.zig`, `keccak256_*` -- RLPx/ENR hashing
+- `sha256_accel.zig` -- RLPx HMAC-SHA256
+
+---
+
+## 4. Existing Zig Files (integration points)
+
+- `src/host.zig` -- HostInterface vtable pattern used for comptime DI; mirror this pattern for networking interfaces.
+
+---
+
+## 5. Test Fixtures and References
+
+**devp2p tests**:
+- `hive/` (devp2p and sync scenarios)
+
+**Ethereum test fixtures** (directory listing from `ethereum-tests/`):
+- `ethereum-tests/ABITests`
+- `ethereum-tests/BasicTests`
+- `ethereum-tests/BlockchainTests`
+- `ethereum-tests/DifficultyTests`
+- `ethereum-tests/EOFTests`
+- `ethereum-tests/GenesisTests`
+- `ethereum-tests/KeyStoreTests`
+- `ethereum-tests/LegacyTests`
+- `ethereum-tests/PoWTests`
+- `ethereum-tests/RLPTests`
+- `ethereum-tests/TransactionTests`
+- `ethereum-tests/TrieTests`
+- `ethereum-tests/JSONSchema`
+
+---
+
+## 6. Notes for Implementation
+
+- RLPx framing and MAC updates are strict; verify MAC before decrypting header/body.
+- Snappy compression required after Hello; enforce uncompressed size limit.
+- Status exchange gates ETH session activation.
+- Discovery v4 relies on endpoint proof; v5 introduces encrypted packets and topic ads.
+- Store discovery nodes and peers in DB names aligned with Nethermind (see `DbNames.cs`).
