@@ -75,15 +75,17 @@ describe("DbTypes", () => {
   });
 
   it("rejects invalid DbMetric payloads", () => {
+    const invalidMetric: unknown = {
+      size: 1,
+      cacheSize: 2,
+      indexSize: 3,
+      memtableSize: 4,
+      totalReads: 5,
+      totalWrites: "6",
+    };
+
     assert.throws(() =>
-      Schema.decodeSync(DbMetricSchema)({
-        size: 1,
-        cacheSize: 2,
-        indexSize: 3,
-        memtableSize: 4,
-        totalReads: 5,
-        totalWrites: "6",
-      } as any),
+      Schema.decodeUnknownSync(DbMetricSchema)(invalidMetric),
     );
   });
 });
