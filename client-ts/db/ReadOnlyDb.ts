@@ -31,7 +31,7 @@ export class ReadOnlyDb extends Context.Tag("ReadOnlyDb")<
   ReadOnlyDbService
 >() {}
 
-type OverlayStore = Map<string, BytesType | null>;
+type OverlayStore = Map<string, BytesType>;
 
 type DbReader = Pick<
   DbService,
@@ -90,9 +90,9 @@ const cloneBytesEffect = (
     : Effect.fail(new DbError({ message: "Invalid DB value" }));
 
 const cloneOverlayStore = (store: OverlayStore): OverlayStore => {
-  const snapshot = new Map<string, BytesType | null>();
+  const snapshot = new Map<string, BytesType>();
   for (const [keyHex, value] of store.entries()) {
-    snapshot.set(keyHex, value === null ? null : cloneBytes(value));
+    snapshot.set(keyHex, cloneBytes(value));
   }
   return snapshot;
 };
@@ -120,9 +120,7 @@ const makeReadOnlyReader = (
       const keyHex = yield* encodeKey(key);
       const overlayValue = getOverlayValue(keyHex);
       if (overlayValue !== undefined) {
-        return overlayValue === null
-          ? Option.none()
-          : Option.some(cloneBytes(overlayValue));
+        return Option.some(cloneBytes(overlayValue));
       }
       return yield* base.get(key, flags);
     });
@@ -142,10 +140,7 @@ const makeReadOnlyReader = (
 
         results.push({
           key: entry.key,
-          value:
-            overlayValue === null
-              ? Option.none()
-              : Option.some(cloneBytes(overlayValue)),
+          value: Option.some(cloneBytes(overlayValue)),
         });
       }
 
@@ -163,11 +158,7 @@ const makeReadOnlyReader = (
       }
 
       for (const [keyHex, value] of overlay.entries()) {
-        if (value === null) {
-          merged.delete(keyHex);
-        } else {
-          merged.set(keyHex, value);
-        }
+        merged.set(keyHex, value);
       }
 
       const entries: Array<DbEntry> = [];
@@ -199,7 +190,7 @@ const makeReadOnlyReader = (
       const keyHex = yield* encodeKey(key);
       const overlayValue = getOverlayValue(keyHex);
       if (overlayValue !== undefined) {
-        return overlayValue !== null;
+        return true;
       }
       return yield* base.has(key);
     });
@@ -219,7 +210,7 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
     const base = yield* Db;
     const overlay = options.createInMemWriteStore
       ? yield* Effect.acquireRelease(
-          Effect.sync(() => new Map<string, BytesType | null>()),
+          Effect.sync(() => new Map<string, BytesType>()),
           (store) => Effect.sync(() => store.clear()),
         )
       : undefined;
@@ -239,7 +230,7 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
       overlay
         ? Effect.gen(function* () {
             const keyHex = yield* encodeKey(key);
-            overlay.set(keyHex, null);
+            overlay.delete(keyHex);
           })
         : Effect.fail(readOnlyWriteError());
 
@@ -265,7 +256,7 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
                 }
                 case "del": {
                   const keyHex = yield* encodeKey(op.key);
-                  overlay.set(keyHex, null);
+                  overlay.delete(keyHex);
                   break;
                 }
                 case "merge": {
@@ -300,7 +291,7 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
               const removeBatch = (key: BytesType) =>
                 Effect.gen(function* () {
                   const keyHex = yield* encodeKey(key);
-                  overlay.set(keyHex, null);
+                  overlay.delete(keyHex);
                 });
 
               const clearBatch = () =>
