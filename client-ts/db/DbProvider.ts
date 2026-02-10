@@ -2,34 +2,19 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import {
+  type ColumnDbServices,
   DbFactory,
   DbFactoryMemoryLive,
   DbFactoryRocksStubLive,
 } from "./DbFactory";
 import type { DbError, DbService } from "./Db";
 import {
-  BlobTxsColumns,
   DbNames,
-  ReceiptsColumns,
   StandardDbNames,
-  type BlobTxsColumn,
   type ColumnDbName,
   type DbName,
-  type ReceiptsColumn,
   type StandardDbName,
 } from "./DbTypes";
-
-/** Columnar DB service group for a named DB. */
-export interface ColumnsDbService<Column extends string> {
-  readonly name: DbName;
-  readonly columns: ReadonlyArray<Column>;
-  readonly getColumnDb: (column: Column) => DbService;
-}
-
-type ColumnDbServices = {
-  readonly receipts: ColumnsDbService<ReceiptsColumn>;
-  readonly blobTransactions: ColumnsDbService<BlobTxsColumn>;
-};
 
 /** DB provider service for resolving standard and column databases. */
 export interface DbProviderService {
@@ -46,12 +31,6 @@ export class DbProvider extends Context.Tag("DbProvider")<
 >() {}
 
 const dbNames = Object.values(StandardDbNames) as ReadonlyArray<StandardDbName>;
-const receiptsColumns = Object.values(
-  ReceiptsColumns,
-) as ReadonlyArray<ReceiptsColumn>;
-const blobTxsColumns = Object.values(
-  BlobTxsColumns,
-) as ReadonlyArray<BlobTxsColumn>;
 
 const buildDbRecord = <Key extends string, R>(
   keys: ReadonlyArray<Key>,
@@ -68,36 +47,17 @@ const buildDbRecord = <Key extends string, R>(
     return Object.fromEntries(entries) as Record<Key, DbService>;
   });
 
-const makeColumnsDb = <Column extends string, R>(
-  name: DbName,
-  columns: ReadonlyArray<Column>,
-  buildDb: (name: DbName) => Effect.Effect<DbService, DbError, R>,
-) =>
-  Effect.gen(function* () {
-    const columnDbs = yield* buildDbRecord(columns, () => buildDb(name));
-
-    return {
-      name,
-      columns,
-      getColumnDb: (column: Column) => columnDbs[column],
-    } satisfies ColumnsDbService<Column>;
-  });
-
 const makeDbProvider = Effect.gen(function* () {
   const dbFactory = yield* DbFactory;
   const buildDb = (name: DbName) => dbFactory.createDb({ name });
 
   const dbs = yield* buildDbRecord(dbNames, buildDb);
-  const receiptsDb = yield* makeColumnsDb(
-    DbNames.receipts,
-    receiptsColumns,
-    buildDb,
-  );
-  const blobTransactionsDb = yield* makeColumnsDb(
-    DbNames.blobTransactions,
-    blobTxsColumns,
-    buildDb,
-  );
+  const receiptsDb = yield* dbFactory.createColumnsDb({
+    name: DbNames.receipts,
+  });
+  const blobTransactionsDb = yield* dbFactory.createColumnsDb({
+    name: DbNames.blobTransactions,
+  });
   const columnDbs: ColumnDbServices = {
     receipts: receiptsDb,
     blobTransactions: blobTransactionsDb,

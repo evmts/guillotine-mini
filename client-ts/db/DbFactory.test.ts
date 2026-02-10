@@ -6,8 +6,9 @@ import {
   DbFactoryMemoryTest,
   DbFactoryRocksStubTest,
   createDb,
+  createColumnsDb,
 } from "./DbFactory";
-import { DbNames } from "./DbTypes";
+import { BlobTxsColumns, DbNames, ReceiptsColumns } from "./DbTypes";
 import { toBytes } from "./testUtils";
 
 describe("DbFactory", () => {
@@ -22,8 +23,11 @@ describe("DbFactory", () => {
         const result = yield* db.get(key);
 
         assert.strictEqual(db.name, DbNames.state);
-        assert.isTrue(Option.isSome(result));
-        assert.isTrue(Bytes.equals(Option.getOrThrow(result), value));
+        assert.strictEqual(Option.isSome(result), true);
+        assert.strictEqual(
+          Bytes.equals(Option.getOrThrow(result), value),
+          true,
+        );
       }),
     ).pipe(Effect.provide(DbFactoryMemoryTest)),
   );
@@ -37,7 +41,64 @@ describe("DbFactory", () => {
         assert.strictEqual(db.name, DbNames.state);
         const error = yield* Effect.flip(db.get(key));
         assert.strictEqual(error._tag, "DbError");
-        assert.isTrue(error.message.includes("does not implement get"));
+        assert.strictEqual(
+          error.message.includes("does not implement get"),
+          true,
+        );
+      }),
+    ).pipe(Effect.provide(DbFactoryRocksStubTest)),
+  );
+
+  it.effect("memory factory creates receipts column DBs", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const receipts = yield* createColumnsDb({ name: DbNames.receipts });
+        const key = toBytes("0x03");
+        const value = toBytes("0xbeef");
+        const defaultDb = receipts.getColumnDb(ReceiptsColumns.default);
+        const transactionsDb = receipts.getColumnDb(
+          ReceiptsColumns.transactions,
+        );
+
+        assert.strictEqual(receipts.name, DbNames.receipts);
+        assert.deepStrictEqual(
+          receipts.columns,
+          Object.values(ReceiptsColumns),
+        );
+
+        yield* defaultDb.put(key, value);
+
+        const defaultResult = yield* defaultDb.get(key);
+        const transactionsResult = yield* transactionsDb.get(key);
+
+        assert.strictEqual(Option.isSome(defaultResult), true);
+        assert.strictEqual(
+          Bytes.equals(Option.getOrThrow(defaultResult), value),
+          true,
+        );
+        assert.strictEqual(Option.isNone(transactionsResult), true);
+      }),
+    ).pipe(Effect.provide(DbFactoryMemoryTest)),
+  );
+
+  it.effect("rocksdb stub factory creates blob transaction column DBs", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const blobTxs = yield* createColumnsDb({
+          name: DbNames.blobTransactions,
+        });
+        const key = toBytes("0x04");
+        const fullDb = blobTxs.getColumnDb(BlobTxsColumns.fullBlobTxs);
+
+        assert.strictEqual(blobTxs.name, DbNames.blobTransactions);
+        assert.deepStrictEqual(blobTxs.columns, Object.values(BlobTxsColumns));
+
+        const error = yield* Effect.flip(fullDb.get(key));
+        assert.strictEqual(error._tag, "DbError");
+        assert.strictEqual(
+          error.message.includes("does not implement get"),
+          true,
+        );
       }),
     ).pipe(Effect.provide(DbFactoryRocksStubTest)),
   );
