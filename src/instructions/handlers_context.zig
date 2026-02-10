@@ -244,6 +244,11 @@ pub fn Handlers(FrameType: type) type {
             // Charge all costs at once
             try frame.consumeGas(access_cost + copy_cost + mem_cost);
 
+            // Update memory size after charging for expansion (per EVM spec)
+            // Subsequent memory-expanding ops must not be double-charged for the same range
+            const aligned = wordAlignedSize(end_bytes);
+            if (aligned > frame.memory_size) frame.memory_size = aligned;
+
             // Get the code from the external address
             const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
 
