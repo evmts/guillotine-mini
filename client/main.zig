@@ -39,7 +39,7 @@ fn run(
 ) !void {
     var config = RunnerConfig{};
     var trace_enabled = false;
-    cli.parseArgs(args, &config, &trace_enabled, writer) catch |err| switch (err) {
+    cli.parse_args(args, &config, &trace_enabled, writer) catch |err| switch (err) {
         error.HelpRequested => return,
         else => return err,
     };
@@ -47,7 +47,7 @@ fn run(
     const network_id = config.effective_network_id();
     const chain = Chain.fromId(config.chain_id) orelse return error.UnknownChainId;
 
-    const genesis_block_context = try loadGenesisBlockContext(config.chain_id, config.hardfork);
+    const genesis_block_context = try load_genesis_block_context(config.chain_id, config.hardfork);
     const block_context = if (genesis_block_context) |ctx| ctx else blk: {
         const fallback_gas_limit = Chain.getGasLimit(chain);
         const fallback_base_fee: u256 = if (config.hardfork.isAtLeast(.LONDON))
@@ -106,7 +106,7 @@ fn run(
     }
 }
 
-fn loadGenesisBlockContext(chain_id: u64, hardfork: primitives.Hardfork) !?evm_mod.BlockContext {
+fn load_genesis_block_context(chain_id: u64, hardfork: primitives.Hardfork) !?evm_mod.BlockContext {
     const genesis_path = switch (chain_id) {
         1 => "execution-specs/src/ethereum/assets/mainnet.json",
         11155111 => "execution-specs/src/ethereum/assets/sepolia.json",
@@ -128,15 +128,15 @@ fn loadGenesisBlockContext(chain_id: u64, hardfork: primitives.Hardfork) !?evm_m
     var line_buf: [1024]u8 = undefined;
     while (try reader.readUntilDelimiterOrEof(&line_buf, '\n')) |line| {
         if (timestamp == null and std.mem.indexOf(u8, line, "\"timestamp\"") != null) {
-            timestamp = try parseGenesisValue(u64, line);
+            timestamp = try parse_genesis_value(u64, line);
         } else if (gas_limit == null and std.mem.indexOf(u8, line, "\"gasLimit\"") != null) {
-            gas_limit = try parseGenesisValue(u64, line);
+            gas_limit = try parse_genesis_value(u64, line);
         } else if (difficulty == null and std.mem.indexOf(u8, line, "\"difficulty\"") != null) {
-            difficulty = try parseGenesisValue(u256, line);
+            difficulty = try parse_genesis_value(u256, line);
         } else if (mix_hash == null and (std.mem.indexOf(u8, line, "\"mixHash\"") != null or std.mem.indexOf(u8, line, "\"mixhash\"") != null)) {
-            mix_hash = try parseGenesisValue(u256, line);
+            mix_hash = try parse_genesis_value(u256, line);
         } else if (coinbase == null and std.mem.indexOf(u8, line, "\"coinbase\"") != null) {
-            coinbase = try parseGenesisValue(primitives.Address, line);
+            coinbase = try parse_genesis_value(primitives.Address, line);
         }
 
         if (timestamp != null and gas_limit != null and difficulty != null and mix_hash != null and coinbase != null) {
@@ -171,7 +171,7 @@ fn loadGenesisBlockContext(chain_id: u64, hardfork: primitives.Hardfork) !?evm_m
     };
 }
 
-fn parseGenesisValue(comptime T: type, line: []const u8) !T {
+fn parse_genesis_value(comptime T: type, line: []const u8) !T {
     const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidGenesis;
     var start = colon + 1;
     while (start < line.len and std.ascii.isWhitespace(line[start])) start += 1;

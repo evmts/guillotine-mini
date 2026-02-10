@@ -27,7 +27,7 @@ const usage =
 ;
 
 /// Parse CLI arguments into a runner configuration.
-pub fn parseArgs(
+pub fn parse_args(
     args: []const []const u8,
     config: *RunnerConfig,
     trace_enabled: *bool,
@@ -132,7 +132,7 @@ test "cli parses flags into runner config" {
         "5s",
     };
 
-    try parseArgs(args, &config, &trace_enabled, stream.writer());
+    try parse_args(args, &config, &trace_enabled, stream.writer());
 
     try std.testing.expect(trace_enabled);
     try std.testing.expectEqual(ChainId.from(11155111), config.chain_id);
@@ -153,7 +153,7 @@ test "cli prints usage on help flag" {
 
     try std.testing.expectError(
         error.HelpRequested,
-        parseArgs(args, &config, &trace_enabled, stream.writer()),
+        parse_args(args, &config, &trace_enabled, stream.writer()),
     );
 
     const output = stream.getWritten();
@@ -186,7 +186,7 @@ test "cli rejects missing or invalid values" {
         var stream = std.io.fixedBufferStream(&buffer);
         try std.testing.expectError(
             case.expected,
-            parseArgs(case.args, &config, &trace_enabled, stream.writer()),
+            parse_args(case.args, &config, &trace_enabled, stream.writer()),
         );
     }
 }
