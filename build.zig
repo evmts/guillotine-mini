@@ -266,6 +266,29 @@ pub fn build(b: *std.Build) void {
     const client_blockchain_test_step = b.step("test-blockchain", "Run chain management tests");
     client_blockchain_test_step.dependOn(&run_client_blockchain_tests.step);
 
+
+    // Client TxPool module (transaction pool)
+    const client_txpool_mod = b.addModule("client_txpool", .{
+        .root_source_file = b.path("client/txpool/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+        },
+    });
+
+    const client_txpool_tests = b.addTest(.{
+        .root_module = client_txpool_mod,
+    });
+
+    const run_client_txpool_tests = b.addRunArtifact(client_txpool_tests);
+    test_step.dependOn(&run_client_txpool_tests.step);
+    unit_test_step.dependOn(&run_client_txpool_tests.step);
+
+    const client_txpool_test_step = b.step("test-txpool", "Run txpool tests");
+    client_txpool_test_step.dependOn(&run_client_txpool_tests.step);
+
+
     // Client JSON-RPC module (HTTP/WebSocket server + namespaces)
     const client_rpc_mod = b.addModule("client_rpc", .{
         .root_source_file = b.path("client/rpc/root.zig"),
