@@ -220,7 +220,7 @@ const makeWorldState = Effect.gen(function* () {
 
   const getAccount = (address: Address.AddressType) =>
     Effect.map(getAccountOptional(address), (account) =>
-      account ? account : EMPTY_ACCOUNT,
+      account ? account : cloneAccount(EMPTY_ACCOUNT),
     );
 
   const markAccountCreated = (address: Address.AddressType) =>
