@@ -8,11 +8,13 @@ import { Address, Blob, Hex, Transaction } from "voltaire-effect/primitives";
 import {
   calculateEffectiveGasPrice,
   checkMaxGasFeeAndBalance,
+  EmptyAuthorizationListError,
   GasPriceBelowBaseFeeError,
   InsufficientMaxFeePerBlobGasError,
   InsufficientMaxFeePerGasError,
   InsufficientSenderBalanceError,
   InvalidBlobVersionedHashError,
+  InvalidTransactionError,
   NoBlobDataError,
   PriorityFeeGreaterThanMaxFeeError,
   runInCallFrameBoundary,
@@ -64,6 +66,10 @@ const Eip1559Schema = Transaction.EIP1559Schema as unknown as Schema.Schema<
 >;
 const Eip4844Schema = Transaction.EIP4844Schema as unknown as Schema.Schema<
   Transaction.EIP4844,
+  unknown
+>;
+const Eip7702Schema = Transaction.EIP7702Schema as unknown as Schema.Schema<
+  Transaction.EIP7702,
   unknown
 >;
 
@@ -167,6 +173,32 @@ const makeEip4844Tx = (
     accessList: [],
     maxFeePerBlobGas,
     blobVersionedHashes,
+    yParity: 0,
+    r: EMPTY_SIGNATURE.r,
+    s: EMPTY_SIGNATURE.s,
+  });
+
+const makeEip7702Tx = (
+  maxFeePerGas: bigint,
+  maxPriorityFeePerGas: bigint,
+  authorizationList: Transaction.EIP7702["authorizationList"],
+  to: Address.AddressType | null = Address.zero(),
+): Transaction.EIP7702 =>
+  Schema.validateSync(Eip7702Schema)({
+    type: Transaction.Type.EIP7702,
+    chainId: 1n,
+    nonce: 0n,
+    maxPriorityFeePerGas,
+    maxFeePerGas,
+    gasLimit: 100_000n,
+    to: to === null ? null : encodeAddress(to),
+    value: 0n,
+    data: new Uint8Array(0),
+    accessList: [],
+    authorizationList: authorizationList.map((authorization) => ({
+      ...authorization,
+      address: encodeAddress(authorization.address),
+    })),
     yParity: 0,
     r: EMPTY_SIGNATURE.r,
     s: EMPTY_SIGNATURE.s,
@@ -309,9 +341,7 @@ describe("TransactionProcessor.checkMaxGasFeeAndBalance", () => {
         );
         assert.isTrue(Either.isLeft(outcome));
         if (Either.isLeft(outcome)) {
-          assert.isTrue(
-            outcome.left instanceof TransactionTypeContractCreationError,
-          );
+          assert.isTrue(outcome.left instanceof InvalidTransactionError);
         }
       }),
     ),
@@ -346,6 +376,52 @@ describe("TransactionProcessor.checkMaxGasFeeAndBalance", () => {
           assert.isTrue(
             outcome.left instanceof InsufficientMaxFeePerBlobGasError,
           );
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when set-code transaction creates a contract", () =>
+    provideProcessor(
+      Effect.gen(function* () {
+        const tx = makeEip7702Tx(
+          10n,
+          1n,
+          [
+            {
+              chainId: 1n,
+              address: Address.zero(),
+              nonce: 0n,
+              yParity: 0,
+              r: EMPTY_SIGNATURE.r,
+              s: EMPTY_SIGNATURE.s,
+            },
+          ],
+          null,
+        );
+        const outcome = yield* Effect.either(
+          checkMaxGasFeeAndBalance(tx, 1n, 0n, 10_000_000n),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(
+            outcome.left instanceof TransactionTypeContractCreationError,
+          );
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when set-code authorization list is empty", () =>
+    provideProcessor(
+      Effect.gen(function* () {
+        const tx = makeEip7702Tx(10n, 1n, []);
+        const outcome = yield* Effect.either(
+          checkMaxGasFeeAndBalance(tx, 1n, 0n, 10_000_000n),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof EmptyAuthorizationListError);
         }
       }),
     ),
