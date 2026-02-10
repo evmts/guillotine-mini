@@ -38,6 +38,15 @@ pub fn head_block(chain: *Chain) !?Block.Block {
     return head_block_of(chain);
 }
 
+/// Returns the canonical head block number if present.
+///
+/// Thin wrapper over Voltaire's `Blockchain.getHeadBlockNumber` to expose a
+/// stable API from the client layer. Prefer this over calling the underlying
+/// orchestrator directly to keep call sites decoupled.
+pub fn head_number(chain: *Chain) ?u64 {
+    return chain.getHeadBlockNumber();
+}
+
 /// Returns true if the given hash is canonical at its block number (local-only).
 ///
 /// Follows Nethermind semantics: compare the hash against the canonical mapping
@@ -96,6 +105,13 @@ pub fn head_block_of(chain: anytype) !?Block.Block {
     const after = chain.getHeadBlockNumber() orelse return null;
     if (after != before) return null;
     return hb;
+}
+
+/// Generic, comptime-injected head number reader for any chain-like type.
+///
+/// The provided `chain` must define `getHeadBlockNumber() -> ?u64`.
+pub fn head_number_of(chain: anytype) ?u64 {
+    return chain.getHeadBlockNumber();
 }
 
 /// Forkchoice view provider interface (duck-typed via comptime DI).
@@ -223,6 +239,55 @@ test "Chain - head_block returns canonical head block" {
             try std.testing.expect(hb2 == null);
         }
     }
+}
+
+test "Chain - head_number returns null for empty chain" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    try std.testing.expect(head_number(&chain) == null);
+}
+
+test "Chain - head_number returns canonical number and updates after reorg" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+    try chain.setCanonicalHead(genesis.hash);
+
+    const n0 = head_number(&chain);
+    try std.testing.expect(n0 != null);
+    try std.testing.expectEqual(@as(u64, 0), n0.?);
+
+    var h1 = primitives.BlockHeader.init();
+    h1.number = 1;
+    h1.parent_hash = genesis.hash;
+    const b1 = try Block.from(&h1, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(b1);
+    try chain.setCanonicalHead(b1.hash);
+
+    const n1 = head_number(&chain);
+    try std.testing.expect(n1 != null);
+    try std.testing.expectEqual(@as(u64, 1), n1.?);
+}
+
+test "Chain - head_number_of forwards to underlying getter" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    try std.testing.expect(head_number_of(&chain) == null);
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+    try chain.setCanonicalHead(genesis.hash);
+
+    const n = head_number_of(&chain);
+    try std.testing.expect(n != null);
+    try std.testing.expectEqual(@as(u64, 0), n.?);
 }
 
 test "Chain - head_block with fork cache and no head returns null (no fetch)" {

@@ -12,6 +12,7 @@ pub const Chain = chain.Chain;
 /// Canonical head helpers.
 pub const head_hash = chain.head_hash;
 pub const head_block = chain.head_block;
+pub const head_number = chain.head_number;
 /// Canonicality checks.
 pub const is_canonical = chain.is_canonical;
 pub const is_canonical_or_fetch = chain.is_canonical_or_fetch;
@@ -20,6 +21,7 @@ pub const has_block = chain.has_block;
 /// Generic comptime DI helpers for head reads.
 pub const head_hash_of = chain.head_hash_of;
 pub const head_block_of = chain.head_block_of;
+pub const head_number_of = chain.head_number_of;
 /// Safe/finalized head helpers (local-only).
 pub const safe_head_hash_of = chain.safe_head_hash_of;
 pub const finalized_head_hash_of = chain.finalized_head_hash_of;
