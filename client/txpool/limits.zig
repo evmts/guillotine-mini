@@ -34,6 +34,49 @@ pub fn fits_gas_limit(tx: anytype, cfg: TxPoolConfig) error{TxGasLimitExceeded}!
         if (tx_limit_gl.value.gt(cap.value)) return error.TxGasLimitExceeded;
     }
 }
+
+/// Enforce that a transaction's nonce is not too far in the future
+/// relative to the sender's current account nonce and the number of
+/// already-pending transactions from that sender.
+///
+/// Mirrors Nethermind's GapNonceFilter core predicate:
+///   next_nonce_in_order = current_nonce + pending_sender_txs
+///   accept if tx_nonce <= next_nonce_in_order
+///
+/// Notes:
+/// - This helper ONLY checks for a future gap; it does not reject stale
+///   (too-low) nonces. Other admission stages should handle stale/replacement.
+/// - Uses difference arithmetic to avoid `u64` overflow on addition.
+pub fn enforce_nonce_gap(
+    tx_nonce: u64,
+    current_nonce: u64,
+    pending_sender_txs: usize,
+) error{NonceGap}!void {
+    // If tx is not ahead of current nonce, gap filter is satisfied.
+    if (tx_nonce <= current_nonce) return;
+
+    // Compute forward distance using subtraction to avoid overflow.
+    const forward: u64 = tx_nonce - current_nonce;
+
+    // Accept if tx is within the allowed window: distance ≤ pending count.
+    if (forward <= @as(u64, @intCast(pending_sender_txs))) return;
+
+    return error.NonceGap;
+}
+
+test "enforce_nonce_gap — accepts when nonce <= current" {
+    try enforce_nonce_gap(7, 8, 0);
+}
+
+test "enforce_nonce_gap — accepts when within pending window" {
+    // current=10, pending=3 allows up to nonce=13
+    try enforce_nonce_gap(11, 10, 3);
+    try enforce_nonce_gap(13, 10, 3);
+}
+
+test "enforce_nonce_gap — rejects when beyond pending window" {
+    try std.testing.expectError(error.NonceGap, enforce_nonce_gap(14, 10, 3));
+}
 /// Validate the RLP-encoded size of a transaction against pool limits.
 ///
 /// - Uses Voltaire Transaction encoders to compute raw network bytes:

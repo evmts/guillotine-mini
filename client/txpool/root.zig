@@ -16,6 +16,7 @@ pub const compare_fee_market_priority = sorter.compare_fee_market_priority;
 pub const fits_size_limits = limits.fits_size_limits;
 pub const fits_gas_limit = limits.fits_gas_limit;
 pub const enforce_min_priority_fee_for_blobs = limits.enforce_min_priority_fee_for_blobs;
+pub const enforce_nonce_gap = limits.enforce_nonce_gap;
 
 test {
     std.testing.refAllDecls(@This());
