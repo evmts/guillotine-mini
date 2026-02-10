@@ -432,11 +432,15 @@ pub fn fits_size_limits(
         len = 1 + header_len + list_len;
     }
 
+    // EIP-4844: Prefer specific blob-envelope limit when configured;
+    // otherwise, fall back to the generic  check below.
     if (comptime T == tx_mod.Eip4844Transaction) {
         if (cfg.max_blob_tx_size) |max| {
             if (len > max) return error.MaxBlobTxSizeExceeded;
+            // When a blob-specific cap exists, do not apply the generic cap.
+            return;
         }
-        return;
+        // No blob cap configured — intentionally fall through to generic cap.
     }
 
     if (cfg.max_tx_size) |max| {
