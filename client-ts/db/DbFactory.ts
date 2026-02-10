@@ -27,36 +27,37 @@ export class DbFactory extends Context.Tag("DbFactory")<
 const buildDb = (layer: Layer.Layer<Db, DbError>) =>
   Layer.build(layer).pipe(Effect.map((context) => Context.get(context, Db)));
 
-const makeMemoryDbFactory = Effect.succeed({
+const memoryDbFactory = {
   createDb: (config: DbConfig) => buildDb(DbMemoryLive(config)),
-} satisfies DbFactoryService);
+} satisfies DbFactoryService;
 
-const makeRocksStubDbFactory = Effect.succeed({
+const rocksStubDbFactory = {
   createDb: (config: DbConfig) => buildDb(DbRocksStubLive(config)),
-} satisfies DbFactoryService);
+} satisfies DbFactoryService;
 
 /** Memory-backed DB factory layer. */
-export const DbFactoryMemoryLive: Layer.Layer<DbFactory> = Layer.effect(
+export const DbFactoryMemoryLive: Layer.Layer<DbFactory> = Layer.succeed(
   DbFactory,
-  makeMemoryDbFactory,
+  memoryDbFactory,
 );
 
 /** Memory-backed DB factory layer for tests. */
 export const DbFactoryMemoryTest: Layer.Layer<DbFactory> = DbFactoryMemoryLive;
 
 /** RocksDB-stub-backed DB factory layer. */
-export const DbFactoryRocksStubLive: Layer.Layer<DbFactory> = Layer.effect(
+export const DbFactoryRocksStubLive: Layer.Layer<DbFactory> = Layer.succeed(
   DbFactory,
-  makeRocksStubDbFactory,
+  rocksStubDbFactory,
 );
 
 /** RocksDB-stub-backed DB factory layer for tests. */
 export const DbFactoryRocksStubTest: Layer.Layer<DbFactory> =
   DbFactoryRocksStubLive;
 
+const withDbFactory = <A, E, R>(
+  f: (factory: DbFactoryService) => Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R | DbFactory> => Effect.flatMap(DbFactory, f);
+
 /** Create a DB from the configured factory. */
 export const createDb = (config: DbConfig) =>
-  Effect.gen(function* () {
-    const factory = yield* DbFactory;
-    return yield* factory.createDb(config);
-  });
+  withDbFactory((factory) => factory.createDb(config));
