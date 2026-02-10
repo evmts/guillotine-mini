@@ -264,6 +264,12 @@ const makeBlockStore = Effect.gen(function* () {
       let currentHash = validated;
       let currentNumber = blockNumberKey(headBlock.header.number);
 
+      for (const number of state.canonicalChain.keys()) {
+        if (number > currentNumber) {
+          state.canonicalChain.delete(number);
+        }
+      }
+
       while (true) {
         state.canonicalChain.set(currentNumber, currentHash);
 

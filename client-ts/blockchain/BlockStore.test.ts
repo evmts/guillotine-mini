@@ -125,4 +125,41 @@ describe("BlockStore", () => {
       assert.instanceOf(orphanError, CannotSetOrphanAsHeadError);
     }).pipe(Effect.provide(BlockStoreMemoryTest)),
   );
+
+  it.effect(
+    "setCanonicalHead prunes canonical entries above the new head",
+    () =>
+      Effect.gen(function* () {
+        const genesis = makeBlock({
+          number: 0n,
+          hash: blockHashFromByte(0xd0),
+          parentHash: blockHashFromByte(0x00),
+        });
+        const block1 = makeBlock({
+          number: 1n,
+          hash: blockHashFromByte(0xd1),
+          parentHash: genesis.hash,
+        });
+        const block2 = makeBlock({
+          number: 2n,
+          hash: blockHashFromByte(0xd2),
+          parentHash: block1.hash,
+        });
+
+        yield* putBlock(genesis);
+        yield* putBlock(block1);
+        yield* putBlock(block2);
+        yield* setCanonicalHead(block2.hash);
+
+        yield* setCanonicalHead(block1.hash);
+
+        const canonicalHash = yield* getCanonicalHash(block2.header.number);
+        assert.isTrue(Option.isNone(canonicalHash));
+        assert.strictEqual(yield* canonicalChainLength(), 2);
+
+        const headNumber = yield* getHeadBlockNumber();
+        assert.isTrue(Option.isSome(headNumber));
+        assert.strictEqual(Option.getOrThrow(headNumber) as bigint, 1n);
+      }).pipe(Effect.provide(BlockStoreMemoryTest)),
+  );
 });
