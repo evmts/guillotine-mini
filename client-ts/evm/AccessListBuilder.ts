@@ -133,7 +133,9 @@ const makeAccessListBuilder = Effect.gen(function* () {
         }
       };
 
-      addAddress(coinbase);
+      if (spec.isEip3651Enabled) {
+        addAddress(coinbase);
+      }
 
       if (
         Transaction.isEIP2930(parsedTx) ||

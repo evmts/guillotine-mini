@@ -24,9 +24,14 @@ const provideBuilder = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 const AccessListBuilderFrontier = AccessListBuilderLive.pipe(
   Layer.provide(ReleaseSpecLive(Hardfork.FRONTIER)),
 );
+const AccessListBuilderLondon = AccessListBuilderLive.pipe(
+  Layer.provide(ReleaseSpecLive(Hardfork.LONDON)),
+);
 
 const provideFrontierBuilder = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(AccessListBuilderFrontier));
+const provideLondonBuilder = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.provide(AccessListBuilderLondon));
 
 const LegacySchema = Transaction.LegacySchema as unknown as Schema.Schema<
   Transaction.Legacy,
@@ -101,6 +106,19 @@ describe("AccessListBuilder.buildAccessList", () => {
           throw new Error("missing coinbase address");
         }
         assert.isTrue(Address.equals(first, coinbase));
+        assert.strictEqual(result.storageKeys.length, 0);
+      }),
+    ),
+  );
+
+  it.effect("skips coinbase warmup before Shanghai", () =>
+    provideLondonBuilder(
+      Effect.gen(function* () {
+        const coinbase = makeAddress(0xaa);
+        const tx = makeLegacyTx();
+        const result = yield* buildAccessList(tx, coinbase);
+
+        assert.strictEqual(result.addresses.length, 0);
         assert.strictEqual(result.storageKeys.length, 0);
       }),
     ),
