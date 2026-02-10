@@ -5,12 +5,14 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import {
+  Address,
   Balance,
   BaseFeePerGas,
   Blob,
   GasPrice,
   Transaction,
 } from "voltaire-effect/primitives";
+import { WorldState } from "../state/State";
 import {
   beginTransaction,
   commitTransaction,
@@ -31,6 +33,13 @@ export type MaxGasFeeCheck = {
   readonly blobGasFee: Balance.BalanceType;
   readonly blobGasUsed: bigint;
 };
+
+/** Result of pre-execution sender mutation (buy gas + increment nonce). */
+export type GasPurchase = EffectiveGasPrice &
+  MaxGasFeeCheck & {
+    readonly senderBalanceAfterGasBuy: Balance.BalanceType;
+    readonly senderNonceAfterIncrement: Transaction.Any["nonce"];
+  };
 
 const TransactionSchema = Transaction.Schema as unknown as Schema.Schema<
   Transaction.Any,
@@ -157,6 +166,22 @@ export class EmptyAuthorizationListError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+/** Error raised when transaction nonce is lower than sender nonce. */
+export class TransactionNonceTooLowError extends Data.TaggedError(
+  "TransactionNonceTooLowError",
+)<{
+  readonly txNonce: bigint;
+  readonly senderNonce: bigint;
+}> {}
+
+/** Error raised when transaction nonce is higher than sender nonce. */
+export class TransactionNonceTooHighError extends Data.TaggedError(
+  "TransactionNonceTooHighError",
+)<{
+  readonly txNonce: bigint;
+  readonly senderNonce: bigint;
+}> {}
+
 /** Union of transaction fee calculation errors. */
 export type TransactionFeeError =
   | InvalidTransactionError
@@ -177,6 +202,12 @@ export type MaxGasFeeCheckError =
   | InvalidBlobVersionedHashError
   | TransactionTypeContractCreationError
   | EmptyAuthorizationListError;
+
+/** Union of buy-gas and nonce increment errors. */
+export type GasPurchaseError =
+  | MaxGasFeeCheckError
+  | TransactionNonceTooLowError
+  | TransactionNonceTooHighError;
 
 const runWithinBoundary = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
@@ -206,6 +237,12 @@ export interface TransactionProcessorService {
     blobGasPrice: bigint,
     senderBalance: bigint,
   ) => Effect.Effect<MaxGasFeeCheck, MaxGasFeeCheckError>;
+  readonly buyGasAndIncrementNonce: (
+    tx: Transaction.Any,
+    sender: Address.AddressType,
+    baseFeePerGas: bigint,
+    blobGasPrice: bigint,
+  ) => Effect.Effect<GasPurchase, GasPurchaseError, WorldState>;
   readonly runInTransactionBoundary: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | TransactionBoundaryError, R | TransactionBoundary>;
@@ -490,6 +527,67 @@ const makeTransactionProcessor = Effect.gen(function* () {
       return { maxGasFee, blobGasFee, blobGasUsed };
     });
 
+  const buyGasAndIncrementNonce = (
+    tx: Transaction.Any,
+    sender: Address.AddressType,
+    baseFeePerGas: bigint,
+    blobGasPrice: bigint,
+  ) =>
+    Effect.gen(function* () {
+      const worldState = yield* WorldState;
+      const senderAccount = yield* worldState.getAccount(sender);
+
+      if (tx.nonce < senderAccount.nonce) {
+        return yield* Effect.fail(
+          new TransactionNonceTooLowError({
+            txNonce: tx.nonce,
+            senderNonce: senderAccount.nonce,
+          }),
+        );
+      }
+
+      if (tx.nonce > senderAccount.nonce) {
+        return yield* Effect.fail(
+          new TransactionNonceTooHighError({
+            txNonce: tx.nonce,
+            senderNonce: senderAccount.nonce,
+          }),
+        );
+      }
+
+      const { effectiveGasPrice, priorityFeePerGas } =
+        yield* calculateEffectiveGasPrice(tx, baseFeePerGas);
+      const { maxGasFee, blobGasFee, blobGasUsed } =
+        yield* checkMaxGasFeeAndBalance(
+          tx,
+          baseFeePerGas,
+          blobGasPrice,
+          senderAccount.balance,
+        );
+
+      const senderBalanceAfterGasBuy = yield* decodeBalance(
+        senderAccount.balance - maxGasFee,
+        "sender post-buy-gas",
+      );
+      const senderNonceAfterIncrement = senderAccount.nonce + 1n;
+
+      yield* worldState.setAccount(sender, {
+        ...senderAccount,
+        balance: senderBalanceAfterGasBuy,
+        nonce: senderNonceAfterIncrement,
+      });
+
+      return {
+        effectiveGasPrice,
+        priorityFeePerGas,
+        maxGasFee,
+        blobGasFee,
+        blobGasUsed,
+        senderBalanceAfterGasBuy,
+        senderNonceAfterIncrement,
+      } satisfies GasPurchase;
+    });
+
   const runInTransactionBoundary = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     runWithinBoundary(effect);
 
@@ -499,6 +597,7 @@ const makeTransactionProcessor = Effect.gen(function* () {
   return {
     calculateEffectiveGasPrice,
     checkMaxGasFeeAndBalance,
+    buyGasAndIncrementNonce,
     runInTransactionBoundary,
     runInCallFrameBoundary,
   } satisfies TransactionProcessorService;
@@ -534,6 +633,17 @@ export const checkMaxGasFeeAndBalance = (
       blobGasPrice,
       senderBalance,
     ),
+  );
+
+/** Reserve sender gas and increment nonce before EVM execution. */
+export const buyGasAndIncrementNonce = (
+  tx: Transaction.Any,
+  sender: Address.AddressType,
+  baseFeePerGas: bigint,
+  blobGasPrice: bigint,
+) =>
+  withTransactionProcessor((service) =>
+    service.buyGasAndIncrementNonce(tx, sender, baseFeePerGas, blobGasPrice),
   );
 
 /** Execute a transaction-scoped effect with begin/commit/rollback semantics. */

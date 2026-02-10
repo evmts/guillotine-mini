@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { Address, Blob, Hex, Transaction } from "voltaire-effect/primitives";
 import {
+  buyGasAndIncrementNonce,
   calculateEffectiveGasPrice,
   checkMaxGasFeeAndBalance,
   EmptyAuthorizationListError,
@@ -19,6 +20,8 @@ import {
   PriorityFeeGreaterThanMaxFeeError,
   runInCallFrameBoundary,
   runInTransactionBoundary,
+  TransactionNonceTooHighError,
+  TransactionNonceTooLowError,
   TransactionTypeContractCreationError,
   TransactionProcessorTest,
 } from "./TransactionProcessor";
@@ -422,6 +425,85 @@ describe("TransactionProcessor.checkMaxGasFeeAndBalance", () => {
         assert.isTrue(Either.isLeft(outcome));
         if (Either.isLeft(outcome)) {
           assert.isTrue(outcome.left instanceof EmptyAuthorizationListError);
+        }
+      }),
+    ),
+  );
+});
+
+describe("TransactionProcessor.buyGasAndIncrementNonce", () => {
+  it.effect("reserves max gas fee and increments sender nonce", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xb1);
+        const tx = makeEip1559Tx(10n, 1n);
+        yield* setAccount(
+          sender,
+          makeAccount({
+            nonce: tx.nonce,
+            balance: 2_000_000n,
+          }),
+        );
+
+        const result = yield* buyGasAndIncrementNonce(tx, sender, 5n, 0n);
+        assert.strictEqual(result.maxGasFee, tx.gasLimit * tx.maxFeePerGas);
+        assert.strictEqual(result.effectiveGasPrice, 6n);
+        assert.strictEqual(result.senderBalanceAfterGasBuy, 1_000_000n);
+        assert.strictEqual(result.senderNonceAfterIncrement, tx.nonce + 1n);
+
+        const account = yield* getAccountOptional(sender);
+        assert.strictEqual(account?.balance, 1_000_000n);
+        assert.strictEqual(account?.nonce, tx.nonce + 1n);
+      }),
+    ),
+  );
+
+  it.effect("fails when transaction nonce is lower than sender nonce", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xb2);
+        const tx = makeEip1559Tx(10n, 1n);
+        yield* setAccount(
+          sender,
+          makeAccount({
+            nonce: tx.nonce + 1n,
+            balance: 2_000_000n,
+          }),
+        );
+
+        const outcome = yield* Effect.either(
+          buyGasAndIncrementNonce(tx, sender, 5n, 0n),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof TransactionNonceTooLowError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when transaction nonce is higher than sender nonce", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xb3);
+        const tx: Transaction.EIP1559 = {
+          ...makeEip1559Tx(10n, 1n),
+          nonce: 1n,
+        };
+        yield* setAccount(
+          sender,
+          makeAccount({
+            nonce: 0n,
+            balance: 2_000_000n,
+          }),
+        );
+
+        const outcome = yield* Effect.either(
+          buyGasAndIncrementNonce(tx, sender, 5n, 0n),
+        );
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof TransactionNonceTooHighError);
         }
       }),
     ),
