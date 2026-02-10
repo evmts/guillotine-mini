@@ -164,6 +164,16 @@ const nullDbWriteError = () =>
 
 const failNullDbWrite = () => Effect.fail(nullDbWriteError());
 
+const rocksDbUnsupportedError = (operation: string) =>
+  new DbError({
+    message: `RocksDb backend stub does not implement ${operation}`,
+  });
+
+const failRocksDbUnsupported = <A>(
+  operation: string,
+): Effect.Effect<A, DbError> =>
+  Effect.fail(rocksDbUnsupportedError(operation)) as Effect.Effect<A, DbError>;
+
 type StoreEntry = {
   readonly key: BytesType;
   readonly value: BytesType;
@@ -582,6 +592,73 @@ const makeNullDb = (config: DbConfig) =>
     } satisfies DbService;
   });
 
+const makeRocksDb = (config: DbConfig) =>
+  Effect.gen(function* () {
+    const validated = yield* validateConfig(config);
+
+    const get = (_key: BytesType, _flags?: ReadFlags) =>
+      failRocksDbUnsupported<Option.Option<BytesType>>("get");
+
+    const getMany = (_keys: ReadonlyArray<BytesType>) =>
+      failRocksDbUnsupported<ReadonlyArray<DbGetEntry>>("getMany");
+
+    const getAll = (_ordered?: boolean) =>
+      failRocksDbUnsupported<ReadonlyArray<DbEntry>>("getAll");
+
+    const getAllKeys = (_ordered?: boolean) =>
+      failRocksDbUnsupported<ReadonlyArray<BytesType>>("getAllKeys");
+
+    const getAllValues = (_ordered?: boolean) =>
+      failRocksDbUnsupported<ReadonlyArray<BytesType>>("getAllValues");
+
+    const put = (_key: BytesType, _value: BytesType, _flags?: WriteFlags) =>
+      failRocksDbUnsupported<void>("put");
+
+    const merge = (_key: BytesType, _value: BytesType, _flags?: WriteFlags) =>
+      failRocksDbUnsupported<void>("merge");
+
+    const remove = (_key: BytesType) => failRocksDbUnsupported<void>("remove");
+
+    const has = (_key: BytesType) => failRocksDbUnsupported<boolean>("has");
+
+    const createSnapshot = () =>
+      failRocksDbUnsupported<DbSnapshot>("createSnapshot");
+
+    const flush = (_onlyWal?: boolean) => failRocksDbUnsupported<void>("flush");
+
+    const clear = () => failRocksDbUnsupported<void>("clear");
+
+    const compact = () => failRocksDbUnsupported<void>("compact");
+
+    const gatherMetric = () => failRocksDbUnsupported<DbMetric>("gatherMetric");
+
+    const writeBatch = (_ops: ReadonlyArray<DbWriteOp>) =>
+      failRocksDbUnsupported<void>("writeBatch");
+
+    const startWriteBatch = () =>
+      failRocksDbUnsupported<WriteBatch>("startWriteBatch");
+
+    return {
+      name: validated.name,
+      get,
+      getMany,
+      getAll,
+      getAllKeys,
+      getAllValues,
+      put,
+      merge,
+      remove,
+      has,
+      createSnapshot,
+      flush,
+      clear,
+      compact,
+      gatherMetric,
+      writeBatch,
+      startWriteBatch,
+    } satisfies DbService;
+  });
+
 /** In-memory production DB layer. */
 export const DbMemoryLive = (config: DbConfig): Layer.Layer<Db, DbError> =>
   Layer.scoped(Db, makeMemoryDb(config));
@@ -599,6 +676,15 @@ export const DbNullLive = (config: DbConfig): Layer.Layer<Db, DbError> =>
 export const DbNullTest = (
   config: DbConfig = { name: DbNames.state },
 ): Layer.Layer<Db, DbError> => Layer.scoped(Db, makeNullDb(config));
+
+/** RocksDB backend stub layer (all operations fail). */
+export const DbRocksStubLive = (config: DbConfig): Layer.Layer<Db, DbError> =>
+  Layer.effect(Db, makeRocksDb(config));
+
+/** RocksDB backend stub layer for tests (all operations fail). */
+export const DbRocksStubTest = (
+  config: DbConfig = { name: DbNames.state },
+): Layer.Layer<Db, DbError> => Layer.effect(Db, makeRocksDb(config));
 
 /** Retrieve a value by key. */
 export const get = (key: BytesType, flags?: ReadFlags) =>
