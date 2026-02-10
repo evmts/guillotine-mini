@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import type * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import { Block, BlockHash, BlockNumber, Hex } from "voltaire-effect/primitives";
@@ -203,6 +204,10 @@ const EMPTY_FORK_CHOICE: ForkChoiceState = {
   safe: Option.none(),
   finalized: Option.none(),
 };
+const BlockNumberBigIntSchema = BlockNumber.BigInt as unknown as Schema.Schema<
+  BlockNumberType,
+  bigint
+>;
 
 const makeBlockchain = Effect.gen(function* () {
   const store = yield* BlockTree;
@@ -225,7 +230,9 @@ const makeBlockchain = Effect.gen(function* () {
 
   const validateGenesisBlock = (genesis: BlockType) =>
     Effect.gen(function* () {
-      const number = genesis.header.number as bigint;
+      const number = Schema.encodeSync(BlockNumberBigIntSchema)(
+        genesis.header.number,
+      );
       if (number !== 0n) {
         return yield* Effect.fail(
           new InvalidGenesisBlockError({
@@ -268,7 +275,9 @@ const makeBlockchain = Effect.gen(function* () {
         }
 
         const block = Option.getOrThrow(currentBlock);
-        const number = block.header.number as bigint;
+        const number = Schema.encodeSync(BlockNumberBigIntSchema)(
+          block.header.number,
+        );
 
         if (number === 0n) {
           if (Hex.fromBytes(block.hash) !== Hex.fromBytes(genesisHash)) {
@@ -295,7 +304,9 @@ const makeBlockchain = Effect.gen(function* () {
         }
 
         const parent = Option.getOrThrow(parentBlock);
-        const parentNumber = parent.header.number as bigint;
+        const parentNumber = Schema.encodeSync(BlockNumberBigIntSchema)(
+          parent.header.number,
+        );
         if (parentNumber !== number - 1n) {
           return yield* Effect.fail(
             new CanonicalChainInvalidError({
@@ -309,7 +320,8 @@ const makeBlockchain = Effect.gen(function* () {
       }
     });
 
-  const toBigInt = (number: BlockNumberType) => number as bigint;
+  const toBigInt = (number: BlockNumberType) =>
+    Schema.encodeSync(BlockNumberBigIntSchema)(number);
 
   const updateBestKnownNumber = (number: BlockNumberType) =>
     Ref.update(state, (current) => {
