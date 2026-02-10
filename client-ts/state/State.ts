@@ -382,7 +382,6 @@ const makeWorldState = Effect.gen(function* () {
           tag: ChangeTag.Create,
         });
         accounts.set(key, next);
-        yield* markAccountCreated(address);
         return;
       }
 

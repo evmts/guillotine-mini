@@ -215,6 +215,7 @@ describe("WorldState", () => {
         const value = makeStorageValue(9);
 
         const snapshot = yield* takeSnapshot();
+        yield* markAccountCreated(addr);
         yield* setAccount(addr, makeAccount({ nonce: 1n }));
         yield* setStorage(addr, slot, value);
 
@@ -266,6 +267,7 @@ describe("WorldState", () => {
       Effect.gen(function* () {
         const addr = makeAddress(4);
         const outer = yield* takeSnapshot();
+        yield* markAccountCreated(addr);
         yield* setAccount(addr, makeAccount({ nonce: 1n }));
 
         assert.isTrue(yield* wasAccountCreated(addr));
@@ -321,6 +323,7 @@ describe("WorldState", () => {
         const outer = yield* takeSnapshot();
         const inner = yield* takeSnapshot();
 
+        yield* markAccountCreated(addr);
         yield* setAccount(addr, makeAccount({ nonce: 1n }));
         assert.isTrue(yield* wasAccountCreated(addr));
 
