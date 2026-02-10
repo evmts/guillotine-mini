@@ -13,6 +13,7 @@ pub const compare_fee_market_priority = sorter.compare_fee_market_priority;
 
 /// Admission helper: re-export to avoid wrapper signature drift.
 pub const fits_size_limits = limits.fits_size_limits;
+pub const fits_gas_limit = limits.fits_gas_limit;
 
 test {
     std.testing.refAllDecls(@This());

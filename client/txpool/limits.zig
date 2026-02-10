@@ -4,6 +4,33 @@ const primitives = @import("primitives");
 const tx_mod = primitives.Transaction;
 const TxPoolConfig = @import("pool.zig").TxPoolConfig;
 
+/// Validate a transaction's `gas_limit` against optional pool cap.
+///
+/// - If `cfg.gas_limit` is `null`, this check is a no-op.
+/// - Otherwise returns `error.TxGasLimitExceeded` when `tx.gas_limit > cfg.gas_limit`.
+///
+/// Uses Voltaire primitives exclusively. Applies uniformly to all canonical
+/// transaction types (legacy, 2930, 1559, 4844, 7702).
+pub fn fits_gas_limit(tx: anytype, cfg: TxPoolConfig) error{TxGasLimitExceeded}!void {
+    const T = @TypeOf(tx);
+    comptime {
+        if (!(T == tx_mod.LegacyTransaction or
+            T == tx_mod.Eip2930Transaction or
+            T == tx_mod.Eip1559Transaction or
+            T == tx_mod.Eip4844Transaction or
+            T == tx_mod.Eip7702Transaction))
+        {
+            @compileError("Unsupported transaction type for fits_gas_limit: " ++ @typeName(T));
+        }
+    }
+
+    const cap_opt = cfg.gas_limit;
+    if (cap_opt) |cap| {
+        // All Voltaire tx types expose .gas_limit as an integer scalar.
+        const tx_limit: u64 = @intCast(tx.gas_limit);
+        if (tx_limit > cap) return error.TxGasLimitExceeded;
+    }
+}
 /// Validate the RLP-encoded size of a transaction against pool limits.
 ///
 /// - Uses Voltaire Transaction encoders to compute raw network bytes:
@@ -834,4 +861,90 @@ test "fits_size_limits — eip7702 within and over limit (signed)" {
     var cfg_bad = TxPoolConfig{};
     cfg_bad.max_tx_size = encoded.len - 1;
     try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(allocator, tx, cfg_bad));
+}
+
+test "fits_gas_limit — passes when under/equal, errors when over (legacy)" {
+    const Address = primitives.Address;
+    const tx = tx_mod.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = 1,
+        .gas_limit = 21_000,
+        .to = Address{ .bytes = [_]u8{0x99} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .v = 37,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    // No cap → always OK
+    try fits_gas_limit(tx, TxPoolConfig{});
+
+    var cfg = TxPoolConfig{};
+    cfg.gas_limit = 21_000;
+    try fits_gas_limit(tx, cfg); // equal → OK
+
+    cfg.gas_limit = 20_999;
+    try std.testing.expectError(error.TxGasLimitExceeded, fits_gas_limit(tx, cfg));
+}
+
+test "fits_gas_limit — works for typed txs (1559, 4844, 7702)" {
+    const Address = primitives.Address;
+    const VersionedHash = primitives.Blob.VersionedHash;
+    const Authorization = primitives.Authorization.Authorization;
+
+    var cfg = TxPoolConfig{};
+    cfg.gas_limit = 50_000;
+
+    const tx1559 = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 2,
+        .gas_limit = 30_000,
+        .to = Address{ .bytes = [_]u8{0xA1} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    try fits_gas_limit(tx1559, cfg);
+
+    const hashes = [_]VersionedHash{.{ .bytes = [_]u8{0xAB} ++ [_]u8{0} ** 31 }};
+    const tx4844 = tx_mod.Eip4844Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 2,
+        .gas_limit = 60_000, // above cap
+        .to = Address{ .bytes = [_]u8{0xA2} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .max_fee_per_blob_gas = 1,
+        .blob_versioned_hashes = &hashes,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    try std.testing.expectError(error.TxGasLimitExceeded, fits_gas_limit(tx4844, cfg));
+
+    const tx7702 = tx_mod.Eip7702Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 2,
+        .gas_limit = 50_000, // equal to cap
+        .to = Address{ .bytes = [_]u8{0xA3} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .authorization_list = &[_]Authorization{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    try fits_gas_limit(tx7702, cfg);
 }
