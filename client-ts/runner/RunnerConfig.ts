@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
+/** Schema for runner bootstrap configuration values resolved from CLI/env/defaults. */
 export const RunnerConfigSchema = Schema.Struct({
   configuration: Schema.String,
   configurationDirectory: Schema.String,
@@ -11,12 +12,15 @@ export const RunnerConfigSchema = Schema.Struct({
   databaseDirectory: Schema.String,
 });
 
+/** Raw runner configuration input shape before schema decoding. */
 export type RunnerConfigInput = Schema.Schema.Encoded<
   typeof RunnerConfigSchema
 >;
 
+/** Decoded runner configuration shape used by services. */
 export type RunnerConfigData = Schema.Schema.Type<typeof RunnerConfigSchema>;
 
+/** Default runner configuration values used when no overrides are provided. */
 export const RunnerConfigDefaults: RunnerConfigInput = {
   configuration: "mainnet",
   configurationDirectory: "configs",
@@ -40,12 +44,14 @@ export class InvalidRunnerConfigError extends Data.TaggedError(
   readonly cause?: unknown;
 }> {}
 
+/** Inputs used to resolve the effective runner configuration. */
 export interface RunnerConfigResolveInput {
   readonly argv?: ReadonlyArray<string>;
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly configDefaults?: Partial<RunnerConfigInput>;
 }
 
+/** Service contract exposing resolved runner configuration. */
 export interface RunnerConfigService {
   readonly config: RunnerConfigData;
 }
@@ -158,6 +164,16 @@ const readEnvValue = (
   return undefined;
 };
 
+const resolveConfigValue = (
+  key: keyof RunnerConfigInput,
+  cliOverrides: Partial<Record<keyof RunnerConfigInput, string>>,
+  env: Readonly<Record<string, string | undefined>>,
+  defaults: RunnerConfigInput,
+): string =>
+  cliOverrides[key] ??
+  readEnvValue(env, envVarToConfigKey[key]) ??
+  defaults[key];
+
 const decodeRunnerConfig = (input: RunnerConfigInput) =>
   Schema.decode(RunnerConfigSchema)(input).pipe(
     Effect.mapError(
@@ -185,22 +201,30 @@ const resolveRunnerConfigInput = ({
     } satisfies RunnerConfigInput;
 
     return {
-      configuration:
-        cliOverrides.configuration ??
-        readEnvValue(env, envVarToConfigKey.configuration) ??
-        defaults.configuration,
-      configurationDirectory:
-        cliOverrides.configurationDirectory ??
-        readEnvValue(env, envVarToConfigKey.configurationDirectory) ??
-        defaults.configurationDirectory,
-      dataDirectory:
-        cliOverrides.dataDirectory ??
-        readEnvValue(env, envVarToConfigKey.dataDirectory) ??
-        defaults.dataDirectory,
-      databaseDirectory:
-        cliOverrides.databaseDirectory ??
-        readEnvValue(env, envVarToConfigKey.databaseDirectory) ??
-        defaults.databaseDirectory,
+      configuration: resolveConfigValue(
+        "configuration",
+        cliOverrides,
+        env,
+        defaults,
+      ),
+      configurationDirectory: resolveConfigValue(
+        "configurationDirectory",
+        cliOverrides,
+        env,
+        defaults,
+      ),
+      dataDirectory: resolveConfigValue(
+        "dataDirectory",
+        cliOverrides,
+        env,
+        defaults,
+      ),
+      databaseDirectory: resolveConfigValue(
+        "databaseDirectory",
+        cliOverrides,
+        env,
+        defaults,
+      ),
     } satisfies RunnerConfigInput;
   });
 
