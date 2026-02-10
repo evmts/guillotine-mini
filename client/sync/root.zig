@@ -7,6 +7,8 @@ const full = @import("full.zig");
 pub const BlocksRequest = full.BlocksRequest;
 /// Full sync per-peer body request limit.
 pub const maxBodiesPerRequest = full.maxBodiesPerRequest;
+/// Full sync per-peer receipt request limit.
+pub const maxReceiptsPerRequest = full.maxReceiptsPerRequest;
 
 test {
     @import("std").testing.refAllDecls(@This());

@@ -27,6 +27,21 @@ pub fn maxBodiesPerRequest(peer: PeerInfo) usize {
     return 32;
 }
 
+/// Return the maximum number of block receipts to request from a peer.
+/// Mirrors Nethermind per-client sync limits for GetReceipts.
+pub fn maxReceiptsPerRequest(peer: PeerInfo) usize {
+    const name = peer.name;
+    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Besu")) return 256;
+    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Geth")) return 256;
+    if (name.len >= 10 and std.ascii.eqlIgnoreCase(name[0..10], "Nethermind")) return 256;
+    if (name.len >= 6 and std.ascii.eqlIgnoreCase(name[0..6], "Parity")) return 256;
+    if (name.len >= 12 and std.ascii.eqlIgnoreCase(name[0..12], "OpenEthereum")) return 256;
+    if (name.len >= 7 and std.ascii.eqlIgnoreCase(name[0..7], "Trinity")) return 256;
+    if (name.len >= 6 and std.ascii.eqlIgnoreCase(name[0..6], "Erigon")) return 256;
+    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Reth")) return 256;
+    return 128;
+}
+
 /// Block body + receipt request/response container.
 ///
 /// Requests are ordered lists of block headers. Responses must preserve
@@ -312,5 +327,35 @@ test "maxBodiesPerRequest uses client-specific limits" {
     for (cases) |case| {
         const peer = PeerInfoModule.init(peer_id, case.name, caps, network, protocols);
         try std.testing.expectEqual(case.expected, maxBodiesPerRequest(peer));
+    }
+}
+
+test "maxReceiptsPerRequest uses client-specific limits" {
+    const peer_id: primitives.PeerId.PeerId = [_]u8{0} ** 64;
+    const caps = &[_][]const u8{};
+    const network = PeerInfoModule.NetworkInfo{
+        .local_address = "",
+        .remote_address = "",
+        .inbound = false,
+        .trusted = false,
+        .static = false,
+    };
+    const protocols = PeerInfoModule.Protocols{ .eth = null };
+
+    const cases = [_]struct { name: []const u8, expected: usize }{
+        .{ .name = "Besu/v23.4.0", .expected = 256 },
+        .{ .name = "Geth/v1.13.0", .expected = 256 },
+        .{ .name = "Nethermind/v1.18.0", .expected = 256 },
+        .{ .name = "Parity-Ethereum/v2.7.2", .expected = 256 },
+        .{ .name = "OpenEthereum/v3.3.5", .expected = 256 },
+        .{ .name = "Trinity/v0.1.0", .expected = 256 },
+        .{ .name = "Erigon/v2.43.1", .expected = 256 },
+        .{ .name = "Reth/v0.2.0", .expected = 256 },
+        .{ .name = "UnknownClient/0.0.1", .expected = 128 },
+    };
+
+    for (cases) |case| {
+        const peer = PeerInfoModule.init(peer_id, case.name, caps, network, protocols);
+        try std.testing.expectEqual(case.expected, maxReceiptsPerRequest(peer));
     }
 }
