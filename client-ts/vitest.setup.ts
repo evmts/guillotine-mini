@@ -1,20 +1,21 @@
-import { onTestFinished } from "vitest";
+import { beforeEach, onTestFinished } from "vitest";
 
 type OnTestFinished = typeof onTestFinished;
 type OnTestFinishedHandler = Parameters<OnTestFinished>[0];
 
-type TestContextFunction = Function & {
+type TestContext = {
   onTestFinished?: (handler: OnTestFinishedHandler) => void;
 };
 
-const functionProto = Function.prototype as TestContextFunction;
+beforeEach((ctx) => {
+  const context = ctx as TestContext;
+  if (typeof context.onTestFinished === "function") {
+    return;
+  }
 
-if (typeof functionProto.onTestFinished !== "function") {
-  Object.defineProperty(Function.prototype, "onTestFinished", {
-    value: function (handler: OnTestFinishedHandler) {
-      return onTestFinished(handler);
-    },
+  Object.defineProperty(context, "onTestFinished", {
+    value: onTestFinished,
     configurable: true,
     writable: true,
   });
-}
+});
