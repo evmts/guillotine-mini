@@ -1,64 +1,112 @@
 # [pass 1/5] phase-9-sync (Synchronization) — Context
 
-This file aggregates the minimal but sufficient context to implement Phase 9 (Synchronization) using Voltaire primitives, the existing EVM, and Nethermind structure.
+## Phase Goal (source: `prd/GUILLOTINE_CLIENT_PLAN.md`)
+- `Phase 9: Synchronization (phase-9-sync)` goal: implement chain synchronization strategies.
+- Planned module boundaries:
+  - `client/sync/full.zig` (full sync)
+  - `client/sync/snap.zig` (snap sync)
+  - `client/sync/manager.zig` (coordination)
+- Structural reference: `nethermind/src/Nethermind/Nethermind.Synchronization/`.
 
-## Goals (from prd/GUILLOTINE_CLIENT_PLAN.md)
-- Path: `prd/GUILLOTINE_CLIENT_PLAN.md:154`
-- Summary: Implement chain synchronization strategies and coordination.
-- Target files to implement in this phase:
-  - `client/sync/full.zig` — Full sync
-  - `client/sync/snap.zig` — Snap sync
-  - `client/sync/manager.zig` — Sync coordination
-- Architectural reference: `nethermind/src/Nethermind/Nethermind.Synchronization/`
+## Specs To Read First (source: `prd/ETHEREUM_SPECS_REFERENCE.md`)
+- `devp2p/caps/eth.md`
+  - Status handshake is mandatory before other ETH messages.
+  - Chain sync flow uses:
+    - `GetBlockHeaders` / `BlockHeaders`
+    - `GetBlockBodies` / `BlockBodies`
+    - `GetReceipts` / `Receipts`
+  - Propagation and sync interaction:
+    - `NewBlockHashes`, `NewBlock`
+    - `BlockRangeUpdate` (eth/69)
+  - Request/response correlation for modern versions includes request ids (eth/66+).
+- `devp2p/caps/snap.md`
+  - Snapshot/state sync protocol is `snap/1`.
+  - Sync algorithm and proofs are defined around:
+    - `GetAccountRange` / `AccountRange`
+    - `GetStorageRanges` / `StorageRanges`
+    - `GetByteCodes` / `ByteCodes`
+    - `GetTrieNodes` / `TrieNodes`
+  - `snap` depends on `eth` for block/header context.
+- Test references for this phase:
+  - `hive/` sync tests
+  - integration tests (client-level)
 
-## Specs (from prd/ETHEREUM_SPECS_REFERENCE.md)
-- `devp2p/caps/eth.md` — ETH subprotocol (e.g., `GetBlockHeaders`, `BlockHeaders`, `GetBlockBodies`, `BlockBodies`, status exchange, total difficulty/terminal PoS handling). Use for header/body download logic, request pagination, and response validation.
-- `devp2p/caps/snap.md` — Snap protocol (state sync via range proofs and trie segments). Use for state range downloads (accounts/storage), proof validation, and pivot logic.
-- Tests called out: `hive/` sync tests; integration tests.
+## Nethermind DB Inventory (source: `nethermind/src/Nethermind/Nethermind.Db/`)
+Requested listing reviewed. Key files to mirror conceptually in Effect TS sync persistence design:
+- `IDb.cs`
+  - Core DB interface: name, multi-get, enumeration, read-only wrapper creation.
+- `IDbProvider.cs`, `DbProvider.cs`
+  - Central registry/resolution pattern for named DBs.
+- `IColumnsDb.cs`, `ReceiptsColumns.cs`, `BlobTxsColumns.cs`
+  - Column-family separation for typed data domains.
+- `InMemoryWriteBatch.cs`, `InMemoryColumnBatch.cs`
+  - Batch write semantics for high-throughput ingestion.
+- `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs`, `IReadOnlyDb.cs`, `IReadOnlyDbProvider.cs`
+  - Read isolation and optional in-memory write overlay patterns.
+- `PruningConfig.cs`, `PruningMode.cs`, `FullPruning/*`, `FullPruningTrigger.cs`
+  - Long-running sync retention/pruning controls.
+- `MetadataDbKeys.cs`
+  - Sync/progress metadata keys (e.g., finalized/safe pivots, barriers).
+- `Metrics.cs`, `DbExtensions.cs`, `DbNames.cs`
+  - Operational telemetry and canonical DB naming.
 
-## Nethermind DB (inventory for sync persistence needs)
-Path: `nethermind/src/Nethermind/Nethermind.Db/` (selected key files)
-- `IDb.cs`, `IReadOnlyDb.cs`, `IDbProvider.cs`, `DbProvider.cs` — DB abstraction/provider boundaries.
-- `MemDb.cs`, `MemDbFactory.cs` — In-memory DB used in tests/bootstrap.
-- `CompressingDb.cs`, `RocksDbSettings.cs`, `IMergeOperator.cs` — Storage tuning and merges.
-- `PruningConfig.cs`, `PruningMode.cs`, `FullPruning/*` — Pruning strategies relevant to long-running sync.
-- `ReadOnlyDb*.cs`, `IColumnsDb.cs`, `InMemoryWriteBatch.cs` — Column/batch patterns for high-throughput ingestion.
-- `Metrics.cs`, `MetadataDbKeys.cs`, `DbExtensions.cs` — Operational telemetry and common keys.
+## Voltaire Zig API Surface (source: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`)
+Top-level modules:
+- `blockchain/`
+- `crypto/`
+- `evm/`
+- `jsonrpc/`
+- `precompiles/`
+- `primitives/`
+- `state-manager/`
 
-These patterns guide: separation of read/write DBs, batch ingestion, pruning modes, and metrics — mirror the structure idiomatically in Zig with Voltaire primitives.
+Relevant exported APIs for sync/reference alignment:
+- `blockchain/root.zig`
+  - `BlockStore`
+  - `ForkBlockCache`
+  - `Blockchain`
+- `state-manager/root.zig`
+  - `StateManager`
+  - `JournaledState`
+  - `ForkBackend`
+  - `AccountCache`, `StorageCache`, `ContractCache`
+- `primitives/root.zig`
+  - Core primitives used by sync/data flow:
+    - `Address`, `Hash`, `Hex`, `Bytes`, `Bytes32`
+    - `Block`, `BlockHeader`, `BlockBody`, `BlockHash`, `BlockNumber`
+    - `Transaction`, `Receipt`, `Rlp`
+    - `ForkId`, `ChainHead`, `PeerId`, `PeerInfo`, `SyncStatus`
+    - `StateRoot`, `Proof`, `StorageProof`, `StateProof`
 
-## Voltaire Zig APIs likely used
-Root: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
-- `primitives/` core types:
-  - `BlockHeader`, `BlockBody`, `Block`, `Uncle`, `Hash`, `Bytes32`, `Rlp/` (encoding/decoding), `Uint/` (fixed-width ints), `PeerId`, `SyncStatus`, `HandshakeRole`, `SnappyParameters`.
-  - `Transaction`, `Receipt`, `BloomFilter`, `StateRoot`, `Storage*`, `AccountState` as needed for validation.
-- `blockchain/` ingestion & chain mgmt: `Blockchain.zig`, `BlockStore.zig`, `ForkBlockCache.zig`.
-- `evm/` and `state-manager/` are kept as-is; EVM is not reimplemented — only invoked where needed for validation post-sync if applicable.
-- Logging: `log.zig`.
+## Existing Host Interface (source: `src/host.zig`)
+- `HostInterface` is a `ptr + vtable` contract with:
+  - `getBalance`, `setBalance`
+  - `getCode`, `setCode`
+  - `getStorage`, `setStorage`
+  - `getNonce`, `setNonce`
+- Current note in file: nested EVM calls use internal call machinery, not this host abstraction.
+- Implication for sync design: host is state access glue, not sync orchestration.
 
-Use these directly — do not introduce custom duplicates. Prefer RLP from `primitives.Rlp`, integers from `primitives.Uint`, IDs and hashes from `primitives` folders.
+## Ethereum Test Fixture Paths (source: `ethereum-tests/`)
+Primary fixture areas relevant to sync and block import:
+- `ethereum-tests/BlockchainTests/ValidBlocks/`
+- `ethereum-tests/BlockchainTests/InvalidBlocks/`
+- `ethereum-tests/DifficultyTests/`
+- `ethereum-tests/RLPTests/`
+- `ethereum-tests/TransactionTests/`
+- `ethereum-tests/TrieTests/`
 
-## Host Interface (existing Zig surface)
-Path: `src/host.zig`
-- Provides `HostInterface` with vtable hooks:
-  - `getBalance/setBalance`, `getCode/setCode`, `getStorage/setStorage`, `getNonce/setNonce`.
-- Note: EVM nested calls use `inner_call` and bypass this host; host is for external state access. Ensure sync uses state-manager + primitives types rather than ad-hoc maps.
+Additional fixture/filler paths worth mapping:
+- `ethereum-tests/src/BlockchainTestsFiller/ValidBlocks/`
+- `ethereum-tests/src/BlockchainTestsFiller/InvalidBlocks/`
+- `ethereum-tests/src/DifficultyTestsFiller/`
+- `ethereum-tests/src/TransactionTestsFiller/`
 
-## Test Fixtures (ethereum-tests/)
-Path: `ethereum-tests/` (submodule)
-- `BlockchainTests/` — canonical block/header/body validation vectors.
-- `TransactionTests/` — tx encoding/validation.
-- `TrieTests/` — trie correctness.
-- `RLPTests/` — RLP edge cases.
-- `BasicTests/`, `DifficultyTests/`, `EOFTests/`, `GenesisTests/`, `PoWTests/`, etc. — additional coverage.
-- Archives: `fixtures_blockchain_tests.tgz`, `fixtures_general_state_tests.tgz` — large fixture bundles.
-
-For Phase 9, prioritize `BlockchainTests` and any `hive/` sync tests for protocol-level validation.
-
-## Pointers for implementation (Phase 9)
-- Follow Nethermind structure: separate sync strategies (full/snap) behind a `manager` with clear state machine and metrics; batch DB operations; pruning awareness.
-- Use Voltaire primitives exclusively for blocks/headers/rlp/ids/integers.
-- Wire to existing networking (`devp2p`) caps: `eth` for headers/bodies; `snap` for state ranges.
-- Ensure strict error handling: no silent catches; bubble typed errors; add unit tests per public function.
-- Keep units small and injectable via comptime (match existing EVM patterns).
-
+## Implementation-Oriented Summary
+- Use `eth` protocol for header/body/receipt acquisition and peer status alignment.
+- Use `snap` protocol for state range syncing with proof verification.
+- Mirror Nethermind separation of concerns:
+  - strategy modules (`full`, `snap`)
+  - coordinator (`manager`)
+  - explicit progress metadata + pruning-aware persistence
+- Keep data model grounded in Voltaire primitive types and existing guillotine host/EVM boundaries.
