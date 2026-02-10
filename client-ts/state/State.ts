@@ -79,6 +79,10 @@ export interface WorldStateService {
     address: Address.AddressType,
     slot: StorageSlotType,
   ) => Effect.Effect<StorageValueType>;
+  readonly getStorageOriginal: (
+    address: Address.AddressType,
+    slot: StorageSlotType,
+  ) => Effect.Effect<StorageValueType>;
   readonly setStorage: (
     address: Address.AddressType,
     slot: StorageSlotType,
@@ -171,11 +175,40 @@ const makeWorldState = Effect.gen(function* () {
   const accounts = new Map<AccountKey, AccountStateType>();
   const storage = new Map<AccountKey, Map<StorageKey, StorageValueType>>();
   const createdAccounts = new Set<AccountKey>();
+  const originalStorage = new Map<
+    AccountKey,
+    Map<StorageKey, StorageValueType>
+  >();
   const snapshotStack: Array<WorldStateSnapshot> = [];
 
-  const clearCreatedIfNoSnapshots = () => {
+  const clearTransactionTrackingIfNoSnapshots = () => {
     if (snapshotStack.length === 0) {
       createdAccounts.clear();
+      originalStorage.clear();
+    }
+  };
+
+  const recordOriginalStorageValue = (
+    key: AccountKey,
+    slotKey: StorageKey,
+    value: StorageValueType,
+  ) => {
+    if (snapshotStack.length === 0) {
+      return;
+    }
+    if (createdAccounts.has(key)) {
+      return;
+    }
+
+    const slots = originalStorage.get(key);
+    if (slots?.has(slotKey)) {
+      return;
+    }
+
+    const nextSlots = slots ?? new Map<StorageKey, StorageValueType>();
+    nextSlots.set(slotKey, cloneStorageValue(value));
+    if (!slots) {
+      originalStorage.set(key, nextSlots);
     }
   };
 
@@ -207,12 +240,37 @@ const makeWorldState = Effect.gen(function* () {
       const slotKey = storageSlotKey(slot);
       const slots = storage.get(key);
       if (!slots) {
+        recordOriginalStorageValue(key, slotKey, ZERO_STORAGE_VALUE);
         return cloneStorageValue(ZERO_STORAGE_VALUE);
       }
       const value = slots.get(slotKey);
+      const nextValue = value ?? ZERO_STORAGE_VALUE;
+      recordOriginalStorageValue(key, slotKey, nextValue);
       return value
         ? cloneStorageValue(value)
         : cloneStorageValue(ZERO_STORAGE_VALUE);
+    });
+
+  const getStorageOriginal = (
+    address: Address.AddressType,
+    slot: StorageSlotType,
+  ) =>
+    Effect.sync(() => {
+      const key = addressKey(address);
+      if (createdAccounts.has(key)) {
+        return cloneStorageValue(ZERO_STORAGE_VALUE);
+      }
+
+      const slotKey = storageSlotKey(slot);
+      const slots = originalStorage.get(key);
+      if (slots?.has(slotKey)) {
+        return cloneStorageValue(slots.get(slotKey)!);
+      }
+
+      const currentSlots = storage.get(key);
+      const currentValue = currentSlots?.get(slotKey) ?? ZERO_STORAGE_VALUE;
+      recordOriginalStorageValue(key, slotKey, currentValue);
+      return cloneStorageValue(currentValue);
     });
 
   const clearStorageForKey = (key: AccountKey) =>
@@ -244,6 +302,7 @@ const makeWorldState = Effect.gen(function* () {
       const slotKey = storageSlotKey(slot);
       const slots = storage.get(key);
       const previous = slots?.get(slotKey) ?? null;
+      recordOriginalStorageValue(key, slotKey, previous ?? ZERO_STORAGE_VALUE);
 
       if (isZeroStorageValue(value)) {
         if (previous === null) {
@@ -350,7 +409,7 @@ const makeWorldState = Effect.gen(function* () {
     Effect.gen(function* () {
       const snapshot = yield* journal.takeSnapshot();
       if (snapshotStack.length === 0) {
-        createdAccounts.clear();
+        clearTransactionTrackingIfNoSnapshots();
       }
       snapshotStack.push(snapshot);
       return snapshot;
@@ -415,7 +474,7 @@ const makeWorldState = Effect.gen(function* () {
 
   const dropSnapshotsFrom = (index: number) => {
     snapshotStack.splice(index);
-    clearCreatedIfNoSnapshots();
+    clearTransactionTrackingIfNoSnapshots();
   };
 
   const restoreSnapshot = (snapshot: WorldStateSnapshot) =>
@@ -437,6 +496,7 @@ const makeWorldState = Effect.gen(function* () {
       accounts.clear();
       storage.clear();
       createdAccounts.clear();
+      originalStorage.clear();
       snapshotStack.length = 0;
       yield* journal.clear();
     });
@@ -449,6 +509,7 @@ const makeWorldState = Effect.gen(function* () {
     markAccountCreated,
     wasAccountCreated,
     getStorage,
+    getStorageOriginal,
     setStorage,
     takeSnapshot,
     restoreSnapshot,
@@ -497,6 +558,12 @@ export const getStorage = (
   address: Address.AddressType,
   slot: StorageSlotType,
 ) => withWorldState((state) => state.getStorage(address, slot));
+
+/** Read the original storage slot value for the current transaction. */
+export const getStorageOriginal = (
+  address: Address.AddressType,
+  slot: StorageSlotType,
+) => withWorldState((state) => state.getStorageOriginal(address, slot));
 
 /** Set a storage slot value (zero clears the slot). */
 export const setStorage = (

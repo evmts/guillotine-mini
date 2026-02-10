@@ -16,6 +16,7 @@ import {
   getAccount,
   getAccountOptional,
   getStorage,
+  getStorageOriginal,
   markAccountCreated,
   restoreSnapshot,
   setAccount,
@@ -175,6 +176,55 @@ describe("WorldState", () => {
         yield* commitSnapshot(snapshot);
         const committed = yield* getStorage(addr, slot);
         assert.strictEqual(storageValueHex(committed), storageValueHex(valueB));
+      }),
+    ),
+  );
+
+  it.effect("tracks original storage values within a transaction", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(14);
+        const slot = makeSlot(4);
+        const valueA = makeStorageValue(1);
+        const valueB = makeStorageValue(2);
+
+        yield* setAccount(addr, makeAccount({ nonce: 1n }));
+        yield* setStorage(addr, slot, valueA);
+
+        const snapshot = yield* takeSnapshot();
+        const original = yield* getStorageOriginal(addr, slot);
+        assert.strictEqual(storageValueHex(original), storageValueHex(valueA));
+
+        yield* setStorage(addr, slot, valueB);
+        const stillOriginal = yield* getStorageOriginal(addr, slot);
+        assert.strictEqual(
+          storageValueHex(stillOriginal),
+          storageValueHex(valueA),
+        );
+
+        yield* commitSnapshot(snapshot);
+      }),
+    ),
+  );
+
+  it.effect("returns zero original storage for created accounts", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(15);
+        const slot = makeSlot(5);
+        const value = makeStorageValue(9);
+
+        const snapshot = yield* takeSnapshot();
+        yield* setAccount(addr, makeAccount({ nonce: 1n }));
+        yield* setStorage(addr, slot, value);
+
+        const original = yield* getStorageOriginal(addr, slot);
+        assert.strictEqual(
+          storageValueHex(original),
+          storageValueHex(ZERO_STORAGE_VALUE),
+        );
+
+        yield* commitSnapshot(snapshot);
       }),
     ),
   );
