@@ -175,7 +175,7 @@ pub fn build(b: *std.Build) void {
     const run_nethermind_trie_diff = b.addRunArtifact(nethermind_trie_diff_exe);
     const nethermind_diff_step = b.step("nethermind-diff", "Run Nethermind trie differential test");
     nethermind_diff_step.dependOn(&run_nethermind_trie_diff.step);
-    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test") orelse false;
+    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test") orelse true;
     if (include_nethermind_diff) {
         test_step.dependOn(&run_nethermind_trie_diff.step);
     }

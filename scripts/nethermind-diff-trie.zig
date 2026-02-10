@@ -37,7 +37,13 @@ pub fn main() !void {
     const zig_root = try std.fmt.allocPrint(allocator, "0x{s}", .{hex[0..]});
     defer allocator.free(zig_root);
 
-    const nethermind_root = try runNethermind(allocator);
+    const nethermind_root = runNethermind(allocator) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("Nethermind diff skipped: dotnet not found\n", .{});
+            return;
+        }
+        return err;
+    };
     defer allocator.free(nethermind_root);
 
     if (!std.ascii.eqlIgnoreCase(zig_root, nethermind_root)) {
