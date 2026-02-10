@@ -422,7 +422,7 @@ const makeWriteBatch = (
             : getHashNodeStoragePath(validatedHash);
 
         yield* pipe(
-          batch.put(key, cloneBytes(validatedNodeData), writeFlags),
+          batch.put(key, validatedNodeData, writeFlags),
           Effect.mapError(wrapDbWriteBatchError),
         );
       }),
@@ -536,7 +536,7 @@ const makeTrieNodeStorage = (db: DbService) => {
             : getHashNodeStoragePath(validatedHash);
 
         yield* pipe(
-          db.put(key, cloneBytes(validatedNodeData), writeFlags),
+          db.put(key, validatedNodeData, writeFlags),
           Effect.mapError(wrapDbSetError),
         );
       }),
