@@ -35,9 +35,14 @@ type StorageValueType = Schema.Schema.Type<
 type WorldStateJournalKey = string;
 /** Journal value union for world state changes. */
 type WorldStateJournalValue = AccountStateType | StorageValueType;
+type OriginalStorageJournalEntry = {
+  readonly accountKey: AccountKey;
+  readonly slotKey: StorageKey;
+};
 type SnapshotEntry = {
   readonly id: WorldStateSnapshot;
   readonly journalSnapshot: JournalSnapshot;
+  readonly originalStorageLength: number;
 };
 
 /** Snapshot identifier for world state journaling. */
@@ -183,6 +188,7 @@ const makeWorldState = Effect.gen(function* () {
     AccountKey,
     Map<StorageKey, StorageValueType>
   >();
+  const originalStorageJournal: Array<OriginalStorageJournalEntry> = [];
   const snapshotStack: Array<SnapshotEntry> = [];
   let nextSnapshotId: WorldStateSnapshot = 0;
 
@@ -190,6 +196,7 @@ const makeWorldState = Effect.gen(function* () {
     if (snapshotStack.length === 0) {
       createdAccounts.clear();
       originalStorage.clear();
+      originalStorageJournal.length = 0;
     }
   };
 
@@ -215,6 +222,7 @@ const makeWorldState = Effect.gen(function* () {
     if (!slots) {
       originalStorage.set(key, nextSlots);
     }
+    originalStorageJournal.push({ accountKey: key, slotKey });
   };
 
   const getAccountOptional = (address: Address.AddressType) =>
@@ -417,7 +425,11 @@ const makeWorldState = Effect.gen(function* () {
       }
       const snapshot = nextSnapshotId;
       nextSnapshotId += 1;
-      snapshotStack.push({ id: snapshot, journalSnapshot });
+      snapshotStack.push({
+        id: snapshot,
+        journalSnapshot,
+        originalStorageLength: originalStorageJournal.length,
+      });
       return snapshot;
     });
 
@@ -485,10 +497,29 @@ const makeWorldState = Effect.gen(function* () {
     clearTransactionTrackingIfNoSnapshots();
   };
 
+  const revertOriginalStorage = (targetLength: number) => {
+    for (let i = originalStorageJournal.length - 1; i >= targetLength; i -= 1) {
+      const entry = originalStorageJournal[i];
+      if (!entry) {
+        continue;
+      }
+      const slots = originalStorage.get(entry.accountKey);
+      if (!slots) {
+        continue;
+      }
+      slots.delete(entry.slotKey);
+      if (slots.size === 0) {
+        originalStorage.delete(entry.accountKey);
+      }
+    }
+    originalStorageJournal.length = targetLength;
+  };
+
   const restoreSnapshot = (snapshot: WorldStateSnapshot) =>
     Effect.gen(function* () {
       const { index, entry } = yield* lookupSnapshot(snapshot);
       yield* journal.restore(entry.journalSnapshot, applyRevert);
+      revertOriginalStorage(entry.originalStorageLength);
       dropSnapshotsFrom(index);
     });
 
@@ -505,6 +536,7 @@ const makeWorldState = Effect.gen(function* () {
       storage.clear();
       createdAccounts.clear();
       originalStorage.clear();
+      originalStorageJournal.length = 0;
       snapshotStack.length = 0;
       yield* journal.clear();
     });
