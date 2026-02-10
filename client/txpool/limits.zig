@@ -307,11 +307,67 @@ pub fn fits_size_limits(
             try list.appendSlice(enc);
         }
 
-        // authorization_list
+        // authorization_list — manual RLP to avoid upstream helper bug
         {
-            const enc = try primitives.Authorization.encodeAuthorizationList(allocator, tx.authorization_list);
-            defer allocator.free(enc);
-            try list.appendSlice(enc);
+            var auths = std.array_list.AlignedManaged(u8, null).init(allocator);
+            defer auths.deinit();
+
+            for (tx.authorization_list) |auth| {
+                var fields = std.array_list.AlignedManaged(u8, null).init(allocator);
+                defer fields.deinit();
+
+                // [chain_id, address, nonce, v, r, s]
+                {
+                    const enc = try rlp.encode(allocator, auth.chain_id);
+                    defer allocator.free(enc);
+                    try fields.appendSlice(enc);
+                }
+                {
+                    const enc = try rlp.encodeBytes(allocator, &auth.address.bytes);
+                    defer allocator.free(enc);
+                    try fields.appendSlice(enc);
+                }
+                {
+                    const enc = try rlp.encode(allocator, auth.nonce);
+                    defer allocator.free(enc);
+                    try fields.appendSlice(enc);
+                }
+                {
+                    const enc = try rlp.encode(allocator, auth.v);
+                    defer allocator.free(enc);
+                    try fields.appendSlice(enc);
+                }
+                {
+                    const enc = try rlp.encodeBytes(allocator, &auth.r);
+                    defer allocator.free(enc);
+                    try fields.appendSlice(enc);
+                }
+                {
+                    const enc = try rlp.encodeBytes(allocator, &auth.s);
+                    defer allocator.free(enc);
+                    try fields.appendSlice(enc);
+                }
+
+                if (fields.items.len <= 55) {
+                    try auths.append(@as(u8, @intCast(0xc0 + fields.items.len)));
+                } else {
+                    const len_bytes = try rlp.encodeLength(allocator, fields.items.len);
+                    defer allocator.free(len_bytes);
+                    try auths.append(@as(u8, @intCast(0xf7 + len_bytes.len)));
+                    try auths.appendSlice(len_bytes);
+                }
+                try auths.appendSlice(fields.items);
+            }
+
+            if (auths.items.len <= 55) {
+                try list.append(@as(u8, @intCast(0xc0 + auths.items.len)));
+            } else {
+                const len_bytes = try rlp.encodeLength(allocator, auths.items.len);
+                defer allocator.free(len_bytes);
+                try list.append(@as(u8, @intCast(0xf7 + len_bytes.len)));
+                try list.appendSlice(len_bytes);
+            }
+            try list.appendSlice(auths.items);
         }
 
         // Optional signature: y_parity, r, s if present (typed txs use y_parity)
@@ -576,7 +632,6 @@ test "fits_size_limits — eip7702 within and over limit (unsigned)" {
         .data = &[_]u8{},
         .access_list = &[_]tx_mod.AccessListItem{},
         .authorization_list = &[_]Authorization{},
-        .v = 0,
         .r = [_]u8{0} ** 32,
         .s = [_]u8{0} ** 32,
         .y_parity = 0,
@@ -681,7 +736,6 @@ test "fits_size_limits — eip7702 within and over limit (signed)" {
         .y_parity = 1,
         .r = [_]u8{9} ** 32,
         .s = [_]u8{8} ** 32,
-        .v = 27, // vendor currently models v for 7702
     };
 
     const allocator = std.testing.allocator;

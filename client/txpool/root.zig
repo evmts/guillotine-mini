@@ -11,10 +11,8 @@ pub const TxPoolConfig = pool.TxPoolConfig;
 // Fee market comparator (EIP-1559-aware)
 pub const compare_fee_market_priority = sorter.compare_fee_market_priority;
 
-// Admission helpers
-pub fn fits_size_limits(allocator: std.mem.Allocator, tx: anytype, cfg: TxPoolConfig) (error{ MaxTxSizeExceeded, MaxBlobTxSizeExceeded } || std.mem.Allocator.Error)!void {
-    return limits.fits_size_limits(allocator, tx, cfg);
-}
+/// Admission helper: re-export to avoid wrapper signature drift.
+pub const fits_size_limits = limits.fits_size_limits;
 
 test {
     std.testing.refAllDecls(@This());
