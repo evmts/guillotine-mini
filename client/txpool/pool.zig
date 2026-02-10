@@ -118,12 +118,14 @@ test "txpool interface dispatches pending counts" {
         pending_blobs: usize,
 
         fn pending_count(ptr: *anyopaque) usize {
-            const self: *DummyPool = @ptrCast(@alignCast(ptr));
+            const Self = @This();
+            const self: *Self = @ptrCast(@alignCast(ptr));
             return self.pending;
         }
 
         fn pending_blob_count(ptr: *anyopaque) usize {
-            const self: *DummyPool = @ptrCast(@alignCast(ptr));
+            const Self = @This();
+            const self: *Self = @ptrCast(@alignCast(ptr));
             return self.pending_blobs;
         }
     };

@@ -10,10 +10,10 @@ const std = @import("std");
 const primitives = @import("primitives");
 
 const BaseFeePerGas = primitives.BaseFeePerGas;
-const EffectiveGasPrice = primitives.EffectiveGasPrice;
 const GasPrice = primitives.GasPrice;
 const MaxFeePerGas = primitives.MaxFeePerGas;
 const MaxPriorityFeePerGas = primitives.MaxPriorityFeePerGas;
+const U256 = @import("primitives").Denomination.U256;
 
 fn is_legacy_fee_fields(max_fee: MaxFeePerGas, max_priority: MaxPriorityFeePerGas) bool {
     return max_fee.isZero() and max_priority.isZero();
@@ -76,18 +76,29 @@ pub fn compare_fee_market_priority(
         const y_max_priority = resolve_max_priority(y_gas_price, y_max_priority_fee_per_gas, y_is_legacy);
 
         const base_fee_wei = base_fee.toWei();
-        const x_effective = EffectiveGasPrice.calculate(
-            base_fee_wei,
-            x_max_fee.toWei(),
-            x_max_priority.toWei(),
-        ).effective;
-        const y_effective = EffectiveGasPrice.calculate(
-            base_fee_wei,
-            y_max_fee.toWei(),
-            y_max_priority.toWei(),
-        ).effective;
 
-        switch (x_effective.compare(y_effective)) {
+        const x_allowed: U256 = blk: {
+            if (x_max_fee.toWei().cmp(base_fee_wei) == .lt) break :blk x_max_fee.toWei();
+            break :blk x_max_fee.toWei().wrapping_sub(base_fee_wei);
+        };
+        const y_allowed: U256 = blk: {
+            if (y_max_fee.toWei().cmp(base_fee_wei) == .lt) break :blk y_max_fee.toWei();
+            break :blk y_max_fee.toWei().wrapping_sub(base_fee_wei);
+        };
+
+        const x_eff_prio: U256 = if (x_max_priority.toWei().cmp(x_allowed) == .lt) x_max_priority.toWei() else x_allowed;
+        const y_eff_prio: U256 = if (y_max_priority.toWei().cmp(y_allowed) == .lt) y_max_priority.toWei() else y_allowed;
+
+        const x_effective: U256 = blk: {
+            const candidate = base_fee_wei.wrapping_add(x_eff_prio);
+            break :blk if (candidate.cmp(x_max_fee.toWei()) == .gt) x_max_fee.toWei() else candidate;
+        };
+        const y_effective: U256 = blk: {
+            const candidate = base_fee_wei.wrapping_add(y_eff_prio);
+            break :blk if (candidate.cmp(y_max_fee.toWei()) == .gt) y_max_fee.toWei() else candidate;
+        };
+
+        switch (x_effective.cmp(y_effective)) {
             .lt => return 1,
             .gt => return -1,
             .eq => {},
@@ -112,16 +123,16 @@ pub fn compare_fee_market_priority(
 // =============================================================================
 
 test "compare_fee_market_priority — EIP-1559 compares effective gas price" {
-    const base_fee = BaseFeePerGas.fromGwei(10);
+    const base_fee = BaseFeePerGas.from(10_000_000_000);
 
-    const x_max_fee = MaxFeePerGas.fromGwei(30);
-    const x_max_priority = MaxPriorityFeePerGas.fromGwei(2);
+    const x_max_fee = MaxFeePerGas.from(30_000_000_000);
+    const x_max_priority = MaxPriorityFeePerGas.from(2_000_000_000);
 
-    const y_max_fee = MaxFeePerGas.fromGwei(20);
-    const y_max_priority = MaxPriorityFeePerGas.fromGwei(8);
+    const y_max_fee = MaxFeePerGas.from(20_000_000_000);
+    const y_max_priority = MaxPriorityFeePerGas.from(8_000_000_000);
 
-    const x_gas_price = GasPrice.fromGwei(0);
-    const y_gas_price = GasPrice.fromGwei(0);
+    const x_gas_price = GasPrice.from(0);
+    const y_gas_price = GasPrice.from(0);
 
     try std.testing.expectEqual(
         @as(i32, 1),
@@ -139,15 +150,15 @@ test "compare_fee_market_priority — EIP-1559 compares effective gas price" {
 }
 
 test "compare_fee_market_priority — EIP-1559 legacy fallback uses gas price" {
-    const base_fee = BaseFeePerGas.fromGwei(10);
+    const base_fee = BaseFeePerGas.from(10_000_000_000);
 
-    const x_gas_price = GasPrice.fromGwei(50);
-    const x_max_fee = MaxFeePerGas.fromGwei(0);
-    const x_max_priority = MaxPriorityFeePerGas.fromGwei(0);
+    const x_gas_price = GasPrice.from(50_000_000_000);
+    const x_max_fee = MaxFeePerGas.from(0);
+    const x_max_priority = MaxPriorityFeePerGas.from(0);
 
-    const y_gas_price = GasPrice.fromGwei(0);
-    const y_max_fee = MaxFeePerGas.fromGwei(40);
-    const y_max_priority = MaxPriorityFeePerGas.fromGwei(2);
+    const y_gas_price = GasPrice.from(0);
+    const y_max_fee = MaxFeePerGas.from(40_000_000_000);
+    const y_max_priority = MaxPriorityFeePerGas.from(2_000_000_000);
 
     try std.testing.expectEqual(
         @as(i32, -1),
@@ -165,16 +176,16 @@ test "compare_fee_market_priority — EIP-1559 legacy fallback uses gas price" {
 }
 
 test "compare_fee_market_priority — EIP-1559 ties on effective gas price use max fee" {
-    const base_fee = BaseFeePerGas.fromGwei(10);
+    const base_fee = BaseFeePerGas.from(10_000_000_000);
 
-    const x_max_fee = MaxFeePerGas.fromGwei(20);
-    const x_max_priority = MaxPriorityFeePerGas.fromGwei(5);
+    const x_max_fee = MaxFeePerGas.from(20_000_000_000);
+    const x_max_priority = MaxPriorityFeePerGas.from(5_000_000_000);
 
-    const y_max_fee = MaxFeePerGas.fromGwei(25);
-    const y_max_priority = MaxPriorityFeePerGas.fromGwei(5);
+    const y_max_fee = MaxFeePerGas.from(25_000_000_000);
+    const y_max_priority = MaxPriorityFeePerGas.from(5_000_000_000);
 
-    const x_gas_price = GasPrice.fromGwei(0);
-    const y_gas_price = GasPrice.fromGwei(0);
+    const x_gas_price = GasPrice.from(0);
+    const y_gas_price = GasPrice.from(0);
 
     try std.testing.expectEqual(
         @as(i32, 1),
@@ -192,16 +203,16 @@ test "compare_fee_market_priority — EIP-1559 ties on effective gas price use m
 }
 
 test "compare_fee_market_priority — EIP-1559 caps priority by max fee minus base fee" {
-    const base_fee = BaseFeePerGas.fromGwei(25);
+    const base_fee = BaseFeePerGas.from(25_000_000_000);
 
-    const x_max_fee = MaxFeePerGas.fromGwei(27);
-    const x_max_priority = MaxPriorityFeePerGas.fromGwei(5);
+    const x_max_fee = MaxFeePerGas.from(27_000_000_000);
+    const x_max_priority = MaxPriorityFeePerGas.from(5_000_000_000);
 
-    const y_max_fee = MaxFeePerGas.fromGwei(28);
-    const y_max_priority = MaxPriorityFeePerGas.fromGwei(1);
+    const y_max_fee = MaxFeePerGas.from(28_000_000_000);
+    const y_max_priority = MaxPriorityFeePerGas.from(1_000_000_000);
 
-    const x_gas_price = GasPrice.fromGwei(0);
-    const y_gas_price = GasPrice.fromGwei(0);
+    const x_gas_price = GasPrice.from(0);
+    const y_gas_price = GasPrice.from(0);
 
     try std.testing.expectEqual(
         @as(i32, -1),
@@ -219,16 +230,16 @@ test "compare_fee_market_priority — EIP-1559 caps priority by max fee minus ba
 }
 
 test "compare_fee_market_priority — EIP-1559 max fee below base fee uses max fee" {
-    const base_fee = BaseFeePerGas.fromGwei(30);
+    const base_fee = BaseFeePerGas.from(30_000_000_000);
 
-    const x_max_fee = MaxFeePerGas.fromGwei(25);
-    const x_max_priority = MaxPriorityFeePerGas.fromGwei(2);
+    const x_max_fee = MaxFeePerGas.from(25_000_000_000);
+    const x_max_priority = MaxPriorityFeePerGas.from(2_000_000_000);
 
-    const y_max_fee = MaxFeePerGas.fromGwei(28);
-    const y_max_priority = MaxPriorityFeePerGas.fromGwei(1);
+    const y_max_fee = MaxFeePerGas.from(28_000_000_000);
+    const y_max_priority = MaxPriorityFeePerGas.from(1_000_000_000);
 
-    const x_gas_price = GasPrice.fromGwei(0);
-    const y_gas_price = GasPrice.fromGwei(0);
+    const x_gas_price = GasPrice.from(0);
+    const y_gas_price = GasPrice.from(0);
 
     try std.testing.expectEqual(
         @as(i32, 1),
@@ -246,15 +257,15 @@ test "compare_fee_market_priority — EIP-1559 max fee below base fee uses max f
 }
 
 test "compare_fee_market_priority — legacy compares gas price descending" {
-    const base_fee = BaseFeePerGas.fromGwei(0);
+    const base_fee = BaseFeePerGas.from(0);
 
-    const x_gas_price = GasPrice.fromGwei(30);
-    const y_gas_price = GasPrice.fromGwei(20);
+    const x_gas_price = GasPrice.from(30_000_000_000);
+    const y_gas_price = GasPrice.from(20_000_000_000);
 
-    const x_max_fee = MaxFeePerGas.fromGwei(0);
-    const x_max_priority = MaxPriorityFeePerGas.fromGwei(0);
-    const y_max_fee = MaxFeePerGas.fromGwei(0);
-    const y_max_priority = MaxPriorityFeePerGas.fromGwei(0);
+    const x_max_fee = MaxFeePerGas.from(0);
+    const x_max_priority = MaxPriorityFeePerGas.from(0);
+    const y_max_fee = MaxFeePerGas.from(0);
+    const y_max_priority = MaxPriorityFeePerGas.from(0);
 
     try std.testing.expectEqual(
         @as(i32, -1),
@@ -272,11 +283,11 @@ test "compare_fee_market_priority — legacy compares gas price descending" {
 }
 
 test "compare_fee_market_priority — equality returns zero" {
-    const base_fee = BaseFeePerGas.fromGwei(10);
+    const base_fee = BaseFeePerGas.from(10_000_000_000);
 
-    const gas_price = GasPrice.fromGwei(20);
-    const max_fee = MaxFeePerGas.fromGwei(20);
-    const max_priority = MaxPriorityFeePerGas.fromGwei(5);
+    const gas_price = GasPrice.from(20_000_000_000);
+    const max_fee = MaxFeePerGas.from(20_000_000_000);
+    const max_priority = MaxPriorityFeePerGas.from(5_000_000_000);
 
     try std.testing.expectEqual(
         @as(i32, 0),
