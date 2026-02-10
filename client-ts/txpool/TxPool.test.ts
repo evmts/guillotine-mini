@@ -1,16 +1,126 @@
+import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { assert, describe, it } from "@effect/vitest";
 import * as Either from "effect/Either";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import { Address, Hex, Transaction } from "voltaire-effect/primitives";
 import {
   BlobsSupportMode,
   InvalidTxPoolConfigError,
+  TxPoolBlobSupportDisabledError,
   TxPoolConfigDefaults,
+  TxPoolFullError,
   TxPoolLive,
+  TxPoolPriorityFeeTooLowError,
+  TxPoolSenderLimitExceededError,
   acceptTxWhenNotSynced,
+  addTransaction,
   getPendingBlobCount,
   getPendingCount,
+  getPendingTransactions,
+  getPendingTransactionsBySender,
+  removeTransaction,
   supportsBlobs,
+  validateTransaction,
 } from "./TxPool";
+
+const Eip1559Schema = Transaction.EIP1559Schema as unknown as Schema.Schema<
+  Transaction.EIP1559,
+  unknown
+>;
+const Eip4844Schema = Transaction.EIP4844Schema as unknown as Schema.Schema<
+  Transaction.EIP4844,
+  unknown
+>;
+
+const PRIVATE_KEY = new Uint8Array(32);
+PRIVATE_KEY[31] = 1;
+
+const encodeAddress = (address: Address.AddressType): string =>
+  Hex.fromBytes(address);
+
+const makeBlobHash = (versionByte: number): Uint8Array => {
+  const hash = new Uint8Array(32);
+  hash[0] = versionByte;
+  return hash;
+};
+
+const signDynamicFeeTx = <T extends Transaction.EIP1559 | Transaction.EIP4844>(
+  tx: T,
+): T => {
+  const signingHash = Transaction.getSigningHash(tx);
+  const signature = secp256k1.sign(signingHash, PRIVATE_KEY, {
+    prehash: false,
+    format: "recovered",
+  });
+  const recovery = signature[0] ?? 0;
+  const r = signature.slice(1, 33);
+  const s = signature.slice(33, 65);
+  return { ...tx, yParity: recovery & 1, r, s } as T;
+};
+
+const makeEip1559Tx = (
+  nonce: bigint,
+  maxPriorityFeePerGas = 1n,
+  maxFeePerGas = 2n,
+): Transaction.EIP1559 =>
+  Schema.validateSync(Eip1559Schema)({
+    type: Transaction.Type.EIP1559,
+    chainId: 1n,
+    nonce,
+    maxPriorityFeePerGas,
+    maxFeePerGas,
+    gasLimit: 100_000n,
+    to: encodeAddress(Address.zero()),
+    value: 0n,
+    data: new Uint8Array(0),
+    accessList: [],
+    yParity: 0,
+    r: new Uint8Array(32),
+    s: new Uint8Array(32),
+  });
+
+const makeEip4844Tx = (
+  nonce: bigint,
+  maxPriorityFeePerGas = 1n,
+  maxFeePerGas = 2n,
+  maxFeePerBlobGas = 3n,
+  blobVersionedHashes: Uint8Array[] = [makeBlobHash(1)],
+): Transaction.EIP4844 =>
+  Schema.validateSync(Eip4844Schema)({
+    type: Transaction.Type.EIP4844,
+    chainId: 1n,
+    nonce,
+    maxPriorityFeePerGas,
+    maxFeePerGas,
+    gasLimit: 120_000n,
+    to: encodeAddress(Address.zero()),
+    value: 0n,
+    data: new Uint8Array(0),
+    accessList: [],
+    maxFeePerBlobGas,
+    blobVersionedHashes,
+    yParity: 0,
+    r: new Uint8Array(32),
+    s: new Uint8Array(32),
+  });
+
+const makeSignedEip1559Tx = (
+  nonce: bigint,
+  maxPriorityFeePerGas = 1n,
+  maxFeePerGas = 2n,
+): Transaction.EIP1559 =>
+  signDynamicFeeTx(makeEip1559Tx(nonce, maxPriorityFeePerGas, maxFeePerGas));
+
+const makeSignedEip4844Tx = (
+  nonce: bigint,
+  maxPriorityFeePerGas = 1n,
+  maxFeePerGas = 2n,
+  maxFeePerBlobGas = 3n,
+): Transaction.EIP4844 =>
+  signDynamicFeeTx(
+    makeEip4844Tx(nonce, maxPriorityFeePerGas, maxFeePerGas, maxFeePerBlobGas),
+  );
 
 describe("TxPool", () => {
   it.effect("returns pending transaction count", () =>
@@ -25,6 +135,139 @@ describe("TxPool", () => {
       const count = yield* getPendingBlobCount();
       assert.strictEqual(count, 0);
     }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
+  it.effect("adds pending transactions and indexes by sender", () =>
+    Effect.gen(function* () {
+      const tx = makeSignedEip1559Tx(0n);
+      const result = yield* addTransaction(tx);
+      assert.strictEqual(result._tag, "Added");
+
+      const count = yield* getPendingCount();
+      assert.strictEqual(count, 1);
+
+      const pending = yield* getPendingTransactions();
+      assert.strictEqual(pending.length, 1);
+
+      const sender = Transaction.getSender(tx);
+      const bySender = yield* getPendingTransactionsBySender(sender);
+      assert.strictEqual(bySender.length, 1);
+    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
+  it.effect("adds blob transactions and updates blob count", () =>
+    Effect.gen(function* () {
+      const blobTx = makeSignedEip4844Tx(0n);
+      const result = yield* addTransaction(blobTx);
+      assert.strictEqual(result._tag, "Added");
+
+      const blobCount = yield* getPendingBlobCount();
+      assert.strictEqual(blobCount, 1);
+    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
+  it.effect("validates transactions and recovers sender", () =>
+    Effect.gen(function* () {
+      const tx = makeSignedEip1559Tx(0n);
+      const validated = yield* validateTransaction(tx);
+      assert.isFalse(validated.isBlob);
+      const expectedSender = Transaction.getSender(tx);
+      assert.isTrue(Address.equals(validated.sender, expectedSender));
+    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
+  it.effect("removes transactions by hash", () =>
+    Effect.gen(function* () {
+      const tx = makeSignedEip1559Tx(0n);
+      const result = yield* addTransaction(tx);
+      assert.strictEqual(result._tag, "Added");
+
+      const removed = yield* removeTransaction(result.hash);
+      assert.isTrue(removed);
+
+      const count = yield* getPendingCount();
+      assert.strictEqual(count, 0);
+    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
+  it.effect("enforces pool size limits", () =>
+    Effect.gen(function* () {
+      const tx1 = makeSignedEip1559Tx(0n);
+      const tx2 = makeSignedEip1559Tx(1n);
+
+      yield* addTransaction(tx1);
+      const outcome = yield* Effect.either(addTransaction(tx2));
+
+      assert.isTrue(Either.isLeft(outcome));
+      if (Either.isLeft(outcome)) {
+        assert.isTrue(outcome.left instanceof TxPoolFullError);
+      }
+    }).pipe(
+      Effect.provide(
+        TxPoolLive({
+          ...TxPoolConfigDefaults,
+          size: 1,
+        }),
+      ),
+    ),
+  );
+
+  it.effect("enforces per-sender pending limits", () =>
+    Effect.gen(function* () {
+      const tx1 = makeSignedEip1559Tx(0n);
+      const tx2 = makeSignedEip1559Tx(1n);
+
+      yield* addTransaction(tx1);
+      const outcome = yield* Effect.either(addTransaction(tx2));
+
+      assert.isTrue(Either.isLeft(outcome));
+      if (Either.isLeft(outcome)) {
+        assert.isTrue(outcome.left instanceof TxPoolSenderLimitExceededError);
+      }
+    }).pipe(
+      Effect.provide(
+        TxPoolLive({
+          ...TxPoolConfigDefaults,
+          maxPendingTxsPerSender: 1,
+        }),
+      ),
+    ),
+  );
+
+  it.effect("rejects blob transactions when blobs are disabled", () =>
+    Effect.gen(function* () {
+      const blobTx = makeSignedEip4844Tx(0n);
+      const outcome = yield* Effect.either(addTransaction(blobTx));
+      assert.isTrue(Either.isLeft(outcome));
+      if (Either.isLeft(outcome)) {
+        assert.isTrue(outcome.left instanceof TxPoolBlobSupportDisabledError);
+      }
+    }).pipe(
+      Effect.provide(
+        TxPoolLive({
+          ...TxPoolConfigDefaults,
+          blobsSupport: BlobsSupportMode.Disabled,
+        }),
+      ),
+    ),
+  );
+
+  it.effect("rejects blob transactions with low priority fee", () =>
+    Effect.gen(function* () {
+      const blobTx = makeSignedEip4844Tx(0n, 1n);
+      const outcome = yield* Effect.either(addTransaction(blobTx));
+      assert.isTrue(Either.isLeft(outcome));
+      if (Either.isLeft(outcome)) {
+        assert.isTrue(outcome.left instanceof TxPoolPriorityFeeTooLowError);
+      }
+    }).pipe(
+      Effect.provide(
+        TxPoolLive({
+          ...TxPoolConfigDefaults,
+          minBlobTxPriorityFee: 5n,
+        }),
+      ),
+    ),
   );
 
   it.effect("derives blob support from configuration", () =>
