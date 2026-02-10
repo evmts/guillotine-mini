@@ -102,8 +102,8 @@ describe("DbProvider", () => {
   it.effect("receipt columns are isolated", () =>
     Effect.gen(function* () {
       const receipts = yield* receiptsDb();
-      const defaultDb = receipts.getColumnDb(ReceiptsColumns.default);
-      const transactionsDb = receipts.getColumnDb(ReceiptsColumns.transactions);
+      const defaultDb = receipts.getColumnDb(ReceiptsColumns.Default);
+      const transactionsDb = receipts.getColumnDb(ReceiptsColumns.Transactions);
       const key = toBytes("0x02");
       const value = toBytes("0x1234");
 
@@ -120,8 +120,8 @@ describe("DbProvider", () => {
   it.effect("blob transaction columns are isolated", () =>
     Effect.gen(function* () {
       const blobTxs = yield* blobTransactionsDb();
-      const fullDb = blobTxs.getColumnDb(BlobTxsColumns.fullBlobTxs);
-      const lightDb = blobTxs.getColumnDb(BlobTxsColumns.lightBlobTxs);
+      const fullDb = blobTxs.getColumnDb(BlobTxsColumns.FullBlobTxs);
+      const lightDb = blobTxs.getColumnDb(BlobTxsColumns.LightBlobTxs);
       const key = toBytes("0x03");
       const value = toBytes("0xbeef");
 

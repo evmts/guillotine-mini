@@ -84,9 +84,9 @@ export interface DbConfig {
 
 /** Receipt DB columns (Nethermind ReceiptsColumns parity). */
 export const ReceiptsColumns = {
-  default: "default",
-  transactions: "transactions",
-  blocks: "blocks",
+  Default: "Default",
+  Transactions: "Transactions",
+  Blocks: "Blocks",
 } as const;
 
 /** Receipt DB column name union. */
@@ -95,9 +95,9 @@ export type ReceiptsColumn =
 
 /** Blob transaction DB columns (Nethermind BlobTxsColumns parity). */
 export const BlobTxsColumns = {
-  fullBlobTxs: "fullBlobTxs",
-  lightBlobTxs: "lightBlobTxs",
-  processedTxs: "processedTxs",
+  FullBlobTxs: "FullBlobTxs",
+  LightBlobTxs: "LightBlobTxs",
+  ProcessedTxs: "ProcessedTxs",
 } as const;
 
 /** Blob transaction DB column name union. */

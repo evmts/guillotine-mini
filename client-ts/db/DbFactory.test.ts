@@ -57,9 +57,9 @@ describe("DbFactory", () => {
         const receipts = yield* createColumnsDb({ name: DbNames.receipts });
         const key = toBytes("0x03");
         const value = toBytes("0xbeef");
-        const defaultDb = receipts.getColumnDb(ReceiptsColumns.default);
+        const defaultDb = receipts.getColumnDb(ReceiptsColumns.Default);
         const transactionsDb = receipts.getColumnDb(
-          ReceiptsColumns.transactions,
+          ReceiptsColumns.Transactions,
         );
 
         assert.strictEqual(receipts.name, DbNames.receipts);
@@ -90,7 +90,7 @@ describe("DbFactory", () => {
           name: DbNames.blobTransactions,
         });
         const key = toBytes("0x04");
-        const fullDb = blobTxs.getColumnDb(BlobTxsColumns.fullBlobTxs);
+        const fullDb = blobTxs.getColumnDb(BlobTxsColumns.FullBlobTxs);
 
         assert.strictEqual(blobTxs.name, DbNames.blobTransactions);
         assert.deepStrictEqual(blobTxs.columns, Object.values(BlobTxsColumns));
