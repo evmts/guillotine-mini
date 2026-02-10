@@ -105,6 +105,15 @@ pub fn get_block_local(chain: *Chain, hash: Hash.Hash) ?Block.Block {
     return chain.block_store.getBlock(hash);
 }
 
+/// Returns a canonical block by number from the local store only.
+///
+/// - Does not consult the fork cache or perform any allocations.
+/// - Mirrors Nethermind semantics where local canonical lookups are explicit
+///   and do not trigger remote fetches.
+pub fn get_block_by_number_local(chain: *Chain, number: u64) ?Block.Block {
+    return chain.block_store.getBlockByNumber(number);
+}
+
 /// Generic, comptime-injected head hash reader for any chain-like type.
 pub fn head_hash_of(chain: anytype) ?Hash.Hash {
     const before = chain.getHeadBlockNumber() orelse return null;
@@ -485,6 +494,52 @@ test "Chain - get_block_local reads only from local store" {
         try std.testing.expect(has_block(&chain, fetched.hash));
         // Local-only read must not see it
         try std.testing.expect(get_block_local(&chain, fetched.hash) == null);
+    }
+}
+
+test "Chain - get_block_by_number_local reads canonical only and stays local" {
+    const allocator = std.testing.allocator;
+
+    // Local-only: before canonical set → null, after set → block
+    {
+        var chain = try Chain.init(allocator, null);
+        defer chain.deinit();
+
+        const genesis = try Block.genesis(1, allocator);
+        try chain.putBlock(genesis);
+        // Not canonical yet
+        try std.testing.expect(get_block_by_number_local(&chain, 0) == null);
+        try chain.setCanonicalHead(genesis.hash);
+        const got0 = get_block_by_number_local(&chain, 0) orelse return error.Unreachable;
+        try std.testing.expectEqual(@as(u64, 0), got0.header.number);
+
+        // Non-existent number → null
+        try std.testing.expect(get_block_by_number_local(&chain, 1) == null);
+    }
+
+    // With fork cache: block present only in cache by number → local read returns null
+    {
+        var fork_cache = try ForkBlockCache.init(allocator, 16);
+        defer fork_cache.deinit();
+
+        var chain = try Chain.init(allocator, &fork_cache);
+        defer chain.deinit();
+
+        // Request remote block #0 and fulfill
+        try std.testing.expectError(error.RpcPending, chain.getBlockByNumber(0));
+        const req = fork_cache.nextRequest() orelse {
+            try std.testing.expect(false);
+            return;
+        };
+        const hash_hex = "0x" ++ ("44" ** 32);
+        const response = try std.fmt.allocPrint(allocator, "{{\"hash\":\"{s}\",\"number\":\"0x0\"}}", .{hash_hex});
+        defer allocator.free(response);
+        try fork_cache.continueRequest(req.id, response);
+
+        // Sanity: unified getter sees it via cache, but local-by-number should not
+        const fetched = (try chain.getBlockByNumber(0)).?;
+        try std.testing.expectEqual(@as(u64, 0), fetched.header.number);
+        try std.testing.expect(get_block_by_number_local(&chain, 0) == null);
     }
 }
 
