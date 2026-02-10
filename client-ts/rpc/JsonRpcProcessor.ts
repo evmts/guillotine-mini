@@ -24,6 +24,10 @@ const isSingleJsonRpcPayloadObject = (
 ): payload is Readonly<Record<string, unknown>> =>
   typeof payload === "object" && payload !== null && !Array.isArray(payload);
 
+const isJsonRpcBatchPayload = (
+  payload: unknown,
+): payload is ReadonlyArray<unknown> => Array.isArray(payload);
+
 const parsePayload = (payload: unknown) =>
   typeof payload === "string"
     ? Effect.try({
@@ -36,11 +40,15 @@ const parsePayload = (payload: unknown) =>
       })
     : Effect.succeed(payload);
 
+export type JsonRpcProcessorResponse =
+  | JsonRpcResponseInput
+  | ReadonlyArray<JsonRpcResponseInput>;
+
 export interface JsonRpcProcessorService {
   readonly process: (
     payload: unknown,
   ) => Effect.Effect<
-    Option.Option<JsonRpcResponseInput>,
+    Option.Option<JsonRpcProcessorResponse>,
     InvalidJsonRpcResponseError
   >;
 }
@@ -56,6 +64,51 @@ const makeJsonRpcProcessor = () =>
     const requestDecoder = yield* JsonRpcRequestDecoder;
     const responseEncoder = yield* JsonRpcResponseEncoder;
     const jsonRpcService = yield* JsonRpcService;
+
+    const invalidRequestResponse = () =>
+      responseEncoder.errorByName("EIP-1474", "InvalidRequest", null);
+
+    const processSinglePayloadObject = (
+      payloadObject: Readonly<Record<string, unknown>>,
+    ) =>
+      Effect.gen(function* () {
+        const decodedRequestOrError = yield* Effect.either(
+          requestDecoder.decode(payloadObject),
+        );
+
+        if (Either.isLeft(decodedRequestOrError)) {
+          return Option.some(yield* invalidRequestResponse());
+        }
+
+        return yield* jsonRpcService.sendRequest(decodedRequestOrError.right);
+      });
+
+    const processBatchPayload = (batchPayload: ReadonlyArray<unknown>) =>
+      Effect.gen(function* () {
+        if (batchPayload.length === 0) {
+          return Option.some(yield* invalidRequestResponse());
+        }
+
+        const itemResponses = yield* Effect.forEach(
+          batchPayload,
+          (batchItem) =>
+            isSingleJsonRpcPayloadObject(batchItem)
+              ? processSinglePayloadObject(batchItem)
+              : invalidRequestResponse().pipe(Effect.map(Option.some)),
+          { concurrency: 1 },
+        );
+
+        const responses: Array<JsonRpcResponseInput> = [];
+        for (const itemResponse of itemResponses) {
+          if (Option.isSome(itemResponse)) {
+            responses.push(itemResponse.value);
+          }
+        }
+
+        return responses.length === 0
+          ? Option.none<JsonRpcProcessorResponse>()
+          : Option.some(responses);
+      });
 
     const process = (payload: unknown) =>
       Effect.gen(function* () {
@@ -73,29 +126,16 @@ const makeJsonRpcProcessor = () =>
         }
 
         const parsedPayload = parsedPayloadOrError.right;
-        if (!isSingleJsonRpcPayloadObject(parsedPayload)) {
-          const invalidRequestError = yield* responseEncoder.errorByName(
-            "EIP-1474",
-            "InvalidRequest",
-            null,
-          );
-          return Option.some(invalidRequestError);
+
+        if (isSingleJsonRpcPayloadObject(parsedPayload)) {
+          return yield* processSinglePayloadObject(parsedPayload);
         }
 
-        const decodedRequestOrError = yield* Effect.either(
-          requestDecoder.decode(parsedPayload),
-        );
-
-        if (Either.isLeft(decodedRequestOrError)) {
-          const invalidRequestError = yield* responseEncoder.errorByName(
-            "EIP-1474",
-            "InvalidRequest",
-            null,
-          );
-          return Option.some(invalidRequestError);
+        if (isJsonRpcBatchPayload(parsedPayload)) {
+          return yield* processBatchPayload(parsedPayload);
         }
 
-        return yield* jsonRpcService.sendRequest(decodedRequestOrError.right);
+        return Option.some(yield* invalidRequestResponse());
       });
 
     return {
