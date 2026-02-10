@@ -1,73 +1,125 @@
 # [Pass 2/5] Phase 0: DB Abstraction Layer — Context
 
-## Phase Goal (from plan)
+## 1) Phase goals to implement
 
-Create a database abstraction layer for persistent storage with interchangeable backends (in-memory for tests, RocksDB for production). This phase is an internal abstraction layer with no external spec requirements.
+Source: `prd/GUILLOTINE_CLIENT_PLAN.md` (`Phase 0: DB Abstraction Layer (phase-0-db)`).
 
-**Key components (planned paths):**
-- `client/db/adapter.zig` — generic DB interface (ptr + vtable)
-- `client/db/rocksdb.zig` — RocksDB backend (stub initially)
-- `client/db/memory.zig` — in-memory backend for testing
+- Goal: build a persistent-storage abstraction with interchangeable backends.
+- Planned components:
+  - `client/db/adapter.zig` (generic DB interface)
+  - `client/db/rocksdb.zig` (RocksDB backend)
+  - `client/db/memory.zig` (in-memory backend for tests)
 
-## Specs & References (from prd/ETHEREUM_SPECS_REFERENCE.md)
+## 2) Relevant specs and references
 
-- **Specs:** N/A for phase-0-db (internal abstraction)
-- **Reference implementation:** `nethermind/src/Nethermind/Nethermind.Db/`
-- **Tests:** Unit tests only (no ethereum-tests fixtures required for this phase)
+Source: `prd/ETHEREUM_SPECS_REFERENCE.md` (`Phase 0: DB Abstraction (phase-0-db)`).
 
-## Nethermind DB module (nethermind/src/Nethermind/Nethermind.Db/)
+- External protocol specs: **N/A** for this phase (internal abstraction).
+- Primary architectural reference: `nethermind/src/Nethermind/Nethermind.Db/`.
+- Test guidance: unit tests only for phase 0.
 
-Key files and likely roles (from directory listing):
+## 3) Nethermind DB architecture inventory
 
-- `IDb.cs` — primary DB interface surface
-- `IReadOnlyDb.cs` — read-only DB wrapper interface
-- `IDbFactory.cs` — DB instance factory
-- `IDbProvider.cs`, `IReadOnlyDbProvider.cs` — named DB registry/provider
-- `IFullDb.cs` — DB with enumeration/count access
-- `IColumnsDb.cs` — column-family DB interface
-- `ITunableDb.cs` — tuning hooks for backends
-- `IMergeOperator.cs` — merge operator abstraction
-- `DbNames.cs` — standard DB name constants
-- `DbProvider.cs`, `DbProviderExtensions.cs` — provider implementation and helpers
-- `DbExtensions.cs` — extension helpers
-- `MemDb.cs`, `MemColumnsDb.cs` — in-memory DB implementations
-- `MemDbFactory.cs` — in-memory DB factory
-- `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs`, `ReadOnlyDbProvider.cs` — read-only wrappers
-- `NullDb.cs`, `NullRocksDbFactory.cs` — null-object DBs/factories
-- `RocksDbSettings.cs`, `RocksDbMergeEnumerator.cs` — RocksDB settings/merge helpers
-- `Metrics.cs` — DB metrics surface
-- `MetadataDbKeys.cs`, `ReceiptsColumns.cs`, `BlobTxsColumns.cs` — key/column definitions
-- `PruningConfig.cs`, `PruningMode.cs`, `FullPruning*` — pruning configuration and flows
-- `SimpleFilePublicKeyDb.cs`, `InMemoryWriteBatch.cs`, `InMemoryColumnBatch.cs`, `CompressingDb.cs` — ancillary DB helpers
+Directory scanned: `nethermind/src/Nethermind/Nethermind.Db/`.
+Subdirectories present: `Blooms/`, `FullPruning/`.
 
-## Voltaire Zig primitives (voltaire/packages/voltaire-zig/src/)
+Key files to mirror structurally:
 
-Top-level modules (directory listing):
-- `blockchain/`, `crypto/`, `evm/`, `jsonrpc/`, `precompiles/`, `primitives/`, `state-manager/`
+- `nethermind/src/Nethermind/Nethermind.Db/IDb.cs`
+  - Core key/value DB interface (`IKeyValueStoreWithBatching`, metadata, `Dispose`, enumeration).
+- `nethermind/src/Nethermind/Nethermind.Db/IColumnsDb.cs`
+  - Column-family abstraction (`GetColumnDb`, column batch, snapshot).
+- `nethermind/src/Nethermind/Nethermind.Db/IDbFactory.cs`
+  - Backend factory (`CreateDb`, `CreateColumnsDb`, path resolution).
+- `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs`
+  - In-memory implementation with batching, metrics, and optional read/write delay for tests.
 
-Likely DB-facing primitives to reuse (no custom types):
-- `primitives/Bytes`, `primitives/Bytes32` — key/value payloads
-- `primitives/Hash`, `primitives/BlockHash`, `primitives/TransactionHash` — canonical key types
-- `primitives/Address`, `primitives/Slot`, `primitives/StorageValue` — state DB keys/values
-- `primitives/StateRoot`, `primitives/AccountState` — state indexing
-- `primitives/Rlp`, `primitives/Hex` — encoding/decoding utilities
+Additional module boundary signals:
 
-## Host interface (src/host.zig)
+- Provider layer: `DbProvider.cs`, `IDbProvider.cs`, `ReadOnlyDbProvider.cs`.
+- Read-only wrappers: `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs`, `IReadOnlyDb.cs`, `IReadOnlyDbProvider.cs`.
+- Backend/config hooks: `RocksDbSettings.cs`, `ITunableDb.cs`, `IMergeOperator.cs`, `NullRocksDbFactory.cs`.
+- Batching utilities: `InMemoryWriteBatch.cs`, `InMemoryColumnBatch.cs`.
+- Pruning surface: `PruningConfig.cs`, `PruningMode.cs`, `FullPruning/*`.
 
-- `HostInterface` is a ptr + vtable pattern for external state access.
-- vtable functions: `getBalance`, `setBalance`, `getCode`, `setCode`, `getStorage`, `setStorage`, `getNonce`, `setNonce`.
-- Uses `primitives.Address` and `u256` for balances/storage.
-- Note: EVM `inner_call` does not go through this host; it handles nested calls internally.
+## 4) Voltaire Zig APIs to reference
 
-## ethereum-tests inventory (ethereum-tests/)
+Top-level directory scanned: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`.
+Relevant modules present:
 
-Directories:
-- `ABITests/`, `BasicTests/`, `BlockchainTests/`, `DifficultyTests/`, `EOFTests/`,
-  `GenesisTests/`, `JSONSchema/`, `KeyStoreTests/`, `LegacyTests/`, `PoWTests/`,
-  `RLPTests/`, `TransactionTests/`, `TrieTests/`
+- `primitives/`
+- `state-manager/`
+- `blockchain/`
 
-Fixture archives:
-- `ethereum-tests/fixtures_blockchain_tests.tgz`
-- `ethereum-tests/fixtures_general_state_tests.tgz`
+Concrete exports relevant to DB-key/value modeling (from `.../primitives/root.zig`):
 
-Phase-0-db tests remain local unit tests (no fixture dependency yet).
+- `primitives.Address`
+- `primitives.Hash`
+- `primitives.Hex`
+- `primitives.Bytes`
+- `primitives.Bytes32`
+- `primitives.BlockHash`
+- `primitives.TransactionHash`
+- `primitives.Slot`
+- `primitives.StorageValue`
+- `primitives.StateRoot`
+- `primitives.AccountState`
+- `primitives.Rlp`
+
+Related state/block modules that may consume DB services:
+
+- `state-manager/StateManager.zig`
+- `state-manager/JournaledState.zig`
+- `blockchain/BlockStore.zig`
+
+## 5) Existing host integration contract
+
+Source: `src/host.zig`.
+
+- `HostInterface` uses ptr + vtable.
+- Required state-facing operations:
+  - `getBalance` / `setBalance`
+  - `getCode` / `setCode`
+  - `getStorage` / `setStorage`
+  - `getNonce` / `setNonce`
+- `Address` is imported from primitives (`const Address = primitives.Address.Address`).
+- Comment in file notes nested EVM calls are handled internally by EVM and not routed through this host interface.
+
+## 6) Ethereum test fixture directories (inventory)
+
+Root scanned: `ethereum-tests/`.
+Top-level fixture families:
+
+- `ethereum-tests/BlockchainTests/`
+- `ethereum-tests/TrieTests/`
+- `ethereum-tests/TransactionTests/`
+- `ethereum-tests/RLPTests/`
+- `ethereum-tests/DifficultyTests/`
+- `ethereum-tests/EOFTests/`
+- `ethereum-tests/ABITests/`
+- `ethereum-tests/BasicTests/`
+- `ethereum-tests/GenesisTests/`
+- `ethereum-tests/KeyStoreTests/`
+- `ethereum-tests/LegacyTests/`
+- `ethereum-tests/PoWTests/`
+
+Notable subpaths found while scanning:
+
+- `ethereum-tests/BlockchainTests/ValidBlocks/`
+- `ethereum-tests/BlockchainTests/InvalidBlocks/`
+- `ethereum-tests/TransactionTests/ttEIP1559/`
+- `ethereum-tests/TransactionTests/ttEIP2930/`
+- `ethereum-tests/TransactionTests/ttEIP3860/`
+
+Phase-0-db remains unit-test focused, but these fixtures are relevant downstream once DB-backed state/block modules are wired.
+
+## 7) Implementation implications for client-ts
+
+- Mirror Nethermind boundaries in Effect.ts:
+  - core DB service
+  - column DB service
+  - provider/factory services
+  - read-only wrappers
+  - in-memory backend first
+- Keep phase-0-db protocol-agnostic (no consensus/execution rule coupling yet).
+- Use Voltaire primitives and avoid custom key/address/hash wrappers in future client-ts code.
