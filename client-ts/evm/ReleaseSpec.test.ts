@@ -19,6 +19,7 @@ describe("ReleaseSpec", () => {
         assert.strictEqual(spec.hardfork, Hardfork.FRONTIER);
         assert.strictEqual(spec.isEip2028Enabled, false);
         assert.strictEqual(spec.isEip2930Enabled, false);
+        assert.strictEqual(spec.isEip3529Enabled, false);
         assert.strictEqual(spec.isEip3651Enabled, false);
         assert.strictEqual(spec.isEip3860Enabled, false);
         assert.strictEqual(spec.isEip7623Enabled, false);
@@ -34,6 +35,7 @@ describe("ReleaseSpec", () => {
         assert.strictEqual(spec.hardfork, Hardfork.PRAGUE);
         assert.strictEqual(spec.isEip2028Enabled, true);
         assert.strictEqual(spec.isEip2930Enabled, true);
+        assert.strictEqual(spec.isEip3529Enabled, true);
         assert.strictEqual(spec.isEip3651Enabled, true);
         assert.strictEqual(spec.isEip3860Enabled, true);
         assert.strictEqual(spec.isEip7623Enabled, true);
