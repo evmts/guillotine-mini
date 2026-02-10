@@ -78,6 +78,8 @@ export type StandardDbName =
 /** Configuration for a DB layer. */
 export interface DbConfig {
   readonly name: DbName;
+  readonly path?: string;
+  readonly basePath?: string;
 }
 
 /** Receipt DB columns (Nethermind ReceiptsColumns parity). */
@@ -105,6 +107,8 @@ export type BlobTxsColumn =
 /** Schema for validating DB configuration at boundaries. */
 export const DbConfigSchema = Schema.Struct({
   name: DbNameSchema,
+  path: Schema.optional(Schema.String),
+  basePath: Schema.optional(Schema.String),
 });
 
 const readFlagsMask = 1 | 2 | 4 | 8 | 16;

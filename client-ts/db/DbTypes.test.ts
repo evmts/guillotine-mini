@@ -30,6 +30,19 @@ describe("DbTypes", () => {
     assert.deepStrictEqual(decoded, { name: DbNames.code });
   });
 
+  it("validates DbConfig with optional path settings", () => {
+    const decoded = Schema.decodeSync(DbConfigSchema)({
+      name: DbNames.state,
+      path: "state-data",
+      basePath: "./db",
+    });
+    assert.deepStrictEqual(decoded, {
+      name: DbNames.state,
+      path: "state-data",
+      basePath: "./db",
+    });
+  });
+
   it("combines ReadFlags bitwise", () => {
     const combined = ReadFlags.combine(
       ReadFlags.HintCacheMiss,

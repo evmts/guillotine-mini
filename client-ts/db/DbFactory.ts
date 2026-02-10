@@ -2,6 +2,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
+import * as Path from "node:path";
 import {
   Db,
   DbMemoryLive,
@@ -48,6 +49,7 @@ export interface DbFactoryService {
   readonly createDb: (
     config: DbConfig,
   ) => Effect.Effect<DbService, DbError, Scope.Scope>;
+  readonly getFullDbPath: (config: DbConfig) => string;
   readonly createColumnsDb: <Name extends ColumnDbName>(config: {
     readonly name: Name;
   }) => Effect.Effect<ColumnDbServices[Name], DbError, Scope.Scope>;
@@ -94,8 +96,34 @@ const buildColumnsDb = <Name extends ColumnDbName>(
     } as ColumnDbServices[Name];
   });
 
+const isExplicitlyRelativePath = (value: string) =>
+  value.startsWith("./") ||
+  value.startsWith("../") ||
+  value.startsWith(".\\") ||
+  value.startsWith("..\\");
+
+const resolveDbPath = (config: DbConfig): string => {
+  const dbPath = config.path ?? config.name;
+  const basePath = config.basePath;
+
+  if (basePath === undefined || basePath.length === 0) {
+    return dbPath;
+  }
+
+  if (Path.isAbsolute(dbPath) || isExplicitlyRelativePath(dbPath)) {
+    return dbPath;
+  }
+
+  if (Path.isAbsolute(basePath) || isExplicitlyRelativePath(basePath)) {
+    return Path.join(basePath, dbPath);
+  }
+
+  return Path.join(process.cwd(), basePath, dbPath);
+};
+
 const memoryDbFactory = {
   createDb: (config: DbConfig) => buildDb(DbMemoryLive(config)),
+  getFullDbPath: (config: DbConfig) => resolveDbPath(config),
   createColumnsDb: <Name extends ColumnDbName>(config: {
     readonly name: Name;
   }) => buildColumnsDb(config, (name) => buildDb(DbMemoryLive({ name }))),
@@ -103,6 +131,7 @@ const memoryDbFactory = {
 
 const rocksStubDbFactory = {
   createDb: (config: DbConfig) => buildDb(DbRocksStubLive(config)),
+  getFullDbPath: (config: DbConfig) => resolveDbPath(config),
   createColumnsDb: <Name extends ColumnDbName>(config: {
     readonly name: Name;
   }) => buildColumnsDb(config, (name) => buildDb(DbRocksStubLive({ name }))),
@@ -134,6 +163,10 @@ const withDbFactory = <A, E, R>(
 /** Create a DB from the configured factory. */
 export const createDb = (config: DbConfig) =>
   withDbFactory((factory) => factory.createDb(config));
+
+/** Resolve the full filesystem path for a DB config. */
+export const getFullDbPath = (config: DbConfig) =>
+  withDbFactory((factory) => Effect.succeed(factory.getFullDbPath(config)));
 
 /** Create a column DB from the configured factory. */
 export const createColumnsDb = <Name extends ColumnDbName>(config: {

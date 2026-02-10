@@ -1,12 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Path from "node:path";
 import { Bytes } from "voltaire-effect/primitives";
 import {
   DbFactoryMemoryTest,
   DbFactoryRocksStubTest,
   createDb,
   createColumnsDb,
+  getFullDbPath,
 } from "./DbFactory";
 import { BlobTxsColumns, DbNames, ReceiptsColumns } from "./DbTypes";
 import { toBytes } from "./testUtils";
@@ -101,5 +103,61 @@ describe("DbFactory", () => {
         );
       }),
     ).pipe(Effect.provide(DbFactoryRocksStubTest)),
+  );
+
+  it.effect("returns db name when path settings are omitted", () =>
+    Effect.gen(function* () {
+      const fullPath = yield* getFullDbPath({
+        name: DbNames.state,
+      });
+      assert.strictEqual(fullPath, DbNames.state);
+    }).pipe(Effect.provide(DbFactoryMemoryTest)),
+  );
+
+  it.effect("resolves full path from non-rooted base path", () =>
+    Effect.gen(function* () {
+      const fullPath = yield* getFullDbPath({
+        name: DbNames.state,
+        basePath: "db",
+      });
+      assert.strictEqual(fullPath, Path.join(process.cwd(), "db", "state"));
+    }).pipe(Effect.provide(DbFactoryMemoryTest)),
+  );
+
+  it.effect("joins explicitly relative base path and custom db path", () =>
+    Effect.gen(function* () {
+      const fullPath = yield* getFullDbPath({
+        name: DbNames.state,
+        basePath: "./db",
+        path: "state-data",
+      });
+      assert.strictEqual(fullPath, Path.join("./db", "state-data"));
+    }).pipe(Effect.provide(DbFactoryMemoryTest)),
+  );
+
+  it.effect("keeps absolute db path unchanged when base path is provided", () =>
+    Effect.gen(function* () {
+      const absolutePath = Path.join(process.cwd(), "absolute-state");
+      const fullPath = yield* getFullDbPath({
+        name: DbNames.state,
+        path: absolutePath,
+        basePath: "db",
+      });
+      assert.strictEqual(fullPath, absolutePath);
+    }).pipe(Effect.provide(DbFactoryMemoryTest)),
+  );
+
+  it.effect(
+    "keeps explicitly relative db path unchanged when base path is provided",
+    () =>
+      Effect.gen(function* () {
+        const explicitPath = "./state-relative";
+        const fullPath = yield* getFullDbPath({
+          name: DbNames.state,
+          path: explicitPath,
+          basePath: "db",
+        });
+        assert.strictEqual(fullPath, explicitPath);
+      }).pipe(Effect.provide(DbFactoryRocksStubTest)),
   );
 });
