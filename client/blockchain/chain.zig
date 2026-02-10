@@ -16,10 +16,10 @@ const ForkBlockCache = blockchain.ForkBlockCache;
 /// - Reads the current head block number; if none is set, returns null.
 /// - Fetches the canonical block for that number and derives the hash from the
 ///   returned block (single-source snapshot) rather than consulting the
-///   number→hash map separately. This avoids stale hash reads if the head
-///   changes between calls.
-/// - Best‑effort race resilience: if the head number changes during the read,
-///   the helper returns null instead of a potentially stale value.
+///   number→hash map separately.
+/// - Race‑resilient snapshot: if the head changes during the read, a consistent
+///   snapshot from the initial head number is returned rather than a stale mix
+///   of values. This mirrors Nethermind’s snapshot semantics.
 pub fn head_hash(chain: *Chain) !?Hash.Hash {
     // Delegate to the generic helper to avoid duplication and propagate errors.
     return try head_hash_of(chain);
@@ -29,10 +29,10 @@ pub fn head_hash(chain: *Chain) !?Hash.Hash {
 ///
 /// Semantics:
 /// - Reads the current head block number; if none is set, returns null.
-/// - Fetches the canonical block for the current head number in a single pass;
-///   returns null if the head number changes mid‑call.
-/// - Propagates any underlying errors (e.g. `error.RpcPending` when a fork
-///   cache is configured and the block must be fetched remotely).
+/// - Fetches the canonical block for that number in a single pass.
+/// - Race‑resilient snapshot: if the head changes during the read, a consistent
+///   snapshot from the initial head number is returned. Underlying errors (e.g.
+///   `error.RpcPending` with a fork cache) are propagated.
 pub fn head_block(chain: *Chain) !?Block.Block {
     // Delegate to the generic helper to avoid duplication.
     return head_block_of(chain);
@@ -116,17 +116,9 @@ pub fn get_block_by_number_local(chain: *Chain, number: u64) ?Block.Block {
 
 /// Generic, comptime-injected head hash reader for any chain-like type.
 pub fn head_hash_of(chain: anytype) !?Hash.Hash {
-    const max_attempts: usize = 2;
-    var attempt: usize = 0;
-    while (attempt < max_attempts) : (attempt += 1) {
-        const before = chain.getHeadBlockNumber() orelse return null;
-        const maybe_block = try chain.getBlockByNumber(before);
-        const hb = maybe_block orelse return null;
-        const after = chain.getHeadBlockNumber() orelse return null;
-        if (after == before) return hb.hash;
-        if (attempt + 1 == max_attempts) return hb.hash; // return 'before' snapshot
-    }
-    return null; // defensive
+    // Reuse the snapshot logic in `head_block_of` to avoid duplication.
+    const maybe_block = try head_block_of(chain);
+    return if (maybe_block) |b| b.hash else null;
 }
 
 /// Generic, comptime-injected head block reader for any chain-like type.
