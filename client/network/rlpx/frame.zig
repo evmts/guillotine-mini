@@ -21,18 +21,22 @@ pub inline fn calculate_padding(size: usize) usize {
 /// Errors when `size` exceeds the protocol's 24-bit representable limit.
 pub inline fn encodeFrameSize24(size: usize) ![3]u8 {
     if (size > ProtocolMaxFrameSize) return error.InvalidFrameSize;
-    return .{
-        @as(u8, @intCast((size >> 16) & 0xFF)),
-        @as(u8, @intCast((size >> 8) & 0xFF)),
-        @as(u8, @intCast(size & 0xFF)),
-    };
+    var out: [3]u8 = undefined;
+    // Use std.mem primitives for well-defined u24 big-endian encoding.
+    std.mem.writeInt(u24, &out, @as(u24, @intCast(size)), .big);
+    return out;
 }
 
 /// Decodes a 24-bit big-endian frame size from the RLPx header bytes.
 /// The input must be exactly three bytes as per RLPx framing.
 pub inline fn decodeFrameSize24(bytes: [3]u8) usize {
-    return (@as(usize, bytes[0]) << 16) | (@as(usize, bytes[1]) << 8) | @as(usize, bytes[2]);
+    const v: u24 = std.mem.readInt(u24, &bytes, .big);
+    return @as(usize, @intCast(v));
 }
+
+// TODO(rlpx): Add an integration test at the header/decoder layer that rejects
+// oversized frames (> 24-bit) before decode/dispatch. This guards invariants
+// and prevents downstream allocations. Not implemented here by design.
 
 test "calculate padding returns zero for aligned sizes" {
     try std.testing.expectEqual(@as(usize, 0), calculate_padding(0));
