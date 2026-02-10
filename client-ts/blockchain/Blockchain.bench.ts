@@ -8,6 +8,7 @@ import {
   Blockchain,
   BlockchainLive,
   getBlockByNumber,
+  hasBlock,
   initializeGenesis,
   putBlock,
   setCanonicalHead,
@@ -31,6 +32,8 @@ type ChainFixture = {
   readonly genesis: BlockType;
   readonly blocks: ReadonlyArray<BlockType>;
   readonly numbers: ReadonlyArray<BlockNumberType>;
+  readonly hashes: ReadonlyArray<BlockHashType>;
+  readonly missingHashes: ReadonlyArray<BlockHashType>;
 };
 
 const BlockHashBytesSchema = BlockHash.Bytes as unknown as Schema.Schema<
@@ -78,6 +81,10 @@ const makeChain = (count: number): ChainFixture => {
     genesis,
     blocks,
     numbers: blocks.map((block) => block.header.number),
+    hashes: blocks.map((block) => block.hash),
+    missingHashes: blocks.map((_, index) =>
+      blockHashFromNumber(index + count + 2),
+    ),
   } satisfies ChainFixture;
 };
 
@@ -100,6 +107,13 @@ const benchReadByNumber = (numbers: ReadonlyArray<BlockNumberType>) =>
   Effect.gen(function* () {
     for (const number of numbers) {
       yield* getBlockByNumber(number);
+    }
+  });
+
+const benchHasBlock = (hashes: ReadonlyArray<BlockHashType>) =>
+  Effect.gen(function* () {
+    for (const hash of hashes) {
+      yield* hasBlock(hash);
     }
   });
 
@@ -170,12 +184,40 @@ const benchReads = (count: number) =>
     }),
   );
 
+const benchHasHits = (count: number) =>
+  withFreshChain(count, (fixture) =>
+    Effect.gen(function* () {
+      yield* initializeGenesis(fixture.genesis);
+      yield* benchPutBlocks(fixture.blocks);
+      return yield* measure(
+        "hasBlock-hit",
+        fixture.hashes.length,
+        benchHasBlock(fixture.hashes),
+      );
+    }),
+  );
+
+const benchHasMisses = (count: number) =>
+  withFreshChain(count, (fixture) =>
+    Effect.gen(function* () {
+      yield* initializeGenesis(fixture.genesis);
+      yield* benchPutBlocks(fixture.blocks);
+      return yield* measure(
+        "hasBlock-miss",
+        fixture.missingHashes.length,
+        benchHasBlock(fixture.missingHashes),
+      );
+    }),
+  );
+
 const runBenchmarks = (count: number) =>
   Effect.gen(function* () {
     const results: BenchResult[] = [];
     results.push(yield* benchPut(count));
     results.push(yield* benchProcess(count));
     results.push(yield* benchReads(count));
+    results.push(yield* benchHasHits(count));
+    results.push(yield* benchHasMisses(count));
     return results;
   });
 
