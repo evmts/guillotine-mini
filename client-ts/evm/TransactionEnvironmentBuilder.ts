@@ -7,7 +7,9 @@ import {
   Address,
   Gas,
   GasPrice,
+  Hash,
   Transaction,
+  TransactionIndex,
 } from "voltaire-effect/primitives";
 import {
   AccessListBuilder,
@@ -38,6 +40,8 @@ export type TransactionEnvironment = {
   readonly accessListStorageKeys: ReadonlyArray<AccessListStorageKey>;
   readonly transientStorage: TransientStorageService;
   readonly blobVersionedHashes: ReadonlyArray<Transaction.VersionedHash>;
+  readonly indexInBlock: TransactionIndex.TransactionIndexType | null;
+  readonly txHash: Hash.HashType | null;
 };
 
 /** Inputs needed to build a transaction environment. */
@@ -46,6 +50,8 @@ export type TransactionEnvironmentInput = {
   readonly origin: Address.AddressType;
   readonly coinbase: Address.AddressType;
   readonly gasPrice: GasPrice.GasPriceType;
+  readonly indexInBlock?: TransactionIndex.TransactionIndexType | null;
+  readonly txHash?: Hash.HashType | null;
 };
 
 /** Error raised when available gas cannot be decoded. */
@@ -127,7 +133,14 @@ const makeTransactionEnvironmentBuilder = Effect.gen(function* () {
 
   const buildTransactionEnvironment = (input: TransactionEnvironmentInput) =>
     Effect.gen(function* () {
-      const { tx, origin, coinbase, gasPrice } = input;
+      const {
+        tx,
+        origin,
+        coinbase,
+        gasPrice,
+        indexInBlock = null,
+        txHash = null,
+      } = input;
       const { intrinsicGas, calldataFloorGas } =
         yield* intrinsicGasCalculator.calculateIntrinsicGas(tx);
       const accessList = yield* accessListBuilder.buildAccessList(tx, coinbase);
@@ -151,6 +164,8 @@ const makeTransactionEnvironmentBuilder = Effect.gen(function* () {
         accessListStorageKeys: accessList.storageKeys,
         transientStorage,
         blobVersionedHashes,
+        indexInBlock,
+        txHash,
       } satisfies TransactionEnvironment;
     });
 
