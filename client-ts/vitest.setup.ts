@@ -7,7 +7,11 @@ type TestContext = {
   onTestFinished?: (handler: OnTestFinishedHandler) => void;
 };
 
-beforeEach((ctx) => {
+const ensureOnTestFinished = (ctx: unknown) => {
+  if (!ctx) {
+    return;
+  }
+
   const context = ctx as TestContext;
   if (typeof context.onTestFinished === "function") {
     return;
@@ -18,4 +22,17 @@ beforeEach((ctx) => {
     configurable: true,
     writable: true,
   });
+};
+
+const prototypeContext = Object.prototype as TestContext;
+if (typeof prototypeContext.onTestFinished !== "function") {
+  Object.defineProperty(Object.prototype, "onTestFinished", {
+    value: onTestFinished,
+    configurable: true,
+    writable: true,
+  });
+}
+
+beforeEach((ctx) => {
+  ensureOnTestFinished(ctx);
 });
