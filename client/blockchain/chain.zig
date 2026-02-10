@@ -21,12 +21,8 @@ const ForkBlockCache = blockchain.ForkBlockCache;
 /// - Best‑effort race resilience: if the head number changes during the read,
 ///   the helper returns null instead of a potentially stale value.
 pub fn head_hash(chain: *Chain) ?Hash.Hash {
-    const before = chain.getHeadBlockNumber() orelse return null;
-    const block = chain.getBlockByNumber(before) catch return null;
-    const hb = block orelse return null;
-    const after = chain.getHeadBlockNumber() orelse return null;
-    if (after != before) return null; // head moved; avoid TOCTOU
-    return hb.hash;
+    // Delegate to the generic helper to avoid duplication.
+    return head_hash_of(chain);
 }
 
 /// Returns the canonical head block if present.
