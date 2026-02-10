@@ -254,6 +254,13 @@ export type TxPoolAddError =
   | TxPoolSenderLimitExceededError
   | TxPoolBlobSenderLimitExceededError;
 
+type TxPoolAddOutcome =
+  | TxPoolAddResult
+  | {
+      readonly _tag: "Rejected";
+      readonly error: TxPoolAddError;
+    };
+
 /** Transaction pool service interface. */
 export interface TxPoolService {
   readonly getPendingCount: () => Effect.Effect<number, never>;
@@ -598,89 +605,80 @@ const makeTxPool = (config: TxPoolConfigInput) =>
         const hashKey = Hash.toHex(validated.hash);
         const senderKey = Address.toHex(validated.sender);
 
-        const outcome = yield* Ref.modify(stateRef, (state) => {
-          if (state.transactions.has(hashKey)) {
-            return [
-              { _tag: "AlreadyKnown", hash: validated.hash } as TxPoolAddResult,
-              state,
-            ];
-          }
+        const outcome = yield* Ref.modify(
+          stateRef,
+          (state): [TxPoolAddOutcome, TxPoolState] => {
+            if (state.transactions.has(hashKey)) {
+              return [{ _tag: "AlreadyKnown", hash: validated.hash }, state];
+            }
 
-          if (
-            validatedConfig.size > 0 &&
-            state.transactions.size >= validatedConfig.size
-          ) {
+            if (
+              validatedConfig.size > 0 &&
+              state.transactions.size >= validatedConfig.size
+            ) {
+              return [
+                {
+                  _tag: "Rejected",
+                  error: new TxPoolFullError({
+                    size: state.transactions.size,
+                    maxSize: validatedConfig.size,
+                  }),
+                },
+                state,
+              ];
+            }
+
+            const pendingLimit = validated.isBlob
+              ? validatedConfig.maxPendingBlobTxsPerSender
+              : validatedConfig.maxPendingTxsPerSender;
+            if (pendingLimit > 0) {
+              const pending = validated.isBlob
+                ? (state.blobSenderIndex.get(senderKey)?.size ?? 0)
+                : (state.senderIndex.get(senderKey)?.size ?? 0);
+              if (pending >= pendingLimit) {
+                return [
+                  {
+                    _tag: "Rejected",
+                    error: validated.isBlob
+                      ? new TxPoolBlobSenderLimitExceededError({
+                          sender: validated.sender,
+                          pending,
+                          maxPending: pendingLimit,
+                        })
+                      : new TxPoolSenderLimitExceededError({
+                          sender: validated.sender,
+                          pending,
+                          maxPending: pendingLimit,
+                        }),
+                  },
+                  state,
+                ];
+              }
+            }
+
+            const nextState = addTransactionToState(
+              state,
+              validated,
+              hashKey,
+              senderKey,
+            );
+
             return [
               {
-                _tag: "Rejected",
-                error: new TxPoolFullError({
-                  size: state.transactions.size,
-                  maxSize: validatedConfig.size,
-                }),
+                _tag: "Added",
+                hash: validated.hash,
+                isBlob: validated.isBlob,
               },
-              state,
+              nextState,
             ];
-          }
-
-          if (!validated.isBlob && validatedConfig.maxPendingTxsPerSender > 0) {
-            const pending = state.senderIndex.get(senderKey)?.size ?? 0;
-            if (pending >= validatedConfig.maxPendingTxsPerSender) {
-              return [
-                {
-                  _tag: "Rejected",
-                  error: new TxPoolSenderLimitExceededError({
-                    sender: validated.sender,
-                    pending,
-                    maxPending: validatedConfig.maxPendingTxsPerSender,
-                  }),
-                },
-                state,
-              ];
-            }
-          }
-
-          if (
-            validated.isBlob &&
-            validatedConfig.maxPendingBlobTxsPerSender > 0
-          ) {
-            const pending = state.blobSenderIndex.get(senderKey)?.size ?? 0;
-            if (pending >= validatedConfig.maxPendingBlobTxsPerSender) {
-              return [
-                {
-                  _tag: "Rejected",
-                  error: new TxPoolBlobSenderLimitExceededError({
-                    sender: validated.sender,
-                    pending,
-                    maxPending: validatedConfig.maxPendingBlobTxsPerSender,
-                  }),
-                },
-                state,
-              ];
-            }
-          }
-
-          const nextState = addTransactionToState(
-            state,
-            validated,
-            hashKey,
-            senderKey,
-          );
-
-          return [
-            {
-              _tag: "Added",
-              hash: validated.hash,
-              isBlob: validated.isBlob,
-            } as TxPoolAddResult,
-            nextState,
-          ];
-        });
+          },
+        );
 
         if (outcome._tag === "Rejected") {
           return yield* Effect.fail(outcome.error);
         }
 
-        return outcome as TxPoolAddResult;
+        return outcome;
       });
 
     const removeTransaction = (hash: Hash.HashType) =>
