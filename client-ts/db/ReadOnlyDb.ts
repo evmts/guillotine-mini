@@ -41,6 +41,16 @@ export class ReadOnlyDb extends Context.Tag("ReadOnlyDb")<
 >() {}
 
 type OverlayStore = Map<string, BytesType>;
+type PreparedOverlayWriteOp =
+  | {
+      readonly _tag: "put";
+      readonly keyHex: string;
+      readonly value: BytesType;
+    }
+  | {
+      readonly _tag: "del";
+      readonly keyHex: string;
+    };
 
 type DbReader = Pick<
   DbService,
@@ -53,6 +63,10 @@ const readOnlyWriteError = () =>
 const mergeUnsupportedError = () =>
   new DbError({ message: "ReadOnlyDb does not support merge" });
 
+const failReadOnlyWrite = () => Effect.fail(readOnlyWriteError());
+
+const failMergeUnsupported = () => Effect.fail(mergeUnsupportedError());
+
 const cloneOverlayStore = (store: OverlayStore): OverlayStore => {
   const snapshot = new Map<string, BytesType>();
   for (const [keyHex, value] of store.entries()) {
@@ -60,6 +74,63 @@ const cloneOverlayStore = (store: OverlayStore): OverlayStore => {
   }
   return snapshot;
 };
+
+const putOverlayValue = (
+  overlay: OverlayStore,
+  key: BytesType,
+  value: BytesType,
+) =>
+  Effect.gen(function* () {
+    const keyHex = yield* encodeKey(key);
+    const stored = yield* cloneBytesEffect(value);
+    overlay.set(keyHex, stored);
+  });
+
+const removeOverlayValue = (overlay: OverlayStore, key: BytesType) =>
+  Effect.gen(function* () {
+    const keyHex = yield* encodeKey(key);
+    overlay.delete(keyHex);
+  });
+
+const prepareOverlayWriteOps = (ops: ReadonlyArray<DbWriteOp>) =>
+  Effect.gen(function* () {
+    const prepared: Array<PreparedOverlayWriteOp> = [];
+
+    for (const op of ops) {
+      switch (op._tag) {
+        case "put": {
+          const keyHex = yield* encodeKey(op.key);
+          const value = yield* cloneBytesEffect(op.value);
+          prepared.push({ _tag: "put", keyHex, value });
+          break;
+        }
+        case "del": {
+          const keyHex = yield* encodeKey(op.key);
+          prepared.push({ _tag: "del", keyHex });
+          break;
+        }
+        case "merge": {
+          return yield* failMergeUnsupported();
+        }
+      }
+    }
+
+    return prepared;
+  });
+
+const applyPreparedOverlayWriteOps = (
+  overlay: OverlayStore,
+  ops: ReadonlyArray<PreparedOverlayWriteOp>,
+) =>
+  Effect.sync(() => {
+    for (const op of ops) {
+      if (op._tag === "put") {
+        overlay.set(op.keyHex, op.value);
+      } else {
+        overlay.delete(op.keyHex);
+      }
+    }
+  });
 
 const makeReadOnlyReader = (
   base: DbReader,
@@ -221,26 +292,13 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
     const reader = makeReadOnlyReader(base, overlay);
 
     const put = (key: BytesType, value: BytesType, _flags?: WriteFlags) =>
-      overlay
-        ? Effect.gen(function* () {
-            const keyHex = yield* encodeKey(key);
-            const stored = yield* cloneBytesEffect(value);
-            overlay.set(keyHex, stored);
-          })
-        : Effect.fail(readOnlyWriteError());
+      overlay ? putOverlayValue(overlay, key, value) : failReadOnlyWrite();
 
     const remove = (key: BytesType) =>
-      overlay
-        ? Effect.gen(function* () {
-            const keyHex = yield* encodeKey(key);
-            overlay.delete(keyHex);
-          })
-        : Effect.fail(readOnlyWriteError());
+      overlay ? removeOverlayValue(overlay, key) : failReadOnlyWrite();
 
     const merge = (_key: BytesType, _value: BytesType, _flags?: WriteFlags) =>
-      overlay
-        ? Effect.fail(mergeUnsupportedError())
-        : Effect.fail(readOnlyWriteError());
+      overlay ? failMergeUnsupported() : failReadOnlyWrite();
 
     const writeBatch = (ops: ReadonlyArray<DbWriteOp>) =>
       overlay
@@ -249,46 +307,10 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
               return;
             }
 
-            const prepared: Array<
-              | {
-                  readonly _tag: "put";
-                  readonly keyHex: string;
-                  readonly value: BytesType;
-                }
-              | {
-                  readonly _tag: "del";
-                  readonly keyHex: string;
-                }
-            > = [];
-
-            for (const op of ops) {
-              switch (op._tag) {
-                case "put": {
-                  const keyHex = yield* encodeKey(op.key);
-                  const stored = yield* cloneBytesEffect(op.value);
-                  prepared.push({ _tag: "put", keyHex, value: stored });
-                  break;
-                }
-                case "del": {
-                  const keyHex = yield* encodeKey(op.key);
-                  prepared.push({ _tag: "del", keyHex });
-                  break;
-                }
-                case "merge": {
-                  return yield* Effect.fail(mergeUnsupportedError());
-                }
-              }
-            }
-
-            for (const op of prepared) {
-              if (op._tag === "put") {
-                overlay.set(op.keyHex, op.value);
-              } else {
-                overlay.delete(op.keyHex);
-              }
-            }
+            const prepared = yield* prepareOverlayWriteOps(ops);
+            yield* applyPreparedOverlayWriteOps(overlay, prepared);
           })
-        : Effect.fail(readOnlyWriteError());
+        : failReadOnlyWrite();
 
     const startWriteBatch = () =>
       overlay
@@ -298,29 +320,18 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
                 key: BytesType,
                 value: BytesType,
                 _flags?: WriteFlags,
-              ) =>
-                Effect.gen(function* () {
-                  const keyHex = yield* encodeKey(key);
-                  const stored = yield* cloneBytesEffect(value);
-                  overlay.set(keyHex, stored);
-                });
+              ) => putOverlayValue(overlay, key, value);
 
               const mergeBatch = (
                 _key: BytesType,
                 _value: BytesType,
                 _flags?: WriteFlags,
-              ) => Effect.fail(mergeUnsupportedError());
+              ) => failMergeUnsupported();
 
               const removeBatch = (key: BytesType) =>
-                Effect.gen(function* () {
-                  const keyHex = yield* encodeKey(key);
-                  overlay.delete(keyHex);
-                });
+                removeOverlayValue(overlay, key);
 
-              const clearBatch = () =>
-                Effect.sync(() => {
-                  // no-op for write-through batch
-                });
+              const clearBatch = () => Effect.void;
 
               return {
                 put: putBatch,
@@ -329,16 +340,9 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
                 clear: clearBatch,
               } satisfies WriteBatch;
             }),
-            () =>
-              Effect.sync(() => {
-                // no-op for batch release
-              }),
+            () => Effect.void,
           )
-        : Effect.acquireRelease(Effect.fail(readOnlyWriteError()), () =>
-            Effect.sync(() => {
-              // no-op for batch release
-            }),
-          );
+        : Effect.acquireRelease(failReadOnlyWrite(), () => Effect.void);
 
     const createSnapshot = () =>
       overlay
@@ -349,26 +353,16 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
           })
         : base.createSnapshot();
 
-    const flush = (_onlyWal?: boolean) =>
-      Effect.sync(() => {
-        // no-op for read-only wrapper
-      });
+    const flush = (_onlyWal?: boolean) => Effect.void;
 
-    const clear = () => Effect.fail(readOnlyWriteError());
+    const clear = () => failReadOnlyWrite();
 
-    const compact = () =>
-      Effect.sync(() => {
-        // no-op for read-only wrapper
-      });
+    const compact = () => Effect.void;
 
     const gatherMetric = () => base.gatherMetric();
 
     const clearTempChanges = () =>
-      overlay
-        ? Effect.sync(() => overlay.clear())
-        : Effect.sync(() => {
-            // no-op when overlay is disabled
-          });
+      overlay ? Effect.sync(() => overlay.clear()) : Effect.void;
 
     return {
       name: base.name,
@@ -403,3 +397,70 @@ export const ReadOnlyDbTest = (
   options: ReadOnlyDbOptions = {},
 ): Layer.Layer<ReadOnlyDb, DbError, Db> =>
   Layer.scoped(ReadOnlyDb, makeReadOnlyDb(options));
+
+const withReadOnlyDb = <A, E, R>(
+  f: (db: ReadOnlyDbService) => Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R | ReadOnlyDb> => Effect.flatMap(ReadOnlyDb, f);
+
+/** Retrieve a value by key from the read-only DB. */
+export const get = (key: BytesType, flags?: ReadFlags) =>
+  withReadOnlyDb((db) => db.get(key, flags));
+
+/** Retrieve values for multiple keys from the read-only DB. */
+export const getMany = (keys: ReadonlyArray<BytesType>) =>
+  withReadOnlyDb((db) => db.getMany(keys));
+
+/** Return all entries from the read-only DB. */
+export const getAll = (ordered?: boolean) =>
+  withReadOnlyDb((db) => db.getAll(ordered));
+
+/** Return all keys from the read-only DB. */
+export const getAllKeys = (ordered?: boolean) =>
+  withReadOnlyDb((db) => db.getAllKeys(ordered));
+
+/** Return all values from the read-only DB. */
+export const getAllValues = (ordered?: boolean) =>
+  withReadOnlyDb((db) => db.getAllValues(ordered));
+
+/** Write a value to the read-only DB overlay if enabled. */
+export const put = (key: BytesType, value: BytesType, flags?: WriteFlags) =>
+  withReadOnlyDb((db) => db.put(key, value, flags));
+
+/** Merge a value into the read-only DB overlay if enabled. */
+export const merge = (key: BytesType, value: BytesType, flags?: WriteFlags) =>
+  withReadOnlyDb((db) => db.merge(key, value, flags));
+
+/** Remove a value from the read-only DB overlay if enabled. */
+export const remove = (key: BytesType) =>
+  withReadOnlyDb((db) => db.remove(key));
+
+/** Check whether a key exists in the read-only DB view. */
+export const has = (key: BytesType) => withReadOnlyDb((db) => db.has(key));
+
+/** Create a read-only snapshot. */
+export const createSnapshot = () => withReadOnlyDb((db) => db.createSnapshot());
+
+/** Flush underlying storage buffers. */
+export const flush = (onlyWal?: boolean) =>
+  withReadOnlyDb((db) => db.flush(onlyWal));
+
+/** Clear all data from the read-only DB. */
+export const clear = () => withReadOnlyDb((db) => db.clear());
+
+/** Compact underlying storage. */
+export const compact = () => withReadOnlyDb((db) => db.compact());
+
+/** Gather DB metrics from the wrapped DB. */
+export const gatherMetric = () => withReadOnlyDb((db) => db.gatherMetric());
+
+/** Apply a batch of write operations to the overlay if enabled. */
+export const writeBatch = (ops: ReadonlyArray<DbWriteOp>) =>
+  withReadOnlyDb((db) => db.writeBatch(ops));
+
+/** Start a write batch scope. */
+export const startWriteBatch = () =>
+  withReadOnlyDb((db) => db.startWriteBatch());
+
+/** Clear in-memory overlay state when enabled. */
+export const clearTempChanges = () =>
+  withReadOnlyDb((db) => db.clearTempChanges());
