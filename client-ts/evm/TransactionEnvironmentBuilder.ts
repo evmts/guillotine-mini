@@ -21,8 +21,8 @@ import {
   type IntrinsicGasError,
 } from "./IntrinsicGasCalculator";
 import {
-  TransientStorage,
-  TransientStorageTest,
+  TransientStorageFactory,
+  TransientStorageFactoryTest,
   type TransientStorageService,
 } from "../state/TransientStorage";
 
@@ -129,7 +129,7 @@ const EMPTY_BLOB_HASHES: ReadonlyArray<Transaction.VersionedHash> = [];
 const makeTransactionEnvironmentBuilder = Effect.gen(function* () {
   const accessListBuilder = yield* AccessListBuilder;
   const intrinsicGasCalculator = yield* IntrinsicGasCalculator;
-  const transientStorage = yield* TransientStorage;
+  const transientStorageFactory = yield* TransientStorageFactory;
 
   const buildTransactionEnvironment = (input: TransactionEnvironmentInput) =>
     Effect.gen(function* () {
@@ -150,7 +150,7 @@ const makeTransactionEnvironmentBuilder = Effect.gen(function* () {
       const gasValue = tx.gasLimit - (intrinsicGas as bigint);
       const gas = yield* decodeGas(gasValue, "available");
 
-      yield* transientStorage.clear();
+      const transientStorage = yield* transientStorageFactory.make();
 
       const blobVersionedHashes = Transaction.isEIP4844(tx)
         ? tx.blobVersionedHashes
@@ -178,7 +178,7 @@ const makeTransactionEnvironmentBuilder = Effect.gen(function* () {
 export const TransactionEnvironmentBuilderLive: Layer.Layer<
   TransactionEnvironmentBuilder,
   never,
-  AccessListBuilder | IntrinsicGasCalculator | TransientStorage
+  AccessListBuilder | IntrinsicGasCalculator | TransientStorageFactory
 > = Layer.effect(
   TransactionEnvironmentBuilder,
   makeTransactionEnvironmentBuilder,
@@ -189,7 +189,9 @@ export const TransactionEnvironmentBuilderTest: Layer.Layer<
   TransactionEnvironmentBuilder,
   never,
   AccessListBuilder | IntrinsicGasCalculator
-> = TransactionEnvironmentBuilderLive.pipe(Layer.provide(TransientStorageTest));
+> = TransactionEnvironmentBuilderLive.pipe(
+  Layer.provide(TransientStorageFactoryTest),
+);
 
 /** Build a transaction environment via the service. */
 export const buildTransactionEnvironment = (

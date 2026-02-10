@@ -64,11 +64,21 @@ export interface TransientStorageService {
   readonly clear: () => Effect.Effect<void>;
 }
 
+/** Factory interface for transaction-scoped transient storage. */
+export interface TransientStorageFactoryService {
+  readonly make: () => Effect.Effect<TransientStorageService>;
+}
+
 /** Context tag for transient storage. */
 export class TransientStorage extends Context.Tag("TransientStorage")<
   TransientStorage,
   TransientStorageService
 >() {}
+
+/** Context tag for transient storage factories. */
+export class TransientStorageFactory extends Context.Tag(
+  "TransientStorageFactory",
+)<TransientStorageFactory, TransientStorageFactoryService>() {}
 
 const withTransientStorage = <A, E>(
   f: (storage: TransientStorageService) => Effect.Effect<A, E>,
@@ -249,6 +259,16 @@ export const TransientStorageLive: Layer.Layer<TransientStorage> = Layer.effect(
 /** Deterministic transient storage layer for tests. */
 export const TransientStorageTest: Layer.Layer<TransientStorage> =
   TransientStorageLive;
+
+/** Production transient storage factory layer. */
+export const TransientStorageFactoryLive: Layer.Layer<TransientStorageFactory> =
+  Layer.succeed(TransientStorageFactory, {
+    make: () => makeTransientStorage,
+  } satisfies TransientStorageFactoryService);
+
+/** Deterministic transient storage factory layer for tests. */
+export const TransientStorageFactoryTest: Layer.Layer<TransientStorageFactory> =
+  TransientStorageFactoryLive;
 
 /** Read a transient storage slot (zero if unset). */
 export const getTransientStorage = (
