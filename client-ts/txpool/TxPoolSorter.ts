@@ -70,7 +70,7 @@ const feeTupleFromTransaction = (tx: Transaction.Any): FeeTuple => {
 
   if (isDynamicFeeTransaction(tx)) {
     return {
-      gasPrice: ZeroGasPrice,
+      gasPrice: tx.maxPriorityFeePerGas as GasPrice.GasPriceType,
       maxFeePerGas: tx.maxFeePerGas as MaxFeePerGas.MaxFeePerGasType,
       maxPriorityFeePerGas:
         tx.maxPriorityFeePerGas as MaxPriorityFeePerGas.MaxPriorityFeePerGasType,
