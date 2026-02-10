@@ -9,6 +9,7 @@
 ///
 /// Notes:
 ///   - Uses empty blocks (no transactions) to isolate chain-store overhead.
+///   - Benchmarks exercise only Voltaire Blockchain primitives; EVM is not invoked.
 ///   - Arena allocator is used for transaction-scoped memory.
 const std = @import("std");
 const chain_mod = @import("chain.zig");
