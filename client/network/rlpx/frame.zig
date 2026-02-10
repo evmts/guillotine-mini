@@ -19,7 +19,7 @@ pub inline fn calculate_padding(size: usize) usize {
 
 /// Encodes a frame size as a 24-bit big-endian integer for the RLPx header.
 /// Errors when `size` exceeds the protocol's 24-bit representable limit.
-pub inline fn encodeFrameSize24(size: usize) FrameError![3]u8 {
+pub inline fn encode_frame_size_24(size: usize) FrameError![3]u8 {
     if (size > ProtocolMaxFrameSize) return FrameError.InvalidFrameSize;
     var out: [3]u8 = undefined;
     // Use std.mem primitives for well-defined u24 big-endian encoding.
@@ -29,7 +29,7 @@ pub inline fn encodeFrameSize24(size: usize) FrameError![3]u8 {
 
 /// Decodes a 24-bit big-endian frame size from the RLPx header bytes.
 /// The input must be exactly three bytes as per RLPx framing.
-pub inline fn decodeFrameSize24(bytes: [3]u8) usize {
+pub inline fn decode_frame_size_24(bytes: [3]u8) usize {
     const v: u24 = std.mem.readInt(u24, &bytes, .big);
     return @as(usize, @intCast(v));
 }
@@ -58,33 +58,33 @@ test "frame constants mirror Nethermind defaults and protocol limits" {
     try std.testing.expectEqual(@as(u24, 0xFF_FF_FF), ProtocolMaxFrameSize);
 }
 
-test "encodeFrameSize24: encodes boundaries" {
-    const zero = try encodeFrameSize24(0);
+test "encode_frame_size_24: encodes boundaries" {
+    const zero = try encode_frame_size_24(0);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x00, 0x00 }, &zero);
 
-    const one = try encodeFrameSize24(1);
+    const one = try encode_frame_size_24(1);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x00, 0x01 }, &one);
 
-    const max = try encodeFrameSize24(ProtocolMaxFrameSize);
+    const max = try encode_frame_size_24(ProtocolMaxFrameSize);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0xFF, 0xFF, 0xFF }, &max);
 }
 
-test "encodeFrameSize24: rejects values > 24-bit" {
+test "encode_frame_size_24: rejects values > 24-bit" {
     const too_big: usize = @as(usize, @intCast(ProtocolMaxFrameSize)) + 1;
-    try std.testing.expectError(FrameError.InvalidFrameSize, encodeFrameSize24(too_big));
+    try std.testing.expectError(FrameError.InvalidFrameSize, encode_frame_size_24(too_big));
 }
 
-test "decodeFrameSize24: decodes boundaries" {
-    try std.testing.expectEqual(@as(usize, 0), decodeFrameSize24(.{ 0x00, 0x00, 0x00 }));
-    try std.testing.expectEqual(@as(usize, 1), decodeFrameSize24(.{ 0x00, 0x00, 0x01 }));
-    try std.testing.expectEqual(ProtocolMaxFrameSize, decodeFrameSize24(.{ 0xFF, 0xFF, 0xFF }));
+test "decode_frame_size_24: decodes boundaries" {
+    try std.testing.expectEqual(@as(usize, 0), decode_frame_size_24(.{ 0x00, 0x00, 0x00 }));
+    try std.testing.expectEqual(@as(usize, 1), decode_frame_size_24(.{ 0x00, 0x00, 0x01 }));
+    try std.testing.expectEqual(ProtocolMaxFrameSize, decode_frame_size_24(.{ 0xFF, 0xFF, 0xFF }));
 }
 
-test "decodeFrameSize24: roundtrips representative values" {
+test "decode_frame_size_24: roundtrips representative values" {
     const values = [_]usize{ 0, 1, 15, 16, 255, 256, 1024, 4096, 65535, 70000, 1_000_000, ProtocolMaxFrameSize };
     inline for (values) |v| {
-        const enc = try encodeFrameSize24(v);
-        const dec = decodeFrameSize24(enc);
+        const enc = try encode_frame_size_24(v);
+        const dec = decode_frame_size_24(enc);
         try std.testing.expectEqual(v, dec);
     }
 }
