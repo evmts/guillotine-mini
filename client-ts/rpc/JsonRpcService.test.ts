@@ -6,7 +6,11 @@ import * as Ref from "effect/Ref";
 import type { JsonRpcRequest } from "./JsonRpcRequest";
 import { JsonRpcErrorRegistryLive } from "./JsonRpcErrors";
 import { JsonRpcResponseEncoderLive } from "./JsonRpcResponse";
-import { JsonRpcServiceLive, sendJsonRpcRequest } from "./JsonRpcService";
+import {
+  JsonRpcMethodExecutionError,
+  JsonRpcServiceLive,
+  sendJsonRpcRequest,
+} from "./JsonRpcService";
 
 const JsonRpcServiceBaseLayer = JsonRpcResponseEncoderLive.pipe(
   Layer.provide(JsonRpcErrorRegistryLive),
@@ -138,6 +142,42 @@ describe("JsonRpcService", () => {
 
         const response = yield* sendJsonRpcRequest(request);
         assert.isTrue(Option.isNone(response));
+      }),
+    ),
+  );
+
+  it.effect("maps typed handler errors to JSON-RPC error responses", () =>
+    provideService({
+      eth_sendRawTransaction: () =>
+        Effect.fail(
+          new JsonRpcMethodExecutionError({
+            source: "EIP-1474",
+            name: "TransactionRejected",
+            data: "replacement transaction underpriced",
+          }),
+        ),
+    })(
+      Effect.gen(function* () {
+        const request = {
+          jsonrpc: "2.0",
+          method: "eth_sendRawTransaction",
+          params: ["0x02"],
+          id: 7,
+        } satisfies JsonRpcRequest;
+
+        const response = yield* sendJsonRpcRequest(request);
+        assert.isTrue(Option.isSome(response));
+        if (Option.isSome(response)) {
+          assert.deepStrictEqual(response.value, {
+            jsonrpc: "2.0",
+            id: 7,
+            error: {
+              code: -32003,
+              message: "Transaction rejected",
+              data: "replacement transaction underpriced",
+            },
+          });
+        }
       }),
     ),
   );
