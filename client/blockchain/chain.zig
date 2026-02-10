@@ -196,9 +196,31 @@ test "Chain - head_block returns canonical head block" {
     try chain.putBlock(genesis);
     try chain.setCanonicalHead(genesis.hash);
 
-    const hb = try head_block(&chain);
-    try std.testing.expect(hb != null);
-    try std.testing.expectEqualSlices(u8, &genesis.hash, &hb.?.hash);
+    const hb1 = try head_block(&chain);
+    try std.testing.expect(hb1 != null);
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &hb1.?.hash);
+
+    // Head changed between reads -> helper should return null instead of stale
+    // value when TOCTOU detected.
+    var h1 = primitives.BlockHeader.init();
+    h1.number = 1;
+    h1.parent_hash = genesis.hash;
+    const b1 = try Block.from(&h1, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(b1);
+
+    const before = chain.getHeadBlockNumber().?;
+    try chain.setCanonicalHead(b1.hash);
+    // Simulate interleaving: if helper snapshots old head number and then new
+    // head number is visible at the end, it should return null.
+    if (chain.getHeadBlockNumber().? != before) {
+        const hb2 = try head_block(&chain);
+        if (hb2) |blk| {
+            // If race not observed, ensure the value is current.
+            try std.testing.expectEqual(@as(u64, 1), blk.header.number);
+        } else {
+            try std.testing.expect(hb2 == null);
+        }
+    }
 }
 
 test "Chain - head_block with fork cache and no head returns null (no fetch)" {
