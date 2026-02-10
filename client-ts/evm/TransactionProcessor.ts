@@ -425,6 +425,170 @@ const decodeBalance = (value: bigint, label: string) =>
     ),
   );
 
+const computeFeeMetricsForParsedTx = (
+  parsedTx: Transaction.Any,
+  baseFee: BaseFeePerGas.BaseFeePerGasType,
+) =>
+  Effect.gen(function* () {
+    const txType = parsedTx.type;
+
+    if (Transaction.isLegacy(parsedTx) || Transaction.isEIP2930(parsedTx)) {
+      const validatedTx = yield* ensureLegacyGasPrice(parsedTx, baseFee);
+      const effectiveGasPrice = yield* decodeGasPrice(
+        validatedTx.gasPrice,
+        "effective",
+      );
+      const priorityFeePerGas = yield* decodeGasPrice(
+        validatedTx.gasPrice - baseFee,
+        "priority",
+      );
+      const maxGasFeeValue = validatedTx.gasLimit * validatedTx.gasPrice;
+
+      return {
+        effectiveGasPrice,
+        priorityFeePerGas,
+        maxGasFeeValue,
+      };
+    }
+
+    if (
+      Transaction.isEIP1559(parsedTx) ||
+      Transaction.isEIP4844(parsedTx) ||
+      Transaction.isEIP7702(parsedTx)
+    ) {
+      const validatedTx = yield* ensureDynamicFeeBounds(parsedTx, baseFee);
+      const maxPriorityFee = validatedTx.maxPriorityFeePerGas;
+      const maxPayablePriorityFee = validatedTx.maxFeePerGas - baseFee;
+      const priorityFeeValue =
+        maxPriorityFee < maxPayablePriorityFee
+          ? maxPriorityFee
+          : maxPayablePriorityFee;
+      const effectiveGasPriceValue = baseFee + priorityFeeValue;
+
+      const effectiveGasPrice = yield* decodeGasPrice(
+        effectiveGasPriceValue,
+        "effective",
+      );
+      const priorityFeePerGas = yield* decodeGasPrice(
+        priorityFeeValue,
+        "priority",
+      );
+      const maxGasFeeValue = validatedTx.gasLimit * validatedTx.maxFeePerGas;
+
+      return {
+        effectiveGasPrice,
+        priorityFeePerGas,
+        maxGasFeeValue,
+      };
+    }
+
+    return yield* Effect.fail(
+      new UnsupportedTransactionTypeError({ type: txType }),
+    );
+  });
+
+const evaluatePreExecutionGasForParsedTx = (
+  parsedTx: Transaction.Any,
+  baseFee: BaseFeePerGas.BaseFeePerGasType,
+  blobGasPrice: bigint,
+  senderBalance: bigint,
+) =>
+  Effect.gen(function* () {
+    const {
+      effectiveGasPrice,
+      priorityFeePerGas,
+      maxGasFeeValue: initialMaxGasFeeValue,
+    } = yield* computeFeeMetricsForParsedTx(parsedTx, baseFee);
+
+    let maxGasFeeValue = initialMaxGasFeeValue;
+    let blobGasUsed = 0n;
+    let blobGasFeeValue = 0n;
+
+    if (Transaction.isEIP4844(parsedTx)) {
+      if (parsedTx.to == null) {
+        return yield* Effect.fail(
+          new TransactionTypeContractCreationError({ type: parsedTx.type }),
+        );
+      }
+
+      if (parsedTx.blobVersionedHashes.length === 0) {
+        return yield* Effect.fail(
+          new NoBlobDataError({ message: "no blob data in transaction" }),
+        );
+      }
+
+      for (const [index, blobHash] of parsedTx.blobVersionedHashes.entries()) {
+        if (!Blob.isValidVersion(blobHash as unknown as Blob.VersionedHash)) {
+          return yield* Effect.fail(
+            new InvalidBlobVersionedHashError({ index }),
+          );
+        }
+      }
+
+      const normalizedBlobGasPrice = yield* decodeGasPrice(
+        blobGasPrice,
+        "blob",
+      );
+
+      if (parsedTx.maxFeePerBlobGas < normalizedBlobGasPrice) {
+        return yield* Effect.fail(
+          new InsufficientMaxFeePerBlobGasError({
+            maxFeePerBlobGas: parsedTx.maxFeePerBlobGas,
+            blobGasPrice: normalizedBlobGasPrice,
+          }),
+        );
+      }
+
+      blobGasUsed =
+        BigInt(parsedTx.blobVersionedHashes.length) * BLOB_GAS_PER_BLOB;
+      blobGasFeeValue = blobGasUsed * parsedTx.maxFeePerBlobGas;
+      maxGasFeeValue += blobGasFeeValue;
+    }
+
+    if (Transaction.isEIP7702(parsedTx) && parsedTx.to == null) {
+      return yield* Effect.fail(
+        new TransactionTypeContractCreationError({ type: parsedTx.type }),
+      );
+    }
+
+    if (
+      Transaction.isEIP7702(parsedTx) &&
+      parsedTx.authorizationList.length === 0
+    ) {
+      return yield* Effect.fail(
+        new EmptyAuthorizationListError({
+          message: "empty authorization list",
+        }),
+      );
+    }
+
+    const maxGasFee = yield* decodeBalance(maxGasFeeValue, "max gas fee");
+    const blobGasFee = yield* decodeBalance(blobGasFeeValue, "blob gas fee");
+    const balance = yield* decodeBalance(senderBalance, "sender");
+    const requiredBalanceValue = maxGasFeeValue + parsedTx.value;
+    const requiredBalance = yield* decodeBalance(
+      requiredBalanceValue,
+      "required",
+    );
+
+    if (balance < requiredBalance) {
+      return yield* Effect.fail(
+        new InsufficientSenderBalanceError({
+          balance,
+          requiredBalance,
+        }),
+      );
+    }
+
+    return {
+      effectiveGasPrice,
+      priorityFeePerGas,
+      maxGasFee,
+      blobGasFee,
+      blobGasUsed,
+    } satisfies EffectiveGasPrice & MaxGasFeeCheck;
+  });
+
 const calculateTransactionBlobGasUsed = (tx: Transaction.Any): bigint =>
   Transaction.isEIP4844(tx)
     ? BigInt(tx.blobVersionedHashes.length) * BLOB_GAS_PER_BLOB
@@ -446,51 +610,9 @@ const makeTransactionProcessor = Effect.gen(function* () {
         tx,
         baseFeePerGas,
       );
-      const txType = parsedTx.type;
-
-      if (Transaction.isLegacy(parsedTx) || Transaction.isEIP2930(parsedTx)) {
-        const validatedTx = yield* ensureLegacyGasPrice(parsedTx, baseFee);
-        const effectiveGasPrice = yield* decodeGasPrice(
-          validatedTx.gasPrice,
-          "effective",
-        );
-        const priorityFeePerGas = yield* decodeGasPrice(
-          validatedTx.gasPrice - baseFee,
-          "priority",
-        );
-
-        return { effectiveGasPrice, priorityFeePerGas };
-      }
-
-      if (
-        Transaction.isEIP1559(parsedTx) ||
-        Transaction.isEIP4844(parsedTx) ||
-        Transaction.isEIP7702(parsedTx)
-      ) {
-        const validatedTx = yield* ensureDynamicFeeBounds(parsedTx, baseFee);
-        const maxPriorityFee = validatedTx.maxPriorityFeePerGas;
-        const maxPayablePriorityFee = validatedTx.maxFeePerGas - baseFee;
-        const priorityFeeValue =
-          maxPriorityFee < maxPayablePriorityFee
-            ? maxPriorityFee
-            : maxPayablePriorityFee;
-        const effectiveGasPriceValue = baseFee + priorityFeeValue;
-
-        const effectiveGasPrice = yield* decodeGasPrice(
-          effectiveGasPriceValue,
-          "effective",
-        );
-        const priorityFeePerGas = yield* decodeGasPrice(
-          priorityFeeValue,
-          "priority",
-        );
-
-        return { effectiveGasPrice, priorityFeePerGas };
-      }
-
-      return yield* Effect.fail(
-        new UnsupportedTransactionTypeError({ type: txType }),
-      );
+      const { effectiveGasPrice, priorityFeePerGas } =
+        yield* computeFeeMetricsForParsedTx(parsedTx, baseFee);
+      return { effectiveGasPrice, priorityFeePerGas };
     });
 
   const checkMaxGasFeeAndBalance = (
@@ -510,108 +632,13 @@ const makeTransactionProcessor = Effect.gen(function* () {
         tx,
         baseFeePerGas,
       );
-      const txType = parsedTx.type;
-
-      let maxGasFeeValue: bigint;
-
-      if (Transaction.isLegacy(parsedTx) || Transaction.isEIP2930(parsedTx)) {
-        const validatedTx = yield* ensureLegacyGasPrice(parsedTx, baseFee);
-        maxGasFeeValue = validatedTx.gasLimit * validatedTx.gasPrice;
-      } else if (
-        Transaction.isEIP1559(parsedTx) ||
-        Transaction.isEIP4844(parsedTx) ||
-        Transaction.isEIP7702(parsedTx)
-      ) {
-        const validatedTx = yield* ensureDynamicFeeBounds(parsedTx, baseFee);
-        maxGasFeeValue = validatedTx.gasLimit * validatedTx.maxFeePerGas;
-      } else {
-        return yield* Effect.fail(
-          new UnsupportedTransactionTypeError({ type: txType }),
-        );
-      }
-
-      let blobGasUsed = 0n;
-      let blobGasFeeValue = 0n;
-
-      if (Transaction.isEIP4844(parsedTx)) {
-        if (parsedTx.to == null) {
-          return yield* Effect.fail(
-            new TransactionTypeContractCreationError({ type: parsedTx.type }),
-          );
-        }
-
-        if (parsedTx.blobVersionedHashes.length === 0) {
-          return yield* Effect.fail(
-            new NoBlobDataError({ message: "no blob data in transaction" }),
-          );
-        }
-
-        for (const [
-          index,
-          blobHash,
-        ] of parsedTx.blobVersionedHashes.entries()) {
-          if (!Blob.isValidVersion(blobHash as unknown as Blob.VersionedHash)) {
-            return yield* Effect.fail(
-              new InvalidBlobVersionedHashError({ index }),
-            );
-          }
-        }
-
-        const normalizedBlobGasPrice = yield* decodeGasPrice(
+      const { maxGasFee, blobGasFee, blobGasUsed } =
+        yield* evaluatePreExecutionGasForParsedTx(
+          parsedTx,
+          baseFee,
           blobGasPrice,
-          "blob",
+          senderBalance,
         );
-
-        if (parsedTx.maxFeePerBlobGas < normalizedBlobGasPrice) {
-          return yield* Effect.fail(
-            new InsufficientMaxFeePerBlobGasError({
-              maxFeePerBlobGas: parsedTx.maxFeePerBlobGas,
-              blobGasPrice: normalizedBlobGasPrice,
-            }),
-          );
-        }
-
-        blobGasUsed =
-          BigInt(parsedTx.blobVersionedHashes.length) * BLOB_GAS_PER_BLOB;
-        blobGasFeeValue = blobGasUsed * parsedTx.maxFeePerBlobGas;
-        maxGasFeeValue += blobGasFeeValue;
-      }
-
-      if (Transaction.isEIP7702(parsedTx) && parsedTx.to == null) {
-        return yield* Effect.fail(
-          new TransactionTypeContractCreationError({ type: parsedTx.type }),
-        );
-      }
-
-      if (
-        Transaction.isEIP7702(parsedTx) &&
-        parsedTx.authorizationList.length === 0
-      ) {
-        return yield* Effect.fail(
-          new EmptyAuthorizationListError({
-            message: "empty authorization list",
-          }),
-        );
-      }
-
-      const maxGasFee = yield* decodeBalance(maxGasFeeValue, "max gas fee");
-      const blobGasFee = yield* decodeBalance(blobGasFeeValue, "blob gas fee");
-      const balance = yield* decodeBalance(senderBalance, "sender");
-      const requiredBalanceValue = maxGasFeeValue + parsedTx.value;
-      const requiredBalance = yield* decodeBalance(
-        requiredBalanceValue,
-        "required",
-      );
-
-      if (balance < requiredBalance) {
-        return yield* Effect.fail(
-          new InsufficientSenderBalanceError({
-            balance,
-            requiredBalance,
-          }),
-        );
-      }
-
       return { maxGasFee, blobGasFee, blobGasUsed };
     });
 
@@ -643,18 +670,25 @@ const makeTransactionProcessor = Effect.gen(function* () {
         );
       }
 
-      const { effectiveGasPrice, priorityFeePerGas } =
-        yield* calculateEffectiveGasPrice(tx, baseFeePerGas);
-      const { maxGasFee, blobGasFee, blobGasUsed } =
-        yield* checkMaxGasFeeAndBalance(
-          tx,
-          baseFeePerGas,
-          blobGasPrice,
-          senderAccount.balance,
-        );
+      const { parsedTx, baseFee } = yield* parseTransactionAndBaseFee(
+        tx,
+        baseFeePerGas,
+      );
+      const {
+        effectiveGasPrice,
+        priorityFeePerGas,
+        maxGasFee,
+        blobGasFee,
+        blobGasUsed,
+      } = yield* evaluatePreExecutionGasForParsedTx(
+        parsedTx,
+        baseFee,
+        blobGasPrice,
+        senderAccount.balance,
+      );
 
       const effectiveGasFee = yield* decodeBalance(
-        tx.gasLimit * effectiveGasPrice,
+        parsedTx.gasLimit * effectiveGasPrice,
         "effective gas fee",
       );
       const normalizedBlobGasPrice = yield* decodeGasPrice(
