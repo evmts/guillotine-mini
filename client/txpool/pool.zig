@@ -149,7 +149,7 @@ test "txpool interface dispatches pending counts" {
         fn get_pending_count_for_sender(ptr: *anyopaque, sender: Address) u32 {
             const Self = @This();
             const self: *Self = @ptrCast(@alignCast(ptr));
-            return if (std.mem.eql(u8, &self.match_sender.bytes, &sender.bytes))
+            return if (Address.equals(self.match_sender, sender))
                 self.pending_for_sender
             else
                 0;
