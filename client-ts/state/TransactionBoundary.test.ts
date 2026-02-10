@@ -1,7 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
-import * as Layer from "effect/Layer";
 import { Address, Hex } from "voltaire-effect/primitives";
 import { EMPTY_ACCOUNT, type AccountStateType } from "./Account";
 import {
@@ -10,13 +9,11 @@ import {
   setStorage,
   getStorage,
   WorldState,
-  WorldStateTest,
 } from "./State";
 import {
   getTransientStorage,
   setTransientStorage,
   TransientStorage,
-  TransientStorageTest,
 } from "./TransientStorage";
 import {
   NoActiveTransactionError,
@@ -56,19 +53,13 @@ const makeAccount = (
 const storageValueHex = (value: Uint8Array) => Hex.fromBytes(value);
 const ZERO_STORAGE_VALUE = makeStorageValue(0);
 
-const TransactionBoundaryIntegrationTest = Layer.mergeAll(
-  WorldStateTest,
-  TransientStorageTest,
-  TransactionBoundaryTest,
-);
-
 const provideIntegration = <A, E>(
   effect: Effect.Effect<
     A,
     E,
     TransactionBoundary | WorldState | TransientStorage
   >,
-) => effect.pipe(Effect.provide(TransactionBoundaryIntegrationTest));
+) => effect.pipe(Effect.provide(TransactionBoundaryTest));
 
 describe("TransactionBoundary", () => {
   it.effect("beginTransaction increases transaction depth", () =>

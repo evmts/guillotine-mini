@@ -129,12 +129,20 @@ export const TransactionBoundaryLive: Layer.Layer<
   WorldState | TransientStorage
 > = Layer.effect(TransactionBoundary, makeTransactionBoundary);
 
+const TransactionBoundaryTestDependencies = Layer.merge(
+  WorldStateTest,
+  TransientStorageTest,
+);
+
 /** Deterministic transaction boundary layer for tests. */
-export const TransactionBoundaryTest: Layer.Layer<TransactionBoundary> =
+export const TransactionBoundaryTest: Layer.Layer<
+  TransactionBoundary | WorldState | TransientStorage
+> = Layer.merge(
+  TransactionBoundaryTestDependencies,
   TransactionBoundaryLive.pipe(
-    Layer.provide(WorldStateTest),
-    Layer.provide(TransientStorageTest),
-  );
+    Layer.provide(TransactionBoundaryTestDependencies),
+  ),
+);
 
 /** Begin a nested transaction boundary. */
 export const beginTransaction = () =>
