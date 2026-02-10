@@ -80,6 +80,14 @@ test "rpc server config respects websocket port override" {
     try std.testing.expectEqual(@as(u16, 9546), cfg.effective_websocket_port());
 }
 
+test "rpc server config defaults match Nethermind core settings" {
+    const cfg = RpcServerConfig{};
+    try std.testing.expectEqual(default_enabled, cfg.enabled);
+    try std.testing.expectEqualStrings(default_host, cfg.host);
+    try std.testing.expectEqual(default_port, cfg.port);
+    try std.testing.expectEqual(default_websocket_port, cfg.websocket_port);
+}
+
 test "rpc server config defaults ipc socket path to null" {
     const cfg = RpcServerConfig{};
     try std.testing.expectEqual(default_ipc_unix_domain_socket_path, cfg.ipc_unix_domain_socket_path);
