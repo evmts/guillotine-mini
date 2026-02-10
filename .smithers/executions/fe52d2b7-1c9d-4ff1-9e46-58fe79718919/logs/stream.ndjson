@@ -1,9 +1,0 @@
-{"type":"RunStarted","runId":"fe52d2b7-1c9d-4ff1-9e46-58fe79718919","timestampMs":1770428318061}
-{"type":"FrameCommitted","runId":"fe52d2b7-1c9d-4ff1-9e46-58fe79718919","frameNo":1,"xmlHash":"aa234c447602d496ffef479a676ba30cd44c723bc08f79134c28f21a75539ca6","timestampMs":1770428318093}
-{"type":"NodeStarted","runId":"fe52d2b7-1c9d-4ff1-9e46-58fe79718919","nodeId":"phase-0-db:context","iteration":0,"attempt":1,"timestampMs":1770428318151}
-{"type":"NodeFinished","runId":"fe52d2b7-1c9d-4ff1-9e46-58fe79718919","nodeId":"phase-0-db:context","iteration":0,"attempt":1,"timestampMs":1770428554925}
-{"type":"FrameCommitted","runId":"fe52d2b7-1c9d-4ff1-9e46-58fe79718919","frameNo":2,"xmlHash":"aa234c447602d496ffef479a676ba30cd44c723bc08f79134c28f21a75539ca6","timestampMs":1770428554937}
-{"type":"NodeStarted","runId":"fe52d2b7-1c9d-4ff1-9e46-58fe79718919","nodeId":"phase-0-db:implement","iteration":0,"attempt":1,"timestampMs":1770428554992}
-{"type":"NodeFinished","runId":"fe52d2b7-1c9d-4ff1-9e46-58fe79718919","nodeId":"phase-0-db:implement","iteration":0,"attempt":1,"timestampMs":1770428679826}
-{"type":"FrameCommitted","runId":"fe52d2b7-1c9d-4ff1-9e46-58fe79718919","frameNo":3,"xmlHash":"6eafbc76c6f38e7b6e726bccd94e3162747511cc1c9de758642f46839273542d","timestampMs":1770428679838}
-{"type":"NodeStarted","runId":"fe52d2b7-1c9d-4ff1-9e46-58fe79718919","nodeId":"phase-0-db:test","iteration":0,"attempt":1,"timestampMs":1770428679892}
