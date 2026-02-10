@@ -22,6 +22,9 @@ describe("ReleaseSpec", () => {
         assert.strictEqual(spec.isEip3529Enabled, false);
         assert.strictEqual(spec.isEip3651Enabled, false);
         assert.strictEqual(spec.isEip3860Enabled, false);
+        assert.strictEqual(spec.isEip2935Enabled, false);
+        assert.strictEqual(spec.isEip7709Enabled, false);
+        assert.strictEqual(spec.isBlockHashInStateAvailable, false);
         assert.strictEqual(spec.isEip7623Enabled, false);
         assert.strictEqual(spec.isEip7702Enabled, false);
       }),
@@ -38,6 +41,9 @@ describe("ReleaseSpec", () => {
         assert.strictEqual(spec.isEip3529Enabled, true);
         assert.strictEqual(spec.isEip3651Enabled, true);
         assert.strictEqual(spec.isEip3860Enabled, true);
+        assert.strictEqual(spec.isEip2935Enabled, true);
+        assert.strictEqual(spec.isEip7709Enabled, false);
+        assert.strictEqual(spec.isBlockHashInStateAvailable, false);
         assert.strictEqual(spec.isEip7623Enabled, true);
         assert.strictEqual(spec.isEip7702Enabled, true);
       }),

@@ -3,17 +3,27 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import {
   BlockHash,
   BlockHeader,
   BlockNumber,
+  Hex,
 } from "voltaire-effect/primitives";
+import { ReleaseSpec } from "../evm/ReleaseSpec";
 import {
-  BlockTree,
-  type BlockTreeError,
-  BlockTreeMemoryTest,
-} from "./BlockTree";
+  BlockhashCache,
+  type BlockhashCacheError,
+  BlockhashCacheTest,
+} from "./BlockhashCache";
+import {
+  BlockhashStore,
+  type BlockhashStoreError,
+  BlockhashStoreLive,
+} from "./BlockhashStore";
+import { BlockTreeMemoryTest } from "./BlockTree";
+import { WorldStateTest } from "../state/State";
 
 /** Block header type used by the blockhash provider. */
 export type BlockHeaderType = BlockHeader.BlockHeaderType;
@@ -36,19 +46,11 @@ export class InvalidBlockhashNumberError extends Data.TaggedError(
   readonly cause?: unknown;
 }> {}
 
-/** Error raised when an expected ancestor hash is missing. */
-export class MissingBlockhashError extends Data.TaggedError(
-  "MissingBlockhashError",
-)<{
-  readonly missingHash: BlockHashType;
-  readonly missingNumber: bigint;
-}> {}
-
 /** Union of blockhash provider errors. */
 export type BlockhashProviderError =
-  | BlockTreeError
-  | InvalidBlockhashNumberError
-  | MissingBlockhashError;
+  | BlockhashCacheError
+  | BlockhashStoreError
+  | InvalidBlockhashNumberError;
 
 /** Blockhash provider service interface. */
 export interface BlockhashProviderService {
@@ -59,6 +61,9 @@ export interface BlockhashProviderService {
   readonly getLast256BlockHashes: (
     currentHeader: BlockHeaderType,
   ) => Effect.Effect<ReadonlyArray<BlockHashType>, BlockhashProviderError>;
+  readonly prefetch: (
+    currentHeader: BlockHeaderType,
+  ) => Effect.Effect<void, BlockhashProviderError>;
 }
 
 /** Context tag for the blockhash provider service. */
@@ -81,8 +86,47 @@ const decodeBlockNumber = (number: BlockNumberType, label: string) =>
 const toBigInt = (number: BlockNumberType) =>
   Schema.encodeSync(BlockNumberSchema)(number);
 
+type PrefetchState = {
+  readonly key: string;
+  readonly hashes: ReadonlyArray<BlockHashType>;
+};
+
+const hashKey = (hash: BlockHashType): string => Hex.fromBytes(hash);
+
 const makeBlockhashProvider = Effect.gen(function* () {
-  const blockTree = yield* BlockTree;
+  const cache = yield* BlockhashCache;
+  const store = yield* BlockhashStore;
+  const spec = yield* ReleaseSpec;
+  const prefetched = yield* Ref.make<Option.Option<PrefetchState>>(
+    Option.none(),
+  );
+
+  const readPrefetched = (currentHeader: BlockHeaderType) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.get(prefetched);
+      if (Option.isNone(state)) {
+        return Option.none<ReadonlyArray<BlockHashType>>();
+      }
+
+      const cached = Option.getOrThrow(state);
+      if (cached.key !== hashKey(currentHeader.parentHash)) {
+        return Option.none<ReadonlyArray<BlockHashType>>();
+      }
+
+      return Option.some(cached.hashes);
+    });
+
+  const prefetch = (currentHeader: BlockHeaderType) =>
+    Effect.gen(function* () {
+      const hashes = yield* cache.prefetch(currentHeader);
+      yield* Ref.set(
+        prefetched,
+        Option.some({
+          key: hashKey(currentHeader.parentHash),
+          hashes,
+        }),
+      );
+    });
 
   const getBlockhash = (
     currentHeader: BlockHeaderType,
@@ -107,40 +151,27 @@ const makeBlockhashProvider = Effect.gen(function* () {
         return Option.none();
       }
 
-      let currentHash = currentHeader.parentHash;
-      let cursorNumber = currentNumber - 1n;
-
-      while (cursorNumber > requestedNumber) {
-        const block = yield* blockTree.getBlock(currentHash);
-        if (Option.isNone(block)) {
-          return yield* Effect.fail(
-            new MissingBlockhashError({
-              missingHash: currentHash,
-              missingNumber: cursorNumber,
-            }),
-          );
-        }
-
-        const ancestor = Option.getOrThrow(block);
-        const ancestorNumberType = yield* decodeBlockNumber(
-          ancestor.header.number,
-          "ancestor",
+      if (spec.isBlockHashInStateAvailable) {
+        return yield* store.getBlockhashFromState(
+          currentHeader,
+          requestedNumberType,
         );
-        const ancestorNumber = toBigInt(ancestorNumberType);
-        if (ancestorNumber !== cursorNumber) {
-          return yield* Effect.fail(
-            new MissingBlockhashError({
-              missingHash: currentHash,
-              missingNumber: cursorNumber,
-            }),
-          );
-        }
-
-        currentHash = ancestor.header.parentHash;
-        cursorNumber -= 1n;
       }
 
-      return Option.some(currentHash);
+      if (depth === 1n) {
+        return Option.some(currentHeader.parentHash);
+      }
+
+      const cached = yield* readPrefetched(currentHeader);
+      if (Option.isSome(cached)) {
+        const hashes = Option.getOrThrow(cached);
+        const index = Number(depth - 1n);
+        if (index < hashes.length) {
+          return Option.some(hashes[index]!);
+        }
+      }
+
+      return yield* cache.getHash(currentHeader, Number(depth));
     });
 
   const getLast256BlockHashes = (currentHeader: BlockHeaderType) =>
@@ -155,58 +186,18 @@ const makeBlockhashProvider = Effect.gen(function* () {
         return [];
       }
 
-      const maxDepth =
-        currentNumber < MAX_BLOCKHASH_DEPTH
-          ? currentNumber
-          : MAX_BLOCKHASH_DEPTH;
-      const maxDepthNumber = Number(maxDepth);
-      const hashes: Array<BlockHashType> = [];
-      let currentHash = currentHeader.parentHash;
-      let cursorNumber = currentNumber - 1n;
+      const cached = yield* readPrefetched(currentHeader);
+      const hashes = Option.isSome(cached)
+        ? Option.getOrThrow(cached)
+        : yield* cache.prefetch(currentHeader);
 
-      while (true) {
-        hashes.push(currentHash);
-
-        if (hashes.length >= maxDepthNumber || cursorNumber === 0n) {
-          break;
-        }
-
-        const block = yield* blockTree.getBlock(currentHash);
-        if (Option.isNone(block)) {
-          return yield* Effect.fail(
-            new MissingBlockhashError({
-              missingHash: currentHash,
-              missingNumber: cursorNumber,
-            }),
-          );
-        }
-
-        const ancestor = Option.getOrThrow(block);
-        const ancestorNumberType = yield* decodeBlockNumber(
-          ancestor.header.number,
-          "ancestor",
-        );
-        const ancestorNumber = toBigInt(ancestorNumberType);
-        if (ancestorNumber !== cursorNumber) {
-          return yield* Effect.fail(
-            new MissingBlockhashError({
-              missingHash: currentHash,
-              missingNumber: cursorNumber,
-            }),
-          );
-        }
-
-        currentHash = ancestor.header.parentHash;
-        cursorNumber -= 1n;
-      }
-
-      hashes.reverse();
-      return hashes;
+      return [...hashes].reverse();
     });
 
   return {
     getBlockhash,
     getLast256BlockHashes,
+    prefetch,
   } satisfies BlockhashProviderService;
 });
 
@@ -214,12 +205,15 @@ const makeBlockhashProvider = Effect.gen(function* () {
 export const BlockhashProviderLive: Layer.Layer<
   BlockhashProvider,
   BlockhashProviderError,
-  BlockTree
+  BlockhashCache | BlockhashStore | ReleaseSpec
 > = Layer.effect(BlockhashProvider, makeBlockhashProvider);
 
 /** Deterministic blockhash provider layer for tests. */
-export const BlockhashProviderTest = Layer.provideMerge(BlockTreeMemoryTest)(
-  BlockhashProviderLive,
+export const BlockhashProviderTest = Layer.provideMerge(BlockhashCacheTest)(
+  BlockhashProviderLive.pipe(
+    Layer.provideMerge(BlockTreeMemoryTest),
+    Layer.provideMerge(BlockhashStoreLive.pipe(Layer.provide(WorldStateTest))),
+  ),
 );
 
 const withBlockhashProvider = <A, E>(
@@ -240,3 +234,9 @@ export const getLast256BlockHashes = (currentHeader: BlockHeaderType) =>
   withBlockhashProvider((service) =>
     service.getLast256BlockHashes(currentHeader),
   );
+
+/** Prefetch block hashes for the last 256 blocks. */
+export const prefetch = (currentHeader: BlockHeaderType) =>
+  withBlockhashProvider((service) => service.prefetch(currentHeader));
+
+export { MissingBlockhashError } from "./BlockhashErrors";
