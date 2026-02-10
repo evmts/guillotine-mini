@@ -15,6 +15,34 @@ const GasPrice = primitives.GasPrice;
 const MaxFeePerGas = primitives.MaxFeePerGas;
 const MaxPriorityFeePerGas = primitives.MaxPriorityFeePerGas;
 
+fn is_legacy_fee_fields(max_fee: MaxFeePerGas, max_priority: MaxPriorityFeePerGas) bool {
+    return max_fee.isZero() and max_priority.isZero();
+}
+
+fn resolve_max_fee(
+    gas_price: GasPrice,
+    max_fee: MaxFeePerGas,
+    is_legacy: bool,
+) MaxFeePerGas {
+    if (is_legacy) {
+        return MaxFeePerGas.fromU256(gas_price.toWei());
+    }
+
+    return max_fee;
+}
+
+fn resolve_max_priority(
+    gas_price: GasPrice,
+    max_priority: MaxPriorityFeePerGas,
+    is_legacy: bool,
+) MaxPriorityFeePerGas {
+    if (is_legacy) {
+        return MaxPriorityFeePerGas.fromU256(gas_price.toWei());
+    }
+
+    return max_priority;
+}
+
 /// Compare two fee tuples by priority (descending).
 ///
 /// Returns:
@@ -38,26 +66,14 @@ pub fn compare_fee_market_priority(
     is_eip1559_enabled: bool,
 ) i32 {
     if (is_eip1559_enabled) {
-        const x_is_legacy = x_max_fee_per_gas.isZero() and x_max_priority_fee_per_gas.isZero();
-        const y_is_legacy = y_max_fee_per_gas.isZero() and y_max_priority_fee_per_gas.isZero();
+        const x_is_legacy = is_legacy_fee_fields(x_max_fee_per_gas, x_max_priority_fee_per_gas);
+        const y_is_legacy = is_legacy_fee_fields(y_max_fee_per_gas, y_max_priority_fee_per_gas);
 
-        const x_max_fee = if (x_is_legacy)
-            MaxFeePerGas.fromU256(x_gas_price.toWei())
-        else
-            x_max_fee_per_gas;
-        const y_max_fee = if (y_is_legacy)
-            MaxFeePerGas.fromU256(y_gas_price.toWei())
-        else
-            y_max_fee_per_gas;
+        const x_max_fee = resolve_max_fee(x_gas_price, x_max_fee_per_gas, x_is_legacy);
+        const y_max_fee = resolve_max_fee(y_gas_price, y_max_fee_per_gas, y_is_legacy);
 
-        const x_max_priority = if (x_is_legacy)
-            MaxPriorityFeePerGas.fromU256(x_gas_price.toWei())
-        else
-            x_max_priority_fee_per_gas;
-        const y_max_priority = if (y_is_legacy)
-            MaxPriorityFeePerGas.fromU256(y_gas_price.toWei())
-        else
-            y_max_priority_fee_per_gas;
+        const x_max_priority = resolve_max_priority(x_gas_price, x_max_priority_fee_per_gas, x_is_legacy);
+        const y_max_priority = resolve_max_priority(y_gas_price, y_max_priority_fee_per_gas, y_is_legacy);
 
         const base_fee_wei = base_fee.toWei();
         const x_effective = EffectiveGasPrice.calculate(
