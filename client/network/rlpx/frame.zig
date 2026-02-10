@@ -10,21 +10,21 @@ pub const ProtocolMaxFrameSize: usize = (@as(usize, 1) << 24) - 1;
 pub const DefaultMaxFrameSize: usize = BlockSize * 64;
 
 /// Returns the zero-fill padding required to align to the AES block size.
-pub inline fn calculatePadding(size: usize) usize {
+pub inline fn calculate_padding(size: usize) usize {
     const remainder = size % BlockSize;
     return if (remainder == 0) 0 else BlockSize - remainder;
 }
 
 test "calculate padding returns zero for aligned sizes" {
-    try std.testing.expectEqual(@as(usize, 0), calculatePadding(0));
-    try std.testing.expectEqual(@as(usize, 0), calculatePadding(BlockSize));
-    try std.testing.expectEqual(@as(usize, 0), calculatePadding(BlockSize * 4));
+    try std.testing.expectEqual(@as(usize, 0), calculate_padding(0));
+    try std.testing.expectEqual(@as(usize, 0), calculate_padding(BlockSize));
+    try std.testing.expectEqual(@as(usize, 0), calculate_padding(BlockSize * 4));
 }
 
 test "calculate padding returns remainder to block size" {
-    try std.testing.expectEqual(@as(usize, 15), calculatePadding(1));
-    try std.testing.expectEqual(@as(usize, 1), calculatePadding(BlockSize - 1));
-    try std.testing.expectEqual(@as(usize, 8), calculatePadding(BlockSize * 2 + 8));
+    try std.testing.expectEqual(@as(usize, 15), calculate_padding(1));
+    try std.testing.expectEqual(@as(usize, 1), calculate_padding(BlockSize - 1));
+    try std.testing.expectEqual(@as(usize, 8), calculate_padding(BlockSize * 2 + 8));
 }
 
 test "frame constants mirror Nethermind defaults and protocol limits" {
