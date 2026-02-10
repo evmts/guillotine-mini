@@ -1,8 +1,10 @@
 const std = @import("std");
 
-/// RLPx frame constants and padding helper.
+/// Size of the RLPx header and frame MACs (16 bytes).
 pub const MacSize: usize = 16;
+/// Size of the encrypted RLPx header (16 bytes).
 pub const HeaderSize: usize = 16;
+/// AES-CTR block size used for header/data padding (16 bytes).
 pub const BlockSize: usize = 16;
 /// Maximum frame-size representable by the 24-bit RLPx header.
 pub const ProtocolMaxFrameSize: usize = (@as(usize, 1) << 24) - 1;

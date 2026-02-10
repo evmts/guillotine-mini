@@ -1,7 +1,7 @@
 const std = @import("std");
 const primitives = @import("primitives");
 
-/// Snappy compressed payload size limit for RLPx (Snappy framing is not used).
+/// Snappy compressed payload size limit for RLPx payloads.
 /// Mirrors Nethermind's SnappyParameters.MaxSnappyLength.
 pub const SnappyParameters = primitives.SnappyParameters;
 
