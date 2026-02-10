@@ -11,6 +11,7 @@ import {
   WorldStateTest,
   MissingAccountError,
   UnknownSnapshotError,
+  clear,
   commitSnapshot,
   destroyAccount,
   getAccount,
@@ -346,6 +347,40 @@ describe("WorldState", () => {
 
         if (Either.isLeft(outcome)) {
           assert.isTrue(outcome.left instanceof UnknownSnapshotError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("clear resets tracked state", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(9);
+        const slot = makeSlot(9);
+        const value = makeStorageValue(7);
+
+        const snapshot = yield* takeSnapshot();
+        yield* markAccountCreated(addr);
+        yield* setAccount(addr, makeAccount({ nonce: 1n }));
+        yield* setStorage(addr, slot, value);
+
+        yield* clear();
+
+        const account = yield* getAccountOptional(addr);
+        assert.isNull(account);
+
+        const stored = yield* getStorage(addr, slot);
+        assert.strictEqual(
+          storageValueHex(stored),
+          storageValueHex(ZERO_STORAGE_VALUE),
+        );
+
+        assert.isFalse(yield* wasAccountCreated(addr));
+
+        const restored = yield* Effect.either(restoreSnapshot(snapshot));
+        assert.isTrue(Either.isLeft(restored));
+        if (Either.isLeft(restored)) {
+          assert.isTrue(restored.left instanceof UnknownSnapshotError);
         }
       }),
     ),
