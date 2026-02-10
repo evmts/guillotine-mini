@@ -6,6 +6,7 @@ import {
   BlockhashProviderTest,
   MissingBlockhashError,
   getBlockhash,
+  getLast256BlockHashes,
 } from "./BlockhashProvider";
 import { putBlock } from "./BlockTree";
 import {
@@ -121,6 +122,76 @@ describe("BlockhashProvider", () => {
         getBlockhash(current.header, blockNumberFromBigInt(1n)),
       );
       assert.instanceOf(error, MissingBlockhashError);
+    }).pipe(Effect.provide(BlockhashProviderTest)),
+  );
+
+  it.effect("returns ordered recent hashes for block env", () =>
+    Effect.gen(function* () {
+      const genesis = makeBlock({
+        number: 0n,
+        hash: blockHashFromByte(0x50),
+        parentHash: blockHashFromByte(0x00),
+      });
+      const block1 = makeBlock({
+        number: 1n,
+        hash: blockHashFromByte(0x51),
+        parentHash: genesis.hash,
+      });
+      const block2 = makeBlock({
+        number: 2n,
+        hash: blockHashFromByte(0x52),
+        parentHash: block1.hash,
+      });
+      const current = makeBlock({
+        number: 3n,
+        hash: blockHashFromByte(0x53),
+        parentHash: block2.hash,
+      });
+
+      yield* putBlock(genesis);
+      yield* putBlock(block1);
+      yield* putBlock(block2);
+
+      const hashes = yield* getLast256BlockHashes(current.header);
+      const hexes = hashes.map((hash) => Hex.fromBytes(hash));
+      const expected = [genesis, block1, block2].map((block) =>
+        Hex.fromBytes(block.hash),
+      );
+      assert.deepStrictEqual(hexes, expected);
+    }).pipe(Effect.provide(BlockhashProviderTest)),
+  );
+
+  it.effect("caps block env hashes at the 256-depth boundary", () =>
+    Effect.gen(function* () {
+      const blocks: Array<ReturnType<typeof makeBlock>> = [];
+      let parentHash = blockHashFromByte(0x00);
+
+      for (let index = 0; index < 256; index += 1) {
+        const block = makeBlock({
+          number: BigInt(index),
+          hash: blockHashFromByte(index),
+          parentHash,
+        });
+        blocks.push(block);
+        parentHash = block.hash;
+      }
+
+      for (const block of blocks) {
+        yield* putBlock(block);
+      }
+
+      const current = makeBlock({
+        number: 256n,
+        hash: blockHashFromByte(0xaa),
+        parentHash: blocks[255]!.hash,
+      });
+
+      const hashes = yield* getLast256BlockHashes(current.header);
+      assert.strictEqual(hashes.length, 256);
+
+      const hexes = hashes.map((hash) => Hex.fromBytes(hash));
+      const expected = blocks.map((block) => Hex.fromBytes(block.hash));
+      assert.deepStrictEqual(hexes, expected);
     }).pipe(Effect.provide(BlockhashProviderTest)),
   );
 });

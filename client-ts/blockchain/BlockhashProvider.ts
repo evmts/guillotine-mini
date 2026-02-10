@@ -56,6 +56,9 @@ export interface BlockhashProviderService {
     currentHeader: BlockHeaderType,
     number: BlockNumberType,
   ) => Effect.Effect<Option.Option<BlockHashType>, BlockhashProviderError>;
+  readonly getLast256BlockHashes: (
+    currentHeader: BlockHeaderType,
+  ) => Effect.Effect<ReadonlyArray<BlockHashType>, BlockhashProviderError>;
 }
 
 /** Context tag for the blockhash provider service. */
@@ -140,7 +143,71 @@ const makeBlockhashProvider = Effect.gen(function* () {
       return Option.some(currentHash);
     });
 
-  return { getBlockhash } satisfies BlockhashProviderService;
+  const getLast256BlockHashes = (currentHeader: BlockHeaderType) =>
+    Effect.gen(function* () {
+      const currentNumberType = yield* decodeBlockNumber(
+        currentHeader.number,
+        "current",
+      );
+      const currentNumber = toBigInt(currentNumberType);
+
+      if (currentNumber <= 0n) {
+        return [];
+      }
+
+      const maxDepth =
+        currentNumber < MAX_BLOCKHASH_DEPTH
+          ? currentNumber
+          : MAX_BLOCKHASH_DEPTH;
+      const maxDepthNumber = Number(maxDepth);
+      const hashes: Array<BlockHashType> = [];
+      let currentHash = currentHeader.parentHash;
+      let cursorNumber = currentNumber - 1n;
+
+      while (true) {
+        hashes.push(currentHash);
+
+        if (hashes.length >= maxDepthNumber || cursorNumber === 0n) {
+          break;
+        }
+
+        const block = yield* blockTree.getBlock(currentHash);
+        if (Option.isNone(block)) {
+          return yield* Effect.fail(
+            new MissingBlockhashError({
+              missingHash: currentHash,
+              missingNumber: cursorNumber,
+            }),
+          );
+        }
+
+        const ancestor = Option.getOrThrow(block);
+        const ancestorNumberType = yield* decodeBlockNumber(
+          ancestor.header.number,
+          "ancestor",
+        );
+        const ancestorNumber = toBigInt(ancestorNumberType);
+        if (ancestorNumber !== cursorNumber) {
+          return yield* Effect.fail(
+            new MissingBlockhashError({
+              missingHash: currentHash,
+              missingNumber: cursorNumber,
+            }),
+          );
+        }
+
+        currentHash = ancestor.header.parentHash;
+        cursorNumber -= 1n;
+      }
+
+      hashes.reverse();
+      return hashes;
+    });
+
+  return {
+    getBlockhash,
+    getLast256BlockHashes,
+  } satisfies BlockhashProviderService;
 });
 
 /** Production blockhash provider layer. */
@@ -166,4 +233,10 @@ export const getBlockhash = (
 ) =>
   withBlockhashProvider((service) =>
     service.getBlockhash(currentHeader, number),
+  );
+
+/** Retrieve ordered block hashes for the last 256 blocks. */
+export const getLast256BlockHashes = (currentHeader: BlockHeaderType) =>
+  withBlockhashProvider((service) =>
+    service.getLast256BlockHashes(currentHeader),
   );
