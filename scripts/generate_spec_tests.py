@@ -158,7 +158,7 @@ def main():
     repo_root = script_dir.parent
     # Select appropriate test directory based on test type
     if test_type == "state":
-        specs_root = repo_root / "execution-specs" / "tests" / "eest" / "static" / "state_tests" / "state_tests"
+        specs_root = repo_root / "execution-specs" / "tests" / "eest" / "static" / "state_tests"
         output_root = repo_root / "test" / "specs" / "generated_state"
     else:  # blockchain
         specs_root = repo_root / "execution-spec-tests" / "fixtures" / "blockchain_tests"
