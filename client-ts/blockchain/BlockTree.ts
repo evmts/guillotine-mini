@@ -223,6 +223,41 @@ const makeBlockTree = Effect.gen(function* () {
       }
     });
 
+  const buildCanonicalEntries = (head: BlockType) =>
+    Effect.gen(function* () {
+      const entries: Array<{
+        readonly numberKey: BlockNumberKey;
+        readonly hash: BlockHashType;
+      }> = [];
+      let currentBlock = head;
+      let currentNumber = blockNumberKey(currentBlock.header.number);
+
+      while (true) {
+        entries.push({
+          numberKey: currentNumber,
+          hash: currentBlock.hash,
+        });
+
+        if (currentNumber === 0n) {
+          break;
+        }
+
+        const parentBlock = yield* store.getBlock(
+          currentBlock.header.parentHash,
+        );
+        if (Option.isNone(parentBlock)) {
+          return yield* Effect.fail(
+            new BlockNotFoundError({ hash: currentBlock.header.parentHash }),
+          );
+        }
+
+        currentBlock = Option.getOrThrow(parentBlock);
+        currentNumber -= 1n;
+      }
+
+      return entries;
+    });
+
   const setCanonicalHead = (hash: BlockHashType) =>
     Effect.gen(function* () {
       const validated = yield* decodeBlockHash(hash);
@@ -239,31 +274,13 @@ const makeBlockTree = Effect.gen(function* () {
         );
       }
 
-      let currentHash = validated;
-      let currentNumber = blockNumberKey(
-        Option.getOrThrow(headBlock).header.number,
+      const entries = yield* buildCanonicalEntries(
+        Option.getOrThrow(headBlock),
       );
 
-      for (const number of state.canonicalChain.keys()) {
-        if (number > currentNumber) {
-          state.canonicalChain.delete(number);
-        }
-      }
-
-      while (true) {
-        state.canonicalChain.set(currentNumber, currentHash);
-
-        if (currentNumber === 0n) {
-          break;
-        }
-
-        const currentBlock = yield* store.getBlock(currentHash);
-        if (Option.isNone(currentBlock)) {
-          break;
-        }
-
-        currentHash = Option.getOrThrow(currentBlock).header.parentHash;
-        currentNumber -= 1n;
+      state.canonicalChain.clear();
+      for (const entry of entries) {
+        state.canonicalChain.set(entry.numberKey, entry.hash);
       }
     });
 
