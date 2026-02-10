@@ -15,7 +15,6 @@ const txpool = @import("root.zig");
 
 const Address = primitives.Address;
 const Tx = primitives.Transaction;
-const U256 = primitives.Denomination.U256;
 const GasPrice = primitives.GasPrice;
 const MaxFeePerGas = primitives.MaxFeePerGas;
 const MaxPriorityFeePerGas = primitives.MaxPriorityFeePerGas;
