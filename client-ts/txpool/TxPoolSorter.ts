@@ -4,9 +4,20 @@ import {
   GasPrice,
   MaxFeePerGas,
   MaxPriorityFeePerGas,
+  Transaction,
 } from "voltaire-effect/primitives";
 
 type CompareResult = -1 | 0 | 1;
+type FeeTuple = Readonly<{
+  gasPrice: GasPrice.GasPriceType;
+  maxFeePerGas: MaxFeePerGas.MaxFeePerGasType;
+  maxPriorityFeePerGas: MaxPriorityFeePerGas.MaxPriorityFeePerGasType;
+}>;
+
+const ZeroGasPrice = 0n as GasPrice.GasPriceType;
+const ZeroMaxFeePerGas = 0n as MaxFeePerGas.MaxFeePerGasType;
+const ZeroMaxPriorityFeePerGas =
+  0n as MaxPriorityFeePerGas.MaxPriorityFeePerGasType;
 
 const compareDescending = (left: bigint, right: bigint): CompareResult => {
   if (left > right) {
@@ -40,6 +51,38 @@ const resolveMaxPriority = (
   isLegacy
     ? (gasPrice as unknown as MaxPriorityFeePerGas.MaxPriorityFeePerGasType)
     : maxPriorityFeePerGas;
+
+const isDynamicFeeTransaction = (
+  tx: Transaction.Any,
+): tx is Transaction.EIP1559 | Transaction.EIP4844 | Transaction.EIP7702 =>
+  Transaction.isEIP1559(tx) ||
+  Transaction.isEIP4844(tx) ||
+  Transaction.isEIP7702(tx);
+
+const feeTupleFromTransaction = (tx: Transaction.Any): FeeTuple => {
+  if (Transaction.isLegacy(tx) || Transaction.isEIP2930(tx)) {
+    return {
+      gasPrice: tx.gasPrice as GasPrice.GasPriceType,
+      maxFeePerGas: ZeroMaxFeePerGas,
+      maxPriorityFeePerGas: ZeroMaxPriorityFeePerGas,
+    };
+  }
+
+  if (isDynamicFeeTransaction(tx)) {
+    return {
+      gasPrice: ZeroGasPrice,
+      maxFeePerGas: tx.maxFeePerGas as MaxFeePerGas.MaxFeePerGasType,
+      maxPriorityFeePerGas:
+        tx.maxPriorityFeePerGas as MaxPriorityFeePerGas.MaxPriorityFeePerGasType,
+    };
+  }
+
+  return {
+    gasPrice: ZeroGasPrice,
+    maxFeePerGas: ZeroMaxFeePerGas,
+    maxPriorityFeePerGas: ZeroMaxPriorityFeePerGas,
+  };
+};
 
 /**
  * Compare two fee tuples by priority (descending).
@@ -109,4 +152,25 @@ export const compareFeeMarketPriority = (
   }
 
   return compareDescending(xGasPrice, yGasPrice);
+};
+
+export const compareTransactionFeeMarketPriority = (
+  x: Transaction.Any,
+  y: Transaction.Any,
+  baseFeePerGas: BaseFeePerGas.BaseFeePerGasType,
+  isEip1559Enabled: boolean,
+): CompareResult => {
+  const xTuple = feeTupleFromTransaction(x);
+  const yTuple = feeTupleFromTransaction(y);
+
+  return compareFeeMarketPriority(
+    xTuple.gasPrice,
+    xTuple.maxFeePerGas,
+    xTuple.maxPriorityFeePerGas,
+    yTuple.gasPrice,
+    yTuple.maxFeePerGas,
+    yTuple.maxPriorityFeePerGas,
+    baseFeePerGas,
+    isEip1559Enabled,
+  );
 };
