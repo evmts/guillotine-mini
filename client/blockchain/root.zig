@@ -5,6 +5,9 @@ const validator = @import("validator.zig");
 // -- Public API --------------------------------------------------------------
 
 /// Chain management API rooted in Voltaire's `Blockchain` primitive.
+///
+/// All public aliases exposed here intentionally re-export Voltaire primitives
+/// or thin helpers around them; no custom types are introduced at this layer.
 pub const Chain = chain.Chain;
 /// Canonical head helpers.
 pub const head_hash = chain.head_hash;
