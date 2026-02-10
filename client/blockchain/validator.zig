@@ -1,6 +1,7 @@
 /// Block header validation helpers for post-merge (PoS) rules.
 const std = @import("std");
 const primitives = @import("primitives");
+const Blob = primitives.Blob;
 const BlockHeader = primitives.BlockHeader;
 const Hash = primitives.Hash;
 const Hardfork = primitives.Hardfork;
@@ -21,6 +22,8 @@ pub const ValidationError = error{
     InvalidBlockNumber,
     MissingParentHeader,
     BaseFeeOverflow,
+    MissingExcessBlobGas,
+    InvalidExcessBlobGas,
     OutOfMemory,
 };
 
@@ -106,6 +109,16 @@ fn validate_post_merge_header(
     if (header.number < 1) return ValidationError.InvalidBlockNumber;
 
     const parent_header = ctx.parent_header orelse return ValidationError.MissingParentHeader;
+
+    if (ctx.hardfork.hasEIP4844()) {
+        const header_excess_blob_gas = header.excess_blob_gas orelse return ValidationError.MissingExcessBlobGas;
+        const parent_excess_blob_gas = parent_header.excess_blob_gas orelse 0;
+        const parent_blob_gas_used = parent_header.blob_gas_used orelse 0;
+        const expected_excess_blob_gas = Blob.calculateExcessBlobGas(parent_excess_blob_gas, parent_blob_gas_used);
+        if (header_excess_blob_gas != expected_excess_blob_gas) {
+            return ValidationError.InvalidExcessBlobGas;
+        }
+    }
 
     if (header.gas_used > header.gas_limit) return ValidationError.InvalidGasUsed;
 
@@ -323,4 +336,146 @@ test "merge_header_validator - treats Shanghai+ as post-merge" {
         .parent_header = &parent,
     };
     try std.testing.expectError(ValidationError.InvalidNonce, MergeValidator.validate(&header, ctx));
+}
+
+test "merge_header_validator - prague requires excess blob gas" {
+    const PreMergeValidator = struct {
+        pub fn validate(_: *const BlockHeader.BlockHeader, _: HeaderValidationContext) ValidationError!void {
+            return;
+        }
+    };
+
+    const MergeValidator = merge_header_validator(PreMergeValidator);
+    const allocator = std.testing.allocator;
+
+    var parent = BlockHeader.init();
+    parent.number = 1;
+    parent.timestamp = 1;
+    parent.gas_limit = 10_000;
+    parent.gas_used = 0;
+    parent.base_fee_per_gas = 100;
+    parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    parent.excess_blob_gas = 393_216;
+    parent.blob_gas_used = 1;
+
+    var header = BlockHeader.init();
+    header.number = 2;
+    header.timestamp = 2;
+    header.gas_limit = parent.gas_limit;
+    header.gas_used = 0;
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    header.difficulty = 0;
+    header.nonce = [_]u8{0} ** BlockHeader.NONCE_SIZE;
+    header.parent_hash = try BlockHeader.hash(&parent, allocator);
+    header.base_fee_per_gas = try calculate_base_fee_per_gas(
+        header.gas_limit,
+        parent.gas_limit,
+        parent.gas_used,
+        parent.base_fee_per_gas.?,
+    );
+
+    const ctx = HeaderValidationContext{
+        .allocator = allocator,
+        .hardfork = .PRAGUE,
+        .parent_header = &parent,
+    };
+    try std.testing.expectError(ValidationError.MissingExcessBlobGas, MergeValidator.validate(&header, ctx));
+}
+
+test "merge_header_validator - prague rejects incorrect excess blob gas" {
+    const PreMergeValidator = struct {
+        pub fn validate(_: *const BlockHeader.BlockHeader, _: HeaderValidationContext) ValidationError!void {
+            return;
+        }
+    };
+
+    const MergeValidator = merge_header_validator(PreMergeValidator);
+    const allocator = std.testing.allocator;
+
+    var parent = BlockHeader.init();
+    parent.number = 1;
+    parent.timestamp = 1;
+    parent.gas_limit = 10_000;
+    parent.gas_used = 0;
+    parent.base_fee_per_gas = 100;
+    parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    parent.excess_blob_gas = 393_216;
+    parent.blob_gas_used = 1;
+
+    var header = BlockHeader.init();
+    header.number = 2;
+    header.timestamp = 2;
+    header.gas_limit = parent.gas_limit;
+    header.gas_used = 0;
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    header.difficulty = 0;
+    header.nonce = [_]u8{0} ** BlockHeader.NONCE_SIZE;
+    header.parent_hash = try BlockHeader.hash(&parent, allocator);
+    header.base_fee_per_gas = try calculate_base_fee_per_gas(
+        header.gas_limit,
+        parent.gas_limit,
+        parent.gas_used,
+        parent.base_fee_per_gas.?,
+    );
+
+    const expected_excess_blob_gas = Blob.calculateExcessBlobGas(
+        parent.excess_blob_gas.?,
+        parent.blob_gas_used.?,
+    );
+    header.excess_blob_gas = expected_excess_blob_gas + 1;
+
+    const ctx = HeaderValidationContext{
+        .allocator = allocator,
+        .hardfork = .PRAGUE,
+        .parent_header = &parent,
+    };
+    try std.testing.expectError(ValidationError.InvalidExcessBlobGas, MergeValidator.validate(&header, ctx));
+}
+
+test "merge_header_validator - prague accepts correct excess blob gas" {
+    const PreMergeValidator = struct {
+        pub fn validate(_: *const BlockHeader.BlockHeader, _: HeaderValidationContext) ValidationError!void {
+            return;
+        }
+    };
+
+    const MergeValidator = merge_header_validator(PreMergeValidator);
+    const allocator = std.testing.allocator;
+
+    var parent = BlockHeader.init();
+    parent.number = 1;
+    parent.timestamp = 1;
+    parent.gas_limit = 10_000;
+    parent.gas_used = 0;
+    parent.base_fee_per_gas = 100;
+    parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    parent.excess_blob_gas = 393_216;
+    parent.blob_gas_used = 1;
+
+    var header = BlockHeader.init();
+    header.number = 2;
+    header.timestamp = 2;
+    header.gas_limit = parent.gas_limit;
+    header.gas_used = 0;
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    header.difficulty = 0;
+    header.nonce = [_]u8{0} ** BlockHeader.NONCE_SIZE;
+    header.parent_hash = try BlockHeader.hash(&parent, allocator);
+    header.base_fee_per_gas = try calculate_base_fee_per_gas(
+        header.gas_limit,
+        parent.gas_limit,
+        parent.gas_used,
+        parent.base_fee_per_gas.?,
+    );
+    header.excess_blob_gas = Blob.calculateExcessBlobGas(
+        parent.excess_blob_gas.?,
+        parent.blob_gas_used.?,
+    );
+
+    const ctx = HeaderValidationContext{
+        .allocator = allocator,
+        .hardfork = .PRAGUE,
+        .parent_header = &parent,
+    };
+    try MergeValidator.validate(&header, ctx);
 }
