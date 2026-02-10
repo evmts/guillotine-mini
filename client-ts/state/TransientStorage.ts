@@ -213,6 +213,9 @@ const makeTransientStorage = Effect.gen(function* () {
     Effect.gen(function* () {
       const { index } = yield* lookupSnapshot(snapshot);
       dropSnapshots(index);
+      if (snapshotStack.length === 0) {
+        journal.length = 0;
+      }
     });
 
   const clear = () =>
