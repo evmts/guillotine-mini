@@ -444,6 +444,12 @@ const makeTransactionProcessor = Effect.gen(function* () {
         maxGasFeeValue += blobGasFeeValue;
       }
 
+      if (Transaction.isEIP7702(parsedTx) && parsedTx.to == null) {
+        return yield* Effect.fail(
+          new TransactionTypeContractCreationError({ type: parsedTx.type }),
+        );
+      }
+
       const maxGasFee = yield* decodeBalance(maxGasFeeValue, "max gas fee");
       const blobGasFee = yield* decodeBalance(blobGasFeeValue, "blob gas fee");
       const balance = yield* decodeBalance(senderBalance, "sender");
