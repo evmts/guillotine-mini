@@ -72,7 +72,8 @@ pub const EngineApi = struct {
     /// Engine API error codes per execution-apis common definitions.
     pub const ErrorCode = struct {
         /// JSON-RPC error code integer type.
-        pub const Code = primitives.Int32.Int32;
+        /// Use plain i32 to avoid an unnecessary re-export indirection.
+        pub const Code = i32;
 
         /// -32700: Invalid JSON was received by the server.
         pub const parse_error: Code = -32700;
