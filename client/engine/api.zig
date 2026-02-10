@@ -60,6 +60,23 @@ pub const EngineApi = struct {
         UnsupportedFork,
     };
 
+    /// Engine API error codes per execution-apis common definitions.
+    pub const ErrorCode = struct {
+        pub const Code = primitives.Int32.Int32;
+
+        pub const parse_error: Code = -32700;
+        pub const invalid_request: Code = -32600;
+        pub const method_not_found: Code = -32601;
+        pub const invalid_params: Code = -32602;
+        pub const internal_error: Code = -32603;
+        pub const server_error: Code = -32000;
+        pub const unknown_payload: Code = -38001;
+        pub const invalid_forkchoice_state: Code = -38002;
+        pub const invalid_payload_attributes: Code = -38003;
+        pub const too_large_request: Code = -38004;
+        pub const unsupported_fork: Code = -38005;
+    };
+
     /// Virtual function table for Engine API operations.
     pub const VTable = struct {
         /// Exchange list of supported Engine API methods.
@@ -178,6 +195,21 @@ fn is_slice_of_byte_slices(comptime T: type) bool {
 // ============================================================================
 // Tests
 // ============================================================================
+
+test "engine api error codes match engine api spec" {
+    const Code = EngineApi.ErrorCode.Code;
+    try std.testing.expectEqual(@as(Code, -32700), EngineApi.ErrorCode.parse_error);
+    try std.testing.expectEqual(@as(Code, -32600), EngineApi.ErrorCode.invalid_request);
+    try std.testing.expectEqual(@as(Code, -32601), EngineApi.ErrorCode.method_not_found);
+    try std.testing.expectEqual(@as(Code, -32602), EngineApi.ErrorCode.invalid_params);
+    try std.testing.expectEqual(@as(Code, -32603), EngineApi.ErrorCode.internal_error);
+    try std.testing.expectEqual(@as(Code, -32000), EngineApi.ErrorCode.server_error);
+    try std.testing.expectEqual(@as(Code, -38001), EngineApi.ErrorCode.unknown_payload);
+    try std.testing.expectEqual(@as(Code, -38002), EngineApi.ErrorCode.invalid_forkchoice_state);
+    try std.testing.expectEqual(@as(Code, -38003), EngineApi.ErrorCode.invalid_payload_attributes);
+    try std.testing.expectEqual(@as(Code, -38004), EngineApi.ErrorCode.too_large_request);
+    try std.testing.expectEqual(@as(Code, -38005), EngineApi.ErrorCode.unsupported_fork);
+}
 
 fn deinit_methods_payload(payload: anytype) void {
     if (payload.array) |*array| array.deinit();
