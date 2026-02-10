@@ -52,11 +52,11 @@ pub fn head_number(chain: *Chain) ?u64 {
 /// Follows Nethermind semantics: compare the hash against the canonical mapping
 /// for the block number using the local store only (no RPC or allocations).
 /// Orphaned blocks are not canonical by definition.
-pub fn is_canonical(chain: *Chain, hash: Hash.Hash) !bool {
-    // Local-only read via BlockStore to uphold allocation/remote guarantees.
-    const local = chain.block_store.getBlock(hash) orelse return false;
+pub fn is_canonical(chain: *Chain, hash: Hash.Hash) bool {
+    // Local-only read via adapter helpers to avoid coupling to internals.
+    const local = get_block_local(chain, hash) orelse return false;
     const number = local.header.number;
-    const canonical = chain.getCanonicalHash(number) orelse return false;
+    const canonical = canonical_hash(chain, number) orelse return false;
     return Hash.equals(&canonical, &hash);
 }
 
