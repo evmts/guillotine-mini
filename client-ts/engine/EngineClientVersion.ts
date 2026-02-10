@@ -25,6 +25,7 @@ export type InvalidClientVersionReason =
   | "EmptyVersion"
   | "InvalidCommitHex"
   | "InvalidCommitLength"
+  | "InvalidResponseCardinality"
   | "EmptyResponse";
 
 /** Error raised when `ClientVersionV1` payloads violate Engine API shape constraints. */
@@ -142,29 +143,48 @@ const validateResponseClientVersions = (
       );
     }
 
-    yield* Effect.forEach(
-      executionClientVersions,
-      (clientVersion, index) =>
-        validateClientVersion("response", clientVersion, index),
-      { concurrency: 1, discard: true },
-    );
+    if (executionClientVersions.length !== 1) {
+      return yield* failInvalidClientVersion(
+        "response",
+        "InvalidResponseCardinality",
+        executionClientVersions,
+      );
+    }
+
+    const [clientVersion] = executionClientVersions;
+    if (clientVersion === undefined) {
+      return yield* failInvalidClientVersion(
+        "response",
+        "EmptyResponse",
+        executionClientVersions,
+      );
+    }
+
+    yield* validateClientVersion("response", clientVersion, 0);
   });
+
+const cloneClientVersion = (
+  clientVersion: ClientVersionV1,
+): ClientVersionV1 => ({
+  ...clientVersion,
+});
+
+const cloneClientVersionList = (
+  clientVersions: ReadonlyArray<ClientVersionV1>,
+): ReadonlyArray<ClientVersionV1> =>
+  clientVersions.map((clientVersion) => cloneClientVersion(clientVersion));
 
 const makeEngineClientVersion = (
   executionClientVersions: ReadonlyArray<ClientVersionV1>,
 ) =>
   Effect.gen(function* () {
     yield* validateResponseClientVersions(executionClientVersions);
-    const advertisedVersions = executionClientVersions.map((clientVersion) => ({
-      ...clientVersion,
-    }));
+    const advertisedVersions = cloneClientVersionList(executionClientVersions);
 
     const getClientVersionV1 = (consensusClientVersion: ClientVersionV1) =>
       Effect.gen(function* () {
         yield* validateClientVersion("request", consensusClientVersion);
-        return advertisedVersions.map((clientVersion) => ({
-          ...clientVersion,
-        }));
+        return cloneClientVersionList(advertisedVersions);
       });
 
     return {

@@ -157,4 +157,25 @@ describe("EngineClientVersion", () => {
       }
     }),
   );
+
+  it.effect(
+    "rejects multi-entry response configuration for single-client mode",
+    () =>
+      Effect.gen(function* () {
+        const outcome = yield* getClientVersionV1(makeClientVersion()).pipe(
+          Effect.provide(
+            EngineClientVersionLive([makeClientVersion(), makeClientVersion()]),
+          ),
+          Effect.either,
+        );
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          const error = outcome.left;
+          assert.isTrue(error instanceof InvalidClientVersionV1Error);
+          assert.strictEqual(error.source, "response");
+          assert.strictEqual(error.reason, "InvalidResponseCardinality");
+        }
+      }),
+  );
 });
