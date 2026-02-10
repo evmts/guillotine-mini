@@ -7,12 +7,15 @@ import { Address, Hash, Hex, Transaction } from "voltaire-effect/primitives";
 import {
   BlobsSupportMode,
   TxPoolBlobFeeCapTooLowError,
+  TxPoolBlobSenderLimitExceededError,
   InvalidTxPoolConfigError,
   TxPoolBlobSupportDisabledError,
   TxPoolConfigDefaults,
   TxPoolFullError,
   TxPoolGasLimitExceededError,
   TxPoolLive,
+  TxPoolMaxBlobTxSizeExceededError,
+  TxPoolMaxTxSizeExceededError,
   TxPoolPriorityFeeTooLowError,
   TxPoolReplacementNotAllowedError,
   TxPoolSenderLimitExceededError,
@@ -177,6 +180,21 @@ describe("TxPool", () => {
     }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
   );
 
+  it.effect("returns AlreadyKnown for duplicate transaction hash", () =>
+    Effect.gen(function* () {
+      const tx = makeSignedEip1559Tx(0n);
+
+      const first = yield* addTransaction(tx);
+      assert.strictEqual(first._tag, "Added");
+
+      const second = yield* addTransaction(tx);
+      assert.strictEqual(second._tag, "AlreadyKnown");
+
+      const count = yield* getPendingCount();
+      assert.strictEqual(count, 1);
+    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
   it.effect(
     "rejects same-sender same-nonce replacements without required fee bump",
     () =>
@@ -330,6 +348,14 @@ describe("TxPool", () => {
     }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
   );
 
+  it.effect("returns false when removing a missing transaction", () =>
+    Effect.gen(function* () {
+      const missingHash = Transaction.hash(makeSignedEip1559Tx(999n));
+      const removed = yield* removeTransaction(missingHash);
+      assert.isFalse(removed);
+    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
   it.effect("enforces pool size limits", () =>
     Effect.gen(function* () {
       const tx1 = makeSignedEip1559Tx(0n);
@@ -369,6 +395,30 @@ describe("TxPool", () => {
         TxPoolLive({
           ...TxPoolConfigDefaults,
           maxPendingTxsPerSender: 1,
+        }),
+      ),
+    ),
+  );
+
+  it.effect("enforces per-sender pending blob transaction limits", () =>
+    Effect.gen(function* () {
+      const tx1 = makeSignedEip4844Tx(0n);
+      const tx2 = makeSignedEip4844Tx(1n);
+
+      yield* addTransaction(tx1);
+      const outcome = yield* Effect.either(addTransaction(tx2));
+
+      assert.isTrue(Either.isLeft(outcome));
+      if (Either.isLeft(outcome)) {
+        assert.isTrue(
+          outcome.left instanceof TxPoolBlobSenderLimitExceededError,
+        );
+      }
+    }).pipe(
+      Effect.provide(
+        TxPoolLive({
+          ...TxPoolConfigDefaults,
+          maxPendingBlobTxsPerSender: 1,
         }),
       ),
     ),
@@ -457,6 +507,42 @@ describe("TxPool", () => {
         TxPoolLive({
           ...TxPoolConfigDefaults,
           minBlobTxPriorityFee: 5n,
+        }),
+      ),
+    ),
+  );
+
+  it.effect("enforces max non-blob transaction size", () =>
+    Effect.gen(function* () {
+      const tx = makeSignedEip1559Tx(0n);
+      const outcome = yield* Effect.either(addTransaction(tx));
+      assert.isTrue(Either.isLeft(outcome));
+      if (Either.isLeft(outcome)) {
+        assert.isTrue(outcome.left instanceof TxPoolMaxTxSizeExceededError);
+      }
+    }).pipe(
+      Effect.provide(
+        TxPoolLive({
+          ...TxPoolConfigDefaults,
+          maxTxSize: 1,
+        }),
+      ),
+    ),
+  );
+
+  it.effect("enforces max blob transaction size", () =>
+    Effect.gen(function* () {
+      const tx = makeSignedEip4844Tx(0n);
+      const outcome = yield* Effect.either(addTransaction(tx));
+      assert.isTrue(Either.isLeft(outcome));
+      if (Either.isLeft(outcome)) {
+        assert.isTrue(outcome.left instanceof TxPoolMaxBlobTxSizeExceededError);
+      }
+    }).pipe(
+      Effect.provide(
+        TxPoolLive({
+          ...TxPoolConfigDefaults,
+          maxBlobTxSize: 1,
         }),
       ),
     ),
