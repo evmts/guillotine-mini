@@ -25,7 +25,8 @@
     "blockchain/**/*.ts",
     "engine/**/*.ts",
     "network/**/*.ts",
-    "sync/**/*.ts"
+    "sync/**/*.ts",
+    "runner/**/*.ts"
   ],
   "exclude": ["node_modules"]
 }
