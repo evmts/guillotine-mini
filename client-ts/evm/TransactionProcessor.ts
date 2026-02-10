@@ -150,6 +150,13 @@ export class TransactionTypeContractCreationError extends Data.TaggedError(
   readonly type: Transaction.Any["type"];
 }> {}
 
+/** Error raised when SetCode transaction has an empty authorization list. */
+export class EmptyAuthorizationListError extends Data.TaggedError(
+  "EmptyAuthorizationListError",
+)<{
+  readonly message: string;
+}> {}
+
 /** Union of transaction fee calculation errors. */
 export type TransactionFeeError =
   | InvalidTransactionError
@@ -168,7 +175,8 @@ export type MaxGasFeeCheckError =
   | InsufficientMaxFeePerBlobGasError
   | NoBlobDataError
   | InvalidBlobVersionedHashError
-  | TransactionTypeContractCreationError;
+  | TransactionTypeContractCreationError
+  | EmptyAuthorizationListError;
 
 const runWithinBoundary = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
@@ -447,6 +455,17 @@ const makeTransactionProcessor = Effect.gen(function* () {
       if (Transaction.isEIP7702(parsedTx) && parsedTx.to == null) {
         return yield* Effect.fail(
           new TransactionTypeContractCreationError({ type: parsedTx.type }),
+        );
+      }
+
+      if (
+        Transaction.isEIP7702(parsedTx) &&
+        parsedTx.authorizationList.length === 0
+      ) {
+        return yield* Effect.fail(
+          new EmptyAuthorizationListError({
+            message: "empty authorization list",
+          }),
         );
       }
 
