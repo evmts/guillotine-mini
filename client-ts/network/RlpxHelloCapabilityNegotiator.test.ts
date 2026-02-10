@@ -224,6 +224,54 @@ describe("RlpxHelloCapabilityNegotiator", () => {
     }
   });
 
+  it("rejects local capability names containing non-printable ASCII", () => {
+    const result = runWithNegotiator(
+      negotiateRlpxHelloCapabilities(
+        [{ name: "et\u0001h", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "et\u0001h", version: 68 }],
+      ).pipe(Effect.either),
+    );
+
+    assert.strictEqual(Either.isLeft(result), true);
+    if (!Either.isLeft(result)) {
+      assert.fail(`Expected Left result, got ${JSON.stringify(result)}`);
+    }
+
+    const error = result.left;
+    if (error instanceof RlpxHelloCapabilityValidationError) {
+      assert.strictEqual(error.reason, "CapabilityNameNonPrintableAscii");
+      assert.strictEqual(error.source, "local");
+      assert.strictEqual(error.capabilityName, "et\u0001h");
+      assert.strictEqual(error.capabilityVersion, 68);
+    } else {
+      assert.fail(`Expected RlpxHelloCapabilityValidationError, got ${error}`);
+    }
+  });
+
+  it("rejects remote capability names containing non-printable ASCII", () => {
+    const result = runWithNegotiator(
+      negotiateRlpxHelloCapabilities(
+        [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "et\u0007h", version: 68 }],
+      ).pipe(Effect.either),
+    );
+
+    assert.strictEqual(Either.isLeft(result), true);
+    if (!Either.isLeft(result)) {
+      assert.fail(`Expected Left result, got ${JSON.stringify(result)}`);
+    }
+
+    const error = result.left;
+    if (error instanceof RlpxHelloCapabilityValidationError) {
+      assert.strictEqual(error.reason, "CapabilityNameNonPrintableAscii");
+      assert.strictEqual(error.source, "remote");
+      assert.strictEqual(error.capabilityName, "et\u0007h");
+      assert.strictEqual(error.capabilityVersion, 68);
+    } else {
+      assert.fail(`Expected RlpxHelloCapabilityValidationError, got ${error}`);
+    }
+  });
+
   it("rejects non-positive local message-ID space sizes", () => {
     const result = runWithNegotiator(
       negotiateRlpxHelloCapabilities(

@@ -33,6 +33,7 @@ export type RlpxHelloCapabilityValidationReason =
   | "CapabilityNameEmpty"
   | "CapabilityNameTooLong"
   | "CapabilityNameNonAscii"
+  | "CapabilityNameNonPrintableAscii"
   | "InvalidVersion"
   | "InvalidMessageIdSpaceSize"
   | "DuplicateCapabilityWithDifferentMessageSpace";
@@ -132,6 +133,17 @@ const validateCapabilityName = (
             capabilityName,
             capabilityVersion,
             reason: "CapabilityNameNonAscii",
+          }),
+        );
+      }
+
+      if (code < 0x21 || code === 0x7f) {
+        return yield* Effect.fail(
+          new RlpxHelloCapabilityValidationError({
+            source,
+            capabilityName,
+            capabilityVersion,
+            reason: "CapabilityNameNonPrintableAscii",
           }),
         );
       }
