@@ -6,8 +6,11 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { Address, Blob, Hex, Transaction } from "voltaire-effect/primitives";
 import {
+  BlockBlobGasLimitExceededError,
+  BlockGasLimitExceededError,
   buyGasAndIncrementNonce,
   calculateEffectiveGasPrice,
+  checkInclusionAvailabilityAndSenderCode,
   checkMaxGasFeeAndBalance,
   EmptyAuthorizationListError,
   GasPriceBelowBaseFeeError,
@@ -15,6 +18,7 @@ import {
   InsufficientMaxFeePerGasError,
   InsufficientSenderBalanceError,
   InvalidBlobVersionedHashError,
+  InvalidSenderAccountCodeError,
   InvalidTransactionError,
   NoBlobDataError,
   PriorityFeeGreaterThanMaxFeeError,
@@ -30,6 +34,7 @@ import {
   getAccountOptional,
   getStorage,
   setAccount,
+  setCode,
   setStorage,
   WorldStateTest,
 } from "../state/State";
@@ -101,6 +106,18 @@ const makeStorageValue = (byte: number) => {
   value.fill(byte);
   return value as Parameters<typeof setStorage>[2];
 };
+
+const makeDelegationCode = (delegatedTo: Address.AddressType) => {
+  const code = new Uint8Array(23);
+  code[0] = 0xef;
+  code[1] = 0x01;
+  code[2] = 0x00;
+  code.set(delegatedTo, 3);
+  return code as Parameters<typeof setCode>[1];
+};
+
+const makeNonDelegationCode = () =>
+  new Uint8Array([0x60, 0x00, 0x56]) as Parameters<typeof setCode>[1];
 
 const makeAccount = (
   overrides: Partial<Omit<AccountStateType, "__tag">> = {},
@@ -504,6 +521,134 @@ describe("TransactionProcessor.buyGasAndIncrementNonce", () => {
         assert.isTrue(Either.isLeft(outcome));
         if (Either.isLeft(outcome)) {
           assert.isTrue(outcome.left instanceof TransactionNonceTooHighError);
+        }
+      }),
+    ),
+  );
+});
+
+describe("TransactionProcessor.checkInclusionAvailabilityAndSenderCode", () => {
+  const maxBlobGasPerBlock = 1_179_648n;
+
+  it.effect("returns inclusion check result for EOA sender", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xc1);
+        const tx = makeLegacyTx(10n);
+
+        const result = yield* checkInclusionAvailabilityAndSenderCode(
+          tx,
+          sender,
+          130_000n,
+          25_000n,
+          maxBlobGasPerBlock,
+          0n,
+        );
+
+        assert.strictEqual(result.txBlobGasUsed, 0n);
+        assert.strictEqual(result.senderHasDelegationCode, false);
+      }),
+    ),
+  );
+
+  it.effect("accepts delegated sender code and computes blob gas used", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xc2);
+        yield* setCode(sender, makeDelegationCode(makeAddress(0xd1)));
+        const blobHash = makeBlobHash(0x01);
+        const tx = makeEip4844Tx(10n, 1n, 2n, [blobHash, blobHash]);
+
+        const result = yield* checkInclusionAvailabilityAndSenderCode(
+          tx,
+          sender,
+          130_000n,
+          10_000n,
+          maxBlobGasPerBlock,
+          800_000n,
+        );
+
+        assert.strictEqual(
+          result.txBlobGasUsed,
+          toBigInt(Blob.GAS_PER_BLOB) * 2n,
+        );
+        assert.strictEqual(result.senderHasDelegationCode, true);
+      }),
+    ),
+  );
+
+  it.effect("fails when tx gas limit exceeds available block gas", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xc3);
+        const tx = makeLegacyTx(10n);
+
+        const outcome = yield* Effect.either(
+          checkInclusionAvailabilityAndSenderCode(
+            tx,
+            sender,
+            90_000n,
+            0n,
+            maxBlobGasPerBlock,
+            0n,
+          ),
+        );
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof BlockGasLimitExceededError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when tx blob gas exceeds available block blob gas", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xc4);
+        const blobHash = makeBlobHash(0x01);
+        const tx = makeEip4844Tx(10n, 1n, 2n, [blobHash, blobHash]);
+
+        const outcome = yield* Effect.either(
+          checkInclusionAvailabilityAndSenderCode(
+            tx,
+            sender,
+            130_000n,
+            0n,
+            300_000n,
+            100_000n,
+          ),
+        );
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof BlockBlobGasLimitExceededError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when sender has non-delegation code", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xc5);
+        yield* setCode(sender, makeNonDelegationCode());
+        const tx = makeLegacyTx(10n);
+
+        const outcome = yield* Effect.either(
+          checkInclusionAvailabilityAndSenderCode(
+            tx,
+            sender,
+            130_000n,
+            0n,
+            maxBlobGasPerBlock,
+            0n,
+          ),
+        );
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof InvalidSenderAccountCodeError);
         }
       }),
     ),

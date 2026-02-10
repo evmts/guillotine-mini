@@ -41,6 +41,12 @@ export type GasPurchase = EffectiveGasPrice &
     readonly senderNonceAfterIncrement: Transaction.Any["nonce"];
   };
 
+/** Result of pre-execution inclusion checks for transaction orchestration. */
+export type PreExecutionInclusionCheck = {
+  readonly txBlobGasUsed: bigint;
+  readonly senderHasDelegationCode: boolean;
+};
+
 const TransactionSchema = Transaction.Schema as unknown as Schema.Schema<
   Transaction.Any,
   unknown
@@ -60,6 +66,10 @@ const BalanceSchema = Balance.BigInt as unknown as Schema.Schema<
 const toBigInt = (value: bigint | number): bigint =>
   typeof value === "bigint" ? value : BigInt(value);
 const BLOB_GAS_PER_BLOB = toBigInt(Blob.GAS_PER_BLOB);
+const EOA_DELEGATION_CODE_LENGTH = 23;
+const EOA_DELEGATION_MARKER_0 = 0xef;
+const EOA_DELEGATION_MARKER_1 = 0x01;
+const EOA_DELEGATION_MARKER_2 = 0x00;
 
 /** Error raised when transaction decoding fails. */
 export class InvalidTransactionError extends Data.TaggedError(
@@ -182,6 +192,30 @@ export class TransactionNonceTooHighError extends Data.TaggedError(
   readonly senderNonce: bigint;
 }> {}
 
+/** Error raised when tx gas exceeds remaining block gas capacity. */
+export class BlockGasLimitExceededError extends Data.TaggedError(
+  "BlockGasLimitExceededError",
+)<{
+  readonly txGasLimit: bigint;
+  readonly gasAvailable: bigint;
+}> {}
+
+/** Error raised when tx blob gas exceeds remaining block blob-gas capacity. */
+export class BlockBlobGasLimitExceededError extends Data.TaggedError(
+  "BlockBlobGasLimitExceededError",
+)<{
+  readonly txBlobGasUsed: bigint;
+  readonly blobGasAvailable: bigint;
+}> {}
+
+/** Error raised when sender has non-empty code that is not delegation code. */
+export class InvalidSenderAccountCodeError extends Data.TaggedError(
+  "InvalidSenderAccountCodeError",
+)<{
+  readonly sender: Address.AddressType;
+  readonly codeLength: number;
+}> {}
+
 /** Union of transaction fee calculation errors. */
 export type TransactionFeeError =
   | InvalidTransactionError
@@ -208,6 +242,13 @@ export type GasPurchaseError =
   | MaxGasFeeCheckError
   | TransactionNonceTooLowError
   | TransactionNonceTooHighError;
+
+/** Union of pre-execution inclusion check errors. */
+export type PreExecutionInclusionCheckError =
+  | InvalidTransactionError
+  | BlockGasLimitExceededError
+  | BlockBlobGasLimitExceededError
+  | InvalidSenderAccountCodeError;
 
 const runWithinBoundary = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
@@ -243,6 +284,18 @@ export interface TransactionProcessorService {
     baseFeePerGas: bigint,
     blobGasPrice: bigint,
   ) => Effect.Effect<GasPurchase, GasPurchaseError, WorldState>;
+  readonly checkInclusionAvailabilityAndSenderCode: (
+    tx: Transaction.Any,
+    sender: Address.AddressType,
+    blockGasLimit: bigint,
+    blockGasUsed: bigint,
+    maxBlobGasPerBlock: bigint,
+    blockBlobGasUsed: bigint,
+  ) => Effect.Effect<
+    PreExecutionInclusionCheck,
+    PreExecutionInclusionCheckError,
+    WorldState
+  >;
   readonly runInTransactionBoundary: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | TransactionBoundaryError, R | TransactionBoundary>;
@@ -353,6 +406,17 @@ const decodeBalance = (value: bigint, label: string) =>
         }),
     ),
   );
+
+const calculateTransactionBlobGasUsed = (tx: Transaction.Any): bigint =>
+  Transaction.isEIP4844(tx)
+    ? BigInt(tx.blobVersionedHashes.length) * BLOB_GAS_PER_BLOB
+    : 0n;
+
+const isValidDelegationDesignationCode = (code: Uint8Array): boolean =>
+  code.length === EOA_DELEGATION_CODE_LENGTH &&
+  code[0] === EOA_DELEGATION_MARKER_0 &&
+  code[1] === EOA_DELEGATION_MARKER_1 &&
+  code[2] === EOA_DELEGATION_MARKER_2;
 
 const makeTransactionProcessor = Effect.gen(function* () {
   const calculateEffectiveGasPrice = (
@@ -588,6 +652,58 @@ const makeTransactionProcessor = Effect.gen(function* () {
       } satisfies GasPurchase;
     });
 
+  const checkInclusionAvailabilityAndSenderCode = (
+    tx: Transaction.Any,
+    sender: Address.AddressType,
+    blockGasLimit: bigint,
+    blockGasUsed: bigint,
+    maxBlobGasPerBlock: bigint,
+    blockBlobGasUsed: bigint,
+  ) =>
+    Effect.gen(function* () {
+      const parsedTx = yield* decodeTransaction(tx);
+
+      const gasAvailable = blockGasLimit - blockGasUsed;
+      if (parsedTx.gasLimit > gasAvailable) {
+        return yield* Effect.fail(
+          new BlockGasLimitExceededError({
+            txGasLimit: parsedTx.gasLimit,
+            gasAvailable,
+          }),
+        );
+      }
+
+      const txBlobGasUsed = calculateTransactionBlobGasUsed(parsedTx);
+      const blobGasAvailable = maxBlobGasPerBlock - blockBlobGasUsed;
+      if (txBlobGasUsed > blobGasAvailable) {
+        return yield* Effect.fail(
+          new BlockBlobGasLimitExceededError({
+            txBlobGasUsed,
+            blobGasAvailable,
+          }),
+        );
+      }
+
+      const worldState = yield* WorldState;
+      const senderCode = yield* worldState.getCode(sender);
+      if (
+        senderCode.length > 0 &&
+        !isValidDelegationDesignationCode(senderCode)
+      ) {
+        return yield* Effect.fail(
+          new InvalidSenderAccountCodeError({
+            sender,
+            codeLength: senderCode.length,
+          }),
+        );
+      }
+
+      return {
+        txBlobGasUsed,
+        senderHasDelegationCode: senderCode.length > 0,
+      } satisfies PreExecutionInclusionCheck;
+    });
+
   const runInTransactionBoundary = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     runWithinBoundary(effect);
 
@@ -598,6 +714,7 @@ const makeTransactionProcessor = Effect.gen(function* () {
     calculateEffectiveGasPrice,
     checkMaxGasFeeAndBalance,
     buyGasAndIncrementNonce,
+    checkInclusionAvailabilityAndSenderCode,
     runInTransactionBoundary,
     runInCallFrameBoundary,
   } satisfies TransactionProcessorService;
@@ -644,6 +761,26 @@ export const buyGasAndIncrementNonce = (
 ) =>
   withTransactionProcessor((service) =>
     service.buyGasAndIncrementNonce(tx, sender, baseFeePerGas, blobGasPrice),
+  );
+
+/** Validate block gas/blob-gas headroom and sender code eligibility. */
+export const checkInclusionAvailabilityAndSenderCode = (
+  tx: Transaction.Any,
+  sender: Address.AddressType,
+  blockGasLimit: bigint,
+  blockGasUsed: bigint,
+  maxBlobGasPerBlock: bigint,
+  blockBlobGasUsed: bigint,
+) =>
+  withTransactionProcessor((service) =>
+    service.checkInclusionAvailabilityAndSenderCode(
+      tx,
+      sender,
+      blockGasLimit,
+      blockGasUsed,
+      maxBlobGasPerBlock,
+      blockBlobGasUsed,
+    ),
   );
 
 /** Execute a transaction-scoped effect with begin/commit/rollback semantics. */
