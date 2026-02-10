@@ -4,6 +4,7 @@ import * as Option from "effect/Option";
 import { Hex } from "voltaire-effect/primitives";
 import {
   BlockchainTest,
+  CanonicalChainInvalidError,
   GenesisAlreadyInitializedError,
   GenesisMismatchError,
   GenesisNotInitializedError,
@@ -15,7 +16,7 @@ import {
   putBlock,
   setCanonicalHead,
 } from "./Blockchain";
-import { BlockNotFoundError, CannotSetOrphanAsHeadError } from "./BlockTree";
+import { BlockNotFoundError } from "./BlockTree";
 import { blockHashFromByte, makeBlock } from "./testUtils";
 
 describe("Blockchain", () => {
@@ -156,7 +157,7 @@ describe("Blockchain", () => {
       yield* putBlock(orphan);
 
       const orphanError = yield* Effect.flip(setCanonicalHead(orphan.hash));
-      assert.instanceOf(orphanError, CannotSetOrphanAsHeadError);
+      assert.instanceOf(orphanError, CanonicalChainInvalidError);
     }).pipe(Effect.provide(BlockchainTest)),
   );
 

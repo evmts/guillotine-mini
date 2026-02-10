@@ -15,7 +15,6 @@ import {
   BlockTree,
   type BlockTreeError,
   BlockTreeMemoryTest,
-  CannotSetOrphanAsHeadError,
 } from "./BlockTree";
 
 /** Block type used by the blockchain service. */
@@ -445,12 +444,7 @@ const makeBlockchain = Effect.gen(function* () {
         );
       }
 
-      const headOrphan = yield* store.isOrphan(update.head);
-      if (headOrphan) {
-        return yield* Effect.fail(
-          new CannotSetOrphanAsHeadError({ hash: update.head }),
-        );
-      }
+      yield* ensureCanonicalChain(update.head);
 
       if (Option.isSome(update.safe)) {
         const safeHash = Option.getOrThrow(update.safe);
@@ -486,11 +480,6 @@ const makeBlockchain = Effect.gen(function* () {
 
   const setCanonicalHead = (hash: BlockHashType) =>
     Effect.gen(function* () {
-      const orphaned = yield* store.isOrphan(hash);
-      if (orphaned) {
-        return yield* Effect.fail(new CannotSetOrphanAsHeadError({ hash }));
-      }
-
       yield* ensureCanonicalChain(hash);
       yield* store.setCanonicalHead(hash);
 
