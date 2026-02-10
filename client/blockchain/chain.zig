@@ -83,6 +83,15 @@ pub fn has_block(chain: *Chain, hash: Hash.Hash) bool {
     return chain.hasBlock(hash);
 }
 
+/// Returns the canonical hash for a given block number (local-only).
+///
+/// Thin wrapper over Voltaire `Blockchain.getCanonicalHash` to keep client
+/// code decoupled from the underlying orchestrator. Does not fetch from a
+/// fork cache and performs no allocations.
+pub fn canonical_hash(chain: *Chain, number: u64) ?Hash.Hash {
+    return chain.getCanonicalHash(number);
+}
+
 // ---------------------------------------------------------------------------
 // Comptime DI helpers (Nethermind-style parity)
 // ---------------------------------------------------------------------------
@@ -364,6 +373,27 @@ test "Chain - is_canonical local-only does not fetch and returns false" {
     const some = Hash.ZERO;
     const result = try is_canonical(&chain, some);
     try std.testing.expect(!result);
+}
+
+test "Chain - canonical_hash returns null for missing number" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    try std.testing.expect(canonical_hash(&chain, 0) == null);
+}
+
+test "Chain - canonical_hash returns hash for canonical block" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+    try chain.setCanonicalHead(genesis.hash);
+
+    const h = canonical_hash(&chain, 0) orelse return error.Unreachable;
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &h);
 }
 
 test "Chain - has_block reflects local and fork-cache presence" {
