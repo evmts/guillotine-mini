@@ -335,13 +335,9 @@ test "Chain - has_block reflects local and fork-cache presence" {
         defer allocator.free(response);
         try fork_cache.continueRequest(req.id, response);
 
-        // Extract the hash we just cached and verify has_block=true
-        const parsed_hash = primitives.Hex.hexToBytesFixed(32, hash_hex) catch blk: {
-            try std.testing.expect(false);
-            return;
-        };
-        const h: Hash.Hash = parsed_hash;
-        try std.testing.expect(has_block(&chain, h));
+        // Verify has_block=true using the retrieved block's hash
+        const fetched = (try chain.getBlockByNumber(0)).?;
+        try std.testing.expect(has_block(&chain, fetched.hash));
     }
 }
 
