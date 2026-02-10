@@ -597,6 +597,64 @@ test "engine api rejects response containing exchangeCapabilities" {
     try std.testing.expect(dummy.called);
 }
 
+test "engine api rejects response containing non-engine methods" {
+    const allocator = std.testing.allocator;
+
+    var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
+        "engine_newPayloadV1",
+    });
+    defer deinit_methods_payload(&consensus_payload);
+
+    // Execution client must not advertise non-engine namespace methods
+    var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
+        "eth_getBlockByNumberV1",
+    });
+    defer deinit_methods_payload(&result_payload);
+
+    const params = ExchangeCapabilitiesParams{
+        .consensus_client_methods = consensus_payload.value,
+    };
+    const result_value = ExchangeCapabilitiesResult{
+        .value = result_payload.value,
+    };
+
+    var dummy = DummyEngine{ .result = result_value };
+    const api = make_api(&dummy);
+
+    // Violation must surface as InternalError (bad executor response)
+    try std.testing.expectError(EngineApi.Error.InternalError, api.exchange_capabilities(params));
+    try std.testing.expect(dummy.called);
+}
+
+test "engine api rejects response containing unversioned engine methods" {
+    const allocator = std.testing.allocator;
+
+    var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
+        "engine_newPayloadV1",
+    });
+    defer deinit_methods_payload(&consensus_payload);
+
+    // Execution client must only advertise versioned engine_* methods
+    var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
+        "engine_newPayload",
+    });
+    defer deinit_methods_payload(&result_payload);
+
+    const params = ExchangeCapabilitiesParams{
+        .consensus_client_methods = consensus_payload.value,
+    };
+    const result_value = ExchangeCapabilitiesResult{
+        .value = result_payload.value,
+    };
+
+    var dummy = DummyEngine{ .result = result_value };
+    const api = make_api(&dummy);
+
+    // Violation must surface as InternalError (bad executor response)
+    try std.testing.expectError(EngineApi.Error.InternalError, api.exchange_capabilities(params));
+    try std.testing.expect(dummy.called);
+}
+
 test "engine api dispatches client version exchange" {
     const consensus_client = ClientVersionV1{
         .code = "LS",
