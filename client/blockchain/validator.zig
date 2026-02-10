@@ -56,8 +56,8 @@ fn validate_pos_header_constants(header: *const BlockHeader.BlockHeader) Validat
 
 fn check_gas_limit(gas_limit: u64, parent_gas_limit: u64) bool {
     const max_adjustment_delta = parent_gas_limit / GAS_LIMIT_ADJUSTMENT_FACTOR;
-    if (gas_limit >= parent_gas_limit + max_adjustment_delta) return false;
-    if (gas_limit <= parent_gas_limit - max_adjustment_delta) return false;
+    if (gas_limit > parent_gas_limit + max_adjustment_delta) return false;
+    if (gas_limit < parent_gas_limit - max_adjustment_delta) return false;
     if (gas_limit < GAS_LIMIT_MINIMUM) return false;
     return true;
 }
