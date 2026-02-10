@@ -13,6 +13,7 @@ const TxPoolConfig = @import("pool.zig").TxPoolConfig;
 /// - Applies `cfg.max_blob_tx_size` to blob txs (EIP-4844), else `cfg.max_tx_size`.
 /// - Returns an error when the encoded size exceeds the configured limit.
 pub fn fits_size_limits(
+    allocator: std.mem.Allocator,
     tx: anytype,
     cfg: TxPoolConfig,
 ) (error{ MaxTxSizeExceeded, MaxBlobTxSizeExceeded } || std.mem.Allocator.Error)!void {
@@ -28,7 +29,7 @@ pub fn fits_size_limits(
         }
     }
 
-    const allocator = std.heap.page_allocator;
+    // Use caller-provided allocator to avoid page allocator churn on hot path
 
     var len: usize = 0;
     if (comptime T == tx_mod.LegacyTransaction) {
@@ -40,6 +41,100 @@ pub fn fits_size_limits(
         const bytes = try tx_mod.encodeEip1559ForSigning(allocator, tx);
         defer allocator.free(bytes);
         len = bytes.len;
+    } else if (comptime T == tx_mod.Eip2930Transaction) {
+        // Construct EIP-2930 list per spec and encode via RLP
+        const rlp = primitives.Rlp;
+        var list = std.array_list.AlignedManaged(u8, null).init(allocator);
+        defer list.deinit();
+
+        // chain_id, nonce, gas_price, gas_limit
+        {
+            const enc = try rlp.encode(allocator, tx.chain_id);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+        {
+            const enc = try rlp.encode(allocator, tx.nonce);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+        {
+            const enc = try rlp.encode(allocator, tx.gas_price);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+        {
+            const enc = try rlp.encode(allocator, tx.gas_limit);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+
+        // to (nullable)
+        if (tx.to) |to_addr| {
+            const enc = try rlp.encodeBytes(allocator, &to_addr.bytes);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        } else {
+            try list.append(0x80);
+        }
+
+        // value, data
+        {
+            const enc = try rlp.encode(allocator, tx.value);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+        {
+            const enc = try rlp.encodeBytes(allocator, tx.data);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+
+        // access_list
+        {
+            const enc = try tx_mod.encodeAccessList(allocator, tx.access_list);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+
+        // Optional signature: y_parity, r, s if present
+        const zeros = [_]u8{0} ** 32;
+        if (!(tx.y_parity == 0 and std.mem.eql(u8, &tx.r, &zeros) and std.mem.eql(u8, &tx.s, &zeros))) {
+            {
+                const enc = try rlp.encode(allocator, tx.y_parity);
+                defer allocator.free(enc);
+                try list.appendSlice(enc);
+            }
+            {
+                const enc = try rlp.encodeBytes(allocator, &tx.r);
+                defer allocator.free(enc);
+                try list.appendSlice(enc);
+            }
+            {
+                const enc = try rlp.encodeBytes(allocator, &tx.s);
+                defer allocator.free(enc);
+                try list.appendSlice(enc);
+            }
+        }
+
+        // Wrap list and add type byte 0x01
+        var wrapped = std.array_list.AlignedManaged(u8, null).init(allocator);
+        defer wrapped.deinit();
+        if (list.items.len <= 55) {
+            try wrapped.append(@as(u8, @intCast(0xc0 + list.items.len)));
+        } else {
+            const len_bytes = try rlp.encodeLength(allocator, list.items.len);
+            defer allocator.free(len_bytes);
+            try wrapped.append(@as(u8, @intCast(0xf7 + len_bytes.len)));
+            try wrapped.appendSlice(len_bytes);
+        }
+        try wrapped.appendSlice(list.items);
+
+        const out = try allocator.alloc(u8, 1 + wrapped.items.len);
+        out[0] = 0x01;
+        @memcpy(out[1..], wrapped.items);
+        defer allocator.free(out);
+        len = out.len;
     } else if (comptime T == tx_mod.Eip4844Transaction) {
         // Manual EIP-4844 encoding using primitives.Rlp to avoid
         // upstream encoder inconsistency (tx.v vs y_parity).
@@ -168,9 +263,111 @@ pub fn fits_size_limits(
         defer allocator.free(out);
         len = out.len;
     } else if (comptime T == tx_mod.Eip7702Transaction) {
-        const bytes = try tx_mod.encodeEip7702ForSigning(allocator, tx);
-        defer allocator.free(bytes);
-        len = bytes.len;
+        // Manual EIP-7702 encoding: 1-byte type + RLP(list[...])
+        // to avoid upstream y_parity/v inconsistency
+        const rlp = primitives.Rlp;
+        var list = std.array_list.AlignedManaged(u8, null).init(allocator);
+        defer list.deinit();
+
+        // chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit
+        {
+            const enc = try rlp.encode(allocator, tx.chain_id);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+        {
+            const enc = try rlp.encode(allocator, tx.nonce);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+        {
+            const enc = try rlp.encode(allocator, tx.max_priority_fee_per_gas);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+        {
+            const enc = try rlp.encode(allocator, tx.max_fee_per_gas);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+        {
+            const enc = try rlp.encode(allocator, tx.gas_limit);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+
+        // to (nullable)
+        if (tx.to) |to_addr| {
+            const enc = try rlp.encodeBytes(allocator, &to_addr.bytes);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        } else {
+            try list.append(0x80);
+        }
+
+        // value, data
+        {
+            const enc = try rlp.encode(allocator, tx.value);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+        {
+            const enc = try rlp.encodeBytes(allocator, tx.data);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+
+        // access_list
+        {
+            const enc = try tx_mod.encodeAccessList(allocator, tx.access_list);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+
+        // authorization_list
+        {
+            const enc = try primitives.Authorization.encodeAuthorizationList(allocator, tx.authorization_list);
+            defer allocator.free(enc);
+            try list.appendSlice(enc);
+        }
+
+        // Optional signature (v,r,s) for 7702 in vendor — until upstream fix, 
+        // treat tx.v==0 as unsigned; otherwise include v,r,s (spec uses y_parity for 1559/4844 only).
+        if (tx.v != 0) {
+            {
+                const enc = try rlp.encode(allocator, tx.v);
+                defer allocator.free(enc);
+                try list.appendSlice(enc);
+            }
+            {
+                const enc = try rlp.encodeBytes(allocator, &tx.r);
+                defer allocator.free(enc);
+                try list.appendSlice(enc);
+            }
+            {
+                const enc = try rlp.encodeBytes(allocator, &tx.s);
+                defer allocator.free(enc);
+                try list.appendSlice(enc);
+            }
+        }
+
+        var wrapped = std.array_list.AlignedManaged(u8, null).init(allocator);
+        defer wrapped.deinit();
+        if (list.items.len <= 55) {
+            try wrapped.append(@as(u8, @intCast(0xc0 + list.items.len)));
+        } else {
+            const len_bytes = try rlp.encodeLength(allocator, list.items.len);
+            defer allocator.free(len_bytes);
+            try wrapped.append(@as(u8, @intCast(0xf7 + len_bytes.len)));
+            try wrapped.appendSlice(len_bytes);
+        }
+        try wrapped.appendSlice(list.items);
+
+        const out = try allocator.alloc(u8, 1 + wrapped.items.len);
+        out[0] = 0x04;
+        @memcpy(out[1..], wrapped.items);
+        defer allocator.free(out);
+        len = out.len;
     }
 
     if (comptime T == tx_mod.Eip4844Transaction) {
@@ -211,11 +408,11 @@ test "fits_size_limits — legacy within and over limit" {
 
     var cfg_ok = TxPoolConfig{}; // defaults allow ample size
     cfg_ok.max_tx_size = encoded.len; // exactly fits
-    try fits_size_limits(tx, cfg_ok);
+    try fits_size_limits(std.testing.allocator, tx, cfg_ok);
 
     var cfg_bad = TxPoolConfig{};
     cfg_bad.max_tx_size = encoded.len - 1; // too small
-    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(tx, cfg_bad));
+    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(std.testing.allocator, tx, cfg_bad));
 }
 
 test "fits_size_limits — eip1559 within and over limit" {
@@ -243,11 +440,11 @@ test "fits_size_limits — eip1559 within and over limit" {
 
     var cfg_ok = TxPoolConfig{};
     cfg_ok.max_tx_size = encoded.len;
-    try fits_size_limits(tx, cfg_ok);
+    try fits_size_limits(std.testing.allocator, tx, cfg_ok);
 
     var cfg_bad = TxPoolConfig{};
     cfg_bad.max_tx_size = encoded.len - 1;
-    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(tx, cfg_bad));
+    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(std.testing.allocator, tx, cfg_bad));
 }
 
 test "fits_size_limits — eip4844 (blob) within and over blob limit" {
@@ -382,9 +579,111 @@ test "fits_size_limits — eip4844 (blob) within and over blob limit" {
 
     var cfg_ok = TxPoolConfig{};
     cfg_ok.max_blob_tx_size = encoded.len;
-    try fits_size_limits(tx, cfg_ok);
+    try fits_size_limits(std.testing.allocator, tx, cfg_ok);
 
     var cfg_bad = TxPoolConfig{};
     cfg_bad.max_blob_tx_size = encoded.len - 1;
-    try std.testing.expectError(error.MaxBlobTxSizeExceeded, fits_size_limits(tx, cfg_bad));
+    try std.testing.expectError(error.MaxBlobTxSizeExceeded, fits_size_limits(std.testing.allocator, tx, cfg_bad));
+}
+
+test "fits_size_limits — eip7702 within and over limit" {
+    const Address = primitives.Address;
+    const Authorization = primitives.Authorization.Authorization;
+    const tx = tx_mod.Eip7702Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 2,
+        .gas_limit = 21_000,
+        .to = Address{ .bytes = [_]u8{0x44} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .authorization_list = &[_]Authorization{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+        .y_parity = 0,
+    };
+
+    const allocator = std.testing.allocator;
+    // Mirror manual encoding used in implementation to compute expected length
+    const rlp = primitives.Rlp;
+    var list = std.array_list.AlignedManaged(u8, null).init(allocator);
+    defer list.deinit();
+    {
+        const enc = try rlp.encode(allocator, tx.chain_id);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.nonce);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.max_priority_fee_per_gas);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.max_fee_per_gas);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.gas_limit);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    if (tx.to) |to_addr| {
+        const enc = try rlp.encodeBytes(allocator, &to_addr.bytes);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    } else {
+        try list.append(0x80);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.value);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, tx.data);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try tx_mod.encodeAccessList(allocator, tx.access_list);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try primitives.Authorization.encodeAuthorizationList(allocator, tx.authorization_list);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    var wrapped = std.array_list.AlignedManaged(u8, null).init(allocator);
+    defer wrapped.deinit();
+    if (list.items.len <= 55) {
+        try wrapped.append(@as(u8, @intCast(0xc0 + list.items.len)));
+    } else {
+        const len_bytes = try rlp.encodeLength(allocator, list.items.len);
+        defer allocator.free(len_bytes);
+        try wrapped.append(@as(u8, @intCast(0xf7 + len_bytes.len)));
+        try wrapped.appendSlice(len_bytes);
+    }
+    try wrapped.appendSlice(list.items);
+    const encoded = try allocator.alloc(u8, 1 + wrapped.items.len);
+    encoded[0] = 0x04;
+    @memcpy(encoded[1..], wrapped.items);
+    defer allocator.free(encoded);
+
+    var cfg_ok = TxPoolConfig{};
+    cfg_ok.max_tx_size = encoded.len;
+    try fits_size_limits(allocator, tx, cfg_ok);
+
+    var cfg_bad = TxPoolConfig{};
+    cfg_bad.max_tx_size = encoded.len - 1;
+    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(allocator, tx, cfg_bad));
 }

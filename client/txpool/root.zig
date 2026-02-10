@@ -12,7 +12,9 @@ pub const TxPoolConfig = pool.TxPoolConfig;
 pub const compare_fee_market_priority = sorter.compare_fee_market_priority;
 
 // Admission helpers
-pub const fits_size_limits = limits.fits_size_limits;
+pub fn fits_size_limits(allocator: std.mem.Allocator, tx: anytype, cfg: TxPoolConfig) (error{ MaxTxSizeExceeded, MaxBlobTxSizeExceeded } || std.mem.Allocator.Error)!void {
+    return limits.fits_size_limits(allocator, tx, cfg);
+}
 
 test {
     std.testing.refAllDecls(@This());
