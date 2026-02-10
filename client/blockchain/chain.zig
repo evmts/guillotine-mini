@@ -149,7 +149,6 @@ pub fn head_hash_of(chain: anytype) !?Hash.Hash {
     return if (maybe_block) |b| b.hash else null;
 }
 
-/// Generic, comptime-injected head block reader for any chain-like type.
 /// Generic, comptime-injected head block reader with configurable retry policy.
 ///
 /// Parameters:
