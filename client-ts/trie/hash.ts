@@ -139,7 +139,7 @@ export class TrieHash extends Context.Tag("TrieHash")<
 
 const TrieHashLayer: Layer.Layer<TrieHash> = Layer.succeed(TrieHash, {
   encodeInternalNode: (node) => encodeInternalNodeImpl(node),
-});
+} satisfies TrieHashService);
 
 /** Production trie hashing layer. */
 export const TrieHashLive: Layer.Layer<TrieHash> = TrieHashLayer;

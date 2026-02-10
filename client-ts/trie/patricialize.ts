@@ -215,14 +215,15 @@ const makePatricialize = (
   encodeInternalNode: (
     node: TrieNode | null | undefined,
   ) => Effect.Effect<EncodedNode, TrieHashError>,
-) => ({
-  patricialize: (obj: NibbleKeyMap, level: number) =>
-    Effect.gen(function* () {
-      yield* validateLevel(level);
-      const normalized = yield* normalizeKeyMap(obj);
-      return yield* patricializeImpl(normalized, level, encodeInternalNode);
-    }),
-});
+) =>
+  ({
+    patricialize: (obj: NibbleKeyMap, level: number) =>
+      Effect.gen(function* () {
+        yield* validateLevel(level);
+        const normalized = yield* normalizeKeyMap(obj);
+        return yield* patricializeImpl(normalized, level, encodeInternalNode);
+      }),
+  }) satisfies TriePatricializeService;
 
 /** Trie patricialization service interface. */
 export interface TriePatricializeService {

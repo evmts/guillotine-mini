@@ -46,8 +46,6 @@ interface TrieStoreService {
   readonly put: (entry: TrieEntry) => Effect.Effect<void, TrieError>;
   readonly remove: (key: BytesType) => Effect.Effect<void, TrieError>;
   readonly entries: () => Effect.Effect<ReadonlyArray<TrieEntry>, never>;
-  readonly persist: () => Effect.Effect<void, never>;
-  readonly prune: () => Effect.Effect<void, never>;
 }
 
 class TrieStore extends Context.Tag("TrieStore")<
@@ -129,23 +127,11 @@ const makeTrieStore = () =>
     const entries = () =>
       Effect.sync(() => Array.from(store.values(), cloneEntry));
 
-    const persist = () =>
-      Effect.sync(() => {
-        // no-op for in-memory store
-      });
-
-    const prune = () =>
-      Effect.sync(() => {
-        // no-op for in-memory store
-      });
-
     return {
       get,
       put,
       remove,
       entries,
-      persist,
-      prune,
     } satisfies TrieStoreService;
   });
 
