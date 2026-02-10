@@ -174,4 +174,39 @@ describe("BlockTree", () => {
         assert.strictEqual(Option.getOrThrow(headNumber) as bigint, 1n);
       }).pipe(Effect.provide(BlockTreeMemoryTest)),
   );
+
+  it.effect("marks non-canonical blocks as orphaned after head is set", () =>
+    Effect.gen(function* () {
+      const genesis = makeBlock({
+        number: 0n,
+        hash: blockHashFromByte(0xf0),
+        parentHash: blockHashFromByte(0x00),
+      });
+      const block1 = makeBlock({
+        number: 1n,
+        hash: blockHashFromByte(0xf1),
+        parentHash: genesis.hash,
+      });
+      const block2 = makeBlock({
+        number: 2n,
+        hash: blockHashFromByte(0xf2),
+        parentHash: block1.hash,
+      });
+      const side = makeBlock({
+        number: 1n,
+        hash: blockHashFromByte(0xf3),
+        parentHash: genesis.hash,
+      });
+
+      yield* putBlock(genesis);
+      yield* putBlock(block1);
+      yield* putBlock(block2);
+      yield* putBlock(side);
+      yield* setCanonicalHead(block2.hash);
+
+      assert.isFalse(yield* isOrphan(block1.hash));
+      assert.isFalse(yield* isOrphan(block2.hash));
+      assert.isTrue(yield* isOrphan(side.hash));
+    }).pipe(Effect.provide(BlockTreeMemoryTest)),
+  );
 });

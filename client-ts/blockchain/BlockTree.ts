@@ -25,6 +25,7 @@ type BlockNumberKey = bigint;
 
 type BlockTreeState = {
   readonly canonicalChain: Map<BlockNumberKey, BlockHashType>;
+  readonly canonicalByHash: Map<BlockHashKey, BlockNumberKey>;
   readonly orphans: Set<BlockHashKey>;
   readonly orphansByParent: Map<BlockHashKey, Set<BlockHashKey>>;
   headNumber: Option.Option<BlockNumberType>;
@@ -139,6 +140,7 @@ const makeBlockTree = Effect.gen(function* () {
       () =>
         ({
           canonicalChain: new Map<BlockNumberKey, BlockHashType>(),
+          canonicalByHash: new Map<BlockHashKey, BlockNumberKey>(),
           orphans: new Set<BlockHashKey>(),
           orphansByParent: new Map<BlockHashKey, Set<BlockHashKey>>(),
           headNumber: Option.none() as Option.Option<BlockNumberType>,
@@ -147,6 +149,7 @@ const makeBlockTree = Effect.gen(function* () {
     (tree) =>
       Effect.sync(() => {
         tree.canonicalChain.clear();
+        tree.canonicalByHash.clear();
         tree.orphans.clear();
         tree.orphansByParent.clear();
         tree.headNumber = Option.none();
@@ -197,7 +200,18 @@ const makeBlockTree = Effect.gen(function* () {
   const isOrphan = (hash: BlockHashType) =>
     Effect.gen(function* () {
       const validated = yield* decodeBlockHash(hash);
-      return state.orphans.has(blockHashKey(validated));
+      const exists = yield* store.hasBlock(validated);
+      if (!exists) {
+        return false;
+      }
+      const key = blockHashKey(validated);
+      if (state.orphans.has(key)) {
+        return true;
+      }
+      if (Option.isNone(state.headNumber)) {
+        return false;
+      }
+      return !state.canonicalByHash.has(key);
     });
 
   const putBlock = (block: BlockType) =>
@@ -283,8 +297,10 @@ const makeBlockTree = Effect.gen(function* () {
       );
 
       state.canonicalChain.clear();
+      state.canonicalByHash.clear();
       for (const entry of entries) {
         state.canonicalChain.set(entry.numberKey, entry.hash);
+        state.canonicalByHash.set(blockHashKey(entry.hash), entry.numberKey);
       }
       state.headNumber = Option.some(
         Option.getOrThrow(headBlock).header.number,
@@ -295,7 +311,14 @@ const makeBlockTree = Effect.gen(function* () {
 
   const blockCount = () => store.blockCount();
 
-  const orphanCount = () => Effect.sync(() => state.orphans.size);
+  const orphanCount = () =>
+    Effect.gen(function* () {
+      if (Option.isNone(state.headNumber)) {
+        return state.orphans.size;
+      }
+      const totalBlocks = yield* store.blockCount();
+      return totalBlocks - state.canonicalByHash.size;
+    });
 
   const canonicalChainLength = () =>
     Effect.sync(() => state.canonicalChain.size);
