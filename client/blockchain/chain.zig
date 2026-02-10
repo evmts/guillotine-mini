@@ -65,6 +65,15 @@ pub fn is_canonical_or_fetch(chain: *Chain, hash: Hash.Hash) !bool {
     return Hash.equals(&canonical, &hash);
 }
 
+/// Returns true if the block is present locally or cached in the fork cache.
+///
+/// Thin wrapper over Voltaire `Blockchain.hasBlock` to keep client code
+/// decoupled from the underlying orchestrator while adhering to Nethermind's
+/// separation of concerns (storage/provider split).
+pub fn has_block(chain: *Chain, hash: Hash.Hash) bool {
+    return chain.hasBlock(hash);
+}
+
 // ---------------------------------------------------------------------------
 // Comptime DI helpers (Nethermind-style parity)
 // ---------------------------------------------------------------------------
@@ -290,6 +299,50 @@ test "Chain - is_canonical local-only does not fetch and returns false" {
     const some = Hash.ZERO;
     const result = try is_canonical(&chain, some);
     try std.testing.expect(!result);
+}
+
+test "Chain - has_block reflects local and fork-cache presence" {
+    const allocator = std.testing.allocator;
+
+    // Local-only: missing → false, after insert → true
+    {
+        var chain = try Chain.init(allocator, null);
+        defer chain.deinit();
+
+        try std.testing.expect(!has_block(&chain, Hash.ZERO));
+
+        const genesis = try Block.genesis(1, allocator);
+        try chain.putBlock(genesis);
+        try std.testing.expect(has_block(&chain, genesis.hash));
+    }
+
+    // With fork cache: cached remote block → true
+    {
+        var fork_cache = try ForkBlockCache.init(allocator, 1024);
+        defer fork_cache.deinit();
+
+        var chain = try Chain.init(allocator, &fork_cache);
+        defer chain.deinit();
+
+        // Queue a remote fetch by number, then supply a minimal JSON response
+        try std.testing.expectError(error.RpcPending, chain.getBlockByNumber(0));
+        const req = fork_cache.nextRequest() orelse {
+            try std.testing.expect(false);
+            return;
+        };
+        const hash_hex = "0x" ++ ("22" ** 32);
+        const response = try std.fmt.allocPrint(allocator, "{{\"hash\":\"{s}\",\"number\":\"0x0\"}}", .{hash_hex});
+        defer allocator.free(response);
+        try fork_cache.continueRequest(req.id, response);
+
+        // Extract the hash we just cached and verify has_block=true
+        const parsed_hash = primitives.Hex.hexToBytesFixed(32, hash_hex) catch blk: {
+            try std.testing.expect(false);
+            return;
+        };
+        const h: Hash.Hash = parsed_hash;
+        try std.testing.expect(has_block(&chain, h));
+    }
 }
 
 test "Chain - generic head helpers are race-resilient" {

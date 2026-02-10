@@ -15,6 +15,8 @@ pub const head_block = chain.head_block;
 /// Canonicality checks.
 pub const is_canonical = chain.is_canonical;
 pub const is_canonical_or_fetch = chain.is_canonical_or_fetch;
+/// Existence check (local or fork-cache).
+pub const has_block = chain.has_block;
 /// Generic comptime DI helpers for head reads.
 pub const head_hash_of = chain.head_hash_of;
 pub const head_block_of = chain.head_block_of;
