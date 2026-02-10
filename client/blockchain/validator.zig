@@ -479,3 +479,38 @@ test "merge_header_validator - prague accepts correct excess blob gas" {
     };
     try MergeValidator.validate(&header, ctx);
 }
+
+test "merge validation boundaries cover gas limit and TTD edges" {
+    const parent_gas_limit: u64 = 1_000_000;
+    const delta = parent_gas_limit / GAS_LIMIT_ADJUSTMENT_FACTOR;
+
+    try std.testing.expect(check_gas_limit(parent_gas_limit + delta, parent_gas_limit));
+    try std.testing.expect(check_gas_limit(parent_gas_limit - delta, parent_gas_limit));
+
+    const parent_gas_used = parent_gas_limit / ELASTICITY_MULTIPLIER;
+    const parent_base_fee: u256 = 100;
+    const boundary_fee = try calculate_base_fee_per_gas(
+        parent_gas_limit + delta,
+        parent_gas_limit,
+        parent_gas_used,
+        parent_base_fee,
+    );
+    try std.testing.expectEqual(parent_base_fee, boundary_fee);
+
+    var header = BlockHeader.init();
+    header.difficulty = 1;
+
+    const ttd: u256 = 1000;
+    var ctx = HeaderValidationContext{
+        .allocator = std.testing.allocator,
+        .hardfork = .MERGE,
+        .terminal_total_difficulty = ttd,
+        .header_total_difficulty = ttd,
+        .parent_total_difficulty = ttd - 1,
+    };
+    try std.testing.expect(!is_post_merge(&header, ctx));
+
+    header.difficulty = 0;
+    ctx.parent_total_difficulty = ttd;
+    try std.testing.expect(is_post_merge(&header, ctx));
+}
