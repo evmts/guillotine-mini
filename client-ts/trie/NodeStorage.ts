@@ -159,6 +159,15 @@ export const setNode = (nodeHash: Hash.HashType, encodedNode: BytesType) =>
     yield* storage.set(nodeHash, encodedNode);
   });
 
+/** Persist an encoded trie node and return its hash reference. */
+export const persistEncodedNode = (encodedNode: BytesType) =>
+  Effect.gen(function* () {
+    const validatedNodeData = yield* validateNodeData(encodedNode);
+    const nodeHash = yield* Hash.keccak256(validatedNodeData);
+    yield* setNode(nodeHash, validatedNodeData);
+    return nodeHash;
+  });
+
 /** Check if an encoded trie node exists by hash. */
 export const hasNode = (nodeHash: Hash.HashType) =>
   Effect.gen(function* () {

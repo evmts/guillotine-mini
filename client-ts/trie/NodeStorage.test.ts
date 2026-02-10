@@ -4,7 +4,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { Bytes, Hash, Hex } from "voltaire-effect/primitives";
 import { DbMemoryTest, DbNames } from "../db/Db";
+import type { BytesType } from "./Node";
 import {
+  persistEncodedNode,
   TrieNodeStorageError,
   TrieNodeStorageTest,
   getNode,
@@ -101,6 +103,36 @@ describe("TrieNodeStorage", () => {
         return;
       }
       assert.fail("Expected TrieNodeStorageError for invalid hash");
+    }).pipe(Effect.provide(TestLayer)),
+  );
+
+  it.effect(
+    "persistEncodedNode stores bytes keyed by keccak hash and returns that hash",
+    () =>
+      Effect.gen(function* () {
+        const encodedNode = bytesFromHex("0xc2200a");
+        const expectedHash = yield* Hash.keccak256(encodedNode);
+
+        const storedHash = yield* persistEncodedNode(encodedNode);
+        const loaded = yield* getNode(storedHash);
+
+        assert.isTrue(yield* Hash.equals(storedHash, expectedHash));
+        assert.isTrue(Option.isSome(loaded));
+        if (Option.isSome(loaded)) {
+          assert.isTrue(Bytes.equals(loaded.value, encodedNode));
+        }
+      }).pipe(Effect.provide(TestLayer)),
+  );
+
+  it.effect("persistEncodedNode rejects invalid encoded bytes input", () =>
+    Effect.gen(function* () {
+      const invalidNode = null as unknown as BytesType;
+      const result = yield* Effect.either(persistEncodedNode(invalidNode));
+      if (result._tag === "Left") {
+        assert.isTrue(result.left instanceof TrieNodeStorageError);
+        return;
+      }
+      assert.fail("Expected TrieNodeStorageError for invalid encoded node");
     }).pipe(Effect.provide(TestLayer)),
   );
 });
