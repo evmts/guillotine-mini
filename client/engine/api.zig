@@ -226,6 +226,14 @@ fn deinit_methods_payload(payload: anytype) void {
     if (payload.array) |*array| array.deinit();
 }
 
+fn make_json_methods_array(allocator: std.mem.Allocator, methods: []const []const u8) !std.json.Array {
+    var array = std.json.Array.init(allocator);
+    for (methods) |method| {
+        try array.append(.{ .string = method });
+    }
+    return array;
+}
+
 fn make_methods_payload(comptime MethodsType: type, allocator: std.mem.Allocator, methods: []const []const u8) !struct {
     array: ?std.json.Array,
     value: MethodsType,
@@ -235,20 +243,14 @@ fn make_methods_payload(comptime MethodsType: type, allocator: std.mem.Allocator
     }
 
     if (comptime MethodsType == std.json.Value) {
-        var array = std.json.Array.init(allocator);
-        for (methods) |method| {
-            try array.append(.{ .string = method });
-        }
+        const array = try make_json_methods_array(allocator, methods);
         return .{ .array = array, .value = .{ .array = array } };
     }
 
     if (comptime @hasField(MethodsType, "value")) {
         const inner_type = @TypeOf(@as(MethodsType, undefined).value);
         if (comptime inner_type == std.json.Value) {
-            var array = std.json.Array.init(allocator);
-            for (methods) |method| {
-                try array.append(.{ .string = method });
-            }
+            const array = try make_json_methods_array(allocator, methods);
             return .{ .array = array, .value = .{ .value = .{ .array = array } } };
         }
     }
