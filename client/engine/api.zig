@@ -513,6 +513,52 @@ test "engine api rejects invalid client version params" {
     try std.testing.expect(!dummy.client_version_called);
 }
 
+test "engine api rejects client version params with invalid commit length" {
+    const bad_params = ClientVersionV1Params{
+        .consensus_client = ClientVersionV1{
+            .code = "LS",
+            .name = "Lodestar",
+            .version = "v1.2.3",
+            .commit = "0x010203",
+        },
+    };
+    const exchange_result = ExchangeCapabilitiesResult{
+        .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } },
+    };
+
+    var dummy = DummyEngine{ .result = exchange_result };
+    const api = make_api(&dummy);
+
+    try std.testing.expectError(EngineApi.Error.InvalidParams, api.get_client_version_v1(bad_params));
+    try std.testing.expect(!dummy.client_version_called);
+}
+
+test "engine api rejects client version response with invalid commit format" {
+    const params = ClientVersionV1Params{ .consensus_client = dummy_client_version };
+    const invalid_result = ClientVersionV1Result{
+        .value = &[_]ClientVersionV1{
+            .{
+                .code = "LS",
+                .name = "Lodestar",
+                .version = "v1.2.3",
+                .commit = "01020304",
+            },
+        },
+    };
+    const exchange_result = ExchangeCapabilitiesResult{
+        .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } },
+    };
+
+    var dummy = DummyEngine{
+        .result = exchange_result,
+        .client_version_result = invalid_result,
+    };
+    const api = make_api(&dummy);
+
+    try std.testing.expectError(EngineApi.Error.InternalError, api.get_client_version_v1(params));
+    try std.testing.expect(dummy.client_version_called);
+}
+
 test "engine api rejects invalid client version response" {
     const params = ClientVersionV1Params{ .consensus_client = dummy_client_version };
     const invalid_result = ClientVersionV1Result{ .value = &[_]ClientVersionV1{} };
