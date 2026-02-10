@@ -15,6 +15,7 @@ type FeeTuple = Readonly<{
   maxPriorityFeePerGas: MaxPriorityFeePerGas.MaxPriorityFeePerGasType;
 }>;
 
+/** Error raised when the transaction type is not supported by the sorter. */
 export class TxPoolSorterUnsupportedTransactionTypeError extends Data.TaggedError(
   "TxPoolSorterUnsupportedTransactionTypeError",
 )<{
@@ -155,6 +156,7 @@ export const compareFeeMarketPriority = (
   return compareDescending(xGasPrice, yGasPrice);
 };
 
+/** Compare two transactions by fee-market priority. */
 export const compareTransactionFeeMarketPriority = (
   x: Transaction.Any,
   y: Transaction.Any,
