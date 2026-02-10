@@ -161,18 +161,21 @@ pub fn finalized_head_hash_of(fc: anytype) ?Hash.Hash {
     return fc.getFinalizedHash();
 }
 
+inline fn block_from_hash_opt(chain: *Chain, maybe_hash: ?Hash.Hash) ?Block.Block {
+    const h = maybe_hash orelse return null;
+    return get_block_local(chain, h);
+}
+
 /// Local-only safe head block lookup (no fork-cache fetch/allocations at this layer).
 pub fn safe_head_block_of(chain: *Chain, fc: anytype) ?Block.Block {
     // Local-only view; use fork-cache layer at call sites if remote fetches are acceptable.
-    const h = fc.getSafeHash() orelse return null;
-    return get_block_local(chain, h);
+    return block_from_hash_opt(chain, fc.getSafeHash());
 }
 
 /// Local-only finalized head block lookup (no fork-cache fetch/allocations at this layer).
 pub fn finalized_head_block_of(chain: *Chain, fc: anytype) ?Block.Block {
     // Local-only view; use fork-cache layer at call sites if remote fetches are acceptable.
-    const h = fc.getFinalizedHash() orelse return null;
-    return get_block_local(chain, h);
+    return block_from_hash_opt(chain, fc.getFinalizedHash());
 }
 
 test {
