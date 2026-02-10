@@ -7,7 +7,7 @@ pub const BlockSize: usize = 16;
 pub const DefaultMaxFrameSize: usize = BlockSize * 64;
 
 /// Returns the zero-fill padding required to align to the AES block size.
-pub fn calculatePadding(size: usize) usize {
+pub inline fn calculatePadding(size: usize) usize {
     const remainder = size % BlockSize;
     return if (remainder == 0) 0 else BlockSize - remainder;
 }
