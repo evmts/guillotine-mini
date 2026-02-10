@@ -30,6 +30,7 @@ type U256Type = Parameters<typeof Uint.toBigInt>[0];
 /** Trie value types that require encoding for storage. */
 export type TrieValue =
   | BytesType
+  | AccountState.AccountStateType
   | Transaction.Any
   | Receipt.ReceiptType
   | U256Type;
@@ -122,6 +123,13 @@ const isTransaction = (value: unknown): value is Transaction.Any =>
 
 const isReceipt = Schema.is(
   Receipt.Schema as unknown as Schema.Schema<Receipt.ReceiptType, unknown>,
+);
+
+const isAccountState = Schema.is(
+  AccountState.AccountStateSchema as unknown as Schema.Schema<
+    AccountState.AccountStateType,
+    unknown
+  >,
 );
 
 const receiptTypePrefix: Record<Receipt.ReceiptType["type"], number | null> = {
@@ -220,6 +228,9 @@ export const encodeTrieValue = (
   Effect.gen(function* () {
     if (Bytes.isBytes(value)) {
       return yield* toBytes(value as Uint8Array);
+    }
+    if (isAccountState(value)) {
+      return yield* encodeAccount(value);
     }
     if (isTransaction(value)) {
       return yield* encodeTransaction(value);
