@@ -39,9 +39,23 @@ const Eip1559Schema = Transaction.EIP1559Schema as unknown as Schema.Schema<
   Transaction.EIP1559,
   unknown
 >;
+const Eip4844Schema = Transaction.EIP4844Schema as unknown as Schema.Schema<
+  Transaction.EIP4844,
+  unknown
+>;
+const Eip7702Schema = Transaction.EIP7702Schema as unknown as Schema.Schema<
+  Transaction.EIP7702,
+  unknown
+>;
 const encodeAddress = (address: Address.AddressType): string =>
   Hex.fromBytes(address);
 const defaultTo = encodeAddress(Address.zero());
+
+const makeBlobHash = (versionByte: number): Uint8Array => {
+  const hash = new Uint8Array(32);
+  hash[0] = versionByte;
+  return hash;
+};
 
 const makeLegacyTx = (gasPrice: bigint): Transaction.Legacy =>
   Schema.validateSync(LegacySchema)({
@@ -88,6 +102,58 @@ const makeEip1559Tx = (
     value: 0n,
     data: new Uint8Array(0),
     accessList: [],
+    yParity: 0,
+    r: new Uint8Array(32),
+    s: new Uint8Array(32),
+  });
+
+const makeEip4844Tx = (
+  maxFeePerGas: bigint,
+  maxPriorityFeePerGas: bigint,
+): Transaction.EIP4844 =>
+  Schema.validateSync(Eip4844Schema)({
+    type: Transaction.Type.EIP4844,
+    chainId: 1n,
+    nonce: 0n,
+    maxPriorityFeePerGas,
+    maxFeePerGas,
+    gasLimit: 21_000n,
+    to: defaultTo,
+    value: 0n,
+    data: new Uint8Array(0),
+    accessList: [],
+    maxFeePerBlobGas: 1n,
+    blobVersionedHashes: [makeBlobHash(1)],
+    yParity: 0,
+    r: new Uint8Array(32),
+    s: new Uint8Array(32),
+  });
+
+const makeEip7702Tx = (
+  maxFeePerGas: bigint,
+  maxPriorityFeePerGas: bigint,
+): Transaction.EIP7702 =>
+  Schema.validateSync(Eip7702Schema)({
+    type: Transaction.Type.EIP7702,
+    chainId: 1n,
+    nonce: 0n,
+    maxPriorityFeePerGas,
+    maxFeePerGas,
+    gasLimit: 21_000n,
+    to: defaultTo,
+    value: 0n,
+    data: new Uint8Array(0),
+    accessList: [],
+    authorizationList: [
+      {
+        chainId: 1n,
+        address: defaultTo,
+        nonce: 0n,
+        yParity: 0,
+        r: new Uint8Array(32),
+        s: new Uint8Array(32),
+      },
+    ],
     yParity: 0,
     r: new Uint8Array(32),
     s: new Uint8Array(32),
@@ -294,6 +360,57 @@ describe("TxPoolSorter.compareTransactionFeeMarketPriority", () => {
       const result = compareTransactionFeeMarketPriority(
         lowerMaxFee,
         higherMaxFee,
+        baseFee,
+        true,
+      );
+
+      assert.strictEqual(result, 1);
+    }),
+  );
+
+  it.effect("returns zero when max fee and effective price tie", () =>
+    Effect.sync(() => {
+      const baseFee = decodeBaseFeeWei(10n);
+      const cappedA = makeEip1559Tx(20n, 15n);
+      const cappedB = makeEip1559Tx(20n, 12n);
+
+      const result = compareTransactionFeeMarketPriority(
+        cappedA,
+        cappedB,
+        baseFee,
+        true,
+      );
+
+      assert.strictEqual(result, 0);
+    }),
+  );
+
+  it.effect("compares EIP-4844 transactions by effective fee", () =>
+    Effect.sync(() => {
+      const baseFee = decodeBaseFeeWei(10n);
+      const lowPriority = makeEip4844Tx(30n, 2n);
+      const highPriority = makeEip4844Tx(20n, 8n);
+
+      const result = compareTransactionFeeMarketPriority(
+        lowPriority,
+        highPriority,
+        baseFee,
+        true,
+      );
+
+      assert.strictEqual(result, 1);
+    }),
+  );
+
+  it.effect("compares EIP-7702 transactions by effective fee", () =>
+    Effect.sync(() => {
+      const baseFee = decodeBaseFeeWei(10n);
+      const lowPriority = makeEip7702Tx(20n, 1n);
+      const highPriority = makeEip7702Tx(20n, 5n);
+
+      const result = compareTransactionFeeMarketPriority(
+        lowPriority,
+        highPriority,
         baseFee,
         true,
       );
