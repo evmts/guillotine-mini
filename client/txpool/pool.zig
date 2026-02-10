@@ -114,6 +114,7 @@ pub const TxPool = struct {
     /// NOTE: This is an intentional extension beyond Nethermind's
     ///  surface to support lightweight per-sender introspection
     /// for admission (e.g., nonce-gap checks). For closer API parity,
+    /// NOTE: Extension beyond Nethermind ITxPool for per-sender count; prefer sender->tx retrieval for parity.
     /// prefer exposing a sender→pending-tx retrieval method from the
     /// concrete pool and thread it through this vtable in a future pass.
     pub fn get_pending_count_for_sender(self: TxPool, sender: Address) u32 {
