@@ -122,12 +122,13 @@ pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
     }
 
     const key = "\"method\"";
-    // Depth-aware, scope-correct search for "method" at the top-level only.
+    // Depth-aware, key-context search for top-level key named "method".
     var depth: u32 = 0;
     var in_string = false;
     var escaped = false;
+    var expecting_key = false; // only true inside the top-level object when next token is a key
     var idx_opt: ?usize = null;
-    var i_scan: usize = i_top; // start from first '{'
+    var i_scan: usize = i_top; // start from first non-ws char
     while (i_scan < request.len) : (i_scan += 1) {
         const c = request[i_scan];
         if (in_string) {
@@ -139,24 +140,35 @@ pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
                 escaped = true;
                 continue;
             }
-            if (c == '"') in_string = false;
+            if (c == '"') in_string = false; // end string
             continue;
         }
         switch (c) {
-            '"' => in_string = true,
-            '{' => depth += 1,
-            '}' => if (depth == 0) break else depth -= 1,
+            '"' => {
+                // Only treat as a potential key when at top-level object and expecting a key
+                if (depth == 1 and expecting_key) {
+                    const rem = request[i_scan..];
+                    if (rem.len >= key.len and std.mem.eql(u8, rem[0..key.len], key)) {
+                        idx_opt = i_scan;
+                        break;
+                    }
+                }
+                in_string = true;
+            },
+            '{' => {
+                depth += 1;
+                if (depth == 1) expecting_key = true; // entering top-level object
+            },
+            '}' => {
+                if (depth == 0) break else depth -= 1;
+                if (depth == 1) expecting_key = false; // leaving inner object
+            },
             '[' => depth += 1,
             ']' => if (depth == 0) break else depth -= 1,
+            ':' => if (depth == 1) expecting_key = false,
+            ',' => if (depth == 1) expecting_key = true,
+            ' ', '\\t', '\\n', '\\r' => {},
             else => {},
-        }
-        if (depth == 1 and c == '"') {
-            // Potential start of a key – check for "method"
-            const rem = request[i_scan..];
-            if (rem.len >= key.len and std.mem.eql(u8, rem[0..key.len], key)) {
-                idx_opt = i_scan;
-                break;
-            }
         }
     }
     if (idx_opt == null) return .{ .err = .invalid_request };
