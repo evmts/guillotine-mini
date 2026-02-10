@@ -7,6 +7,12 @@ type TestContext = {
   onTestFinished?: (handler: OnTestFinishedHandler) => void;
 };
 
+const safeOnTestFinished: OnTestFinished = (handler) => {
+  if (typeof onTestFinished === "function") {
+    return onTestFinished(handler);
+  }
+};
+
 const ensureOnTestFinished = (ctx: unknown) => {
   if (!ctx) {
     return;
@@ -18,7 +24,7 @@ const ensureOnTestFinished = (ctx: unknown) => {
   }
 
   Object.defineProperty(context, "onTestFinished", {
-    value: onTestFinished,
+    value: safeOnTestFinished,
     configurable: true,
     writable: true,
   });
@@ -27,7 +33,7 @@ const ensureOnTestFinished = (ctx: unknown) => {
 const prototypeContext = Object.prototype as TestContext;
 if (typeof prototypeContext.onTestFinished !== "function") {
   Object.defineProperty(Object.prototype, "onTestFinished", {
-    value: onTestFinished,
+    value: safeOnTestFinished,
     configurable: true,
     writable: true,
   });
