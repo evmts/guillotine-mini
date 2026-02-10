@@ -39,3 +39,4 @@
 - Mirror Nethermind flow: parse CLI, configure logging early, load plugins/config, resolve data/DB paths, build services (RPC/engine/sync), start runner, handle SIGTERM/ProcessExit for graceful shutdown.
 - Config precedence: CLI args -> env vars -> config file (Nethermind uses `configs/` and warns on legacy formats).
 - Support `--help`/`--version` without noisy logs; keep plugin loading and dynamic option registration aligned with Nethermind patterns.
+- Commit message policy for phase fixes: use only `🐛 fix`, `♻️ refactor`, `🧪 test`, or `⚡ perf` prefixes (no `✨ feat`).
