@@ -179,6 +179,10 @@ fn is_slice_of_byte_slices(comptime T: type) bool {
 // Tests
 // ============================================================================
 
+fn deinit_methods_payload(payload: anytype) void {
+    if (payload.array) |*array| array.deinit();
+}
+
 fn make_methods_payload(comptime MethodsType: type, allocator: std.mem.Allocator, methods: []const []const u8) !struct {
     array: ?std.json.Array,
     value: MethodsType,
@@ -262,12 +266,12 @@ test "engine api dispatches capabilities exchange" {
         "engine_newPayloadV1",
         "engine_forkchoiceUpdatedV1",
     });
-    defer if (consensus_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&consensus_payload);
 
     var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
-    defer if (result_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&result_payload);
 
     const params = ExchangeCapabilitiesParams{
         .consensus_client_methods = consensus_payload.value,
@@ -290,12 +294,12 @@ test "engine api rejects unversioned consensus capabilities" {
     var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
         "engine_newPayload",
     });
-    defer if (consensus_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&consensus_payload);
 
     var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
-    defer if (result_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&result_payload);
 
     const params = ExchangeCapabilitiesParams{
         .consensus_client_methods = consensus_payload.value,
@@ -317,12 +321,12 @@ test "engine api rejects non-engine consensus capabilities" {
     var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
         "eth_getBlockByNumberV1",
     });
-    defer if (consensus_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&consensus_payload);
 
     var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
-    defer if (result_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&result_payload);
 
     const params = ExchangeCapabilitiesParams{
         .consensus_client_methods = consensus_payload.value,
@@ -344,12 +348,12 @@ test "engine api rejects unknown engine consensus capabilities" {
     var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
         "engine_fooV1",
     });
-    defer if (consensus_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&consensus_payload);
 
     var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
-    defer if (result_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&result_payload);
 
     const params = ExchangeCapabilitiesParams{
         .consensus_client_methods = consensus_payload.value,
@@ -370,7 +374,7 @@ test "engine api rejects non-array consensus capabilities payload" {
     var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
-    defer if (result_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&result_payload);
 
     const params = ExchangeCapabilitiesParams{
         .consensus_client_methods = jsonrpc.types.Quantity{ .value = .{ .string = "engine_newPayloadV1" } },
@@ -398,7 +402,7 @@ test "engine api rejects non-string consensus capabilities entries" {
     var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
-    defer if (result_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&result_payload);
 
     var dummy = DummyEngine{ .result = .{ .value = result_payload.value } };
     const api = make_api(&dummy);
@@ -413,12 +417,12 @@ test "engine api rejects response containing exchangeCapabilities" {
     var consensus_payload = try make_methods_payload(ConsensusType, allocator, &[_][]const u8{
         "engine_newPayloadV1",
     });
-    defer if (consensus_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&consensus_payload);
 
     var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
         "engine_exchangeCapabilities",
     });
-    defer if (result_payload.array) |*array| array.deinit();
+    defer deinit_methods_payload(&result_payload);
 
     const params = ExchangeCapabilitiesParams{
         .consensus_client_methods = consensus_payload.value,
