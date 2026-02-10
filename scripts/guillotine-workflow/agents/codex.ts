@@ -6,7 +6,7 @@ import { getInstructions } from "./claude";
 import type { Target } from "../targets";
 import { ZIG_TARGET } from "../targets";
 
-const CODEX_MODEL = process.env.CODEX_MODEL ?? "gpt-5.2-codex";
+const CODEX_MODEL = process.env.CODEX_MODEL ?? "gpt-5.3-codex";
 const USE_CLI = process.env.USE_CLI_AGENTS !== "0" && process.env.USE_CLI_AGENTS !== "false";
 const REPO_ROOT = new URL("../../..", import.meta.url).pathname.replace(/\/$/, "");
 
@@ -48,7 +48,7 @@ export function makeCodex(target: Target) {
     systemPrompt: instructions,
     yolo: true,
     cwd: REPO_ROOT,
-    config: { model_reasoning_effort: "xhigh" },
+    config: { model_reasoning_effort: "high" },
   });
 
   return USE_CLI ? cliAgent : apiAgent;

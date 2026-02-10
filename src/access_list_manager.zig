@@ -95,6 +95,11 @@ pub const AccessListManager = struct {
         }
     }
 
+    /// Compatibility wrapper for camelCase API expected by spec runner
+    /// Delegates to snake_case implementation to avoid duplicate logic
+    pub fn preWarmFromAccessList(self: *AccessListManager, access_list: AccessList) !void {
+        return self.pre_warm_from_access_list(access_list);
+    }
     /// Check if address is warm
     pub fn is_address_warm(self: *const AccessListManager, addr: Address) bool {
         return self.warm_addresses.contains(addr);

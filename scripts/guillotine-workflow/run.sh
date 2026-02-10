@@ -19,6 +19,11 @@ unset ANTHROPIC_API_KEY
 # Show engine errors instead of swallowing them
 export SMITHERS_DEBUG=1
 
+# Skip phases that are already implemented
+# Comma-separated list of phase IDs from phases.ts
+# Override with SKIP_PHASES="" to run all phases
+export SKIP_PHASES="${SKIP_PHASES:-phase-0-db,phase-1-trie,phase-2-world-state,phase-3-evm-state,phase-10-runner}"
+
 # Target-specific DB isolation
 export WORKFLOW_TARGET="$TARGET"
 

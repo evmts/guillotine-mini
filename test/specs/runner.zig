@@ -357,7 +357,8 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
             .opName = try allocator.dupe(u8, obj.get("opName").?.string),
         };
 
-        try ref_tracer.entries.append(entry);
+        // Zig 0.15 ArrayList API requires an allocator parameter for append
+        try ref_tracer.entries.append(allocator, entry);
     }
 
     // Compare traces and print diff

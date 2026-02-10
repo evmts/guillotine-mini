@@ -1,0 +1,15 @@
+{"type":"RunStarted","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","timestampMs":1770434698416}
+{"type":"FrameCommitted","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","frameNo":1,"xmlHash":"aa234c447602d496ffef479a676ba30cd44c723bc08f79134c28f21a75539ca6","timestampMs":1770434698445}
+{"type":"NodeStarted","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","nodeId":"phase-0-db:context","iteration":0,"attempt":1,"timestampMs":1770434698507}
+{"type":"NodeFinished","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","nodeId":"phase-0-db:context","iteration":0,"attempt":1,"timestampMs":1770434941145}
+{"type":"FrameCommitted","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","frameNo":2,"xmlHash":"aa234c447602d496ffef479a676ba30cd44c723bc08f79134c28f21a75539ca6","timestampMs":1770434941161}
+{"type":"NodeStarted","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","nodeId":"phase-0-db:implement","iteration":0,"attempt":1,"timestampMs":1770434941219}
+{"type":"NodeFinished","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","nodeId":"phase-0-db:implement","iteration":0,"attempt":1,"timestampMs":1770435151067}
+{"type":"FrameCommitted","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","frameNo":3,"xmlHash":"08cc1ad295581e561cce21ba32a01c7b4aded3dfc04e694e34e7a5f4f4222b05","timestampMs":1770435151103}
+{"type":"NodeStarted","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","nodeId":"phase-0-db:test","iteration":0,"attempt":1,"timestampMs":1770435151163}
+{"type":"NodeFinished","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","nodeId":"phase-0-db:test","iteration":0,"attempt":1,"timestampMs":1770435341369}
+{"type":"FrameCommitted","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","frameNo":4,"xmlHash":"be493e68733f415fdf991350dcc06b3307954646fc65cdc68ff38eb4e5d6303c","timestampMs":1770435341477}
+{"type":"NodeStarted","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","nodeId":"phase-0-db:review","iteration":0,"attempt":1,"timestampMs":1770435341956}
+{"type":"NodeFailed","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","nodeId":"phase-0-db:review","iteration":0,"attempt":1,"error":{"name":"Error","message":"error: the argument '--full-auto' cannot be used with '--dangerously-bypass-approvals-and-sandbox'\n\nUsage: codex exec --model <MODEL> --full-auto --output-last-message <FILE> <PROMPT>\n\nFor more information, try '--help'.","stack":"Error: error: the argument '--full-auto' cannot be used with '--dangerously-bypass-approvals-and-sandbox'\n\nUsage: codex exec --model <MODEL> --full-auto --output-last-message <FILE> <PROMPT>\n\nFor more information, try '--help'.\n    at generate (/Users/williamcory/guillotine-mini/smithers/src/agents/cli.ts:519:17)\n    at processTicksAndRejections (native:7:39)"},"timestampMs":1770435342047}
+{"type":"FrameCommitted","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","frameNo":5,"xmlHash":"be493e68733f415fdf991350dcc06b3307954646fc65cdc68ff38eb4e5d6303c","timestampMs":1770435342120}
+{"type":"RunFailed","runId":"0c80f62e-1dcc-42c6-b661-bae5d0e0e246","error":"Task failed","timestampMs":1770435342575}
