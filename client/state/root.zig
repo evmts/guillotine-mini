@@ -91,10 +91,6 @@ pub const has_code_or_nonce_or_storage = account.has_code_or_nonce_or_storage;
 /// Check whether an account exists and is not empty.
 pub const is_account_alive = account.is_account_alive;
 
-// State utilities
-/// Tracks accounts created during the current transaction.
-pub const CreatedAccounts = state.CreatedAccounts;
-
 test {
     // Ensure all sub-modules compile and their tests run.
     @import("std").testing.refAllDecls(@This());
