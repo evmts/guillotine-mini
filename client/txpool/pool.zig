@@ -71,7 +71,8 @@ pub const TxPoolConfig = struct {
     /// Require max fee per blob gas to meet current blob base fee.
     current_blob_base_fee_required: bool = true,
     /// Minimum priority fee required for blob transactions.
-    min_blob_tx_priority_fee: U256 = U256.ZERO,
+    /// Minimum priority fee required for blob transactions (semantic type).
+    min_blob_tx_priority_fee: primitives.MaxPriorityFeePerGas = primitives.MaxPriorityFeePerGas.from(0),
 };
 
 /// Transaction pool interface (minimal vtable surface).
@@ -186,5 +187,5 @@ test "txpool config defaults match nethermind" {
     try std.testing.expect(!config.accept_tx_when_not_synced);
     try std.testing.expect(config.persistent_broadcast_enabled);
     try std.testing.expect(config.current_blob_base_fee_required);
-    try std.testing.expect(config.min_blob_tx_priority_fee.eq(U256.ZERO));
+    try std.testing.expect(config.min_blob_tx_priority_fee.isZero());
 }

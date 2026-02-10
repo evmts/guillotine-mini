@@ -293,10 +293,11 @@ pub fn enforce_min_priority_fee_for_blobs(
     if (comptime T != tx_mod.Eip4844Transaction) return;
 
     // Check min priority fee for blob txs (if configured > 0)
-    if (!cfg.min_blob_tx_priority_fee.eq(U256.ZERO)) {
-        // Convert native u256 tip into Voltaire U256 for comparison.
+    if (!cfg.min_blob_tx_priority_fee.isZero()) {
+        // Compare in wei space using primitives types.
         const tx_tip_wei: U256 = U256.from_u256(tx.max_priority_fee_per_gas);
-        if (tx_tip_wei.cmp(cfg.min_blob_tx_priority_fee) == .lt) {
+        const min_tip_wei: U256 = cfg.min_blob_tx_priority_fee.toWei();
+        if (tx_tip_wei.cmp(min_tip_wei) == .lt) {
             return error.BlobPriorityFeeTooLow;
         }
     }
@@ -895,8 +896,7 @@ test "enforce_min_priority_fee_for_blobs — min priority tip enforced for blob 
     var cfg = TxPoolConfig{};
     cfg.current_blob_base_fee_required = false; // isolate priority fee check
     const MaxPriorityFeePerGas = primitives.MaxPriorityFeePerGas;
-    cfg.min_blob_tx_priority_fee = MaxPriorityFeePerGas.from(3).toWei();
-
+    cfg.min_blob_tx_priority_fee = MaxPriorityFeePerGas.from(3);
     const tx_low = tx_mod.Eip4844Transaction{
         .chain_id = 1,
         .nonce = 0,
@@ -969,7 +969,7 @@ inline fn rlpLenOfUInt(x: anytype) usize {
     if (x == 0) return 1; // encoded as empty string (0x80)
     // Determine minimal byte length via bit-length to avoid shifts on small ints.
     const bits: usize = @bitSizeOf(T);
-    const used_bits: usize = bits - @clz(T, x);
+    const used_bits: usize = bits - @clz(x);
     const bytes: usize = (used_bits + 7) / 8;
     if (bytes == 1 and (x & 0x7f) == x) return 1; // single byte < 0x80
     return 1 + bytes; // short string form
