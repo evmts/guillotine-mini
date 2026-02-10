@@ -132,17 +132,22 @@ const makeBlockHeaderStore = Effect.gen(function* () {
   } satisfies BlockHeaderStoreService;
 });
 
+const BlockHeaderStoreMemoryLayer: Layer.Layer<
+  BlockHeaderStore,
+  BlockHeaderStoreError
+> = Layer.scoped(BlockHeaderStore, makeBlockHeaderStore);
+
 /** In-memory production block header store layer. */
 export const BlockHeaderStoreMemoryLive: Layer.Layer<
   BlockHeaderStore,
   BlockHeaderStoreError
-> = Layer.scoped(BlockHeaderStore, makeBlockHeaderStore);
+> = BlockHeaderStoreMemoryLayer;
 
 /** In-memory deterministic block header store layer for tests. */
 export const BlockHeaderStoreMemoryTest: Layer.Layer<
   BlockHeaderStore,
   BlockHeaderStoreError
-> = Layer.scoped(BlockHeaderStore, makeBlockHeaderStore);
+> = BlockHeaderStoreMemoryLayer;
 
 const withBlockHeaderStore = <A, E, R>(
   f: (service: BlockHeaderStoreService) => Effect.Effect<A, E, R>,
