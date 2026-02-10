@@ -1,122 +1,88 @@
 # [Pass 1/5] Phase 4: Block Chain Management - Context
 
-## Goal (from prd/GUILLOTINE_CLIENT_PLAN.md)
-Manage the block chain structure and validation.
-Planned modules:
-- client/blockchain/chain.zig (chain management)
-- client/blockchain/validator.zig (block validation)
+## Phase Goal (from `prd/GUILLOTINE_CLIENT_PLAN.md`)
+Manage block chain structure and validation.
 
-Reference files:
-- nethermind/src/Nethermind/Nethermind.Blockchain/
-- /Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/
+Planned components:
+- `client/blockchain/chain.zig` - chain management
+- `client/blockchain/validator.zig` - block validation
 
-Test fixtures:
-- ethereum-tests/BlockchainTests/
+Primary structural references:
+- `nethermind/src/Nethermind/Nethermind.Blockchain/`
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/`
 
-## Spec References (from prd/ETHEREUM_SPECS_REFERENCE.md)
-Specs:
-- execution-specs/src/ethereum/forks/*/fork.py (block validation)
-- yellowpaper/Paper.tex Section 11 (Block Finalization)
+Primary fixture set:
+- `ethereum-tests/BlockchainTests/`
 
-Tests:
-- ethereum-tests/BlockchainTests/
-- execution-spec-tests/fixtures/blockchain_tests/
+## Spec References (from `prd/ETHEREUM_SPECS_REFERENCE.md`)
+Authoritative execution-layer references for this phase:
+- `execution-specs/src/ethereum/forks/*/fork.py` - block validation + state transition
+- `execution-specs/src/ethereum/forks/prague/fork.py` - current fork reference with `state_transition`, `validate_header`, `apply_body`, `check_transaction`, `check_gas_limit`
+- `execution-specs/src/ethereum/forks/cancun/fork.py` - prior fork reference for same validation flow
 
-## Nethermind.Db listing (nethermind/src/Nethermind/Nethermind.Db/)
-Key files:
-- BlobTxsColumns.cs
-- CompressingDb.cs
-- DbExtensions.cs
-- DbNames.cs
-- DbProvider.cs
-- DbProviderExtensions.cs
-- FullPruning/
-- FullPruningCompletionBehavior.cs
-- FullPruningTrigger.cs
-- IColumnsDb.cs
-- IDb.cs
-- IDbFactory.cs
-- IDbProvider.cs
-- IFullDb.cs
-- IMergeOperator.cs
-- IPruningConfig.cs
-- IReadOnlyDb.cs
-- IReadOnlyDbProvider.cs
-- ITunableDb.cs
-- InMemoryColumnBatch.cs
-- InMemoryWriteBatch.cs
-- MemColumnsDb.cs
-- MemDb.cs
-- MemDbFactory.cs
-- MetadataDbKeys.cs
-- Metrics.cs
-- NullDb.cs
-- NullRocksDbFactory.cs
-- PruningConfig.cs
-- PruningMode.cs
-- ReadOnlyColumnsDb.cs
-- ReadOnlyDb.cs
-- ReadOnlyDbProvider.cs
-- ReceiptsColumns.cs
-- RocksDbMergeEnumerator.cs
-- RocksDbSettings.cs
-- SimpleFilePublicKeyDb.cs
+Execution-spec tests / fixtures:
+- `execution-spec-tests/fixtures/blockchain_tests` (symlink in this workspace)
 
-## Voltaire Zig APIs
-Requested path: /Users/williamcory/voltaire/packages/voltaire-zig/src/ (not found in this environment).
-Fallback listing from /Users/williamcory/voltaire/src/:
-- blockchain/
-- crypto/
-- evm/
-- jsonrpc/
-- primitives/
-- state-manager/
-- root.zig
-- c_api.zig
-- log.zig
+Yellow Paper note:
+- `yellowpaper/` exists in repo but no local paper file is present in this checkout, so Section 11 could not be inspected directly here.
 
-Blockchain module contents from /Users/williamcory/voltaire/src/blockchain/:
-- BlockStore.zig
-- Blockchain.zig
-- ForkBlockCache.zig
-- c_api.zig
-- root.zig
-- Blockchain/index.ts
+## Nethermind DB Reference Snapshot
+Listed directory:
+- `nethermind/src/Nethermind/Nethermind.Db/`
 
-## Existing Zig Host Interface (src/host.zig)
-HostInterface provides a vtable for external state access:
-- getBalance, setBalance
-- getCode, setCode
-- getStorage, setStorage
-- getNonce, setNonce
-Notes:
-- Uses primitives.Address.Address and u256
-- Not used for nested calls (EVM handles inner calls directly)
+Key files/modules to mirror DB boundaries when implementing chain persistence:
+- Core DB contracts: `IDb.cs`, `IDbProvider.cs`, `IReadOnlyDb.cs`, `IFullDb.cs`, `IColumnsDb.cs`, `ITunableDb.cs`
+- Provider + naming: `DbProvider.cs`, `DbProviderExtensions.cs`, `DbNames.cs`, `MetadataDbKeys.cs`
+- Backend adapters: `MemDb.cs`, `MemDbFactory.cs`, `MemColumnsDb.cs`, `NullDb.cs`, `NullRocksDbFactory.cs`, `RocksDbSettings.cs`
+- Read-only wrappers: `ReadOnlyDb.cs`, `ReadOnlyDbProvider.cs`, `ReadOnlyColumnsDb.cs`
+- Pruning: `IPruningConfig.cs`, `PruningConfig.cs`, `PruningMode.cs`, `FullPruning/FullPruningDb.cs`, `FullPruning/FullPruningInnerDbFactory.cs`
+- Column families / specialized storage: `ReceiptsColumns.cs`, `BlobTxsColumns.cs`, `Blooms/BloomStorage.cs`
+- Misc infrastructure: `CompressingDb.cs`, `RocksDbMergeEnumerator.cs`, `Metrics.cs`
 
-## ethereum-tests directory listing
-Top-level directories and fixtures:
-- ABITests
-- BasicTests
-- BlockchainTests
-- DifficultyTests
-- EOFTests
-- GenesisTests
-- JSONSchema
-- KeyStoreTests
-- LegacyTests
-- PoWTests
-- RLPTests
-- TransactionTests
-- TrieTests
-- fixtures_blockchain_tests.tgz
-- fixtures_general_state_tests.tgz
+## Voltaire Zig APIs (`/Users/williamcory/voltaire/packages/voltaire-zig/src/`)
+Top-level modules observed:
+- `blockchain/`, `crypto/`, `evm/`, `jsonrpc/`, `precompiles/`, `primitives/`, `state-manager/`, `root.zig`, `c_api.zig`, `log.zig`
 
-## Paths read in this pass
-- prd/GUILLOTINE_CLIENT_PLAN.md
-- prd/ETHEREUM_SPECS_REFERENCE.md
-- nethermind/src/Nethermind/Nethermind.Db/
-- /Users/williamcory/voltaire/packages/voltaire-zig/src/ (missing)
-- /Users/williamcory/voltaire/src/
-- /Users/williamcory/voltaire/src/blockchain/
-- src/host.zig
-- ethereum-tests/
+Blockchain module files:
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/root.zig`
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/Blockchain.zig`
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/BlockStore.zig`
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/ForkBlockCache.zig`
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/c_api.zig`
+
+Relevant exported APIs to mirror at the Effect layer:
+- `blockchain.root`: `BlockStore`, `ForkBlockCache`, `Blockchain`
+- `BlockStore`: `init`, `deinit`, `getBlock`, `getBlockByNumber`, `getCanonicalHash`, `hasBlock`, `isOrphan`, `putBlock`, `setCanonicalHead`, `getHeadBlockNumber`, `blockCount`, `orphanCount`, `canonicalChainLength`
+- `Blockchain`: `init`, `deinit`, `getBlockByHash`, `getBlockByNumber`, `getCanonicalHash`, `hasBlock`, `getHeadBlockNumber`, `putBlock`, `setCanonicalHead`, `localBlockCount`, `orphanCount`, `canonicalChainLength`, `isForkBlock`
+- `ForkBlockCache`: `init`, `deinit`, `isForkBlock`, `getBlockByNumber`, `getBlockByHash`, `peekNextRequest`, `nextRequest`, `continueRequest`, `cacheSize`, `isCached`
+
+## Existing Zig Host Interface (`src/host.zig`)
+Observed host contract used by EVM-facing state access:
+- `HostInterface` vtable methods:
+  - `getBalance` / `setBalance`
+  - `getCode` / `setCode`
+  - `getStorage` / `setStorage`
+  - `getNonce` / `setNonce`
+
+Important behavior note in file:
+- Nested calls are handled directly by `EVM.inner_call`; this host interface is a minimal external-state adapter.
+
+## Ethereum Test Fixture Paths
+Top-level test directories (`ethereum-tests/`):
+- `ABITests`, `BasicTests`, `BlockchainTests`, `DifficultyTests`, `EOFTests`, `GenesisTests`, `KeyStoreTests`, `LegacyTests`, `PoWTests`, `RLPTests`, `TransactionTests`, `TrieTests`
+
+Phase-4 relevant blockchain fixture paths:
+- `ethereum-tests/BlockchainTests/ValidBlocks/`
+- `ethereum-tests/BlockchainTests/InvalidBlocks/`
+- `ethereum-tests/BlockchainTests/ValidBlocks/bcEIP1559/`
+- `ethereum-tests/BlockchainTests/ValidBlocks/bcEIP3675/`
+- `ethereum-tests/BlockchainTests/ValidBlocks/bcEIP4844-blobtransactions/`
+- `ethereum-tests/BlockchainTests/InvalidBlocks/bcInvalidHeaderTest/`
+- `ethereum-tests/BlockchainTests/InvalidBlocks/bcEIP1559/`
+- `ethereum-tests/BlockchainTests/InvalidBlocks/bcEIP3675/`
+
+Execution-spec fixture linkage in this checkout:
+- `execution-spec-tests/fixtures/blockchain_tests -> /Users/williamcory/guillotine-mini/ethereum-tests/BlockchainTests`
+
+## Summary
+This pass captured the exact Phase-4 goal, authoritative execution-spec entry points for block validation, Nethermind DB contracts to mirror storage module boundaries, concrete Voltaire blockchain APIs to wrap/reimplement in Effect, host interface constraints from `src/host.zig`, and the local blockchain test fixture paths available for validation.
