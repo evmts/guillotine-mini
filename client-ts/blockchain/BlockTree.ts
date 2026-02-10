@@ -1,7 +1,6 @@
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
-import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -28,6 +27,7 @@ type BlockTreeState = {
   readonly canonicalChain: Map<BlockNumberKey, BlockHashType>;
   readonly orphans: Set<BlockHashKey>;
   readonly orphansByParent: Map<BlockHashKey, Set<BlockHashKey>>;
+  headNumber: Option.Option<BlockNumberType>;
 };
 
 const BlockHashSchema = BlockHash.Bytes as unknown as Schema.Schema<
@@ -137,6 +137,7 @@ const makeBlockTree = Effect.gen(function* () {
           canonicalChain: new Map<BlockNumberKey, BlockHashType>(),
           orphans: new Set<BlockHashKey>(),
           orphansByParent: new Map<BlockHashKey, Set<BlockHashKey>>(),
+          headNumber: Option.none() as Option.Option<BlockNumberType>,
         }) satisfies BlockTreeState,
     ),
     (tree) =>
@@ -144,6 +145,7 @@ const makeBlockTree = Effect.gen(function* () {
         tree.canonicalChain.clear();
         tree.orphans.clear();
         tree.orphansByParent.clear();
+        tree.headNumber = Option.none();
       }),
   );
 
@@ -280,23 +282,12 @@ const makeBlockTree = Effect.gen(function* () {
       for (const entry of entries) {
         state.canonicalChain.set(entry.numberKey, entry.hash);
       }
-    });
-
-  const getHeadBlockNumber = () =>
-    Effect.sync(() => {
-      let max: BlockNumberKey | null = null;
-
-      for (const number of state.canonicalChain.keys()) {
-        if (max === null || number > max) {
-          max = number;
-        }
-      }
-
-      return pipe(
-        Option.fromNullable(max),
-        Option.map((value) => value as BlockNumberType),
+      state.headNumber = Option.some(
+        Option.getOrThrow(headBlock).header.number,
       );
     });
+
+  const getHeadBlockNumber = () => Effect.sync(() => state.headNumber);
 
   const blockCount = () => store.blockCount();
 
