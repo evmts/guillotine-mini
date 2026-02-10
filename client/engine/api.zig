@@ -8,6 +8,8 @@ const primitives = @import("primitives");
 
 const ExchangeCapabilitiesMethod = @FieldType(jsonrpc.engine.EngineMethod, "engine_exchangeCapabilities");
 const ClientVersionV1Method = @FieldType(jsonrpc.engine.EngineMethod, "engine_getClientVersionV1");
+const ExchangeTransitionConfigurationV1Method =
+    @FieldType(jsonrpc.engine.EngineMethod, "engine_exchangeTransitionConfigurationV1");
 /// Parameters for `engine_exchangeCapabilities` requests.
 pub const ExchangeCapabilitiesParams = @FieldType(ExchangeCapabilitiesMethod, "params");
 /// Result payload for `engine_exchangeCapabilities` responses.
@@ -17,6 +19,11 @@ pub const ClientVersionV1Params = @FieldType(ClientVersionV1Method, "params");
 /// Result payload for `engine_getClientVersionV1` responses.
 pub const ClientVersionV1Result = @FieldType(ClientVersionV1Method, "result");
 const ClientVersionV1 = @FieldType(ClientVersionV1Params, "consensus_client");
+
+/// Parameters for `engine_exchangeTransitionConfigurationV1` requests.
+pub const ExchangeTransitionConfigurationV1Params = @FieldType(ExchangeTransitionConfigurationV1Method, "params");
+/// Result payload for `engine_exchangeTransitionConfigurationV1` responses.
+pub const ExchangeTransitionConfigurationV1Result = @FieldType(ExchangeTransitionConfigurationV1Method, "result");
 
 const exchange_capabilities_method = "engine_exchangeCapabilities";
 const get_client_version_v1_method = "engine_getClientVersionV1";
@@ -102,6 +109,11 @@ pub const EngineApi = struct {
             ptr: *anyopaque,
             params: ClientVersionV1Params,
         ) Error!ClientVersionV1Result,
+        /// Exchange transition configuration for Paris (EIP-3675).
+        exchange_transition_configuration_v1: *const fn (
+            ptr: *anyopaque,
+            params: ExchangeTransitionConfigurationV1Params,
+        ) Error!ExchangeTransitionConfigurationV1Result,
     };
 
     /// Exchange list of supported Engine API methods.
@@ -127,6 +139,18 @@ pub const EngineApi = struct {
         return result;
     }
 
+    /// Exchanges transition configuration with the consensus client.
+    /// Validates JSON shapes per execution-apis Paris spec (TransitionConfigurationV1).
+    pub fn exchange_transition_configuration_v1(
+        self: EngineApi,
+        params: ExchangeTransitionConfigurationV1Params,
+    ) Error!ExchangeTransitionConfigurationV1Result {
+        try validate_transition_configuration_params(params, Error.InvalidParams);
+        const result = try self.vtable.exchange_transition_configuration_v1(self.ptr, params);
+        try validate_transition_configuration_result(result, Error.InternalError);
+        return result;
+    }
+
     /// Generic dispatcher for EngineMethod calls using Voltaire's EngineMethod schema.
     ///
     /// Only `engine_exchangeCapabilities` and `engine_getClientVersionV1` are
@@ -143,6 +167,8 @@ pub const EngineApi = struct {
             return self.exchange_capabilities(params);
         } else if (comptime Method == ClientVersionV1Method) {
             return self.get_client_version_v1(params);
+        } else if (comptime Method == ExchangeTransitionConfigurationV1Method) {
+            return self.exchange_transition_configuration_v1(params);
         } else {
             return Error.MethodNotFound;
         }
@@ -203,6 +229,56 @@ fn validate_client_version_v1_result(result: ClientVersionV1Result, comptime inv
 fn validate_client_version_v1(client: ClientVersionV1, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
     if (client.code.len != 2) return invalid_err;
     _ = primitives.Hex.assertSize(client.commit, 4) catch return invalid_err;
+}
+
+fn validate_transition_configuration_params(
+    params: ExchangeTransitionConfigurationV1Params,
+    comptime invalid_err: EngineApi.Error,
+) EngineApi.Error!void {
+    // Voltaire JSON-RPC typing wraps dynamic values in Quantity.value: std.json.Value
+    return validate_transition_configuration_json(params.consensus_client_configuration.value, invalid_err);
+}
+
+fn validate_transition_configuration_result(
+    result: ExchangeTransitionConfigurationV1Result,
+    comptime invalid_err: EngineApi.Error,
+) EngineApi.Error!void {
+    return validate_transition_configuration_json(result.value.value, invalid_err);
+}
+
+fn validate_transition_configuration_json(value: std.json.Value, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+    // TransitionConfigurationV1 object with fields:
+    // - terminalTotalDifficulty: QUANTITY (u256)
+    // - terminalBlockHash: DATA (32 bytes)
+    // - terminalBlockNumber: QUANTITY (u64)
+    if (value != .object) return invalid_err;
+
+    const obj = value.object;
+
+    const ttd_val = obj.get("terminalTotalDifficulty") orelse return invalid_err;
+    const tbh_val = obj.get("terminalBlockHash") orelse return invalid_err;
+    const tbn_val = obj.get("terminalBlockNumber") orelse return invalid_err;
+
+    // Validate terminalTotalDifficulty as QUANTITY (hex) parsable to u256
+    switch (ttd_val) {
+        .string => |s| _ = primitives.Hex.hexToU256(s) catch return invalid_err,
+        else => return invalid_err,
+    }
+
+    // Validate terminalBlockHash is 32-byte DATA hex string
+    switch (tbh_val) {
+        .string => |s| _ = primitives.Hex.assertSize(s, 32) catch return invalid_err,
+        else => return invalid_err,
+    }
+
+    // Validate terminalBlockNumber fits in 64-bit QUANTITY
+    switch (tbn_val) {
+        .string => |s| {
+            const v: u256 = primitives.Hex.hexToU256(s) catch return invalid_err;
+            if (v > std.math.maxInt(u64)) return invalid_err;
+        },
+        else => return invalid_err,
+    }
 }
 
 fn is_versioned_method(method: []const u8) bool {
@@ -293,8 +369,10 @@ const DummyEngine = struct {
     const Self = @This();
     result: ExchangeCapabilitiesResult,
     client_version_result: ClientVersionV1Result = ClientVersionV1Result{ .value = &[_]ClientVersionV1{dummy_client_version} },
+    transition_result: ExchangeTransitionConfigurationV1Result = .{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } },
     called: bool = false,
     client_version_called: bool = false,
+    transition_called: bool = false,
 
     fn exchange_capabilities(
         ptr: *anyopaque,
@@ -315,11 +393,22 @@ const DummyEngine = struct {
         self.client_version_called = true;
         return self.client_version_result;
     }
+
+    fn exchange_transition_configuration_v1(
+        ptr: *anyopaque,
+        params: ExchangeTransitionConfigurationV1Params,
+    ) EngineApi.Error!ExchangeTransitionConfigurationV1Result {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        _ = params;
+        self.transition_called = true;
+        return self.transition_result;
+    }
 };
 
 const dummy_vtable = EngineApi.VTable{
     .exchange_capabilities = DummyEngine.exchange_capabilities,
     .get_client_version_v1 = DummyEngine.get_client_version_v1,
+    .exchange_transition_configuration_v1 = DummyEngine.exchange_transition_configuration_v1,
 };
 
 fn make_api(dummy: *DummyEngine) EngineApi {
@@ -527,6 +616,103 @@ test "engine api dispatches client version exchange" {
     const result = try api.get_client_version_v1(params);
     try std.testing.expect(dummy.client_version_called);
     try std.testing.expectEqualDeep(result_value, result);
+}
+
+fn make_transition_config_object(
+    allocator: std.mem.Allocator,
+    ttd_hex: []const u8,
+    hash_hex: []const u8,
+    number_hex: []const u8,
+) !std.json.ObjectMap {
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("terminalTotalDifficulty", .{ .string = ttd_hex });
+    try obj.put("terminalBlockHash", .{ .string = hash_hex });
+    try obj.put("terminalBlockNumber", .{ .string = number_hex });
+    return obj;
+}
+
+test "engine api dispatches exchangeTransitionConfigurationV1" {
+    const allocator = std.testing.allocator;
+    var obj = try make_transition_config_object(
+        allocator,
+        "0x0",
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "0x1",
+    );
+    defer obj.deinit();
+
+    const params = ExchangeTransitionConfigurationV1Params{
+        .consensus_client_configuration = jsonrpc.types.Quantity{ .value = .{ .object = obj } },
+    };
+    var ret_obj = try make_transition_config_object(
+        allocator,
+        "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc00",
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "0x0",
+    );
+    defer ret_obj.deinit();
+    const result_value = ExchangeTransitionConfigurationV1Result{
+        .value = jsonrpc.types.Quantity{ .value = .{ .object = ret_obj } },
+    };
+
+    const exchange_result = ExchangeCapabilitiesResult{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } };
+    var dummy = DummyEngine{ .result = exchange_result, .transition_result = result_value };
+    const api = make_api(&dummy);
+
+    const out = try api.exchange_transition_configuration_v1(params);
+    try std.testing.expect(dummy.transition_called);
+    try std.testing.expectEqualDeep(result_value, out);
+}
+
+test "engine api rejects invalid transition config params" {
+    const allocator = std.testing.allocator;
+    // Missing terminalBlockHash
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("terminalTotalDifficulty", .{ .string = "0x0" });
+    try obj.put("terminalBlockNumber", .{ .string = "0x1" });
+    defer obj.deinit();
+
+    const params = ExchangeTransitionConfigurationV1Params{
+        .consensus_client_configuration = jsonrpc.types.Quantity{ .value = .{ .object = obj } },
+    };
+
+    const exchange_result = ExchangeCapabilitiesResult{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } };
+    var dummy = DummyEngine{ .result = exchange_result };
+    const api = make_api(&dummy);
+
+    try std.testing.expectError(EngineApi.Error.InvalidParams, api.exchange_transition_configuration_v1(params));
+    try std.testing.expect(!dummy.transition_called);
+}
+
+test "engine api rejects invalid transition config response" {
+    const allocator = std.testing.allocator;
+    var good_obj = try make_transition_config_object(
+        allocator,
+        "0x1",
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "0x2",
+    );
+    defer good_obj.deinit();
+    const params = ExchangeTransitionConfigurationV1Params{
+        .consensus_client_configuration = jsonrpc.types.Quantity{ .value = .{ .object = good_obj } },
+    };
+
+    // Invalid response: terminalBlockNumber not a string hex
+    var bad_obj = std.json.ObjectMap.init(allocator);
+    try bad_obj.put("terminalTotalDifficulty", .{ .string = "0x1" });
+    try bad_obj.put("terminalBlockHash", .{ .string = "0x0000000000000000000000000000000000000000000000000000000000000000" });
+    try bad_obj.put("terminalBlockNumber", .{ .float = 3.14 });
+    defer bad_obj.deinit();
+    const bad_result = ExchangeTransitionConfigurationV1Result{
+        .value = jsonrpc.types.Quantity{ .value = .{ .object = bad_obj } },
+    };
+
+    const exchange_result = ExchangeCapabilitiesResult{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } };
+    var dummy = DummyEngine{ .result = exchange_result, .transition_result = bad_result };
+    const api = make_api(&dummy);
+
+    try std.testing.expectError(EngineApi.Error.InternalError, api.exchange_transition_configuration_v1(params));
+    try std.testing.expect(dummy.transition_called);
 }
 
 test "engine api generic dispatcher routes exchangeCapabilities" {
