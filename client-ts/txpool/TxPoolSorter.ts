@@ -1,3 +1,4 @@
+import * as Data from "effect/Data";
 import {
   BaseFeePerGas,
   EffectiveGasPrice,
@@ -13,6 +14,12 @@ type FeeTuple = Readonly<{
   maxFeePerGas: MaxFeePerGas.MaxFeePerGasType;
   maxPriorityFeePerGas: MaxPriorityFeePerGas.MaxPriorityFeePerGasType;
 }>;
+
+export class TxPoolSorterUnsupportedTransactionTypeError extends Data.TaggedError(
+  "TxPoolSorterUnsupportedTransactionTypeError",
+)<{
+  readonly type: Transaction.Any["type"];
+}> {}
 
 const ZeroGasPrice = 0n as GasPrice.GasPriceType;
 const ZeroMaxFeePerGas = 0n as MaxFeePerGas.MaxFeePerGasType;
@@ -77,11 +84,7 @@ const feeTupleFromTransaction = (tx: Transaction.Any): FeeTuple => {
     };
   }
 
-  return {
-    gasPrice: ZeroGasPrice,
-    maxFeePerGas: ZeroMaxFeePerGas,
-    maxPriorityFeePerGas: ZeroMaxPriorityFeePerGas,
-  };
+  throw new TxPoolSorterUnsupportedTransactionTypeError({ type: tx.type });
 };
 
 /**

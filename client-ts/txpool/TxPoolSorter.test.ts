@@ -13,6 +13,7 @@ import {
 import {
   compareFeeMarketPriority,
   compareTransactionFeeMarketPriority,
+  TxPoolSorterUnsupportedTransactionTypeError,
 } from "./TxPoolSorter";
 
 const decodeBaseFee = (value: number) =>
@@ -318,5 +319,23 @@ describe("TxPoolSorter.compareTransactionFeeMarketPriority", () => {
 
         assert.strictEqual(result, 1);
       }),
+  );
+
+  it.effect("throws on unsupported transaction types", () =>
+    Effect.sync(() => {
+      const baseFee = decodeBaseFeeWei(0n);
+      const unknownTx = { type: 99 } as unknown as Transaction.Any;
+
+      assert.throws(
+        () =>
+          compareTransactionFeeMarketPriority(
+            unknownTx,
+            unknownTx,
+            baseFee,
+            true,
+          ),
+        TxPoolSorterUnsupportedTransactionTypeError,
+      );
+    }),
   );
 });
