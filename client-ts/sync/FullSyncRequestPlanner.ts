@@ -24,6 +24,7 @@ export type FullSyncRequestPlannerErrorReason =
   | "InvalidStartBlockNumber"
   | "InvalidSkip"
   | "HeaderRangeUnderflow"
+  | "MissingInitialRequestId"
   | "InvalidInitialRequestId"
   | "InvalidPeerLimit";
 
@@ -171,7 +172,11 @@ const initializeRequestIdState = ({
       };
     }
 
-    const firstRequestId = initialRequestId ?? 0n;
+    if (initialRequestId === undefined) {
+      return yield* failPlanner("MissingInitialRequestId", "initialRequestId");
+    }
+
+    const firstRequestId = initialRequestId;
     yield* validateInitialRequestId(firstRequestId);
 
     return {
