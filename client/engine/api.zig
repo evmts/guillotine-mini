@@ -155,8 +155,9 @@ pub const EngineApi = struct {
 
     /// Generic dispatcher for EngineMethod calls using Voltaire's EngineMethod schema.
     ///
-    /// Only `engine_exchangeCapabilities` and `engine_getClientVersionV1` are
-    /// handled at this stage; others return `Error.MethodNotFound`.
+    /// Partial coverage: currently handles `engine_exchangeCapabilities`,
+    /// `engine_getClientVersionV1`, and `engine_exchangeTransitionConfigurationV1`.
+    /// All other Engine methods return `Error.MethodNotFound` until implemented.
     ///
     /// Example:
     /// const Result = try api.dispatch("engine_exchangeCapabilities", params);
