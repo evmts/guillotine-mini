@@ -7,13 +7,11 @@ import {
   type UnknownSnapshotError,
   WorldState,
   WorldStateTest,
-  type WorldStateService,
   type WorldStateSnapshot,
 } from "./State";
 import {
   TransientStorage,
   TransientStorageTest,
-  type TransientStorageService,
   type TransientStorageSnapshot,
   type UnknownTransientSnapshotError,
 } from "./TransientStorage";
@@ -57,8 +55,8 @@ export class TransactionBoundary extends Context.Tag("TransactionBoundary")<
   TransactionBoundaryService
 >() {}
 
-const withTransactionBoundary = <A, E>(
-  f: (service: TransactionBoundaryService) => Effect.Effect<A, E>,
+const withTransactionBoundary = <A, E, R>(
+  f: (service: TransactionBoundaryService) => Effect.Effect<A, E, R>,
 ) => Effect.flatMap(TransactionBoundary, f);
 
 const makeTransactionBoundary: Effect.Effect<
@@ -66,8 +64,8 @@ const makeTransactionBoundary: Effect.Effect<
   never,
   WorldState | TransientStorage
 > = Effect.gen(function* () {
-  const worldState = (yield* WorldState) as WorldStateService;
-  const transientStorage = (yield* TransientStorage) as TransientStorageService;
+  const worldState = yield* WorldState;
+  const transientStorage = yield* TransientStorage;
   const stack: Array<TransactionSnapshot> = [];
 
   const requireActiveTransaction = (): Effect.Effect<
@@ -129,7 +127,7 @@ export const TransactionBoundaryLive: Layer.Layer<
   WorldState | TransientStorage
 > = Layer.effect(TransactionBoundary, makeTransactionBoundary);
 
-const TransactionBoundaryTestDependencies = Layer.merge(
+const TransactionBoundaryTestDependencies = Layer.mergeAll(
   WorldStateTest,
   TransientStorageTest,
 );
