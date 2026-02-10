@@ -4,7 +4,11 @@ import * as Either from "effect/Either";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { BlockHash } from "voltaire-effect/primitives";
-import { FullSyncPeerRequestLimitsLive } from "./FullSyncPeerRequestLimits";
+import {
+  FullSyncPeerRequestLimits,
+  FullSyncPeerRequestLimitsLive,
+  type FullSyncPeerRequestLimitsService,
+} from "./FullSyncPeerRequestLimits";
 import {
   FullSyncRequestPlannerError,
   FullSyncRequestPlannerLive,
@@ -122,6 +126,7 @@ describe("FullSyncRequestPlanner", () => {
             startBlockNumber: 3n,
             totalHeaders: 5,
             reverse: true,
+            initialRequestId: 0n,
           }).pipe(Effect.either);
 
           assert.strictEqual(Either.isLeft(outcome), true);
@@ -185,7 +190,7 @@ describe("FullSyncRequestPlanner", () => {
   );
 
   it.effect(
-    "returns typed errors for invalid protocol versions and out-of-range request ids",
+    "returns typed errors for invalid protocol versions, missing request ids, and out-of-range request ids",
     () =>
       providePlanner(
         Effect.gen(function* () {
@@ -206,6 +211,25 @@ describe("FullSyncRequestPlanner", () => {
               "InvalidProtocolVersion",
             );
             assert.strictEqual(invalidVersion.left.field, "protocolVersion");
+          }
+
+          const missingRequestId = yield* planFullSyncBodyRequests({
+            peerClientId: "Geth/v1.15.11",
+            protocolVersion: 69,
+            blockHashes: makeBlockHashes(1),
+          }).pipe(Effect.either);
+
+          assert.strictEqual(Either.isLeft(missingRequestId), true);
+          if (Either.isLeft(missingRequestId)) {
+            assert.strictEqual(
+              missingRequestId.left instanceof FullSyncRequestPlannerError,
+              true,
+            );
+            assert.strictEqual(
+              missingRequestId.left.reason,
+              "MissingInitialRequestId",
+            );
+            assert.strictEqual(missingRequestId.left.field, "initialRequestId");
           }
 
           const invalidRequestId = yield* planFullSyncBodyRequests({
@@ -229,5 +253,146 @@ describe("FullSyncRequestPlanner", () => {
           }
         }),
       ),
+  );
+
+  it.effect("wraps request ids at uint64 max boundary", () =>
+    providePlanner(
+      Effect.gen(function* () {
+        const requests = yield* planFullSyncBodyRequests({
+          peerClientId: "UnknownClient/v0.0.1",
+          protocolVersion: 69,
+          blockHashes: makeBlockHashes(64),
+          initialRequestId: (1n << 64n) - 1n,
+        });
+
+        assert.strictEqual(requests.length, 2);
+        assert.strictEqual(requests[0]?.requestId, (1n << 64n) - 1n);
+        assert.strictEqual(requests[1]?.requestId, 0n);
+      }),
+    ),
+  );
+
+  it.effect("plans eth/70 receipt requests with firstBlockReceiptIndex", () =>
+    providePlanner(
+      Effect.gen(function* () {
+        const requests = yield* planFullSyncReceiptRequests({
+          peerClientId: "Nethermind/v1.29.0",
+          protocolVersion: 70,
+          blockHashes: makeBlockHashes(300),
+          initialRequestId: 100n,
+        });
+
+        assert.strictEqual(requests.length, 2);
+        assert.strictEqual(requests[0]?.requestId, 100n);
+        assert.strictEqual(requests[1]?.requestId, 101n);
+        assert.strictEqual(requests[0]?.firstBlockReceiptIndex, 0n);
+        assert.strictEqual(requests[1]?.firstBlockReceiptIndex, 0n);
+        assert.strictEqual(requests[0]?.blockHashes.length, 256);
+        assert.strictEqual(requests[1]?.blockHashes.length, 44);
+      }),
+    ),
+  );
+
+  it.effect("rejects protocol versions above the supported upper bound", () =>
+    providePlanner(
+      Effect.gen(function* () {
+        const outcome = yield* planFullSyncReceiptRequests({
+          peerClientId: "Geth/v1.15.11",
+          protocolVersion: 71,
+          blockHashes: makeBlockHashes(1),
+          initialRequestId: 1n,
+        }).pipe(Effect.either);
+
+        assert.strictEqual(Either.isLeft(outcome), true);
+        if (Either.isLeft(outcome)) {
+          assert.strictEqual(outcome.left.reason, "InvalidProtocolVersion");
+          assert.strictEqual(outcome.left.field, "protocolVersion");
+        }
+      }),
+    ),
+  );
+
+  it.effect("handles zero totals and rejects unsafe integer boundaries", () =>
+    providePlanner(
+      Effect.gen(function* () {
+        const zeroHeaders = yield* planFullSyncHeaderRequests({
+          peerClientId: "Geth/v1.15.11",
+          protocolVersion: 69,
+          startBlockNumber: 123n,
+          totalHeaders: 0,
+          initialRequestId: 0n,
+        });
+        assert.deepStrictEqual(zeroHeaders, []);
+
+        const invalidSkip = yield* planFullSyncHeaderRequests({
+          peerClientId: "Geth/v1.15.11",
+          protocolVersion: 69,
+          startBlockNumber: 123n,
+          totalHeaders: 1,
+          skip: Number.MAX_SAFE_INTEGER + 1,
+          initialRequestId: 0n,
+        }).pipe(Effect.either);
+
+        assert.strictEqual(Either.isLeft(invalidSkip), true);
+        if (Either.isLeft(invalidSkip)) {
+          assert.strictEqual(invalidSkip.left.reason, "InvalidSkip");
+          assert.strictEqual(invalidSkip.left.field, "skip");
+        }
+
+        const unsafeProtocol = yield* planFullSyncBodyRequests({
+          peerClientId: "Geth/v1.15.11",
+          protocolVersion: Number.MAX_SAFE_INTEGER + 1,
+          blockHashes: makeBlockHashes(1),
+          initialRequestId: 0n,
+        }).pipe(Effect.either);
+
+        assert.strictEqual(Either.isLeft(unsafeProtocol), true);
+        if (Either.isLeft(unsafeProtocol)) {
+          assert.strictEqual(
+            unsafeProtocol.left.reason,
+            "InvalidProtocolVersion",
+          );
+          assert.strictEqual(unsafeProtocol.left.field, "protocolVersion");
+        }
+      }),
+    ),
+  );
+
+  it.effect(
+    "returns InvalidPeerLimit when peer limits are non-positive",
+    () => {
+      const invalidLimitsLayer = FullSyncRequestPlannerLive.pipe(
+        Layer.provide(
+          Layer.succeed(FullSyncPeerRequestLimits, {
+            resolve: () =>
+              Effect.succeed({
+                maxHeadersPerRequest: 1,
+                maxBodiesPerRequest: 0,
+                maxReceiptsPerRequest: 1,
+              }),
+          } satisfies FullSyncPeerRequestLimitsService),
+        ),
+      );
+
+      const provideInvalidPlanner = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(Effect.provide(invalidLimitsLayer));
+
+      return provideInvalidPlanner(
+        Effect.gen(function* () {
+          const outcome = yield* planFullSyncBodyRequests({
+            peerClientId: "Geth/v1.15.11",
+            protocolVersion: 69,
+            blockHashes: makeBlockHashes(1),
+            initialRequestId: 5n,
+          }).pipe(Effect.either);
+
+          assert.strictEqual(Either.isLeft(outcome), true);
+          if (Either.isLeft(outcome)) {
+            assert.strictEqual(outcome.left.reason, "InvalidPeerLimit");
+            assert.strictEqual(outcome.left.field, "maxBodiesPerRequest");
+          }
+        }),
+      );
+    },
   );
 });
