@@ -10,7 +10,10 @@ import {
   MaxPriorityFeePerGas,
   Transaction,
 } from "voltaire-effect/primitives";
-import { compareReplacedTransactionByFee } from "./TxPoolSorter";
+import {
+  compareReplacedBlobTransactionByFee,
+  compareReplacedTransactionByFee,
+} from "./TxPoolSorter";
 
 /** Blob transaction support modes (Nethermind BlobsSupportMode parity). */
 export const BlobsSupportMode = {
@@ -671,10 +674,14 @@ const makeTxPool = (config: TxPoolConfigInput) =>
                 : removeTransactionFromState(state, competing.hashKey).next;
 
             if (competing !== undefined) {
-              const comparison = compareReplacedTransactionByFee(
-                validated.tx,
-                competing.tx,
-              );
+              const comparison =
+                Transaction.isEIP4844(validated.tx) &&
+                Transaction.isEIP4844(competing.tx)
+                  ? compareReplacedBlobTransactionByFee(
+                      validated.tx,
+                      competing.tx,
+                    )
+                  : compareReplacedTransactionByFee(validated.tx, competing.tx);
               if (comparison !== -1) {
                 return [
                   {

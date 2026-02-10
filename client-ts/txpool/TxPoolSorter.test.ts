@@ -11,6 +11,7 @@ import {
   Transaction,
 } from "voltaire-effect/primitives";
 import {
+  compareReplacedBlobTransactionByFee,
   compareFeeMarketPriority,
   compareReplacedTransactionByFee,
   compareTransactionFeeMarketPriority,
@@ -111,6 +112,8 @@ const makeEip1559Tx = (
 const makeEip4844Tx = (
   maxFeePerGas: bigint,
   maxPriorityFeePerGas: bigint,
+  maxFeePerBlobGas = 1n,
+  blobCount = 1,
 ): Transaction.EIP4844 =>
   Schema.validateSync(Eip4844Schema)({
     type: Transaction.Type.EIP4844,
@@ -123,8 +126,10 @@ const makeEip4844Tx = (
     value: 0n,
     data: new Uint8Array(0),
     accessList: [],
-    maxFeePerBlobGas: 1n,
-    blobVersionedHashes: [makeBlobHash(1)],
+    maxFeePerBlobGas,
+    blobVersionedHashes: Array.from({ length: blobCount }, (_, index) =>
+      makeBlobHash(index + 1),
+    ),
     yParity: 0,
     r: new Uint8Array(32),
     s: new Uint8Array(32),
@@ -541,6 +546,41 @@ describe("TxPoolSorter.compareReplacedTransactionByFee", () => {
         () => compareReplacedTransactionByFee(unknownNewTx, unknownOldTx),
         TxPoolSorterUnsupportedTransactionTypeError,
       );
+    }),
+  );
+});
+
+describe("TxPoolSorter.compareReplacedBlobTransactionByFee", () => {
+  it.effect("rejects replacement when newcomer has fewer blobs", () =>
+    Effect.sync(() => {
+      const oldTx = makeEip4844Tx(100n, 20n, 30n, 2);
+      const newTx = makeEip4844Tx(200n, 40n, 60n, 1);
+
+      const result = compareReplacedBlobTransactionByFee(newTx, oldTx);
+
+      assert.strictEqual(result, 1);
+    }),
+  );
+
+  it.effect("requires 2x bumps for all blob fee dimensions", () =>
+    Effect.sync(() => {
+      const oldTx = makeEip4844Tx(100n, 20n, 30n);
+      const newTx = makeEip4844Tx(200n, 40n, 59n);
+
+      const result = compareReplacedBlobTransactionByFee(newTx, oldTx);
+
+      assert.strictEqual(result, 1);
+    }),
+  );
+
+  it.effect("accepts blob replacement at exact 2x bumps", () =>
+    Effect.sync(() => {
+      const oldTx = makeEip4844Tx(100n, 20n, 30n);
+      const newTx = makeEip4844Tx(200n, 40n, 60n);
+
+      const result = compareReplacedBlobTransactionByFee(newTx, oldTx);
+
+      assert.strictEqual(result, -1);
     }),
   );
 });

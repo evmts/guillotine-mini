@@ -20,6 +20,12 @@ type ReplacementFeeTuple = Readonly<{
   maxPriorityFeePerGas: bigint;
   supports1559: boolean;
 }>;
+type BlobReplacementFeeTuple = Readonly<{
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+  maxFeePerBlobGas: bigint;
+  blobCount: number;
+}>;
 
 /** Error raised when the transaction type is not supported by the sorter. */
 export class TxPoolSorterUnsupportedTransactionTypeError extends Data.TaggedError(
@@ -130,6 +136,15 @@ const replacementFeeTupleFromTransaction = (
 
   throw new TxPoolSorterUnsupportedTransactionTypeError({ type: tx.type });
 };
+
+const blobReplacementFeeTupleFromTransaction = (
+  tx: Transaction.EIP4844,
+): BlobReplacementFeeTuple => ({
+  maxFeePerGas: tx.maxFeePerGas,
+  maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
+  maxFeePerBlobGas: tx.maxFeePerBlobGas,
+  blobCount: tx.blobVersionedHashes.length,
+});
 
 /**
  * Compare two fee tuples by priority (descending).
@@ -277,4 +292,40 @@ export const compareReplacedTransactionByFee = (
   }
 
   return bumpMaxFeePerGas > 0n && bumpMaxPriorityFeePerGas > 0n ? -1 : 1;
+};
+
+/**
+ * Compare a newcomer blob transaction against an existing blob transaction.
+ *
+ * This mirrors Nethermind's `CompareReplacedBlobTx` rules:
+ * - New blob tx cannot have fewer blobs than the existing tx.
+ * - New blob tx must provide at least 2x bumps for `maxFeePerGas`,
+ *   `maxPriorityFeePerGas`, and `maxFeePerBlobGas`.
+ */
+export const compareReplacedBlobTransactionByFee = (
+  newTx: Transaction.EIP4844,
+  oldTx: Transaction.EIP4844,
+): CompareResult => {
+  if (newTx === oldTx) {
+    return 0;
+  }
+
+  const newcomer = blobReplacementFeeTupleFromTransaction(newTx);
+  const existing = blobReplacementFeeTupleFromTransaction(oldTx);
+
+  if (existing.blobCount > newcomer.blobCount) {
+    return 1;
+  }
+
+  if (existing.maxFeePerGas * 2n > newcomer.maxFeePerGas) {
+    return 1;
+  }
+  if (existing.maxPriorityFeePerGas * 2n > newcomer.maxPriorityFeePerGas) {
+    return 1;
+  }
+  if (existing.maxFeePerBlobGas * 2n > newcomer.maxFeePerBlobGas) {
+    return 1;
+  }
+
+  return -1;
 };

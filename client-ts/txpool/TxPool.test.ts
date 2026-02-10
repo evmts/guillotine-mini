@@ -123,9 +123,16 @@ const makeSignedEip4844Tx = (
   maxPriorityFeePerGas = 1n,
   maxFeePerGas = 2n,
   maxFeePerBlobGas = 3n,
+  blobVersionedHashes: Uint8Array[] = [makeBlobHash(1)],
 ): Transaction.EIP4844 =>
   signDynamicFeeTx(
-    makeEip4844Tx(nonce, maxPriorityFeePerGas, maxFeePerGas, maxFeePerBlobGas),
+    makeEip4844Tx(
+      nonce,
+      maxPriorityFeePerGas,
+      maxFeePerGas,
+      maxFeePerBlobGas,
+      blobVersionedHashes,
+    ),
   );
 
 describe("TxPool", () => {
@@ -255,6 +262,45 @@ describe("TxPool", () => {
 
       const blobCount = yield* getPendingBlobCount();
       assert.strictEqual(blobCount, 1);
+    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
+  it.effect("applies blob replacement fee rules for maxFeePerBlobGas", () =>
+    Effect.gen(function* () {
+      const existing = makeSignedEip4844Tx(0n, 10n, 10n, 10n);
+      const underpricedBlobFee = makeSignedEip4844Tx(0n, 20n, 20n, 19n);
+
+      const first = yield* addTransaction(existing);
+      assert.strictEqual(first._tag, "Added");
+
+      const second = yield* Effect.either(addTransaction(underpricedBlobFee));
+      assert.isTrue(Either.isLeft(second));
+      if (Either.isLeft(second)) {
+        assert.isTrue(second.left instanceof TxPoolReplacementNotAllowedError);
+      }
+    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
+  it.effect("rejects blob replacement with fewer blobs", () =>
+    Effect.gen(function* () {
+      const existing = makeSignedEip4844Tx(0n, 10n, 10n, 10n, [
+        makeBlobHash(1),
+        makeBlobHash(2),
+      ]);
+      const fewerBlobsReplacement = makeSignedEip4844Tx(0n, 20n, 20n, 20n, [
+        makeBlobHash(1),
+      ]);
+
+      const first = yield* addTransaction(existing);
+      assert.strictEqual(first._tag, "Added");
+
+      const second = yield* Effect.either(
+        addTransaction(fewerBlobsReplacement),
+      );
+      assert.isTrue(Either.isLeft(second));
+      if (Either.isLeft(second)) {
+        assert.isTrue(second.left instanceof TxPoolReplacementNotAllowedError);
+      }
     }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
   );
 
