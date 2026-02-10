@@ -78,6 +78,7 @@ fn run(
     var tracer_instance: Tracer = undefined;
     if (trace_enabled) {
         tracer_instance = Tracer.init(allocator);
+        tracer_instance.config = config.trace_config;
         tracer_instance.enable();
         defer tracer_instance.deinit();
     }
