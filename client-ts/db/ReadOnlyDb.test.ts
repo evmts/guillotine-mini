@@ -377,7 +377,7 @@ describe("ReadOnlyDb", () => {
 
       yield* remove(overlayKey);
       const removed = yield* get(overlayKey);
-      assert.isTrue(Bytes.equals(Option.getOrThrow(removed), baseValue));
+      assert.isTrue(Option.isNone(removed));
 
       yield* clearTempChanges();
       const afterClear = yield* get(baseKey);
