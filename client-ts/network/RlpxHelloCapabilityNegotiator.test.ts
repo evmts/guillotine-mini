@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
 import {
   RlpxCapabilityMessageIdStart,
+  RlpxHelloCapabilityNegotiator,
   RlpxHelloCapabilityNegotiatorLive,
   type RlpxHelloCapability,
   type RlpxHelloCapabilityDescriptor,
@@ -12,8 +13,12 @@ import {
   negotiateRlpxHelloCapabilities,
 } from "./RlpxHelloCapabilityNegotiator";
 
-const provideNegotiator = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.provide(RlpxHelloCapabilityNegotiatorLive));
+const runWithNegotiator = <A, E>(
+  effect: Effect.Effect<A, E, RlpxHelloCapabilityNegotiator>,
+): A =>
+  Effect.runSync(
+    effect.pipe(Effect.provide(RlpxHelloCapabilityNegotiatorLive)),
+  );
 
 const negotiate = (
   localCapabilities: ReadonlyArray<RlpxHelloCapabilityDescriptor>,
@@ -77,358 +82,306 @@ const expectValidationError = (
 };
 
 describe("RlpxHelloCapabilityNegotiator", () => {
-  it.effect(
-    "negotiates shared capabilities with highest version, alphabetic ordering, and 0x10-based offsets",
-    () =>
-      provideNegotiator(
-        Effect.gen(function* () {
-          const result = yield* negotiate(
-            [
-              { name: "snap", version: 1, messageIdSpaceSize: 8 },
-              { name: "eth", version: 66, messageIdSpaceSize: 17 },
-              { name: "eth", version: 68, messageIdSpaceSize: 17 },
-              { name: "nodedata", version: 1, messageIdSpaceSize: 2 },
-            ],
-            [
-              { name: "les", version: 2 },
-              { name: "eth", version: 66 },
-              { name: "eth", version: 68 },
-              { name: "snap", version: 1 },
-            ],
-          );
-
-          assert.deepStrictEqual(result.negotiatedCapabilities, [
-            {
-              name: "eth",
-              version: 68,
-              messageIdSpaceSize: 17,
-              messageIdOffset: RlpxCapabilityMessageIdStart,
-              messageIdRangeEnd: RlpxCapabilityMessageIdStart + 16,
-            },
-            {
-              name: "snap",
-              version: 1,
-              messageIdSpaceSize: 8,
-              messageIdOffset: RlpxCapabilityMessageIdStart + 17,
-              messageIdRangeEnd: RlpxCapabilityMessageIdStart + 24,
-            },
-          ]);
-          assert.strictEqual(
-            result.nextMessageId,
-            RlpxCapabilityMessageIdStart + 25,
-          );
-        }),
+  it("negotiates shared capabilities with highest version, alphabetic ordering, and 0x10-based offsets", () => {
+    const result = runWithNegotiator(
+      negotiate(
+        [
+          { name: "snap", version: 1, messageIdSpaceSize: 8 },
+          { name: "eth", version: 66, messageIdSpaceSize: 17 },
+          { name: "eth", version: 68, messageIdSpaceSize: 17 },
+          { name: "nodedata", version: 1, messageIdSpaceSize: 2 },
+        ],
+        [
+          { name: "les", version: 2 },
+          { name: "eth", version: 66 },
+          { name: "eth", version: 68 },
+          { name: "snap", version: 1 },
+        ],
       ),
-  );
+    );
 
-  it.effect(
-    "treats capability names as case-sensitive during matching and sorting",
-    () =>
-      provideNegotiator(
-        Effect.gen(function* () {
-          const result = yield* negotiate(
-            [
-              { name: "Aa", version: 1, messageIdSpaceSize: 1 },
-              { name: "aa", version: 1, messageIdSpaceSize: 1 },
-              { name: "aa", version: 2, messageIdSpaceSize: 2 },
-            ],
-            [
-              { name: "aa", version: 1 },
-              { name: "Aa", version: 1 },
-              { name: "aa", version: 2 },
-            ],
-          );
+    assert.deepStrictEqual(result.negotiatedCapabilities, [
+      {
+        name: "eth",
+        version: 68,
+        messageIdSpaceSize: 17,
+        messageIdOffset: RlpxCapabilityMessageIdStart,
+        messageIdRangeEnd: RlpxCapabilityMessageIdStart + 16,
+      },
+      {
+        name: "snap",
+        version: 1,
+        messageIdSpaceSize: 8,
+        messageIdOffset: RlpxCapabilityMessageIdStart + 17,
+        messageIdRangeEnd: RlpxCapabilityMessageIdStart + 24,
+      },
+    ]);
+    assert.strictEqual(result.nextMessageId, RlpxCapabilityMessageIdStart + 25);
+  });
 
-          assert.deepStrictEqual(result.negotiatedCapabilities, [
-            {
-              name: "Aa",
-              version: 1,
-              messageIdSpaceSize: 1,
-              messageIdOffset: RlpxCapabilityMessageIdStart,
-              messageIdRangeEnd: RlpxCapabilityMessageIdStart,
-            },
-            {
-              name: "aa",
-              version: 2,
-              messageIdSpaceSize: 2,
-              messageIdOffset: RlpxCapabilityMessageIdStart + 1,
-              messageIdRangeEnd: RlpxCapabilityMessageIdStart + 2,
-            },
-          ]);
-        }),
+  it("treats capability names as case-sensitive during matching and sorting", () => {
+    const result = runWithNegotiator(
+      negotiate(
+        [
+          { name: "Aa", version: 1, messageIdSpaceSize: 1 },
+          { name: "aa", version: 1, messageIdSpaceSize: 1 },
+          { name: "aa", version: 2, messageIdSpaceSize: 2 },
+        ],
+        [
+          { name: "aa", version: 1 },
+          { name: "Aa", version: 1 },
+          { name: "aa", version: 2 },
+        ],
       ),
-  );
+    );
 
-  it.effect(
-    "returns empty negotiation output when no capabilities are shared",
-    () =>
-      provideNegotiator(
-        Effect.gen(function* () {
-          const result = yield* negotiate(
-            [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
-            [{ name: "snap", version: 1 }],
-          );
+    assert.deepStrictEqual(result.negotiatedCapabilities, [
+      {
+        name: "Aa",
+        version: 1,
+        messageIdSpaceSize: 1,
+        messageIdOffset: RlpxCapabilityMessageIdStart,
+        messageIdRangeEnd: RlpxCapabilityMessageIdStart,
+      },
+      {
+        name: "aa",
+        version: 2,
+        messageIdSpaceSize: 2,
+        messageIdOffset: RlpxCapabilityMessageIdStart + 1,
+        messageIdRangeEnd: RlpxCapabilityMessageIdStart + 2,
+      },
+    ]);
+  });
 
-          assert.deepStrictEqual(result.negotiatedCapabilities, []);
-          assert.strictEqual(
-            result.nextMessageId,
-            RlpxCapabilityMessageIdStart,
-          );
-        }),
+  it("returns empty negotiation output when no capabilities are shared", () => {
+    const result = runWithNegotiator(
+      negotiate(
+        [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "snap", version: 1 }],
       ),
-  );
+    );
 
-  it.effect(
-    "rejects local duplicate definitions with conflicting message-ID space",
-    () =>
-      provideNegotiator(
-        Effect.gen(function* () {
-          const result = yield* negotiateEither(
-            [
-              { name: "eth", version: 68, messageIdSpaceSize: 17 },
-              { name: "eth", version: 68, messageIdSpaceSize: 18 },
-            ],
-            [{ name: "eth", version: 68 }],
-          );
+    assert.deepStrictEqual(result.negotiatedCapabilities, []);
+    assert.strictEqual(result.nextMessageId, RlpxCapabilityMessageIdStart);
+  });
 
-          expectValidationError(expectLeft(result), {
-            reason: "DuplicateCapabilityWithDifferentMessageSpace",
-            source: "local",
-            capabilityName: "eth",
-            capabilityVersion: 68,
-          });
-        }),
+  it("rejects local duplicate definitions with conflicting message-ID space", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [
+          { name: "eth", version: 68, messageIdSpaceSize: 17 },
+          { name: "eth", version: 68, messageIdSpaceSize: 18 },
+        ],
+        [{ name: "eth", version: 68 }],
       ),
-  );
+    );
 
-  it.effect("rejects capability names longer than 8 ASCII characters", () =>
-    provideNegotiator(
-      Effect.gen(function* () {
-        const result = yield* negotiateEither(
-          [{ name: "toolonggg", version: 1, messageIdSpaceSize: 1 }],
-          [{ name: "toolonggg", version: 1 }],
-        );
+    expectValidationError(expectLeft(result), {
+      reason: "DuplicateCapabilityWithDifferentMessageSpace",
+      source: "local",
+      capabilityName: "eth",
+      capabilityVersion: 68,
+    });
+  });
 
-        expectValidationError(expectLeft(result), {
-          reason: "CapabilityNameTooLong",
-          source: "local",
-        });
-      }),
-    ),
-  );
-
-  it.effect("rejects empty local capability names", () =>
-    provideNegotiator(
-      Effect.gen(function* () {
-        const result = yield* negotiateEither(
-          [{ name: "", version: 1, messageIdSpaceSize: 1 }],
-          [{ name: "", version: 1 }],
-        );
-
-        expectValidationError(expectLeft(result), {
-          reason: "CapabilityNameEmpty",
-          source: "local",
-          capabilityName: "",
-          capabilityVersion: 1,
-        });
-      }),
-    ),
-  );
-
-  it.effect("rejects empty remote capability names", () =>
-    provideNegotiator(
-      Effect.gen(function* () {
-        const result = yield* negotiateEither(
-          [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
-          [{ name: "", version: 68 }],
-        );
-
-        expectValidationError(expectLeft(result), {
-          reason: "CapabilityNameEmpty",
-          source: "remote",
-          capabilityName: "",
-          capabilityVersion: 68,
-        });
-      }),
-    ),
-  );
-
-  it.effect("rejects non-ASCII capability names in remote Hello entries", () =>
-    provideNegotiator(
-      Effect.gen(function* () {
-        const result = yield* negotiateEither(
-          [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
-          [{ name: "éth", version: 68 }],
-        );
-
-        expectValidationError(expectLeft(result), {
-          reason: "CapabilityNameNonAscii",
-          source: "remote",
-        });
-      }),
-    ),
-  );
-
-  it.effect(
-    "rejects local capability names containing non-printable ASCII",
-    () =>
-      provideNegotiator(
-        Effect.gen(function* () {
-          const result = yield* negotiateEither(
-            [{ name: "et\u0001h", version: 68, messageIdSpaceSize: 17 }],
-            [{ name: "et\u0001h", version: 68 }],
-          );
-
-          expectValidationError(expectLeft(result), {
-            reason: "CapabilityNameNonPrintableAscii",
-            source: "local",
-            capabilityName: "et\u0001h",
-            capabilityVersion: 68,
-          });
-        }),
+  it("rejects capability names longer than 8 ASCII characters", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [{ name: "toolonggg", version: 1, messageIdSpaceSize: 1 }],
+        [{ name: "toolonggg", version: 1 }],
       ),
-  );
+    );
 
-  it.effect(
-    "rejects remote capability names containing non-printable ASCII",
-    () =>
-      provideNegotiator(
-        Effect.gen(function* () {
-          const result = yield* negotiateEither(
-            [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
-            [{ name: "et\u0007h", version: 68 }],
-          );
+    expectValidationError(expectLeft(result), {
+      reason: "CapabilityNameTooLong",
+      source: "local",
+    });
+  });
 
-          expectValidationError(expectLeft(result), {
-            reason: "CapabilityNameNonPrintableAscii",
-            source: "remote",
-            capabilityName: "et\u0007h",
-            capabilityVersion: 68,
-          });
-        }),
+  it("rejects empty local capability names", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [{ name: "", version: 1, messageIdSpaceSize: 1 }],
+        [{ name: "", version: 1 }],
       ),
-  );
+    );
 
-  it.effect("rejects non-positive local message-ID space sizes", () =>
-    provideNegotiator(
-      Effect.gen(function* () {
-        const result = yield* negotiateEither(
-          [{ name: "eth", version: 68, messageIdSpaceSize: 0 }],
-          [{ name: "eth", version: 68 }],
-        );
+    expectValidationError(expectLeft(result), {
+      reason: "CapabilityNameEmpty",
+      source: "local",
+      capabilityName: "",
+      capabilityVersion: 1,
+    });
+  });
 
-        expectValidationError(expectLeft(result), {
-          reason: "InvalidMessageIdSpaceSize",
-          source: "local",
-        });
-      }),
-    ),
-  );
-
-  it.effect("rejects non-integer local capability versions", () =>
-    provideNegotiator(
-      Effect.gen(function* () {
-        const result = yield* negotiateEither(
-          [{ name: "eth", version: 1.5, messageIdSpaceSize: 17 }],
-          [{ name: "eth", version: 1.5 }],
-        );
-
-        expectValidationError(expectLeft(result), {
-          reason: "InvalidVersion",
-          source: "local",
-          capabilityName: "eth",
-          capabilityVersion: 1.5,
-        });
-      }),
-    ),
-  );
-
-  it.effect("rejects negative local capability versions", () =>
-    provideNegotiator(
-      Effect.gen(function* () {
-        const result = yield* negotiateEither(
-          [{ name: "eth", version: -1, messageIdSpaceSize: 17 }],
-          [{ name: "eth", version: -1 }],
-        );
-
-        expectValidationError(expectLeft(result), {
-          reason: "InvalidVersion",
-          source: "local",
-          capabilityName: "eth",
-          capabilityVersion: -1,
-        });
-      }),
-    ),
-  );
-
-  it.effect("rejects non-integer remote capability versions", () =>
-    provideNegotiator(
-      Effect.gen(function* () {
-        const result = yield* negotiateEither(
-          [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
-          [{ name: "eth", version: 68.25 }],
-        );
-
-        expectValidationError(expectLeft(result), {
-          reason: "InvalidVersion",
-          source: "remote",
-          capabilityName: "eth",
-          capabilityVersion: 68.25,
-        });
-      }),
-    ),
-  );
-
-  it.effect("rejects negative remote capability versions", () =>
-    provideNegotiator(
-      Effect.gen(function* () {
-        const result = yield* negotiateEither(
-          [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
-          [{ name: "eth", version: -68 }],
-        );
-
-        expectValidationError(expectLeft(result), {
-          reason: "InvalidVersion",
-          source: "remote",
-          capabilityName: "eth",
-          capabilityVersion: -68,
-        });
-      }),
-    ),
-  );
-
-  it.effect(
-    "rejects allocations that would overflow message-ID numeric bounds",
-    () =>
-      provideNegotiator(
-        Effect.gen(function* () {
-          const result = yield* negotiateEither(
-            [
-              {
-                name: "a",
-                version: 1,
-                messageIdSpaceSize:
-                  Number.MAX_SAFE_INTEGER - RlpxCapabilityMessageIdStart,
-              },
-              { name: "b", version: 1, messageIdSpaceSize: 1 },
-            ],
-            [
-              { name: "a", version: 1 },
-              { name: "b", version: 1 },
-            ],
-          );
-
-          const error = expectLeft(result);
-
-          assert.strictEqual(
-            error instanceof RlpxHelloMessageIdAllocationError,
-            true,
-          );
-          if (error instanceof RlpxHelloMessageIdAllocationError) {
-            assert.strictEqual(error.capabilityName, "b");
-            assert.strictEqual(error.capabilityVersion, 1);
-          }
-        }),
+  it("rejects empty remote capability names", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "", version: 68 }],
       ),
-  );
+    );
+
+    expectValidationError(expectLeft(result), {
+      reason: "CapabilityNameEmpty",
+      source: "remote",
+      capabilityName: "",
+      capabilityVersion: 68,
+    });
+  });
+
+  it("rejects non-ASCII capability names in remote Hello entries", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "éth", version: 68 }],
+      ),
+    );
+
+    expectValidationError(expectLeft(result), {
+      reason: "CapabilityNameNonAscii",
+      source: "remote",
+    });
+  });
+
+  it("rejects local capability names containing non-printable ASCII", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [{ name: "et\u0001h", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "et\u0001h", version: 68 }],
+      ),
+    );
+
+    expectValidationError(expectLeft(result), {
+      reason: "CapabilityNameNonPrintableAscii",
+      source: "local",
+      capabilityName: "et\u0001h",
+      capabilityVersion: 68,
+    });
+  });
+
+  it("rejects remote capability names containing non-printable ASCII", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "et\u0007h", version: 68 }],
+      ),
+    );
+
+    expectValidationError(expectLeft(result), {
+      reason: "CapabilityNameNonPrintableAscii",
+      source: "remote",
+      capabilityName: "et\u0007h",
+      capabilityVersion: 68,
+    });
+  });
+
+  it("rejects non-positive local message-ID space sizes", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [{ name: "eth", version: 68, messageIdSpaceSize: 0 }],
+        [{ name: "eth", version: 68 }],
+      ),
+    );
+
+    expectValidationError(expectLeft(result), {
+      reason: "InvalidMessageIdSpaceSize",
+      source: "local",
+    });
+  });
+
+  it("rejects non-integer local capability versions", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [{ name: "eth", version: 1.5, messageIdSpaceSize: 17 }],
+        [{ name: "eth", version: 1.5 }],
+      ),
+    );
+
+    expectValidationError(expectLeft(result), {
+      reason: "InvalidVersion",
+      source: "local",
+      capabilityName: "eth",
+      capabilityVersion: 1.5,
+    });
+  });
+
+  it("rejects negative local capability versions", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [{ name: "eth", version: -1, messageIdSpaceSize: 17 }],
+        [{ name: "eth", version: -1 }],
+      ),
+    );
+
+    expectValidationError(expectLeft(result), {
+      reason: "InvalidVersion",
+      source: "local",
+      capabilityName: "eth",
+      capabilityVersion: -1,
+    });
+  });
+
+  it("rejects non-integer remote capability versions", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "eth", version: 68.25 }],
+      ),
+    );
+
+    expectValidationError(expectLeft(result), {
+      reason: "InvalidVersion",
+      source: "remote",
+      capabilityName: "eth",
+      capabilityVersion: 68.25,
+    });
+  });
+
+  it("rejects negative remote capability versions", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [{ name: "eth", version: 68, messageIdSpaceSize: 17 }],
+        [{ name: "eth", version: -68 }],
+      ),
+    );
+
+    expectValidationError(expectLeft(result), {
+      reason: "InvalidVersion",
+      source: "remote",
+      capabilityName: "eth",
+      capabilityVersion: -68,
+    });
+  });
+
+  it("rejects allocations that would overflow message-ID numeric bounds", () => {
+    const result = runWithNegotiator(
+      negotiateEither(
+        [
+          {
+            name: "a",
+            version: 1,
+            messageIdSpaceSize:
+              Number.MAX_SAFE_INTEGER - RlpxCapabilityMessageIdStart,
+          },
+          { name: "b", version: 1, messageIdSpaceSize: 1 },
+        ],
+        [
+          { name: "a", version: 1 },
+          { name: "b", version: 1 },
+        ],
+      ),
+    );
+
+    const error = expectLeft(result);
+
+    assert.strictEqual(
+      error instanceof RlpxHelloMessageIdAllocationError,
+      true,
+    );
+    if (error instanceof RlpxHelloMessageIdAllocationError) {
+      assert.strictEqual(error.capabilityName, "b");
+      assert.strictEqual(error.capabilityVersion, 1);
+    }
+  });
 });

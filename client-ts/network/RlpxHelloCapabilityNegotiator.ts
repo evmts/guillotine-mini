@@ -29,6 +29,7 @@ export interface RlpxHelloCapabilityNegotiationResult {
   readonly nextMessageId: number;
 }
 
+/** Validation failure reason when checking local or remote Hello capabilities. */
 export type RlpxHelloCapabilityValidationReason =
   | "CapabilityNameEmpty"
   | "CapabilityNameTooLong"
@@ -58,6 +59,7 @@ export class RlpxHelloMessageIdAllocationError extends Data.TaggedError(
   readonly messageIdSpaceSize: number;
 }> {}
 
+/** Errors emitted when validating and assigning RLPx capability message-ID space. */
 export type RlpxHelloCapabilityNegotiationError =
   | RlpxHelloCapabilityValidationError
   | RlpxHelloMessageIdAllocationError;
@@ -83,6 +85,18 @@ const RlpxCapabilityNameMaxLength = 8;
 const capabilityKey = (name: string, version: number): string =>
   `${name}\u0000${version}`;
 
+interface CapabilityValidationContext {
+  readonly source: "local" | "remote";
+  readonly capabilityName: string;
+  readonly capabilityVersion: number;
+  readonly reason: RlpxHelloCapabilityValidationReason;
+}
+
+const failCapabilityValidation = (
+  context: CapabilityValidationContext,
+): Effect.Effect<never, RlpxHelloCapabilityValidationError> =>
+  Effect.fail(new RlpxHelloCapabilityValidationError(context));
+
 const compareCapabilityNames = (left: string, right: string): number => {
   if (left < right) {
     return -1;
@@ -102,50 +116,42 @@ const validateCapabilityName = (
 ): Effect.Effect<void, RlpxHelloCapabilityValidationError> =>
   Effect.gen(function* () {
     if (capabilityName.length === 0) {
-      return yield* Effect.fail(
-        new RlpxHelloCapabilityValidationError({
-          source,
-          capabilityName,
-          capabilityVersion,
-          reason: "CapabilityNameEmpty",
-        }),
-      );
+      return yield* failCapabilityValidation({
+        source,
+        capabilityName,
+        capabilityVersion,
+        reason: "CapabilityNameEmpty",
+      });
     }
 
     if (capabilityName.length > RlpxCapabilityNameMaxLength) {
-      return yield* Effect.fail(
-        new RlpxHelloCapabilityValidationError({
-          source,
-          capabilityName,
-          capabilityVersion,
-          reason: "CapabilityNameTooLong",
-        }),
-      );
+      return yield* failCapabilityValidation({
+        source,
+        capabilityName,
+        capabilityVersion,
+        reason: "CapabilityNameTooLong",
+      });
     }
 
     for (let index = 0; index < capabilityName.length; index += 1) {
       const code = capabilityName.charCodeAt(index);
 
       if (code > 0x7f) {
-        return yield* Effect.fail(
-          new RlpxHelloCapabilityValidationError({
-            source,
-            capabilityName,
-            capabilityVersion,
-            reason: "CapabilityNameNonAscii",
-          }),
-        );
+        return yield* failCapabilityValidation({
+          source,
+          capabilityName,
+          capabilityVersion,
+          reason: "CapabilityNameNonAscii",
+        });
       }
 
       if (code < 0x21 || code === 0x7f) {
-        return yield* Effect.fail(
-          new RlpxHelloCapabilityValidationError({
-            source,
-            capabilityName,
-            capabilityVersion,
-            reason: "CapabilityNameNonPrintableAscii",
-          }),
-        );
+        return yield* failCapabilityValidation({
+          source,
+          capabilityName,
+          capabilityVersion,
+          reason: "CapabilityNameNonPrintableAscii",
+        });
       }
     }
   });
@@ -156,14 +162,12 @@ const validateCapabilityVersion = (
 ): Effect.Effect<void, RlpxHelloCapabilityValidationError> =>
   Effect.gen(function* () {
     if (!Number.isSafeInteger(capability.version) || capability.version < 0) {
-      return yield* Effect.fail(
-        new RlpxHelloCapabilityValidationError({
-          source,
-          capabilityName: capability.name,
-          capabilityVersion: capability.version,
-          reason: "InvalidVersion",
-        }),
-      );
+      return yield* failCapabilityValidation({
+        source,
+        capabilityName: capability.name,
+        capabilityVersion: capability.version,
+        reason: "InvalidVersion",
+      });
     }
   });
 
@@ -175,14 +179,12 @@ const validateMessageIdSpaceSize = (
       !Number.isSafeInteger(capability.messageIdSpaceSize) ||
       capability.messageIdSpaceSize <= 0
     ) {
-      return yield* Effect.fail(
-        new RlpxHelloCapabilityValidationError({
-          source: "local",
-          capabilityName: capability.name,
-          capabilityVersion: capability.version,
-          reason: "InvalidMessageIdSpaceSize",
-        }),
-      );
+      return yield* failCapabilityValidation({
+        source: "local",
+        capabilityName: capability.name,
+        capabilityVersion: capability.version,
+        reason: "InvalidMessageIdSpaceSize",
+      });
     }
   });
 
@@ -229,14 +231,12 @@ const makeRlpxHelloCapabilityNegotiator =
             existing !== undefined &&
             existing.messageIdSpaceSize !== localCapability.messageIdSpaceSize
           ) {
-            return yield* Effect.fail(
-              new RlpxHelloCapabilityValidationError({
-                source: "local",
-                capabilityName: localCapability.name,
-                capabilityVersion: localCapability.version,
-                reason: "DuplicateCapabilityWithDifferentMessageSpace",
-              }),
-            );
+            return yield* failCapabilityValidation({
+              source: "local",
+              capabilityName: localCapability.name,
+              capabilityVersion: localCapability.version,
+              reason: "DuplicateCapabilityWithDifferentMessageSpace",
+            });
           }
 
           if (existing === undefined) {

@@ -30,6 +30,7 @@ export class RlpxSnappyLengthExceededError extends Data.TaggedError(
   readonly maxLength: number;
 }> {}
 
+/** Errors emitted while decoding or bounds-checking Snappy uncompressed length. */
 export type RlpxSnappyLengthValidationError =
   | RlpxSnappyLengthHeaderError
   | RlpxSnappyLengthExceededError;
@@ -46,6 +47,11 @@ export class RlpxSnappyLengthValidator extends Context.Tag(
   "RlpxSnappyLengthValidator",
 )<RlpxSnappyLengthValidator, RlpxSnappyLengthValidatorService>() {}
 
+const failLengthHeader = (
+  reason: RlpxSnappyLengthHeaderReason,
+): Effect.Effect<never, RlpxSnappyLengthHeaderError> =>
+  Effect.fail(new RlpxSnappyLengthHeaderError({ reason }));
+
 const decodeSnappyLengthHeader = (
   compressedPayload: BytesType,
 ): Effect.Effect<number, RlpxSnappyLengthHeaderError> =>
@@ -53,9 +59,7 @@ const decodeSnappyLengthHeader = (
     const bytes = compressedPayload as Uint8Array;
 
     if (bytes.length === 0) {
-      return yield* Effect.fail(
-        new RlpxSnappyLengthHeaderError({ reason: "EmptyPayload" }),
-      );
+      return yield* failLengthHeader("EmptyPayload");
     }
 
     let length = 0;
@@ -67,18 +71,14 @@ const decodeSnappyLengthHeader = (
       const hasContinuation = (current & 0x80) !== 0;
 
       if (shift === 28 && (value > 0x0f || hasContinuation)) {
-        return yield* Effect.fail(
-          new RlpxSnappyLengthHeaderError({ reason: "LengthOverflow" }),
-        );
+        return yield* failLengthHeader("LengthOverflow");
       }
 
       const increment = value * 2 ** shift;
       const next = length + increment;
 
       if (!Number.isSafeInteger(next)) {
-        return yield* Effect.fail(
-          new RlpxSnappyLengthHeaderError({ reason: "LengthOverflow" }),
-        );
+        return yield* failLengthHeader("LengthOverflow");
       }
 
       length = next;
@@ -90,9 +90,7 @@ const decodeSnappyLengthHeader = (
       shift += 7;
     }
 
-    return yield* Effect.fail(
-      new RlpxSnappyLengthHeaderError({ reason: "TruncatedLength" }),
-    );
+    return yield* failLengthHeader("TruncatedLength");
   });
 
 const makeRlpxSnappyLengthValidator =
