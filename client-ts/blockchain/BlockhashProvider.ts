@@ -22,7 +22,6 @@ import {
   type BlockhashStoreError,
   BlockhashStoreLive,
 } from "./BlockhashStore";
-import { BlockTreeMemoryTest } from "./BlockTree";
 import { WorldStateTest } from "../state/State";
 
 /** Block header type used by the blockhash provider. */
@@ -211,7 +210,6 @@ export const BlockhashProviderLive: Layer.Layer<
 /** Deterministic blockhash provider layer for tests. */
 export const BlockhashProviderTest = Layer.provideMerge(BlockhashCacheTest)(
   BlockhashProviderLive.pipe(
-    Layer.provideMerge(BlockTreeMemoryTest),
     Layer.provideMerge(BlockhashStoreLive.pipe(Layer.provide(WorldStateTest))),
   ),
 );

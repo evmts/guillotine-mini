@@ -11,6 +11,11 @@ import {
 } from "voltaire-effect/primitives";
 import { MissingBlockhashError } from "./BlockhashErrors";
 import {
+  BlockHeaderStore,
+  type BlockHeaderStoreError,
+  BlockHeaderStoreMemoryTest,
+} from "./BlockHeaderStore";
+import {
   BlockTree,
   type BlockTreeError,
   BlockTreeMemoryTest,
@@ -31,7 +36,10 @@ const MAX_BLOCKHASH_DEPTH = 256n;
 const CACHE_LIMIT = 32;
 
 /** Union of blockhash cache errors. */
-export type BlockhashCacheError = BlockTreeError | MissingBlockhashError;
+export type BlockhashCacheError =
+  | BlockHeaderStoreError
+  | BlockTreeError
+  | MissingBlockhashError;
 
 /** Blockhash cache service interface. */
 export interface BlockhashCacheService {
@@ -57,6 +65,7 @@ const hashKey = (hash: BlockHashType): string => Hex.fromBytes(hash);
 
 const makeBlockhashCache = Effect.gen(function* () {
   const blockTree = yield* BlockTree;
+  const headerStore = yield* BlockHeaderStore;
   const state = yield* Effect.acquireRelease(
     Effect.sync(() => new Map<string, ReadonlyArray<BlockHashType>>()),
     (cache) =>
@@ -64,6 +73,19 @@ const makeBlockhashCache = Effect.gen(function* () {
         cache.clear();
       }),
   );
+
+  const getHeader = (hash: BlockHashType) =>
+    Effect.gen(function* () {
+      const stored = yield* headerStore.getHeader(hash);
+      if (Option.isSome(stored)) {
+        return stored;
+      }
+      const block = yield* blockTree.getBlock(hash);
+      if (Option.isSome(block)) {
+        return Option.some(Option.getOrThrow(block).header);
+      }
+      return Option.none();
+    });
 
   const saveCache = (
     hash: BlockHashType,
@@ -111,8 +133,8 @@ const makeBlockhashCache = Effect.gen(function* () {
           break;
         }
 
-        const block = yield* blockTree.getBlock(currentHash);
-        if (Option.isNone(block)) {
+        const header = yield* getHeader(currentHash);
+        if (Option.isNone(header)) {
           return yield* Effect.fail(
             new MissingBlockhashError({
               missingHash: currentHash,
@@ -121,8 +143,8 @@ const makeBlockhashCache = Effect.gen(function* () {
           );
         }
 
-        const ancestor = Option.getOrThrow(block);
-        const ancestorNumber = toBigInt(ancestor.header.number);
+        const ancestorHeader = Option.getOrThrow(header);
+        const ancestorNumber = toBigInt(ancestorHeader.number);
         if (ancestorNumber !== cursorNumber) {
           return yield* Effect.fail(
             new MissingBlockhashError({
@@ -132,7 +154,7 @@ const makeBlockhashCache = Effect.gen(function* () {
           );
         }
 
-        currentHash = ancestor.header.parentHash;
+        currentHash = ancestorHeader.parentHash;
         cursorNumber -= 1n;
       }
 
@@ -175,12 +197,13 @@ const makeBlockhashCache = Effect.gen(function* () {
 export const BlockhashCacheLive: Layer.Layer<
   BlockhashCache,
   BlockhashCacheError,
-  BlockTree
+  BlockHeaderStore | BlockTree
 > = Layer.scoped(BlockhashCache, makeBlockhashCache);
 
 /** Deterministic blockhash cache layer for tests. */
-export const BlockhashCacheTest =
-  Layer.provideMerge(BlockTreeMemoryTest)(BlockhashCacheLive);
+export const BlockhashCacheTest = Layer.provideMerge(BlockTreeMemoryTest)(
+  BlockhashCacheLive.pipe(Layer.provideMerge(BlockHeaderStoreMemoryTest)),
+);
 
 const withBlockhashCache = <A, E>(
   f: (service: BlockhashCacheService) => Effect.Effect<A, E>,
