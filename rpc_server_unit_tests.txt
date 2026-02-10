@@ -1,0 +1,1 @@
+error: main module provided both by '-Mjsonrpc=voltaire/packages/voltaire-zig/src/jsonrpc/root.zig' and by positional argument 'client/rpc/server.zig'

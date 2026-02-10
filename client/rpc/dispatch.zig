@@ -15,19 +15,31 @@ const primitives = @import("primitives");
 /// - `null` if the method is unknown to all namespaces
 pub fn resolveNamespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcMethod) {
     // Try Engine namespace
-    if (jsonrpc.engine.fromMethodName(method_name)) |_| {
+    if (jsonrpc.engine.fromMethodName(method_name)) |tag| {
+        _ = tag; // tag not used beyond confirming success
         return .engine;
-    } else |_| {}
+    } else |err| switch (err) {
+        error.UnknownMethod => {}, // continue probing other namespaces
+        else => return null, // defensive: unexpected error -> no match
+    }
 
     // Try Eth namespace
-    if (jsonrpc.eth.fromMethodName(method_name)) |_| {
+    if (jsonrpc.eth.fromMethodName(method_name)) |tag| {
+        _ = tag;
         return .eth;
-    } else |_| {}
+    } else |err| switch (err) {
+        error.UnknownMethod => {},
+        else => return null,
+    }
 
     // Try Debug namespace
-    if (jsonrpc.debug.fromMethodName(method_name)) |_| {
+    if (jsonrpc.debug.fromMethodName(method_name)) |tag| {
+        _ = tag;
         return .debug;
-    } else |_| {}
+    } else |err| switch (err) {
+        error.UnknownMethod => {},
+        else => return null,
+    }
 
     return null;
 }
