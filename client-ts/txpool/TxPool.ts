@@ -26,8 +26,38 @@ export const BlobsSupportModeSchema = Schema.Union(
 
 const NonNegativeIntSchema = Schema.NonNegativeInt;
 const NullableNonNegativeIntSchema = Schema.NullOr(NonNegativeIntSchema);
+const MinBlobTxPriorityFeeInputSchema = Schema.Union(
+  Schema.BigIntFromSelf,
+  Schema.Number,
+  Schema.String,
+);
+type MinBlobTxPriorityFeeInput = Schema.Schema.Encoded<
+  typeof MinBlobTxPriorityFeeInputSchema
+>;
 
 /** Schema for validating txpool configuration at boundaries. */
+export const TxPoolConfigInputSchema = Schema.Struct({
+  peerNotificationThreshold: NonNegativeIntSchema,
+  minBaseFeeThreshold: NonNegativeIntSchema,
+  size: NonNegativeIntSchema,
+  blobsSupport: BlobsSupportModeSchema,
+  persistentBlobStorageSize: NonNegativeIntSchema,
+  blobCacheSize: NonNegativeIntSchema,
+  inMemoryBlobPoolSize: NonNegativeIntSchema,
+  maxPendingTxsPerSender: NonNegativeIntSchema,
+  maxPendingBlobTxsPerSender: NonNegativeIntSchema,
+  hashCacheSize: NonNegativeIntSchema,
+  gasLimit: NullableNonNegativeIntSchema,
+  maxTxSize: NullableNonNegativeIntSchema,
+  maxBlobTxSize: NullableNonNegativeIntSchema,
+  proofsTranslationEnabled: Schema.Boolean,
+  reportMinutes: NullableNonNegativeIntSchema,
+  acceptTxWhenNotSynced: Schema.Boolean,
+  persistentBroadcastEnabled: Schema.Boolean,
+  currentBlobBaseFeeRequired: Schema.Boolean,
+  minBlobTxPriorityFee: MinBlobTxPriorityFeeInputSchema,
+});
+
 export const TxPoolConfigSchema = Schema.Struct({
   peerNotificationThreshold: NonNegativeIntSchema,
   minBaseFeeThreshold: NonNegativeIntSchema,
@@ -53,7 +83,7 @@ export const TxPoolConfigSchema = Schema.Struct({
 /** Configuration for the transaction pool. */
 export type TxPoolConfig = Schema.Schema.Type<typeof TxPoolConfigSchema>;
 export type TxPoolConfigInput = Schema.Schema.Encoded<
-  typeof TxPoolConfigSchema
+  typeof TxPoolConfigInputSchema
 >;
 
 /** Default txpool configuration derived from Nethermind defaults. */
@@ -98,14 +128,53 @@ export interface TxPoolService {
 /** Context tag for the transaction pool. */
 export class TxPool extends Context.Tag("TxPool")<TxPool, TxPoolService>() {}
 
+const parseMinBlobTxPriorityFee = (value: MinBlobTxPriorityFeeInput) =>
+  Effect.try({
+    try: () => {
+      if (typeof value === "bigint") {
+        return Schema.decodeSync(MaxPriorityFeePerGas.BigInt)(value);
+      }
+
+      if (typeof value === "number") {
+        if (!Number.isFinite(value) || !Number.isInteger(value)) {
+          throw new Error("minBlobTxPriorityFee must be an integer");
+        }
+        return Schema.decodeSync(MaxPriorityFeePerGas.BigInt)(BigInt(value));
+      }
+
+      const normalized = value.trim();
+      if (normalized.length === 0) {
+        throw new Error("minBlobTxPriorityFee cannot be empty");
+      }
+
+      return Schema.decodeSync(MaxPriorityFeePerGas.BigInt)(BigInt(normalized));
+    },
+    catch: (cause) =>
+      new InvalidTxPoolConfigError({
+        message: "Invalid minBlobTxPriorityFee",
+        cause,
+      }),
+  });
+
 const decodeConfig = (config: TxPoolConfigInput) =>
-  Schema.decode(TxPoolConfigSchema)(config).pipe(
+  Schema.decode(TxPoolConfigInputSchema)(config).pipe(
     Effect.mapError(
       (cause) =>
         new InvalidTxPoolConfigError({
           message: "Invalid txpool configuration",
           cause,
         }),
+    ),
+    Effect.flatMap((decoded) =>
+      parseMinBlobTxPriorityFee(decoded.minBlobTxPriorityFee).pipe(
+        Effect.map((minBlobTxPriorityFee) => {
+          const normalized = {
+            ...decoded,
+            minBlobTxPriorityFee,
+          } satisfies TxPoolConfig;
+          return normalized;
+        }),
+      ),
     ),
   );
 
