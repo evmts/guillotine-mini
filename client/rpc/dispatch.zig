@@ -16,7 +16,7 @@ const primitives = @import("primitives");
 pub fn resolveNamespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcMethod) {
     // Fast prefix short-circuit: only probe the relevant namespace
     if (std.mem.startsWith(u8, method_name, "eth_")) {
-        if (jsonrpc.eth.fromMethodName(method_name)) |tag| {
+        if (jsonrpc.eth.EthMethod.fromMethodName(method_name)) |tag| {
             _ = tag;
             return .eth;
         } else |err| switch (err) {
@@ -25,7 +25,7 @@ pub fn resolveNamespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcMe
         }
     }
     if (std.mem.startsWith(u8, method_name, "engine_")) {
-        if (jsonrpc.engine.fromMethodName(method_name)) |tag| {
+        if (jsonrpc.engine.EngineMethod.fromMethodName(method_name)) |tag| {
             _ = tag;
             return .engine;
         } else |err| switch (err) {
@@ -34,7 +34,7 @@ pub fn resolveNamespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcMe
         }
     }
     if (std.mem.startsWith(u8, method_name, "debug_")) {
-        if (jsonrpc.debug.fromMethodName(method_name)) |tag| {
+        if (jsonrpc.debug.DebugMethod.fromMethodName(method_name)) |tag| {
             _ = tag;
             return .debug;
         } else |err| switch (err) {
@@ -44,7 +44,7 @@ pub fn resolveNamespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcMe
     }
 
     // Try Engine namespace
-    if (jsonrpc.engine.fromMethodName(method_name)) |tag| {
+    if (jsonrpc.engine.EngineMethod.fromMethodName(method_name)) |tag| {
         _ = tag; // tag not used beyond confirming success
         return .engine;
     } else |err| switch (err) {
@@ -53,7 +53,7 @@ pub fn resolveNamespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcMe
     }
 
     // Try Eth namespace
-    if (jsonrpc.eth.fromMethodName(method_name)) |tag| {
+    if (jsonrpc.eth.EthMethod.fromMethodName(method_name)) |tag| {
         _ = tag;
         return .eth;
     } else |err| switch (err) {
@@ -62,7 +62,7 @@ pub fn resolveNamespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcMe
     }
 
     // Try Debug namespace
-    if (jsonrpc.debug.fromMethodName(method_name)) |tag| {
+    if (jsonrpc.debug.DebugMethod.fromMethodName(method_name)) |tag| {
         _ = tag;
         return .debug;
     } else |err| switch (err) {
@@ -165,9 +165,8 @@ pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
             },
             '[' => depth += 1,
             ']' => if (depth == 0) break else depth -= 1,
-            ':' => if (depth == 1) expecting_key = false,
-            ',' => if (depth == 1) expecting_key = true,
-            ' ', '\\t', '\\n', '\\r' => {},
+            58 => { if (depth == 1) expecting_key = false; },
+            44 => { if (depth == 1) expecting_key = true; },
             else => {},
         }
     }
