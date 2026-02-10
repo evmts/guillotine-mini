@@ -62,7 +62,7 @@ const assertTrieNodeStorageError = (
   result: Either<TrieNodeStorageError, unknown>,
 ): TrieNodeStorageError => {
   if (result._tag === "Left") {
-    assert.isTrue(result.left instanceof TrieNodeStorageError);
+    assert.strictEqual(result.left instanceof TrieNodeStorageError, true);
     return result.left;
   }
 
@@ -96,9 +96,9 @@ describe("TrieNodeStorage", () => {
       yield* setNode(nodeHash, encodedNode);
       const loaded = yield* getNode(nodeHash);
 
-      assert.isTrue(Option.isSome(loaded));
+      assert.strictEqual(Option.isSome(loaded), true);
       if (Option.isSome(loaded)) {
-        assert.isTrue(Bytes.equals(loaded.value, encodedNode));
+        assert.strictEqual(Bytes.equals(loaded.value, encodedNode), true);
       }
     }).pipe(Effect.provide(TestLayer)),
   );
@@ -109,7 +109,7 @@ describe("TrieNodeStorage", () => {
         "0x2222222222222222222222222222222222222222222222222222222222222222",
       );
       const loaded = yield* getNode(nodeHash);
-      assert.isTrue(Option.isNone(loaded));
+      assert.strictEqual(Option.isNone(loaded), true);
     }).pipe(Effect.provide(TestLayer)),
   );
 
@@ -124,8 +124,8 @@ describe("TrieNodeStorage", () => {
       yield* setNode(nodeHash, encodedNode);
       const after = yield* hasNode(nodeHash);
 
-      assert.isFalse(before);
-      assert.isTrue(after);
+      assert.strictEqual(before, false);
+      assert.strictEqual(after, true);
     }).pipe(Effect.provide(TestLayer)),
   );
 
@@ -142,8 +142,8 @@ describe("TrieNodeStorage", () => {
       const loaded = yield* getNode(nodeHash);
       const present = yield* hasNode(nodeHash);
 
-      assert.isTrue(Option.isNone(loaded));
-      assert.isFalse(present);
+      assert.strictEqual(Option.isNone(loaded), true);
+      assert.strictEqual(present, false);
     }).pipe(Effect.provide(TestLayer)),
   );
 
@@ -160,14 +160,14 @@ describe("TrieNodeStorage", () => {
       const after = yield* getNode(EMPTY_TRIE_ROOT);
       const afterPresent = yield* hasNode(EMPTY_TRIE_ROOT);
 
-      assert.isTrue(Option.isSome(before));
-      assert.isTrue(beforePresent);
-      assert.isTrue(Option.isSome(after));
-      assert.isTrue(afterPresent);
+      assert.strictEqual(Option.isSome(before), true);
+      assert.strictEqual(beforePresent, true);
+      assert.strictEqual(Option.isSome(after), true);
+      assert.strictEqual(afterPresent, true);
 
       if (Option.isSome(before) && Option.isSome(after)) {
-        assert.isTrue(Bytes.equals(before.value, emptyNode));
-        assert.isTrue(Bytes.equals(after.value, emptyNode));
+        assert.strictEqual(Bytes.equals(before.value, emptyNode), true);
+        assert.strictEqual(Bytes.equals(after.value, emptyNode), true);
       }
     }).pipe(Effect.provide(TestLayer)),
   );
@@ -233,12 +233,15 @@ describe("TrieNodeStorage", () => {
           return;
         }
 
-        assert.isTrue(yield* Hash.equals(reference.value, expectedHash));
+        assert.strictEqual(
+          yield* Hash.equals(reference.value, expectedHash),
+          true,
+        );
 
         const loaded = yield* getNode(reference.value);
-        assert.isTrue(Option.isSome(loaded));
+        assert.strictEqual(Option.isSome(loaded), true);
         if (Option.isSome(loaded)) {
-          assert.isTrue(Bytes.equals(loaded.value, encodedNode));
+          assert.strictEqual(Bytes.equals(loaded.value, encodedNode), true);
         }
       }).pipe(Effect.provide(TestLayer)),
   );
@@ -261,12 +264,13 @@ describe("TrieNodeStorage", () => {
         const reEncoded = yield* coerceEffect<Uint8Array, unknown>(
           Rlp.encode(reference.value),
         );
-        assert.isTrue(
+        assert.strictEqual(
           Bytes.equals(bytesFromUint8Array(reEncoded), encodedNode),
+          true,
         );
 
         const persisted = yield* hasNode(expectedHash);
-        assert.isFalse(persisted);
+        assert.strictEqual(persisted, false);
       }).pipe(Effect.provide(TestLayer)),
   );
 
@@ -295,9 +299,9 @@ describe("TrieNodeStorage", () => {
         mutable[mutable.length - 1] = 0xff;
 
         const loaded = yield* getNode(nodeHash);
-        assert.isTrue(Option.isSome(loaded));
+        assert.strictEqual(Option.isSome(loaded), true);
         if (Option.isSome(loaded)) {
-          assert.isTrue(Bytes.equals(loaded.value, original));
+          assert.strictEqual(Bytes.equals(loaded.value, original), true);
         }
       }).pipe(Effect.provide(TestLayer)),
   );
@@ -344,10 +348,10 @@ describe("TrieNodeStorage", () => {
       const loaded = yield* getNodeWithContext(addressHash, path, nodeHash);
       const exists = yield* hasNodeWithContext(addressHash, path, nodeHash);
 
-      assert.isTrue(Option.isSome(loaded));
-      assert.isTrue(exists);
+      assert.strictEqual(Option.isSome(loaded), true);
+      assert.strictEqual(exists, true);
       if (Option.isSome(loaded)) {
-        assert.isTrue(Bytes.equals(loaded.value, encodedNode));
+        assert.strictEqual(Bytes.equals(loaded.value, encodedNode), true);
       }
     }).pipe(Effect.provide(TestLayer)),
   );
@@ -375,10 +379,10 @@ describe("TrieNodeStorage", () => {
       const loaded = yield* getNodeWithContext(addressHash, path, nodeHash);
       const exists = yield* hasNodeWithContext(addressHash, path, nodeHash);
 
-      assert.isTrue(Option.isSome(loaded));
-      assert.isTrue(exists);
+      assert.strictEqual(Option.isSome(loaded), true);
+      assert.strictEqual(exists, true);
       if (Option.isSome(loaded)) {
-        assert.isTrue(Bytes.equals(loaded.value, encodedNode));
+        assert.strictEqual(Bytes.equals(loaded.value, encodedNode), true);
       }
     }).pipe(Effect.provide(TestLayer)),
   );
@@ -418,8 +422,8 @@ describe("TrieNodeStorage", () => {
 
       const loaded = yield* getNodeWithContext(addressHash, path, nodeHash);
       const exists = yield* hasNodeWithContext(addressHash, path, nodeHash);
-      assert.isTrue(Option.isNone(loaded));
-      assert.isFalse(exists);
+      assert.strictEqual(Option.isNone(loaded), true);
+      assert.strictEqual(exists, false);
     }).pipe(Effect.provide(TestLayer)),
   );
 });
