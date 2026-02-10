@@ -4,7 +4,27 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { Bytes } from "voltaire-effect/primitives";
 import { Db, DbMemoryTest } from "./Db";
-import { ReadOnlyDb, ReadOnlyDbLive } from "./ReadOnlyDb";
+import {
+  ReadOnlyDb,
+  ReadOnlyDbLive,
+  clear as clearReadOnly,
+  clearTempChanges,
+  compact,
+  createSnapshot,
+  flush,
+  gatherMetric,
+  get,
+  getAll,
+  getAllKeys,
+  getAllValues,
+  getMany,
+  has,
+  merge,
+  put,
+  remove,
+  startWriteBatch,
+  writeBatch,
+} from "./ReadOnlyDb";
 import { toBytes } from "./testUtils";
 
 describe("ReadOnlyDb", () => {
@@ -284,5 +304,84 @@ describe("ReadOnlyDb", () => {
         "DbError",
       );
     }).pipe(Effect.provide(withoutOverlay)),
+  );
+
+  it.effect("convenience accessors delegate to ReadOnlyDb service", () =>
+    Effect.gen(function* () {
+      const base = yield* Db;
+      const baseKey = toBytes("0x60");
+      const baseValue = toBytes("0xaaaa");
+      const overlayKey = toBytes("0x61");
+      const overlayValue = toBytes("0xbbbb");
+      const batchKey = toBytes("0x62");
+      const batchValue = toBytes("0xcccc");
+      const scopedKey = toBytes("0x63");
+      const scopedValue = toBytes("0xdddd");
+
+      yield* base.put(baseKey, baseValue);
+      yield* put(overlayKey, overlayValue);
+
+      const single = yield* get(overlayKey);
+      assert.isTrue(Bytes.equals(Option.getOrThrow(single), overlayValue));
+
+      const many = yield* getMany([baseKey, overlayKey]);
+      assert.strictEqual(many.length, 2);
+      assert.isTrue(Bytes.equals(Option.getOrThrow(many[0]!.value), baseValue));
+      assert.isTrue(
+        Bytes.equals(Option.getOrThrow(many[1]!.value), overlayValue),
+      );
+
+      const entries = yield* getAll();
+      assert.strictEqual(entries.length, 2);
+      const keys = yield* getAllKeys();
+      assert.strictEqual(keys.length, 2);
+      const values = yield* getAllValues();
+      assert.strictEqual(values.length, 2);
+
+      assert.isTrue(yield* has(baseKey));
+
+      yield* writeBatch([{ _tag: "put", key: batchKey, value: batchValue }]);
+      const batchStored = yield* get(batchKey);
+      assert.isTrue(Bytes.equals(Option.getOrThrow(batchStored), batchValue));
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const batch = yield* startWriteBatch();
+          yield* batch.put(scopedKey, scopedValue);
+          yield* batch.clear();
+        }),
+      );
+      const scopedStored = yield* get(scopedKey);
+      assert.isTrue(Bytes.equals(Option.getOrThrow(scopedStored), scopedValue));
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const snapshot = yield* createSnapshot();
+          const snapshotValue = yield* snapshot.get(overlayKey);
+          assert.isTrue(
+            Bytes.equals(Option.getOrThrow(snapshotValue), overlayValue),
+          );
+        }),
+      );
+
+      yield* flush();
+      yield* compact();
+      const metrics = yield* gatherMetric();
+      assert.strictEqual(metrics.size, 1);
+
+      const mergeError = yield* Effect.flip(merge(overlayKey, overlayValue));
+      assert.strictEqual(mergeError._tag, "DbError");
+
+      const clearError = yield* Effect.flip(clearReadOnly());
+      assert.strictEqual(clearError._tag, "DbError");
+
+      yield* remove(overlayKey);
+      const removed = yield* get(overlayKey);
+      assert.isTrue(Bytes.equals(Option.getOrThrow(removed), baseValue));
+
+      yield* clearTempChanges();
+      const afterClear = yield* get(baseKey);
+      assert.isTrue(Bytes.equals(Option.getOrThrow(afterClear), baseValue));
+    }).pipe(Effect.provide(withOverlay)),
   );
 });
