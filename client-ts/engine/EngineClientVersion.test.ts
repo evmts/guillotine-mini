@@ -140,6 +140,30 @@ describe("EngineClientVersion", () => {
     }),
   );
 
+  it.effect("rejects configured response payloads with empty version", () =>
+    Effect.gen(function* () {
+      const outcome = yield* getClientVersionV1(makeClientVersion()).pipe(
+        Effect.provide(
+          EngineClientVersionLive([
+            makeClientVersion({
+              version: "  ",
+            }),
+          ]),
+        ),
+        Effect.either,
+      );
+
+      assert.isTrue(Either.isLeft(outcome));
+      if (Either.isLeft(outcome)) {
+        const error = outcome.left;
+        assert.isTrue(error instanceof InvalidClientVersionV1Error);
+        assert.strictEqual(error.source, "response");
+        assert.strictEqual(error.reason, "EmptyVersion");
+        assert.strictEqual(error.index, 0);
+      }
+    }),
+  );
+
   it.effect(
     "rejects multi-entry response configuration for single-client mode",
     () =>
