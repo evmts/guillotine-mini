@@ -216,8 +216,8 @@ test "NullDb: multiple instances are independent" {
     const iface1 = ndb1.database();
     const iface2 = ndb2.database();
 
-    try std.testing.expectEqual(null, try iface1.get("key"));
-    try std.testing.expectEqual(null, try iface2.get("key"));
+    try std.testing.expect((try iface1.get("key")) == null);
+    try std.testing.expect((try iface2.get("key")) == null);
 }
 
 test "NullDb: name is accessible via interface" {

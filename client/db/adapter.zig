@@ -46,6 +46,8 @@ pub const Error = error{
     ValueTooLarge,
     /// The database has been closed or is in an invalid state.
     DatabaseClosed,
+    /// The backend does not support the requested operation.
+    UnsupportedOperation,
     /// Allocation failure — propagated directly, never masked as StorageError.
     OutOfMemory,
 };
@@ -112,6 +114,211 @@ pub const DbName = enum {
     }
 };
 
+/// Read flags (Nethermind ReadFlags) — backend optimization hints.
+pub const ReadFlags = struct {
+    bits: u8,
+
+    pub const none = ReadFlags{ .bits = 0 };
+    pub const hint_cache_miss = ReadFlags{ .bits = 1 };
+    pub const hint_read_ahead = ReadFlags{ .bits = 2 };
+    pub const hint_read_ahead2 = ReadFlags{ .bits = 4 };
+    pub const hint_read_ahead3 = ReadFlags{ .bits = 8 };
+    pub const skip_duplicate_read = ReadFlags{ .bits = 16 };
+
+    pub fn merge(self: ReadFlags, other: ReadFlags) ReadFlags {
+        return .{ .bits = self.bits | other.bits };
+    }
+
+    pub fn has(self: ReadFlags, other: ReadFlags) bool {
+        return (self.bits & other.bits) == other.bits;
+    }
+};
+
+/// Write flags (Nethermind WriteFlags) — backend optimization hints.
+pub const WriteFlags = struct {
+    bits: u8,
+
+    pub const none = WriteFlags{ .bits = 0 };
+    pub const low_priority = WriteFlags{ .bits = 1 };
+    pub const disable_wal = WriteFlags{ .bits = 2 };
+    pub const low_priority_and_no_wal = WriteFlags{
+        .bits = low_priority.bits | disable_wal.bits,
+    };
+
+    pub fn merge(self: WriteFlags, other: WriteFlags) WriteFlags {
+        return .{ .bits = self.bits | other.bits };
+    }
+
+    pub fn has(self: WriteFlags, other: WriteFlags) bool {
+        return (self.bits & other.bits) == other.bits;
+    }
+};
+
+/// Database metrics (Nethermind DbMetric).
+pub const DbMetric = struct {
+    size: u64 = 0,
+    cache_size: u64 = 0,
+    index_size: u64 = 0,
+    memtable_size: u64 = 0,
+    total_reads: u64 = 0,
+    total_writes: u64 = 0,
+};
+
+/// Release callback for DB values owned by the backend.
+pub const ReleaseFn = *const fn (ctx: ?*anyopaque, bytes: []const u8) void;
+
+/// Borrowed DB value with optional release hook.
+pub const DbValue = struct {
+    bytes: []const u8,
+    release_ctx: ?*anyopaque = null,
+    release_fn: ?ReleaseFn = null,
+
+    pub fn release(self: DbValue) void {
+        if (self.release_fn) |func| {
+            func(self.release_ctx, self.bytes);
+        }
+    }
+
+    pub fn borrowed(bytes: []const u8) DbValue {
+        return .{ .bytes = bytes };
+    }
+};
+
+/// Key/value entry used by iterators.
+pub const DbEntry = struct {
+    key: DbValue,
+    value: DbValue,
+
+    pub fn release(self: DbEntry) void {
+        self.key.release();
+        self.value.release();
+    }
+};
+
+/// Type-erased DB iterator.
+pub const DbIterator = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        next: *const fn (ptr: *anyopaque) Error!?DbEntry,
+        deinit: *const fn (ptr: *anyopaque) void,
+    };
+
+    pub fn next(self: *DbIterator) Error!?DbEntry {
+        return self.vtable.next(self.ptr);
+    }
+
+    pub fn deinit(self: *DbIterator) void {
+        self.vtable.deinit(self.ptr);
+    }
+
+    pub fn init(
+        comptime T: type,
+        ptr: *T,
+        comptime next_fn: *const fn (ptr: *T) Error!?DbEntry,
+        comptime deinit_fn: *const fn (ptr: *T) void,
+    ) DbIterator {
+        const Wrapper = struct {
+            fn next_impl(raw: *anyopaque) Error!?DbEntry {
+                const typed: *T = @ptrCast(@alignCast(raw));
+                return next_fn(typed);
+            }
+
+            fn deinit_impl(raw: *anyopaque) void {
+                const typed: *T = @ptrCast(@alignCast(raw));
+                deinit_fn(typed);
+            }
+
+            const vtable = VTable{
+                .next = next_impl,
+                .deinit = deinit_impl,
+            };
+        };
+
+        return .{
+            .ptr = @ptrCast(ptr),
+            .vtable = &Wrapper.vtable,
+        };
+    }
+};
+
+/// Type-erased DB snapshot.
+pub const DbSnapshot = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        get: *const fn (ptr: *anyopaque, key: []const u8, flags: ReadFlags) Error!?DbValue,
+        contains: *const fn (ptr: *anyopaque, key: []const u8) Error!bool,
+        iterator: ?*const fn (ptr: *anyopaque, ordered: bool) Error!DbIterator,
+        deinit: *const fn (ptr: *anyopaque) void,
+    };
+
+    pub fn get(self: *const DbSnapshot, key: []const u8, flags: ReadFlags) Error!?DbValue {
+        return self.vtable.get(self.ptr, key, flags);
+    }
+
+    pub fn contains(self: *const DbSnapshot, key: []const u8) Error!bool {
+        return self.vtable.contains(self.ptr, key);
+    }
+
+    pub fn iterator(self: *const DbSnapshot, ordered: bool) Error!DbIterator {
+        if (self.vtable.iterator) |iter_fn| {
+            return iter_fn(self.ptr, ordered);
+        }
+        return error.UnsupportedOperation;
+    }
+
+    pub fn deinit(self: *const DbSnapshot) void {
+        self.vtable.deinit(self.ptr);
+    }
+
+    pub fn init(
+        comptime T: type,
+        ptr: *T,
+        comptime get_fn: *const fn (ptr: *T, key: []const u8, flags: ReadFlags) Error!?DbValue,
+        comptime contains_fn: *const fn (ptr: *T, key: []const u8) Error!bool,
+        comptime iterator_fn: ?*const fn (ptr: *T, ordered: bool) Error!DbIterator,
+        comptime deinit_fn: *const fn (ptr: *T) void,
+    ) DbSnapshot {
+        const Wrapper = struct {
+            fn get_impl(raw: *anyopaque, key: []const u8, flags: ReadFlags) Error!?DbValue {
+                const typed: *T = @ptrCast(@alignCast(raw));
+                return get_fn(typed, key, flags);
+            }
+
+            fn contains_impl(raw: *anyopaque, key: []const u8) Error!bool {
+                const typed: *T = @ptrCast(@alignCast(raw));
+                return contains_fn(typed, key);
+            }
+
+            fn iterator_impl(raw: *anyopaque, ordered: bool) Error!DbIterator {
+                const typed: *T = @ptrCast(@alignCast(raw));
+                const iter_fn = iterator_fn orelse return error.UnsupportedOperation;
+                return iter_fn(typed, ordered);
+            }
+
+            fn deinit_impl(raw: *anyopaque) void {
+                const typed: *T = @ptrCast(@alignCast(raw));
+                deinit_fn(typed);
+            }
+
+            const vtable = VTable{
+                .get = get_impl,
+                .contains = contains_impl,
+                .iterator = if (iterator_fn == null) null else iterator_impl,
+                .deinit = deinit_impl,
+            };
+        };
+
+        return .{
+            .ptr = @ptrCast(ptr),
+            .vtable = &Wrapper.vtable,
+        };
+    }
+};
+
 /// Generic key-value database interface using type-erased vtable dispatch.
 ///
 /// This is the fundamental storage abstraction for the Guillotine execution
@@ -130,7 +337,7 @@ pub const DbName = enum {
 ///
 /// // Use the interface
 /// try db.put("key", "value");
-/// const val = try db.get("key"); // returns ?[]const u8
+/// const val = try db.get("key"); // returns ?DbValue
 /// ```
 pub const Database = struct {
     /// Type-erased pointer to the concrete backend implementation.
@@ -143,23 +350,44 @@ pub const Database = struct {
     /// Mirrors Nethermind's IReadOnlyKeyValueStore + IWriteOnlyKeyValueStore,
     /// combined into a single vtable for simplicity.
     pub const VTable = struct {
+        /// Name of the database (column family).
+        name: *const fn (ptr: *anyopaque) DbName,
+
         /// Retrieve the value associated with `key`.
         /// Returns `null` if the key does not exist.
         /// The returned slice is owned by the database and valid until
         /// the next mutation or database destruction.
-        get: *const fn (ptr: *anyopaque, key: []const u8) Error!?[]const u8,
+        get: *const fn (ptr: *anyopaque, key: []const u8, flags: ReadFlags) Error!?DbValue,
 
         /// Store a key-value pair. If `value` is `null`, this is equivalent
         /// to calling `delete`. Overwrites any existing value for the key.
         /// Input slices are caller-owned and only valid for the duration
         /// of the call; implementations must copy if they need to retain them.
-        put: *const fn (ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void,
+        put: *const fn (ptr: *anyopaque, key: []const u8, value: ?[]const u8, flags: WriteFlags) Error!void,
 
         /// Remove the entry for `key`. No-op if the key does not exist.
-        delete: *const fn (ptr: *anyopaque, key: []const u8) Error!void,
+        delete: *const fn (ptr: *anyopaque, key: []const u8, flags: WriteFlags) Error!void,
 
         /// Check whether `key` exists in the database.
         contains: *const fn (ptr: *anyopaque, key: []const u8) Error!bool,
+
+        /// Iterate over all key/value entries.
+        iterator: *const fn (ptr: *anyopaque, ordered: bool) Error!DbIterator,
+
+        /// Create a snapshot for consistent reads.
+        snapshot: *const fn (ptr: *anyopaque) Error!DbSnapshot,
+
+        /// Flush pending writes to storage.
+        flush: *const fn (ptr: *anyopaque, only_wal: bool) Error!void,
+
+        /// Clear all entries in the database.
+        clear: *const fn (ptr: *anyopaque) Error!void,
+
+        /// Compact database storage.
+        compact: *const fn (ptr: *anyopaque) Error!void,
+
+        /// Gather diagnostic metrics.
+        gather_metric: *const fn (ptr: *anyopaque) Error!DbMetric,
 
         /// Apply a batch of write operations atomically.
         ///
@@ -176,26 +404,76 @@ pub const Database = struct {
         write_batch: ?*const fn (ptr: *anyopaque, ops: []const WriteBatchOp) Error!void = null,
     };
 
+    /// Return the database name (column family).
+    pub fn name(self: Database) DbName {
+        return self.vtable.name(self.ptr);
+    }
+
     /// Retrieve the value associated with `key`.
     /// Returns `null` if the key does not exist.
-    pub fn get(self: Database, key: []const u8) Error!?[]const u8 {
-        return self.vtable.get(self.ptr, key);
+    pub fn get(self: Database, key: []const u8) Error!?DbValue {
+        return self.get_with_flags(key, .none);
+    }
+
+    /// Retrieve the value associated with `key` with explicit read flags.
+    pub fn get_with_flags(self: Database, key: []const u8, flags: ReadFlags) Error!?DbValue {
+        return self.vtable.get(self.ptr, key, flags);
     }
 
     /// Store a key-value pair. If `value` is `null`, this is equivalent
     /// to calling `delete`.
     pub fn put(self: Database, key: []const u8, value: ?[]const u8) Error!void {
-        return self.vtable.put(self.ptr, key, value);
+        return self.put_with_flags(key, value, .none);
+    }
+
+    /// Store a key-value pair with explicit write flags.
+    pub fn put_with_flags(self: Database, key: []const u8, value: ?[]const u8, flags: WriteFlags) Error!void {
+        return self.vtable.put(self.ptr, key, value, flags);
     }
 
     /// Remove the entry for `key`. No-op if the key does not exist.
     pub fn delete(self: Database, key: []const u8) Error!void {
-        return self.vtable.delete(self.ptr, key);
+        return self.delete_with_flags(key, .none);
+    }
+
+    /// Remove the entry for `key` with explicit write flags.
+    pub fn delete_with_flags(self: Database, key: []const u8, flags: WriteFlags) Error!void {
+        return self.vtable.delete(self.ptr, key, flags);
     }
 
     /// Check whether `key` exists in the database.
     pub fn contains(self: Database, key: []const u8) Error!bool {
         return self.vtable.contains(self.ptr, key);
+    }
+
+    /// Iterate over all entries in the database.
+    pub fn iterator(self: Database, ordered: bool) Error!DbIterator {
+        return self.vtable.iterator(self.ptr, ordered);
+    }
+
+    /// Create a snapshot for consistent reads.
+    pub fn snapshot(self: Database) Error!DbSnapshot {
+        return self.vtable.snapshot(self.ptr);
+    }
+
+    /// Flush pending writes to storage.
+    pub fn flush(self: Database, only_wal: bool) Error!void {
+        return self.vtable.flush(self.ptr, only_wal);
+    }
+
+    /// Clear all entries in the database.
+    pub fn clear(self: Database) Error!void {
+        return self.vtable.clear(self.ptr);
+    }
+
+    /// Compact database storage.
+    pub fn compact(self: Database) Error!void {
+        return self.vtable.compact(self.ptr);
+    }
+
+    /// Gather diagnostic metrics.
+    pub fn gather_metric(self: Database) Error!DbMetric {
+        return self.vtable.gather_metric(self.ptr);
     }
 
     /// Returns true if the backend provides an atomic `write_batch` implementation.
@@ -352,7 +630,11 @@ pub const WriteBatch = struct {
 // Tests
 // ---------------------------------------------------------------------------
 
-fn get_null(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+fn name_default(_: *anyopaque) DbName {
+    return .metadata;
+}
+
+fn get_null(_: *anyopaque, _: []const u8, _: ReadFlags) Error!?DbValue {
     return null;
 }
 
@@ -360,23 +642,41 @@ fn contains_false(_: *anyopaque, _: []const u8) Error!bool {
     return false;
 }
 
+fn iterator_unsupported(_: *anyopaque, _: bool) Error!DbIterator {
+    return error.UnsupportedOperation;
+}
+
+fn snapshot_unsupported(_: *anyopaque) Error!DbSnapshot {
+    return error.UnsupportedOperation;
+}
+
+fn flush_noop(_: *anyopaque, _: bool) Error!void {}
+
+fn clear_noop(_: *anyopaque) Error!void {}
+
+fn compact_noop(_: *anyopaque) Error!void {}
+
+fn gather_metric_zero(_: *anyopaque) Error!DbMetric {
+    return .{};
+}
+
 /// Minimal mock database for testing the vtable dispatch mechanism.
 /// This is NOT the full MemoryDatabase (that goes in memory.zig).
 const MockDb = struct {
     call_count: usize = 0,
 
-    fn get_impl(ptr: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn get_impl(ptr: *anyopaque, _: []const u8, _: ReadFlags) Error!?DbValue {
         const self: *MockDb = @ptrCast(@alignCast(ptr));
         self.call_count += 1;
         return null;
     }
 
-    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8, _: WriteFlags) Error!void {
         const self: *MockDb = @ptrCast(@alignCast(ptr));
         self.call_count += 1;
     }
 
-    fn delete_impl(ptr: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, _: []const u8, _: WriteFlags) Error!void {
         const self: *MockDb = @ptrCast(@alignCast(ptr));
         self.call_count += 1;
     }
@@ -388,10 +688,17 @@ const MockDb = struct {
     }
 
     const vtable = Database.VTable{
+        .name = name_default,
         .get = get_impl,
         .put = put_impl,
         .delete = delete_impl,
         .contains = contains_impl,
+        .iterator = iterator_unsupported,
+        .snapshot = snapshot_unsupported,
+        .flush = flush_noop,
+        .clear = clear_noop,
+        .compact = compact_noop,
+        .gather_metric = gather_metric_zero,
     };
 
     fn database(self: *MockDb) Database {
@@ -407,7 +714,7 @@ test "Database vtable dispatches get" {
     const db = mock.database();
 
     const result = try db.get("test_key");
-    try std.testing.expectEqual(null, result);
+    try std.testing.expect(result == null);
     try std.testing.expectEqual(@as(usize, 1), mock.call_count);
 }
 
@@ -455,17 +762,24 @@ test "Database supports_write_batch reports true when present" {
     const BatchDb = struct {
         const Self = @This();
 
-        fn put_impl(_: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {}
+        fn put_impl(_: *anyopaque, _: []const u8, _: ?[]const u8, _: WriteFlags) Error!void {}
 
-        fn delete_impl(_: *anyopaque, _: []const u8) Error!void {}
+        fn delete_impl(_: *anyopaque, _: []const u8, _: WriteFlags) Error!void {}
 
         fn write_batch_impl(_: *anyopaque, _: []const WriteBatchOp) Error!void {}
 
         const vtable = Database.VTable{
+            .name = name_default,
             .get = get_null,
             .put = put_impl,
             .delete = delete_impl,
             .contains = contains_false,
+            .iterator = iterator_unsupported,
+            .snapshot = snapshot_unsupported,
+            .flush = flush_noop,
+            .clear = clear_noop,
+            .compact = compact_noop,
+            .gather_metric = gather_metric_zero,
             .write_batch = write_batch_impl,
         };
 
@@ -560,7 +874,7 @@ const TrackingDb = struct {
         self.deletes.deinit(self.alloc);
     }
 
-    fn put_impl(ptr: *anyopaque, key: []const u8, value: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, key: []const u8, value: ?[]const u8, _: WriteFlags) Error!void {
         const self: *TrackingDb = @ptrCast(@alignCast(ptr));
         const owned_key = self.alloc.dupe(u8, key) catch return error.OutOfMemory;
         var owned_value: ?[]const u8 = null;
@@ -577,7 +891,7 @@ const TrackingDb = struct {
         };
     }
 
-    fn delete_impl(ptr: *anyopaque, key: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, key: []const u8, _: WriteFlags) Error!void {
         const self: *TrackingDb = @ptrCast(@alignCast(ptr));
         const owned_key = self.alloc.dupe(u8, key) catch return error.OutOfMemory;
         self.deletes.append(self.alloc, owned_key) catch {
@@ -587,10 +901,17 @@ const TrackingDb = struct {
     }
 
     const vtable = Database.VTable{
+        .name = name_default,
         .get = get_null,
         .put = put_impl,
         .delete = delete_impl,
         .contains = contains_false,
+        .iterator = iterator_unsupported,
+        .snapshot = snapshot_unsupported,
+        .flush = flush_noop,
+        .clear = clear_noop,
+        .compact = compact_noop,
+        .gather_metric = gather_metric_zero,
     };
 
     fn database(self: *TrackingDb) Database {
@@ -710,7 +1031,7 @@ const FailingDb = struct {
     /// Tracks how many writes have been applied.
     applied: usize = 0,
 
-    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8, _: WriteFlags) Error!void {
         const self: *FailingDb = @ptrCast(@alignCast(ptr));
         if (self.applied >= self.succeed_count) {
             return Error.StorageError;
@@ -718,7 +1039,7 @@ const FailingDb = struct {
         self.applied += 1;
     }
 
-    fn delete_impl(ptr: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, _: []const u8, _: WriteFlags) Error!void {
         const self: *FailingDb = @ptrCast(@alignCast(ptr));
         if (self.applied >= self.succeed_count) {
             return Error.StorageError;
@@ -727,10 +1048,17 @@ const FailingDb = struct {
     }
 
     const vtable = Database.VTable{
+        .name = name_default,
         .get = get_null,
         .put = put_impl,
         .delete = delete_impl,
         .contains = contains_false,
+        .iterator = iterator_unsupported,
+        .snapshot = snapshot_unsupported,
+        .flush = flush_noop,
+        .clear = clear_noop,
+        .compact = compact_noop,
+        .gather_metric = gather_metric_zero,
     };
 
     fn database(self: *FailingDb) Database {
@@ -768,12 +1096,12 @@ const AtomicDb = struct {
     /// When true, write_batch will fail (to test rollback).
     should_fail: bool = false,
 
-    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(ptr: *anyopaque, _: []const u8, _: ?[]const u8, _: WriteFlags) Error!void {
         const self: *AtomicDb = @ptrCast(@alignCast(ptr));
         self.committed_count += 1;
     }
 
-    fn delete_impl(ptr: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(ptr: *anyopaque, _: []const u8, _: WriteFlags) Error!void {
         const self: *AtomicDb = @ptrCast(@alignCast(ptr));
         self.committed_count += 1;
     }
@@ -788,11 +1116,18 @@ const AtomicDb = struct {
     }
 
     const vtable = Database.VTable{
+        .name = name_default,
         .get = get_null,
         .put = put_impl,
         .delete = delete_impl,
         .contains = contains_false,
         .write_batch = write_batch_impl,
+        .iterator = iterator_unsupported,
+        .snapshot = snapshot_unsupported,
+        .flush = flush_noop,
+        .clear = clear_noop,
+        .compact = compact_noop,
+        .gather_metric = gather_metric_zero,
     };
 
     fn database(self: *AtomicDb) Database {

@@ -27,7 +27,12 @@ const std = @import("std");
 const adapter = @import("adapter.zig");
 const Database = adapter.Database;
 const DbName = adapter.DbName;
+const DbMetric = adapter.DbMetric;
+const DbSnapshot = adapter.DbSnapshot;
+const DbValue = adapter.DbValue;
 const Error = adapter.Error;
+const ReadFlags = adapter.ReadFlags;
+const WriteFlags = adapter.WriteFlags;
 
 /// Configuration settings for a RocksDB-backed database instance.
 ///
@@ -116,29 +121,65 @@ pub const RocksDatabase = struct {
     // -- VTable implementation (stub — all ops error) -------------------------
 
     const vtable = Database.VTable{
+        .name = name_impl,
         .get = get_impl,
         .put = put_impl,
         .delete = delete_impl,
         .contains = contains_impl,
+        .iterator = iterator_impl,
+        .snapshot = snapshot_impl,
+        .flush = flush_impl,
+        .clear = clear_impl,
+        .compact = compact_impl,
+        .gather_metric = gather_metric_impl,
     };
 
-    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
+    fn name_impl(ptr: *anyopaque) DbName {
+        const self: *RocksDatabase = @ptrCast(@alignCast(ptr));
+        return self.name;
+    }
+
+    fn get_impl(_: *anyopaque, _: []const u8, _: ReadFlags) Error!?DbValue {
         // Stub: RocksDB backend not implemented yet.
         return error.StorageError;
     }
 
-    fn put_impl(_: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
+    fn put_impl(_: *anyopaque, _: []const u8, _: ?[]const u8, _: WriteFlags) Error!void {
         // Stub: RocksDB backend not implemented yet.
         return error.StorageError;
     }
 
-    fn delete_impl(_: *anyopaque, _: []const u8) Error!void {
+    fn delete_impl(_: *anyopaque, _: []const u8, _: WriteFlags) Error!void {
         // Stub: RocksDB backend not implemented yet.
         return error.StorageError;
     }
 
     fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
         // Stub: RocksDB backend not implemented yet.
+        return error.StorageError;
+    }
+
+    fn iterator_impl(_: *anyopaque, _: bool) Error!adapter.DbIterator {
+        return error.StorageError;
+    }
+
+    fn snapshot_impl(_: *anyopaque) Error!DbSnapshot {
+        return error.StorageError;
+    }
+
+    fn flush_impl(_: *anyopaque, _: bool) Error!void {
+        return error.StorageError;
+    }
+
+    fn clear_impl(_: *anyopaque) Error!void {
+        return error.StorageError;
+    }
+
+    fn compact_impl(_: *anyopaque) Error!void {
+        return error.StorageError;
+    }
+
+    fn gather_metric_impl(_: *anyopaque) Error!DbMetric {
         return error.StorageError;
     }
 };

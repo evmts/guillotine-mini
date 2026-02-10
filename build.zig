@@ -118,6 +118,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("client/db/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+        },
     });
 
     const client_db_tests = b.addTest(.{
@@ -429,6 +432,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("client/db/bench.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+        },
     });
 
     const client_db_bench = b.addExecutable(.{
