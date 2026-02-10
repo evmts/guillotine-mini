@@ -160,3 +160,33 @@ test "cli prints usage on help flag" {
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "Usage:"));
     try std.testing.expect(!trace_enabled);
 }
+
+test "cli rejects missing or invalid values" {
+    const Case = struct {
+        args: []const []const u8,
+        expected: anyerror,
+    };
+
+    const cases = [_]Case{
+        .{ .args = &[_][]const u8{ "guillotine-mini", "--chain-id" }, .expected = error.MissingChainId },
+        .{ .args = &[_][]const u8{ "guillotine-mini", "--chain-id", "nope" }, .expected = error.InvalidChainId },
+        .{ .args = &[_][]const u8{ "guillotine-mini", "--network-id" }, .expected = error.MissingNetworkId },
+        .{ .args = &[_][]const u8{ "guillotine-mini", "--network-id", "bad" }, .expected = error.InvalidNetworkId },
+        .{ .args = &[_][]const u8{ "guillotine-mini", "--hardfork" }, .expected = error.MissingHardfork },
+        .{ .args = &[_][]const u8{ "guillotine-mini", "--hardfork", "Atlantis" }, .expected = error.InvalidHardfork },
+        .{ .args = &[_][]const u8{ "guillotine-mini", "--trace-tracer" }, .expected = error.MissingTraceTracer },
+        .{ .args = &[_][]const u8{ "guillotine-mini", "--trace-timeout" }, .expected = error.MissingTraceTimeout },
+        .{ .args = &[_][]const u8{ "guillotine-mini", "--unknown" }, .expected = error.UnknownOption },
+    };
+
+    for (cases) |case| {
+        var config = RunnerConfig{};
+        var trace_enabled = false;
+        var buffer: [128]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&buffer);
+        try std.testing.expectError(
+            case.expected,
+            parseArgs(case.args, &config, &trace_enabled, stream.writer()),
+        );
+    }
+}
