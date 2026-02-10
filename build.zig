@@ -266,7 +266,6 @@ pub fn build(b: *std.Build) void {
     const client_blockchain_test_step = b.step("test-blockchain", "Run chain management tests");
     client_blockchain_test_step.dependOn(&run_client_blockchain_tests.step);
 
-
     // Client TxPool module (transaction pool)
     const client_txpool_mod = b.addModule("client_txpool", .{
         .root_source_file = b.path("client/txpool/root.zig"),
@@ -288,6 +287,7 @@ pub fn build(b: *std.Build) void {
     const client_txpool_test_step = b.step("test-txpool", "Run txpool tests");
     client_txpool_test_step.dependOn(&run_client_txpool_tests.step);
 
+    // Client TxPool benchmark executable (added later after bench_utils_mod is defined)
 
     // Client JSON-RPC module (HTTP/WebSocket server + namespaces)
     const client_rpc_mod = b.addModule("client_rpc", .{
@@ -488,6 +488,28 @@ pub fn build(b: *std.Build) void {
     const run_client_trie_bench = b.addRunArtifact(client_trie_bench);
     const bench_trie_step = b.step("bench-trie", "Run Merkle Patricia Trie benchmarks");
     bench_trie_step.dependOn(&run_client_trie_bench.step);
+
+    // Client TxPool benchmark executable (depends on bench_utils)
+    const client_txpool_bench_mod = b.addModule("client_txpool_bench", .{
+        .root_source_file = b.path("client/txpool/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+            .{ .name = "primitives", .module = primitives_mod },
+        },
+    });
+
+    const client_txpool_bench = b.addExecutable(.{
+        .name = "bench_txpool",
+        .root_module = client_txpool_bench_mod,
+    });
+
+    const run_client_txpool_bench = b.addRunArtifact(client_txpool_bench);
+    const bench_txpool_step = b.step("bench-txpool", "Run transaction pool benchmarks");
+    bench_txpool_step.dependOn(&run_client_txpool_bench.step);
+    const install_client_txpool_bench = b.addInstallArtifact(client_txpool_bench, .{});
+    bench_txpool_step.dependOn(&install_client_txpool_bench.step);
 
     // Add execution-specs tests
     // Build option to force refreshing the generated Python fixtures
