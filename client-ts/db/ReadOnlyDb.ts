@@ -3,7 +3,6 @@ import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { Bytes, Hex } from "voltaire-effect/primitives";
 import {
   Db,
   DbError,
@@ -17,15 +16,25 @@ import {
   type WriteBatch,
   type WriteFlags,
 } from "./Db";
+import {
+  cloneBytes,
+  cloneBytesEffect,
+  compareBytes,
+  decodeKey,
+  encodeKey,
+} from "./DbUtils";
 
+/** Options for the read-only DB wrapper. */
 export interface ReadOnlyDbOptions {
   readonly createInMemWriteStore?: boolean;
 }
 
+/** Read-only DB service with optional in-memory write overlay. */
 export interface ReadOnlyDbService extends DbService {
   readonly clearTempChanges: () => Effect.Effect<void, DbError>;
 }
 
+/** Context tag for the read-only DB service. */
 export class ReadOnlyDb extends Context.Tag("ReadOnlyDb")<
   ReadOnlyDb,
   ReadOnlyDbService
@@ -43,51 +52,6 @@ const readOnlyWriteError = () =>
 
 const mergeUnsupportedError = () =>
   new DbError({ message: "ReadOnlyDb does not support merge" });
-
-const encodeKey = (key: BytesType): Effect.Effect<string, DbError> =>
-  Effect.try({
-    try: () => Hex.fromBytes(key),
-    catch: (cause) => new DbError({ message: "Invalid DB key", cause }),
-  });
-
-const decodeKey = (keyHex: string): BytesType =>
-  Hex.toBytes(keyHex) as BytesType;
-
-const compareBytes = (left: BytesType, right: BytesType): number => {
-  const leftBytes = left as Uint8Array;
-  const rightBytes = right as Uint8Array;
-
-  if (leftBytes === rightBytes) {
-    return 0;
-  }
-
-  if (leftBytes.length === 0) {
-    return rightBytes.length === 0 ? 0 : 1;
-  }
-
-  for (let index = 0; index < leftBytes.length; index += 1) {
-    if (rightBytes.length <= index) {
-      return -1;
-    }
-
-    const result = leftBytes[index]! - rightBytes[index]!;
-    if (result !== 0) {
-      return result < 0 ? -1 : 1;
-    }
-  }
-
-  return rightBytes.length > leftBytes.length ? 1 : 0;
-};
-
-const cloneBytes = (value: BytesType): BytesType =>
-  (value as Uint8Array).slice() as BytesType;
-
-const cloneBytesEffect = (
-  value: BytesType,
-): Effect.Effect<BytesType, DbError> =>
-  Bytes.isBytes(value)
-    ? Effect.succeed(cloneBytes(value))
-    : Effect.fail(new DbError({ message: "Invalid DB value" }));
 
 const cloneOverlayStore = (store: OverlayStore): OverlayStore => {
   const snapshot = new Map<string, BytesType>();
@@ -428,11 +392,13 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
     } satisfies ReadOnlyDbService;
   });
 
+/** Read-only DB layer for production. */
 export const ReadOnlyDbLive = (
   options: ReadOnlyDbOptions = {},
 ): Layer.Layer<ReadOnlyDb, DbError, Db> =>
   Layer.scoped(ReadOnlyDb, makeReadOnlyDb(options));
 
+/** Read-only DB layer for tests. */
 export const ReadOnlyDbTest = (
   options: ReadOnlyDbOptions = {},
 ): Layer.Layer<ReadOnlyDb, DbError, Db> =>

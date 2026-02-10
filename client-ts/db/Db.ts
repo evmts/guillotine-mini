@@ -1,12 +1,11 @@
 import * as Context from "effect/Context";
-import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
-import { Bytes, Hex } from "voltaire-effect/primitives";
+import { DbError } from "./DbError";
 import type { BytesType } from "./DbTypes";
 import {
   DbConfigSchema,
@@ -17,14 +16,16 @@ import {
   type ReadFlags,
   type WriteFlags,
 } from "./DbTypes";
+import {
+  cloneBytes,
+  cloneBytesEffect,
+  compareBytes,
+  decodeKey,
+  encodeKey,
+} from "./DbUtils";
 
 export * from "./DbTypes";
-
-/** Error raised by DB operations. */
-export class DbError extends Data.TaggedError("DbError")<{
-  readonly message: string;
-  readonly cause?: unknown;
-}> {}
+export { DbError } from "./DbError";
 
 /** DB key/value pair entry. */
 export interface DbEntry {
@@ -152,51 +153,6 @@ const validateConfig = (config: DbConfig): Effect.Effect<DbConfig, DbError> =>
     try: () => Schema.decodeSync(DbConfigSchema)(config),
     catch: (cause) => new DbError({ message: "Invalid DbConfig", cause }),
   });
-
-const encodeKey = (key: BytesType): Effect.Effect<string, DbError> =>
-  Effect.try({
-    try: () => Hex.fromBytes(key),
-    catch: (cause) => new DbError({ message: "Invalid DB key", cause }),
-  });
-
-const decodeKey = (keyHex: string): BytesType =>
-  Hex.toBytes(keyHex) as BytesType;
-
-const compareBytes = (left: BytesType, right: BytesType): number => {
-  const leftBytes = left as Uint8Array;
-  const rightBytes = right as Uint8Array;
-
-  if (leftBytes === rightBytes) {
-    return 0;
-  }
-
-  if (leftBytes.length === 0) {
-    return rightBytes.length === 0 ? 0 : 1;
-  }
-
-  for (let index = 0; index < leftBytes.length; index += 1) {
-    if (rightBytes.length <= index) {
-      return -1;
-    }
-
-    const result = leftBytes[index]! - rightBytes[index]!;
-    if (result !== 0) {
-      return result < 0 ? -1 : 1;
-    }
-  }
-
-  return rightBytes.length > leftBytes.length ? 1 : 0;
-};
-
-const cloneBytes = (value: BytesType): BytesType =>
-  (value as Uint8Array).slice() as BytesType;
-
-const cloneBytesEffect = (
-  value: BytesType,
-): Effect.Effect<BytesType, DbError> =>
-  Bytes.isBytes(value)
-    ? Effect.succeed(cloneBytes(value))
-    : Effect.fail(new DbError({ message: "Invalid DB value" }));
 
 const mergeUnsupportedError = () =>
   new DbError({ message: "Merge is not supported by the memory DB" });
