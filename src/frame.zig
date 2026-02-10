@@ -511,8 +511,11 @@ pub fn Frame(comptime config: EvmConfig) type {
             if (evm.tracer) |tracer| {
                 const gas_before = @as(u64, @intCast(@max(self.gas_remaining, 0)));
 
-                // Get memory slice for tracing
-                const mem_slice = try self.getMemorySlice(self.allocator);
+                // Get memory slice for tracing if configured
+                const mem_slice: ?[]const u8 = if (tracer.config.tracksMemory())
+                    try self.getMemorySlice(self.allocator)
+                else
+                    null;
 
                 // Execute opcode first to measure actual gas cost
                 const pc_before = self.pc;

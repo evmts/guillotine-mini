@@ -11,6 +11,7 @@ pub const PrecompileOutput = evm_config.PrecompileOutput;
 // Export the main EVM module
 pub const evm = @import("evm.zig");
 pub const Evm = evm.Evm;
+pub const StorageKey = evm.StorageKey;
 pub const StorageSlotKey = evm.StorageSlotKey;
 // AccessListParam removed - use primitives.AccessList.AccessList instead
 // AccessListStorageKey is now primitives.AccessList.StorageSlotKey

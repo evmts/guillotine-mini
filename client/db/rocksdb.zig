@@ -27,12 +27,52 @@ const std = @import("std");
 const adapter = @import("adapter.zig");
 const Database = adapter.Database;
 const DbName = adapter.DbName;
-const DbMetric = adapter.DbMetric;
-const DbSnapshot = adapter.DbSnapshot;
-const DbValue = adapter.DbValue;
 const Error = adapter.Error;
-const ReadFlags = adapter.ReadFlags;
-const WriteFlags = adapter.WriteFlags;
+
+/// Configuration settings for a RocksDB-backed database instance.
+///
+/// Mirrors Nethermind's `DbSettings` (Nethermind.Db/RocksDbSettings.cs),
+/// simplified for Zig and kept allocation-free. `path` and any merge
+/// operator references are caller-owned and must outlive the settings.
+pub const DbSettings = struct {
+    /// Logical database name (maps to column family or DB partition).
+    name: DbName,
+    /// Filesystem path for the RocksDB instance (caller-owned).
+    path: []const u8,
+    /// Whether to delete the DB on startup.
+    delete_on_start: bool = false,
+    /// Whether the DB folder can be deleted (safety guard).
+    can_delete_folder: bool = true,
+    /// Optional merge operator for the default column family (caller-owned).
+    merge_operator: ?*const anyopaque = null,
+    /// Optional per-column merge operators (caller-owned map).
+    columns_merge_operators: ?*const std.StringHashMapUnmanaged(*const anyopaque) = null,
+
+    /// Create settings for a named database at `path`.
+    pub fn init(name: DbName, path: []const u8) DbSettings {
+        return .{
+            .name = name,
+            .path = path,
+        };
+    }
+
+    /// Clone the settings (value-copy).
+    pub fn clone(self: DbSettings) DbSettings {
+        return self;
+    }
+
+    /// Clone with a new name/path while preserving flags.
+    pub fn clone_with(self: DbSettings, name: DbName, path: []const u8) DbSettings {
+        return .{
+            .name = name,
+            .path = path,
+            .delete_on_start = self.delete_on_start,
+            .can_delete_folder = self.can_delete_folder,
+            .merge_operator = self.merge_operator,
+            .columns_merge_operators = self.columns_merge_operators,
+        };
+    }
+};
 
 /// Stub RocksDB database implementing the `Database` vtable interface.
 ///
@@ -46,13 +86,18 @@ const WriteFlags = adapter.WriteFlags;
 pub const RocksDatabase = struct {
     /// Which logical database partition this instance represents.
     name: DbName,
+    /// Filesystem path for the RocksDB instance (caller-owned).
+    path: []const u8,
 
-    /// Create a new RocksDatabase stub for the given partition.
+    /// Create a new RocksDatabase stub for the given settings.
     ///
     /// In the real implementation, this would open a RocksDB instance
     /// at a derived path. Currently, no resources are allocated.
-    pub fn init(name: DbName) RocksDatabase {
-        return .{ .name = name };
+    pub fn init(settings: DbSettings) RocksDatabase {
+        return .{
+            .name = settings.name,
+            .path = settings.path,
+        };
     }
 
     /// Release all resources. Currently a no-op (stub has no resources).
@@ -71,65 +116,29 @@ pub const RocksDatabase = struct {
     // -- VTable implementation (stub — all ops error) -------------------------
 
     const vtable = Database.VTable{
-        .name = name_impl,
         .get = get_impl,
         .put = put_impl,
         .delete = delete_impl,
         .contains = contains_impl,
-        .iterator = iterator_impl,
-        .snapshot = snapshot_impl,
-        .flush = flush_impl,
-        .clear = clear_impl,
-        .compact = compact_impl,
-        .gather_metric = gather_metric_impl,
     };
 
-    fn name_impl(ptr: *anyopaque) DbName {
-        const self: *RocksDatabase = @ptrCast(@alignCast(ptr));
-        return self.name;
-    }
-
-    fn get_impl(_: *anyopaque, _: []const u8, _: ReadFlags) Error!?DbValue {
+    fn get_impl(_: *anyopaque, _: []const u8) Error!?[]const u8 {
         // Stub: RocksDB backend not implemented yet.
         return error.StorageError;
     }
 
-    fn put_impl(_: *anyopaque, _: []const u8, _: ?[]const u8, _: WriteFlags) Error!void {
+    fn put_impl(_: *anyopaque, _: []const u8, _: ?[]const u8) Error!void {
         // Stub: RocksDB backend not implemented yet.
         return error.StorageError;
     }
 
-    fn delete_impl(_: *anyopaque, _: []const u8, _: WriteFlags) Error!void {
+    fn delete_impl(_: *anyopaque, _: []const u8) Error!void {
         // Stub: RocksDB backend not implemented yet.
         return error.StorageError;
     }
 
     fn contains_impl(_: *anyopaque, _: []const u8) Error!bool {
         // Stub: RocksDB backend not implemented yet.
-        return error.StorageError;
-    }
-
-    fn iterator_impl(_: *anyopaque, _: bool) Error!adapter.DbIterator {
-        return error.StorageError;
-    }
-
-    fn snapshot_impl(_: *anyopaque) Error!DbSnapshot {
-        return error.StorageError;
-    }
-
-    fn flush_impl(_: *anyopaque, _: bool) Error!void {
-        return error.StorageError;
-    }
-
-    fn clear_impl(_: *anyopaque) Error!void {
-        return error.StorageError;
-    }
-
-    fn compact_impl(_: *anyopaque) Error!void {
-        return error.StorageError;
-    }
-
-    fn gather_metric_impl(_: *anyopaque) Error!DbMetric {
         return error.StorageError;
     }
 };
@@ -139,7 +148,8 @@ pub const RocksDatabase = struct {
 // ---------------------------------------------------------------------------
 
 test "RocksDatabase: get returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.state);
+    const settings = DbSettings.init(.state, "/tmp/guillotine-state");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     const iface = db.database();
@@ -147,7 +157,8 @@ test "RocksDatabase: get returns StorageError (unimplemented stub)" {
 }
 
 test "RocksDatabase: put returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.code);
+    const settings = DbSettings.init(.code, "/tmp/guillotine-code");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     const iface = db.database();
@@ -155,7 +166,8 @@ test "RocksDatabase: put returns StorageError (unimplemented stub)" {
 }
 
 test "RocksDatabase: put with null returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.headers);
+    const settings = DbSettings.init(.headers, "/tmp/guillotine-headers");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     const iface = db.database();
@@ -163,7 +175,8 @@ test "RocksDatabase: put with null returns StorageError (unimplemented stub)" {
 }
 
 test "RocksDatabase: delete returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.blocks);
+    const settings = DbSettings.init(.blocks, "/tmp/guillotine-blocks");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     const iface = db.database();
@@ -171,58 +184,100 @@ test "RocksDatabase: delete returns StorageError (unimplemented stub)" {
 }
 
 test "RocksDatabase: contains returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.receipts);
+    const settings = DbSettings.init(.receipts, "/tmp/guillotine-receipts");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     const iface = db.database();
     try std.testing.expectError(error.StorageError, iface.contains("key"));
 }
 
-test "RocksDatabase: name is accessible after init" {
-    var db = RocksDatabase.init(.headers);
+test "RocksDatabase: name and path are accessible after init" {
+    const settings = DbSettings.init(.headers, "/tmp/guillotine-headers");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     try std.testing.expectEqual(DbName.headers, db.name);
+    try std.testing.expectEqualStrings("/tmp/guillotine-headers", db.path);
     try std.testing.expectEqualStrings("headers", db.name.to_string());
-
-    const iface = db.database();
-    try std.testing.expectEqual(DbName.headers, iface.name());
 }
 
 test "RocksDatabase: multiple instances with different names" {
-    var db1 = RocksDatabase.init(.state);
+    const settings1 = DbSettings.init(.state, "/tmp/guillotine-state");
+    var db1 = RocksDatabase.init(settings1);
     defer db1.deinit();
 
-    var db2 = RocksDatabase.init(.code);
+    const settings2 = DbSettings.init(.code, "/tmp/guillotine-code");
+    var db2 = RocksDatabase.init(settings2);
     defer db2.deinit();
 
     try std.testing.expectEqual(DbName.state, db1.name);
     try std.testing.expectEqual(DbName.code, db2.name);
 }
 
-test "RocksDatabase: iterator returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.state);
-    defer db.deinit();
-
-    const iface = db.database();
-    try std.testing.expectError(error.StorageError, iface.iterator(false));
+test "DbSettings: init sets name/path and defaults flags" {
+    const settings = DbSettings.init(.state, "/tmp/guillotine-state");
+    try std.testing.expectEqual(DbName.state, settings.name);
+    try std.testing.expectEqualStrings("/tmp/guillotine-state", settings.path);
+    try std.testing.expectEqual(false, settings.delete_on_start);
+    try std.testing.expectEqual(true, settings.can_delete_folder);
+    try std.testing.expectEqual(@as(?*const anyopaque, null), settings.merge_operator);
+    try std.testing.expectEqual(
+        @as(?*const std.StringHashMapUnmanaged(*const anyopaque), null),
+        settings.columns_merge_operators,
+    );
 }
 
-test "RocksDatabase: snapshot returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.state);
-    defer db.deinit();
+test "DbSettings: clone copies flags" {
+    var settings = DbSettings.init(.code, "/tmp/guillotine-code");
+    var dummy: u8 = 0;
+    var columns = std.StringHashMapUnmanaged(*const anyopaque){};
+    defer columns.deinit(std.testing.allocator);
+    const merge_ptr: *const anyopaque = @ptrCast(&dummy);
+    try columns.put(std.testing.allocator, "default", merge_ptr);
+    settings.delete_on_start = true;
+    settings.can_delete_folder = false;
+    settings.merge_operator = merge_ptr;
+    settings.columns_merge_operators = &columns;
 
-    const iface = db.database();
-    try std.testing.expectError(error.StorageError, iface.snapshot());
+    const cloned = settings.clone();
+    try std.testing.expectEqual(DbName.code, cloned.name);
+    try std.testing.expectEqualStrings("/tmp/guillotine-code", cloned.path);
+    try std.testing.expectEqual(true, cloned.delete_on_start);
+    try std.testing.expectEqual(false, cloned.can_delete_folder);
+    try std.testing.expectEqual(
+        @intFromPtr(settings.merge_operator.?),
+        @intFromPtr(cloned.merge_operator.?),
+    );
+    try std.testing.expectEqual(
+        @intFromPtr(settings.columns_merge_operators.?),
+        @intFromPtr(cloned.columns_merge_operators.?),
+    );
 }
 
-test "RocksDatabase: maintenance ops return StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.state);
-    defer db.deinit();
+test "DbSettings: clone_with overrides name/path but keeps flags" {
+    var settings = DbSettings.init(.blocks, "/tmp/blocks");
+    var dummy: u8 = 0;
+    var columns = std.StringHashMapUnmanaged(*const anyopaque){};
+    defer columns.deinit(std.testing.allocator);
+    const merge_ptr: *const anyopaque = @ptrCast(&dummy);
+    try columns.put(std.testing.allocator, "default", merge_ptr);
+    settings.delete_on_start = true;
+    settings.can_delete_folder = false;
+    settings.merge_operator = merge_ptr;
+    settings.columns_merge_operators = &columns;
 
-    const iface = db.database();
-    try std.testing.expectError(error.StorageError, iface.flush(false));
-    try std.testing.expectError(error.StorageError, iface.clear());
-    try std.testing.expectError(error.StorageError, iface.compact());
-    try std.testing.expectError(error.StorageError, iface.gather_metric());
+    const cloned = settings.clone_with(.headers, "/tmp/headers");
+    try std.testing.expectEqual(DbName.headers, cloned.name);
+    try std.testing.expectEqualStrings("/tmp/headers", cloned.path);
+    try std.testing.expectEqual(true, cloned.delete_on_start);
+    try std.testing.expectEqual(false, cloned.can_delete_folder);
+    try std.testing.expectEqual(
+        @intFromPtr(settings.merge_operator.?),
+        @intFromPtr(cloned.merge_operator.?),
+    );
+    try std.testing.expectEqual(
+        @intFromPtr(settings.columns_merge_operators.?),
+        @intFromPtr(cloned.columns_merge_operators.?),
+    );
 }

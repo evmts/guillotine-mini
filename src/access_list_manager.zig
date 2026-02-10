@@ -25,7 +25,9 @@ const StorageKeyContext = struct {
 /// Manages warm/cold access state for EIP-2929
 pub const AccessListManager = struct {
     allocator: Allocator,
+    // Address uses AutoHashMap (20-byte array, auto-hash is sufficient).
     warm_addresses: std.AutoHashMap(Address, void),
+    // StorageKey uses ArrayHashMap with a custom context (address + slot).
     warm_storage_slots: std.ArrayHashMap(StorageKey, void, StorageKeyContext, false),
 
     /// Initialize empty access list manager
@@ -45,7 +47,7 @@ pub const AccessListManager = struct {
 
     /// Access an address and return gas cost (warm=100, cold=2600)
     /// EIP-2929: First access is cold, subsequent accesses are warm
-    pub fn accessAddress(self: *AccessListManager, addr: Address) !u64 {
+    pub fn access_address(self: *AccessListManager, addr: Address) !u64 {
         const entry = try self.warm_addresses.getOrPut(addr);
         return if (entry.found_existing)
             gas_constants.WarmStorageReadCost
@@ -55,7 +57,7 @@ pub const AccessListManager = struct {
 
     /// Access a storage slot and return gas cost (warm=100, cold=2100)
     /// EIP-2929: First access is cold, subsequent accesses are warm
-    pub fn accessStorageSlot(self: *AccessListManager, addr: Address, slot: u256) !u64 {
+    pub fn access_storage_slot(self: *AccessListManager, addr: Address, slot: u256) !u64 {
         const key = StorageKey{ .address = addr.bytes, .slot = slot };
         const entry = try self.warm_storage_slots.getOrPut(key);
         return if (entry.found_existing)
@@ -65,21 +67,21 @@ pub const AccessListManager = struct {
     }
 
     /// Pre-warm multiple addresses (marks them as already accessed)
-    pub fn preWarmAddresses(self: *AccessListManager, addresses: []const Address) !void {
+    pub fn pre_warm_addresses(self: *AccessListManager, addresses: []const Address) !void {
         for (addresses) |addr| {
             _ = try self.warm_addresses.getOrPut(addr);
         }
     }
 
     /// Pre-warm multiple storage slots (marks them as already accessed)
-    pub fn preWarmStorageSlots(self: *AccessListManager, slots: []const StorageKey) !void {
+    pub fn pre_warm_storage_slots(self: *AccessListManager, slots: []const StorageKey) !void {
         for (slots) |slot| {
             _ = try self.warm_storage_slots.getOrPut(slot);
         }
     }
 
     /// Pre-warm from EIP-2930 access list
-    pub fn preWarmFromAccessList(self: *AccessListManager, access_list: AccessList) !void {
+    pub fn pre_warm_from_access_list(self: *AccessListManager, access_list: AccessList) !void {
         for (access_list) |entry| {
             // Pre-warm address
             _ = try self.warm_addresses.getOrPut(entry.address);
@@ -94,23 +96,25 @@ pub const AccessListManager = struct {
     }
 
     /// Check if address is warm
-    pub fn isAddressWarm(self: *const AccessListManager, addr: Address) bool {
+    pub fn is_address_warm(self: *const AccessListManager, addr: Address) bool {
         return self.warm_addresses.contains(addr);
     }
 
     /// Check if storage slot is warm
-    pub fn isStorageSlotWarm(self: *const AccessListManager, addr: Address, slot: u256) bool {
+    pub fn is_storage_slot_warm(self: *const AccessListManager, addr: Address, slot: u256) bool {
         const key = StorageKey{ .address = addr.bytes, .slot = slot };
         return self.warm_storage_slots.contains(key);
     }
 
-    /// Clear all warm sets (used at transaction boundaries)
+    /// Clear all warm sets (call at transaction boundaries).
+    /// Warm state does not persist across transactions per EIP-2929.
     pub fn clear(self: *AccessListManager) void {
         self.warm_addresses.clearRetainingCapacity();
         self.warm_storage_slots.clearRetainingCapacity();
     }
 
-    /// Create snapshot for nested call revert handling
+    /// Create snapshot for nested call revert handling.
+    /// On successful call completion, discard the snapshot without restoring.
     pub fn snapshot(self: *const AccessListManager) !AccessListSnapshot {
         var addr_snapshot = std.AutoHashMap(Address, void).init(self.allocator);
         errdefer addr_snapshot.deinit();
@@ -132,7 +136,7 @@ pub const AccessListManager = struct {
         };
     }
 
-    /// Restore from snapshot (for nested call reverts)
+    /// Restore from snapshot (for nested call reverts).
     pub fn restore(self: *AccessListManager, snap: AccessListSnapshot) !void {
         var new_addresses = std.AutoHashMap(Address, void).init(self.allocator);
         errdefer new_addresses.deinit();
@@ -155,102 +159,123 @@ pub const AccessListManager = struct {
     }
 };
 
-/// Snapshot of warm sets for nested call revert handling
+/// Snapshot of warm sets for nested call revert handling.
 pub const AccessListSnapshot = struct {
     addresses: std.AutoHashMap(Address, void),
     slots: std.ArrayHashMap(StorageKey, void, StorageKeyContext, false),
 
-    /// Free snapshot resources
+    /// Release snapshot resources.
     pub fn deinit(self: *AccessListSnapshot) void {
         self.addresses.deinit();
         self.slots.deinit();
     }
 };
 
-test "AccessListManager: address warm tracking" {
+test "AccessListManager: init creates empty warm sets" {
     const allocator = std.testing.allocator;
     var manager = AccessListManager.init(allocator);
     defer manager.deinit();
 
-    const addr = Address{ .bytes = [_]u8{0x01} ** 20 };
-    try std.testing.expect(!manager.isAddressWarm(addr));
-
-    const cold_cost = try manager.accessAddress(addr);
-    try std.testing.expectEqual(gas_constants.ColdAccountAccessCost, cold_cost);
-    try std.testing.expect(manager.isAddressWarm(addr));
-
-    const warm_cost = try manager.accessAddress(addr);
-    try std.testing.expectEqual(gas_constants.WarmStorageReadCost, warm_cost);
+    try std.testing.expectEqual(@as(usize, 0), manager.warm_addresses.count());
+    try std.testing.expectEqual(@as(usize, 0), manager.warm_storage_slots.count());
 }
 
-test "AccessListManager: storage slot warm tracking" {
+test "AccessListManager: access_address returns cold then warm" {
     const allocator = std.testing.allocator;
     var manager = AccessListManager.init(allocator);
     defer manager.deinit();
 
-    const addr = Address{ .bytes = [_]u8{0x02} ** 20 };
-    const slot: u256 = 0x10;
+    const addr = Address{ .bytes = [_]u8{1} ** 20 };
+    const cold = try manager.access_address(addr);
+    try std.testing.expectEqual(gas_constants.ColdAccountAccessCost, cold);
 
-    try std.testing.expect(!manager.isStorageSlotWarm(addr, slot));
-
-    const cold_cost = try manager.accessStorageSlot(addr, slot);
-    try std.testing.expectEqual(gas_constants.ColdSloadCost, cold_cost);
-    try std.testing.expect(manager.isStorageSlotWarm(addr, slot));
-
-    const warm_cost = try manager.accessStorageSlot(addr, slot);
-    try std.testing.expectEqual(gas_constants.WarmStorageReadCost, warm_cost);
+    const warm = try manager.access_address(addr);
+    try std.testing.expectEqual(gas_constants.WarmStorageReadCost, warm);
 }
 
-test "AccessListManager: preWarmAddresses and preWarmStorageSlots" {
+test "AccessListManager: access_storage_slot returns cold then warm" {
     const allocator = std.testing.allocator;
     var manager = AccessListManager.init(allocator);
     defer manager.deinit();
 
-    const addr1 = Address{ .bytes = [_]u8{0x03} ** 20 };
-    const addr2 = Address{ .bytes = [_]u8{0x04} ** 20 };
+    const addr = Address{ .bytes = [_]u8{2} ** 20 };
+    const slot: u256 = 42;
+    const cold = try manager.access_storage_slot(addr, slot);
+    try std.testing.expectEqual(gas_constants.ColdSloadCost, cold);
+
+    const warm = try manager.access_storage_slot(addr, slot);
+    try std.testing.expectEqual(gas_constants.WarmStorageReadCost, warm);
+}
+
+test "AccessListManager: pre_warm_addresses marks warm" {
+    const allocator = std.testing.allocator;
+    var manager = AccessListManager.init(allocator);
+    defer manager.deinit();
+
+    const addr1 = Address{ .bytes = [_]u8{1} ** 20 };
+    const addr2 = Address{ .bytes = [_]u8{2} ** 20 };
     const addresses = [_]Address{ addr1, addr2 };
 
-    try manager.preWarmAddresses(addresses[0..]);
-    try std.testing.expect(manager.isAddressWarm(addr1));
-    try std.testing.expect(manager.isAddressWarm(addr2));
+    try manager.pre_warm_addresses(&addresses);
 
-    const slot1: u256 = 0x11;
-    const slot2: u256 = 0x12;
-    const key1 = StorageKey{ .address = addr1.bytes, .slot = slot1 };
-    const key2 = StorageKey{ .address = addr2.bytes, .slot = slot2 };
-    const keys = [_]StorageKey{ key1, key2 };
-
-    try manager.preWarmStorageSlots(keys[0..]);
-    try std.testing.expect(manager.isStorageSlotWarm(addr1, slot1));
-    try std.testing.expect(manager.isStorageSlotWarm(addr2, slot2));
+    try std.testing.expect(manager.is_address_warm(addr1));
+    try std.testing.expect(manager.is_address_warm(addr2));
 }
 
-test "AccessListManager: preWarmFromAccessList" {
+test "AccessListManager: pre_warm_storage_slots marks warm" {
     const allocator = std.testing.allocator;
     var manager = AccessListManager.init(allocator);
     defer manager.deinit();
 
-    const addr = Address{ .bytes = [_]u8{0x05} ** 20 };
-    var storage_keys = [_][32]u8{
-        [_]u8{0} ** 32,
-        [_]u8{0} ** 32,
+    const addr = Address{ .bytes = [_]u8{3} ** 20 };
+    const slot1: u256 = 1;
+    const slot2: u256 = 2;
+    const slots = [_]StorageKey{
+        .{ .address = addr.bytes, .slot = slot1 },
+        .{ .address = addr.bytes, .slot = slot2 },
     };
-    std.mem.writeInt(u256, &storage_keys[0], 0x21, .big);
-    std.mem.writeInt(u256, &storage_keys[1], 0x22, .big);
 
-    const entries = [_]primitives.AccessList.AccessListEntry{
+    try manager.pre_warm_storage_slots(&slots);
+
+    try std.testing.expect(manager.is_storage_slot_warm(addr, slot1));
+    try std.testing.expect(manager.is_storage_slot_warm(addr, slot2));
+}
+
+test "AccessListManager: pre_warm_from_access_list marks addresses and slots" {
+    const allocator = std.testing.allocator;
+    var manager = AccessListManager.init(allocator);
+    defer manager.deinit();
+
+    const addr = Address{ .bytes = [_]u8{4} ** 20 };
+    const slot_hash: primitives.Hash.Hash = [_]u8{0xaa} ** 32;
+    const access_list = [_]primitives.AccessList.AccessListEntry{
         .{
             .address = addr,
-            .storage_keys = storage_keys[0..],
+            .storage_keys = &[_]primitives.Hash.Hash{slot_hash},
         },
     };
-    const access_list: AccessList = entries[0..];
 
-    try manager.preWarmFromAccessList(access_list);
+    try manager.pre_warm_from_access_list(&access_list);
 
-    try std.testing.expect(manager.isAddressWarm(addr));
-    try std.testing.expect(manager.isStorageSlotWarm(addr, 0x21));
-    try std.testing.expect(manager.isStorageSlotWarm(addr, 0x22));
+    try std.testing.expect(manager.is_address_warm(addr));
+    const slot = std.mem.readInt(u256, &slot_hash, .big);
+    try std.testing.expect(manager.is_storage_slot_warm(addr, slot));
+}
+
+test "AccessListManager: clear resets warm state" {
+    const allocator = std.testing.allocator;
+    var manager = AccessListManager.init(allocator);
+    defer manager.deinit();
+
+    const addr = Address{ .bytes = [_]u8{5} ** 20 };
+    const slot: u256 = 7;
+    _ = try manager.access_address(addr);
+    _ = try manager.access_storage_slot(addr, slot);
+
+    manager.clear();
+
+    try std.testing.expect(!manager.is_address_warm(addr));
+    try std.testing.expect(!manager.is_storage_slot_warm(addr, slot));
 }
 
 test "AccessListManager: snapshot and restore" {
@@ -258,40 +283,18 @@ test "AccessListManager: snapshot and restore" {
     var manager = AccessListManager.init(allocator);
     defer manager.deinit();
 
-    const addr1 = Address{ .bytes = [_]u8{0x06} ** 20 };
-    const addr2 = Address{ .bytes = [_]u8{0x07} ** 20 };
-    const slot1: u256 = 0x31;
-    const slot2: u256 = 0x32;
+    const addr1 = Address{ .bytes = [_]u8{6} ** 20 };
+    const addr2 = Address{ .bytes = [_]u8{7} ** 20 };
 
-    _ = try manager.accessAddress(addr1);
-    _ = try manager.accessStorageSlot(addr1, slot1);
+    _ = try manager.access_address(addr1);
 
     var snap = try manager.snapshot();
     defer snap.deinit();
 
-    _ = try manager.accessAddress(addr2);
-    _ = try manager.accessStorageSlot(addr2, slot2);
-    try std.testing.expect(manager.isAddressWarm(addr2));
-    try std.testing.expect(manager.isStorageSlotWarm(addr2, slot2));
+    _ = try manager.access_address(addr2);
+    try std.testing.expect(manager.is_address_warm(addr2));
 
     try manager.restore(snap);
-
-    try std.testing.expect(manager.isAddressWarm(addr1));
-    try std.testing.expect(manager.isStorageSlotWarm(addr1, slot1));
-    try std.testing.expect(!manager.isAddressWarm(addr2));
-    try std.testing.expect(!manager.isStorageSlotWarm(addr2, slot2));
-}
-
-test "AccessListManager: clear resets warm sets" {
-    const allocator = std.testing.allocator;
-    var manager = AccessListManager.init(allocator);
-    defer manager.deinit();
-
-    const addr = Address{ .bytes = [_]u8{0x08} ** 20 };
-    _ = try manager.accessAddress(addr);
-    try std.testing.expect(manager.isAddressWarm(addr));
-
-    manager.clear();
-
-    try std.testing.expect(!manager.isAddressWarm(addr));
+    try std.testing.expect(manager.is_address_warm(addr1));
+    try std.testing.expect(!manager.is_address_warm(addr2));
 }

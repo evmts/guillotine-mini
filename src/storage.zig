@@ -8,11 +8,12 @@ const log = @import("logger.zig");
 const storage_injector = @import("storage_injector.zig");
 const async_executor = @import("async_executor.zig");
 
-// Re-export from primitives for convenience
+/// Re-export StorageKey from primitives for convenience.
 pub const StorageKey = primitives.State.StorageKey;
-pub const StorageSlotKey = StorageKey; // Backwards compatibility alias
+/// Backwards compatibility alias for StorageKey (prefer StorageKey for new code).
+pub const StorageSlotKey = StorageKey;
 
-// Re-export AsyncDataRequest from async_executor
+/// Re-export AsyncDataRequest from async_executor.
 pub const AsyncDataRequest = async_executor.AsyncDataRequest;
 
 /// Storage manager - handles all storage operations for the EVM
@@ -70,7 +71,7 @@ pub const Storage = struct {
     /// Parameters: self
     ///
     /// Returns: void
-    pub fn clearInjectorCache(self: *Storage) void {
+    pub fn clear_injector_cache(self: *Storage) void {
         if (self.storage_injector) |injector| {
             log.debug("Storage: Clearing injector cache", .{});
             injector.clearCache();
@@ -178,7 +179,7 @@ pub const Storage = struct {
     ///   - slot: Storage slot (u256)
     ///
     /// Returns: Original storage value (0 if slot was empty at transaction start)
-    pub fn getOriginal(self: *Storage, address: primitives.Address, slot: u256) u256 {
+    pub fn get_original(self: *Storage, address: primitives.Address, slot: u256) u256 {
         const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
         // If we have tracked the original, return it
         if (self.original_storage.get(key)) |original| {
@@ -202,7 +203,7 @@ pub const Storage = struct {
     ///   - slot: Transient storage slot (u256)
     ///
     /// Returns: Current transient value (0 if slot is empty)
-    pub fn getTransient(self: *Storage, address: primitives.Address, slot: u256) u256 {
+    pub fn get_transient(self: *Storage, address: primitives.Address, slot: u256) u256 {
         const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
         return self.transient.get(key) orelse 0;
     }
@@ -221,7 +222,7 @@ pub const Storage = struct {
     ///
     /// Errors:
     ///   - OutOfMemory: If HashMap allocation fails
-    pub fn setTransient(self: *Storage, address: primitives.Address, slot: u256, value: u256) !void {
+    pub fn set_transient(self: *Storage, address: primitives.Address, slot: u256, value: u256) !void {
         const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
         if (value == 0) {
             _ = self.transient.remove(key);
@@ -244,7 +245,7 @@ pub const Storage = struct {
     ///
     /// Errors:
     ///   - OutOfMemory: If cache or storage allocation fails
-    pub fn putInCache(self: *Storage, address: primitives.Address, slot: u256, value: u256) !void {
+    pub fn put_in_cache(self: *Storage, address: primitives.Address, slot: u256, value: u256) !void {
         const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
 
         // Store value in both cache and storage
@@ -264,7 +265,7 @@ pub const Storage = struct {
     /// Parameters: self
     ///
     /// Returns: void
-    pub fn clearTransient(self: *Storage) void {
+    pub fn clear_transient(self: *Storage) void {
         self.transient.clearRetainingCapacity();
     }
 
@@ -276,7 +277,7 @@ pub const Storage = struct {
     /// Parameters: self
     ///
     /// Returns: void
-    pub fn clearAsyncRequest(self: *Storage) void {
+    pub fn clear_async_request(self: *Storage) void {
         self.async_data_request = .none;
     }
 };
@@ -319,7 +320,7 @@ test "Storage: set and get persistent storage" {
     try std.testing.expectEqual(value, retrieved);
 
     // Verify original storage was tracked
-    const original = storage.getOriginal(addr, slot);
+    const original = storage.get_original(addr, slot);
     try std.testing.expectEqual(@as(u256, 0), original);
 }
 
@@ -340,7 +341,7 @@ test "Storage: set to zero deletes slot" {
     try std.testing.expectEqual(@as(u256, 0), try storage.get(addr, slot));
 }
 
-test "Storage: getOriginal returns current for unmodified slots" {
+test "Storage: get_original returns current for unmodified slots" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator, null, null);
     defer storage.deinit();
@@ -352,14 +353,14 @@ test "Storage: getOriginal returns current for unmodified slots" {
     try storage.set(addr, slot, 100);
 
     // First write tracks original as 0
-    const original = storage.getOriginal(addr, slot);
+    const original = storage.get_original(addr, slot);
     try std.testing.expectEqual(@as(u256, 0), original);
 
     // Modify again
     try storage.set(addr, slot, 200);
 
     // Original should still be 0 (first value before transaction)
-    try std.testing.expectEqual(@as(u256, 0), storage.getOriginal(addr, slot));
+    try std.testing.expectEqual(@as(u256, 0), storage.get_original(addr, slot));
 }
 
 test "Storage: transient storage get/set" {
@@ -372,13 +373,13 @@ test "Storage: transient storage get/set" {
     const value: u256 = 0xdeadbeef;
 
     // Get empty transient slot
-    try std.testing.expectEqual(@as(u256, 0), storage.getTransient(addr, slot));
+    try std.testing.expectEqual(@as(u256, 0), storage.get_transient(addr, slot));
 
     // Set transient value
-    try storage.setTransient(addr, slot, value);
+    try storage.set_transient(addr, slot, value);
 
     // Get transient value back
-    try std.testing.expectEqual(value, storage.getTransient(addr, slot));
+    try std.testing.expectEqual(value, storage.get_transient(addr, slot));
 
     // Verify it doesn't affect persistent storage
     try std.testing.expectEqual(@as(u256, 0), try storage.get(addr, slot));
@@ -393,15 +394,15 @@ test "Storage: transient storage set to zero deletes slot" {
     const slot: u256 = 100;
 
     // Set transient value
-    try storage.setTransient(addr, slot, 12345);
-    try std.testing.expectEqual(@as(u256, 12345), storage.getTransient(addr, slot));
+    try storage.set_transient(addr, slot, 12345);
+    try std.testing.expectEqual(@as(u256, 12345), storage.get_transient(addr, slot));
 
     // Set to zero (should delete)
-    try storage.setTransient(addr, slot, 0);
-    try std.testing.expectEqual(@as(u256, 0), storage.getTransient(addr, slot));
+    try storage.set_transient(addr, slot, 0);
+    try std.testing.expectEqual(@as(u256, 0), storage.get_transient(addr, slot));
 }
 
-test "Storage: clearTransient removes all transient storage" {
+test "Storage: clear_transient removes all transient storage" {
     const allocator = std.testing.allocator;
     var storage = Storage.init(allocator, null, null);
     defer storage.deinit();
@@ -410,22 +411,22 @@ test "Storage: clearTransient removes all transient storage" {
     const addr2 = primitives.Address{ .bytes = [_]u8{0x22} ** 20 };
 
     // Set multiple transient values
-    try storage.setTransient(addr1, 1, 100);
-    try storage.setTransient(addr1, 2, 200);
-    try storage.setTransient(addr2, 1, 300);
+    try storage.set_transient(addr1, 1, 100);
+    try storage.set_transient(addr1, 2, 200);
+    try storage.set_transient(addr2, 1, 300);
 
     // Verify they exist
-    try std.testing.expectEqual(@as(u256, 100), storage.getTransient(addr1, 1));
-    try std.testing.expectEqual(@as(u256, 200), storage.getTransient(addr1, 2));
-    try std.testing.expectEqual(@as(u256, 300), storage.getTransient(addr2, 1));
+    try std.testing.expectEqual(@as(u256, 100), storage.get_transient(addr1, 1));
+    try std.testing.expectEqual(@as(u256, 200), storage.get_transient(addr1, 2));
+    try std.testing.expectEqual(@as(u256, 300), storage.get_transient(addr2, 1));
 
     // Clear transient storage
-    storage.clearTransient();
+    storage.clear_transient();
 
     // Verify all are gone
-    try std.testing.expectEqual(@as(u256, 0), storage.getTransient(addr1, 1));
-    try std.testing.expectEqual(@as(u256, 0), storage.getTransient(addr1, 2));
-    try std.testing.expectEqual(@as(u256, 0), storage.getTransient(addr2, 1));
+    try std.testing.expectEqual(@as(u256, 0), storage.get_transient(addr1, 1));
+    try std.testing.expectEqual(@as(u256, 0), storage.get_transient(addr1, 2));
+    try std.testing.expectEqual(@as(u256, 0), storage.get_transient(addr2, 1));
 }
 
 test "Storage: multiple addresses with same slot" {
@@ -444,4 +445,57 @@ test "Storage: multiple addresses with same slot" {
     // Verify they're independent
     try std.testing.expectEqual(@as(u256, 111), try storage.get(addr1, slot));
     try std.testing.expectEqual(@as(u256, 222), try storage.get(addr2, slot));
+}
+
+test "Storage: put_in_cache stores in cache and storage" {
+    const allocator = std.testing.allocator;
+    var injector = try storage_injector.StorageInjector.init(allocator);
+    defer injector.deinit();
+
+    var storage = Storage.init(allocator, null, &injector);
+    defer storage.deinit();
+
+    const addr = primitives.Address{ .bytes = [_]u8{0x12} ** 20 };
+    const slot: u256 = 9;
+    const value: u256 = 0xdead;
+
+    try storage.put_in_cache(addr, slot, value);
+
+    try std.testing.expectEqual(value, injector.getStorageFromCache(addr, slot).?);
+    try std.testing.expectEqual(value, try storage.get(addr, slot));
+}
+
+test "Storage: clear_injector_cache clears injector cache" {
+    const allocator = std.testing.allocator;
+    var injector = try storage_injector.StorageInjector.init(allocator);
+    defer injector.deinit();
+
+    var storage = Storage.init(allocator, null, &injector);
+    defer storage.deinit();
+
+    const addr = primitives.Address{ .bytes = [_]u8{0x34} ** 20 };
+    const slot: u256 = 2;
+    const value: u256 = 0xbeef;
+
+    try injector.cacheStorage(addr, slot, value);
+    try std.testing.expectEqual(value, injector.getStorageFromCache(addr, slot).?);
+
+    storage.clear_injector_cache();
+    try std.testing.expect(injector.getStorageFromCache(addr, slot) == null);
+}
+
+test "Storage: clear_async_request resets pending request" {
+    const allocator = std.testing.allocator;
+    var storage = Storage.init(allocator, null, null);
+    defer storage.deinit();
+
+    const addr = primitives.Address{ .bytes = [_]u8{0x56} ** 20 };
+    storage.async_data_request = .{ .storage = .{ .address = addr, .slot = 1 } };
+
+    storage.clear_async_request();
+
+    try std.testing.expect(switch (storage.async_data_request) {
+        .none => true,
+        else => false,
+    });
 }

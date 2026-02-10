@@ -1,9 +1,11 @@
-//! Engine API module for consensus-layer interaction.
+/// Engine API module for consensus layer communication.
+const std = @import("std");
+
 const api = @import("api.zig");
 
-/// Engine API error codes (execution-apis common definitions).
-pub const EngineApiErrorCode = api.EngineApiErrorCode;
+/// Re-exported Engine API interface.
+pub const EngineApi = api.EngineApi;
 
 test {
-    @import("std").testing.refAllDecls(@This());
+    std.testing.refAllDecls(@This());
 }

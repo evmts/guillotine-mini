@@ -25,6 +25,7 @@
 /// | `is_totally_empty` | Nethermind: `IsTotallyEmpty`            | is_empty AND storage_root=empty          |
 /// | `is_account_alive` | Python: `is_account_alive()`            | exists AND NOT empty                     |
 /// | `has_code_or_nonce`| Python: `account_has_code_or_nonce()`   | nonce!=0 OR code!=empty                  |
+/// | `has_code_or_nonce_or_storage` | EIP-7610                         | nonce!=0 OR code!=empty OR storage!=empty |
 ///
 /// These predicates are critical for EIP-158 (spurious dragon) empty account
 /// cleanup and EIP-161 state clearing.
@@ -34,8 +35,9 @@ const primitives = @import("primitives");
 /// Re-export Voltaire's AccountState — the canonical account type.
 pub const AccountState = primitives.AccountState.AccountState;
 
-/// Re-export canonical constants from Voltaire.
+/// Canonical hash of empty EVM bytecode (keccak256 of empty bytes).
 pub const EMPTY_CODE_HASH = primitives.AccountState.EMPTY_CODE_HASH;
+/// Root hash of an empty Merkle Patricia Trie.
 pub const EMPTY_TRIE_ROOT = primitives.AccountState.EMPTY_TRIE_ROOT;
 
 /// The empty account — equivalent to Python's `EMPTY_ACCOUNT` constant.
@@ -90,9 +92,11 @@ pub fn is_totally_empty(account: *const AccountState) bool {
 ///
 /// This is equivalent to `account != EMPTY_ACCOUNT` and requires the account
 /// to be present; storage_root is not considered.
-pub fn is_account_alive(account: ?AccountState) bool {
+///
+/// Accepts an optional pointer to avoid copying `AccountState`.
+pub fn is_account_alive(account: ?*const AccountState) bool {
     if (account) |acct| {
-        return !is_empty(&acct);
+        return !is_empty(acct);
     }
     return false;
 }
@@ -106,10 +110,19 @@ pub fn is_account_alive(account: ?AccountState) bool {
 ///     return account.nonce != Uint(0) or account.code != b""
 /// ```
 ///
-/// Used during CREATE to check for address collision (EIP-7610).
+/// Used during CREATE to check for address collision (EIP-684).
+/// For EIP-7610 (storage-aware collision), use `has_code_or_nonce_or_storage`.
 pub fn has_code_or_nonce(account: *const AccountState) bool {
     return account.nonce != 0 or
         !std.mem.eql(u8, &account.code_hash, &EMPTY_CODE_HASH);
+}
+
+/// Check whether an account has code, a non-zero nonce, or non-empty storage.
+///
+/// Equivalent to EIP-7610 collision semantics: nonce != 0 OR code != empty OR storage != empty.
+pub fn has_code_or_nonce_or_storage(account: *const AccountState) bool {
+    return has_code_or_nonce(account) or
+        !std.mem.eql(u8, &account.storage_root, &EMPTY_TRIE_ROOT);
 }
 
 // =========================================================================
@@ -130,21 +143,38 @@ test "EMPTY_ACCOUNT is totally empty" {
 }
 
 test "is_account_alive: false for null account" {
-    const account: ?AccountState = null;
+    const account: ?*const AccountState = null;
     try std.testing.expect(!is_account_alive(account));
 }
 
 test "is_account_alive: false for EMPTY_ACCOUNT" {
-    try std.testing.expect(!is_account_alive(EMPTY_ACCOUNT));
+    try std.testing.expect(!is_account_alive(&EMPTY_ACCOUNT));
 }
 
 test "is_account_alive: true for non-zero nonce" {
     const account = AccountState.from(.{ .nonce = 1 });
-    try std.testing.expect(is_account_alive(account));
+    try std.testing.expect(is_account_alive(&account));
+}
+
+test "is_account_alive: true for non-zero balance" {
+    const account = AccountState.from(.{ .balance = 1 });
+    try std.testing.expect(is_account_alive(&account));
+}
+
+test "is_account_alive: true for non-empty code hash" {
+    var custom_hash: primitives.Hash.Hash = undefined;
+    @memset(&custom_hash, 0xCE);
+
+    const account = AccountState.from(.{
+        .nonce = 0,
+        .balance = 0,
+        .code_hash = custom_hash,
+    });
+    try std.testing.expect(is_account_alive(&account));
 }
 
 test "is_account_alive: false when only storage root is non-empty" {
-    var custom_root: [32]u8 = undefined;
+    var custom_root: primitives.StateRoot.StateRoot = undefined;
     @memset(&custom_root, 0xAB);
 
     const account = AccountState.from(.{
@@ -155,7 +185,7 @@ test "is_account_alive: false when only storage root is non-empty" {
     });
 
     // Per execution-specs, storage root does not affect liveness.
-    try std.testing.expect(!is_account_alive(account));
+    try std.testing.expect(!is_account_alive(&account));
     try std.testing.expect(!is_totally_empty(&account));
 }
 
@@ -191,7 +221,7 @@ test "is_empty: false when balance is non-zero" {
 }
 
 test "is_empty: false when code hash is non-empty" {
-    var custom_hash: [32]u8 = undefined;
+    var custom_hash: primitives.Hash.Hash = undefined;
     @memset(&custom_hash, 0xAB);
 
     const acct = AccountState.from(.{
@@ -204,7 +234,7 @@ test "is_empty: false when code hash is non-empty" {
 
 test "is_empty: true even with non-empty storage root" {
     // Per EIP-161, is_empty does NOT check storage_root.
-    var custom_root: [32]u8 = undefined;
+    var custom_root: primitives.StateRoot.StateRoot = undefined;
     @memset(&custom_root, 0xFF);
 
     const acct = AccountState.from(.{
@@ -222,7 +252,7 @@ test "is_totally_empty: true for default empty account" {
 }
 
 test "is_totally_empty: false when storage root is non-empty" {
-    var custom_root: [32]u8 = undefined;
+    var custom_root: primitives.StateRoot.StateRoot = undefined;
     @memset(&custom_root, 0xFF);
 
     const acct = AccountState.from(.{
@@ -247,7 +277,7 @@ test "has_code_or_nonce: true when nonce is non-zero" {
 }
 
 test "has_code_or_nonce: true when code is non-empty" {
-    var custom_hash: [32]u8 = undefined;
+    var custom_hash: primitives.Hash.Hash = undefined;
     @memset(&custom_hash, 0xCD);
 
     const acct = AccountState.from(.{
@@ -258,7 +288,7 @@ test "has_code_or_nonce: true when code is non-empty" {
 }
 
 test "has_code_or_nonce: true when both nonce and code are non-empty" {
-    var custom_hash: [32]u8 = undefined;
+    var custom_hash: primitives.Hash.Hash = undefined;
     @memset(&custom_hash, 0xEF);
 
     const acct = AccountState.from(.{
@@ -281,6 +311,24 @@ test "has_code_or_nonce: false when only balance is set" {
         .code_hash = EMPTY_CODE_HASH,
     });
     try std.testing.expect(!has_code_or_nonce(&acct));
+}
+
+test "has_code_or_nonce_or_storage: true when storage root is non-empty" {
+    var custom_root: primitives.StateRoot.StateRoot = undefined;
+    @memset(&custom_root, 0xAA);
+
+    const acct = AccountState.from(.{
+        .nonce = 0,
+        .balance = 0,
+        .code_hash = EMPTY_CODE_HASH,
+        .storage_root = custom_root,
+    });
+    try std.testing.expect(has_code_or_nonce_or_storage(&acct));
+}
+
+test "has_code_or_nonce_or_storage: false for empty account" {
+    const acct = AccountState.createEmpty();
+    try std.testing.expect(!has_code_or_nonce_or_storage(&acct));
 }
 
 test "is_empty and has_code_or_nonce are mutually consistent" {

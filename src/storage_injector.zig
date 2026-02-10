@@ -313,7 +313,7 @@ pub const StorageInjector = struct {
             const original = if (is_mock)
                 evm.original_storage.get(key.*) orelse 0
             else
-                evm.storage.getOriginal(primitives.Address{ .bytes = key.address }, key.slot);
+                evm.storage.get_original(primitives.Address{ .bytes = key.address }, key.slot);
 
             const current = if (is_mock)
                 evm.storage.get(key.*) orelse 0

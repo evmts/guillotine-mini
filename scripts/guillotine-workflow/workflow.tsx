@@ -32,6 +32,10 @@ import EffectRefactorPrompt from "./steps/effect/5_refactor";
 const MAX_PASSES = 5;
 const MAX_ITERATIONS_PER_PASS = phases.length * 50;
 
+const skipPhases = new Set(
+  (process.env.SKIP_PHASES ?? "").split(",").map((s) => s.trim()).filter(Boolean)
+);
+
 export default smithers(db, (ctx) => {
   const targetId = (ctx as any).input?.target ?? process.env.WORKFLOW_TARGET ?? "zig";
   const target = getTarget(targetId);
@@ -70,9 +74,10 @@ export default smithers(db, (ctx) => {
             const latestBenchmark = ctx.outputMaybe(schema.benchmark, { nodeId: `${id}:benchmark` }) as BenchmarkRow | undefined;
 
             const isPhaseComplete = latestFinalReview?.readyToMoveOn ?? false;
+            const isPhaseSkipped = skipPhases.has(id);
 
             return (
-              <Sequence key={id} skipIf={isPhaseComplete}>
+              <Sequence key={id} skipIf={isPhaseComplete || isPhaseSkipped}>
                 <Task id={`${id}:context`} output={schema.context} outputSchema={contextOutputSchema} agent={codex}>
                   {render(ContextPrompt, {
                     phase,

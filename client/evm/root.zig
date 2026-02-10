@@ -20,6 +20,7 @@
 ///
 /// ```zig
 /// const client_evm = @import("client_evm");
+/// const primitives = @import("primitives");
 ///
 /// var state = try StateManager.init(allocator, null);
 /// defer state.deinit();
@@ -28,11 +29,18 @@
 /// const host = adapter.host_interface();
 ///
 /// // Calculate intrinsic gas for a transaction
-/// const gas = client_evm.calculate_intrinsic_gas(.{
+/// const tx = primitives.Transaction.LegacyTransaction{
+///     .nonce = 0,
+///     .gas_price = 0,
+///     .gas_limit = 0,
+///     .to = null,
+///     .value = 0,
 ///     .data = tx_data,
-///     .is_create = true,
-///     .hardfork = .CANCUN,
-/// });
+///     .v = 0,
+///     .r = [_]u8{0} ** 32,
+///     .s = [_]u8{0} ** 32,
+/// };
+/// const gas = client_evm.calculate_intrinsic_gas(tx, .CANCUN);
 /// ```
 const host_adapter = @import("host_adapter.zig");
 const intrinsic_gas = @import("intrinsic_gas.zig");
@@ -48,9 +56,6 @@ pub const calculate_intrinsic_gas = intrinsic_gas.calculate_intrinsic_gas;
 
 /// Calculate the gas cost for init code words (EIP-3860).
 pub const init_code_cost = intrinsic_gas.init_code_cost;
-
-/// Parameters for intrinsic gas calculation.
-pub const IntrinsicGasParams = intrinsic_gas.IntrinsicGasParams;
 
 /// Validate a transaction and return its intrinsic gas.
 pub const validate_transaction = processor.validate_transaction;

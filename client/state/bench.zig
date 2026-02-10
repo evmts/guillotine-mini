@@ -21,7 +21,7 @@ const journal_mod = @import("journal.zig");
 const Journal = journal_mod.Journal;
 const ChangeTag = journal_mod.ChangeTag;
 const Entry = journal_mod.Entry;
-const bench_utils = @import("../bench_utils.zig");
+const bench_utils = @import("bench_utils");
 const format_ns = bench_utils.format_ns;
 const print_result = bench_utils.print_result;
 
@@ -187,7 +187,7 @@ fn bench_commit(n: usize) u64 {
 
         Counter.count = 0;
         var timer = std.time.Timer.start() catch unreachable;
-        j.commit(JournalU64.empty_snapshot, &Counter.cb);
+        j.commit(JournalU64.empty_snapshot, &Counter.cb) catch unreachable;
         total_ns += timer.read();
         j.deinit();
     }
@@ -223,7 +223,7 @@ fn bench_nested_calls(depth: usize) u64 {
         }
         // Commit remaining
         if (d > 0) {
-            j.commit(snapshots[0], null);
+            j.commit(snapshots[0], null) catch unreachable;
         }
 
         total_ns += timer.read();
@@ -282,7 +282,7 @@ fn bench_block_processing(_: usize) u64 {
             }
 
             // Commit transaction
-            j.commit(tx_snap, null);
+            j.commit(tx_snap, null) catch unreachable;
         }
 
         total_ns += timer.read();

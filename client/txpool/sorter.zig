@@ -1,232 +1,294 @@
-/// Transaction pool sorting helpers (priority fee calculation).
+/// Transaction pool sorting helpers (fee market priority).
 ///
 /// Spec references:
-/// - `execution-specs/src/ethereum/forks/cancun/fork.py` -> check_transaction
-/// - `execution-specs/src/ethereum/forks/london/transactions.py` -> fee market fields
+/// - EIP-1559 effective gas price calculation
+/// - execution-specs/src/ethereum/forks/london/fork.py (effective gas price)
+///
+/// Nethermind reference:
+/// - Nethermind.Consensus/Comparers/GasPriceTxComparerHelper.cs
 const std = @import("std");
 const primitives = @import("primitives");
 
-const tx_mod = primitives.Transaction;
 const BaseFeePerGas = primitives.BaseFeePerGas;
 const EffectiveGasPrice = primitives.EffectiveGasPrice;
-const U256 = EffectiveGasPrice.U256;
+const GasPrice = primitives.GasPrice;
+const MaxFeePerGas = primitives.MaxFeePerGas;
+const MaxPriorityFeePerGas = primitives.MaxPriorityFeePerGas;
 
-/// Compute the effective priority fee per gas (miner tip) at the given base fee.
+fn is_legacy_fee_fields(max_fee: MaxFeePerGas, max_priority: MaxPriorityFeePerGas) bool {
+    return max_fee.isZero() and max_priority.isZero();
+}
+
+fn resolve_max_fee(
+    gas_price: GasPrice,
+    max_fee: MaxFeePerGas,
+    is_legacy: bool,
+) MaxFeePerGas {
+    if (is_legacy) {
+        return MaxFeePerGas.fromU256(gas_price.toWei());
+    }
+
+    return max_fee;
+}
+
+fn resolve_max_priority(
+    gas_price: GasPrice,
+    max_priority: MaxPriorityFeePerGas,
+    is_legacy: bool,
+) MaxPriorityFeePerGas {
+    if (is_legacy) {
+        return MaxPriorityFeePerGas.fromU256(gas_price.toWei());
+    }
+
+    return max_priority;
+}
+
+/// Compare two fee tuples by priority (descending).
 ///
-/// For EIP-1559 style transactions this is:
-///   min(max_priority_fee_per_gas, max_fee_per_gas - base_fee)
-/// Legacy transactions treat gas_price as both max fee and max priority fee.
-/// Returns an error when fee constraints are invalid per execution-specs.
-pub fn effective_priority_fee_per_gas(tx: anytype, base_fee: BaseFeePerGas) !U256 {
-    const Tx = @TypeOf(tx);
-    comptime {
-        // NOTE: Voltaire Zig primitives do not yet expose EIP-2930 transactions.
-        if (Tx != tx_mod.LegacyTransaction and
-            Tx != tx_mod.Eip1559Transaction and
-            Tx != tx_mod.Eip4844Transaction and
-            Tx != tx_mod.Eip7702Transaction)
-        {
-            @compileError("Unsupported transaction type for effective_priority_fee_per_gas");
+/// Returns:
+/// - `-1` when `x` has higher priority (should sort before `y`)
+/// - `0` when equal
+/// - `1` when `y` has higher priority
+///
+/// When EIP-1559 is enabled, this compares the effective gas price:
+/// `min(max_fee, base_fee + max_priority)` with a max fee tie-breaker.
+/// Legacy txs with zeroed EIP-1559 fields are treated as
+/// `max_fee = max_priority = gas_price`.
+/// Otherwise it compares legacy `gas_price` (descending).
+pub fn compare_fee_market_priority(
+    x_gas_price: GasPrice,
+    x_max_fee_per_gas: MaxFeePerGas,
+    x_max_priority_fee_per_gas: MaxPriorityFeePerGas,
+    y_gas_price: GasPrice,
+    y_max_fee_per_gas: MaxFeePerGas,
+    y_max_priority_fee_per_gas: MaxPriorityFeePerGas,
+    base_fee: BaseFeePerGas,
+    is_eip1559_enabled: bool,
+) i32 {
+    if (is_eip1559_enabled) {
+        const x_is_legacy = is_legacy_fee_fields(x_max_fee_per_gas, x_max_priority_fee_per_gas);
+        const y_is_legacy = is_legacy_fee_fields(y_max_fee_per_gas, y_max_priority_fee_per_gas);
+
+        const x_max_fee = resolve_max_fee(x_gas_price, x_max_fee_per_gas, x_is_legacy);
+        const y_max_fee = resolve_max_fee(y_gas_price, y_max_fee_per_gas, y_is_legacy);
+
+        const x_max_priority = resolve_max_priority(x_gas_price, x_max_priority_fee_per_gas, x_is_legacy);
+        const y_max_priority = resolve_max_priority(y_gas_price, y_max_priority_fee_per_gas, y_is_legacy);
+
+        const base_fee_wei = base_fee.toWei();
+        const x_effective = EffectiveGasPrice.calculate(
+            base_fee_wei,
+            x_max_fee.toWei(),
+            x_max_priority.toWei(),
+        ).effective;
+        const y_effective = EffectiveGasPrice.calculate(
+            base_fee_wei,
+            y_max_fee.toWei(),
+            y_max_priority.toWei(),
+        ).effective;
+
+        switch (x_effective.compare(y_effective)) {
+            .lt => return 1,
+            .gt => return -1,
+            .eq => {},
+        }
+
+        switch (x_max_fee.compare(y_max_fee)) {
+            .lt => return 1,
+            .gt => return -1,
+            .eq => return 0,
         }
     }
 
-    const base_fee_wei = base_fee.toWei();
-
-    var max_fee: U256 = undefined;
-    var max_priority: U256 = undefined;
-
-    if (comptime Tx == tx_mod.LegacyTransaction) {
-        const gas_price = U256.from_u256(tx.gas_price);
-        if (gas_price.cmp(base_fee_wei) == .lt) {
-            return error.GasPriceBelowBaseFee;
-        }
-        max_fee = gas_price;
-        max_priority = gas_price;
-    } else {
-        max_fee = U256.from_u256(tx.max_fee_per_gas);
-        max_priority = U256.from_u256(tx.max_priority_fee_per_gas);
-        if (max_fee.cmp(max_priority) == .lt) {
-            return error.PriorityFeeGreaterThanMaxFee;
-        }
-        if (max_fee.cmp(base_fee_wei) == .lt) {
-            return error.MaxFeePerGasBelowBaseFee;
-        }
+    switch (x_gas_price.compare(y_gas_price)) {
+        .lt => return 1,
+        .gt => return -1,
+        .eq => return 0,
     }
-
-    const result = EffectiveGasPrice.calculate(base_fee_wei, max_fee, max_priority);
-    return result.miner_fee;
 }
 
 // =============================================================================
 // Tests
 // =============================================================================
 
-test "effective_priority_fee_per_gas - legacy uses gas_price minus base_fee" {
-    const Address = primitives.Address;
+test "compare_fee_market_priority — EIP-1559 compares effective gas price" {
+    const base_fee = BaseFeePerGas.fromGwei(10);
 
-    const tx = tx_mod.LegacyTransaction{
-        .nonce = 0,
-        .gas_price = @as(u256, 50),
-        .gas_limit = 21_000,
-        .to = Address{ .bytes = [_]u8{0x11} ++ [_]u8{0} ** 19 },
-        .value = 0,
-        .data = &[_]u8{},
-        .v = 0,
-        .r = [_]u8{0} ** 32,
-        .s = [_]u8{0} ** 32,
-    };
+    const x_max_fee = MaxFeePerGas.fromGwei(30);
+    const x_max_priority = MaxPriorityFeePerGas.fromGwei(2);
 
-    const base_fee = BaseFeePerGas.from(10);
-    const priority = try effective_priority_fee_per_gas(tx, base_fee);
-    try std.testing.expectEqual(U256.from_u64(40), priority);
-}
+    const y_max_fee = MaxFeePerGas.fromGwei(20);
+    const y_max_priority = MaxPriorityFeePerGas.fromGwei(8);
 
-test "effective_priority_fee_per_gas - 1559 caps at max fee" {
-    const Address = primitives.Address;
+    const x_gas_price = GasPrice.fromGwei(0);
+    const y_gas_price = GasPrice.fromGwei(0);
 
-    const tx = tx_mod.Eip1559Transaction{
-        .chain_id = 1,
-        .nonce = 0,
-        .max_priority_fee_per_gas = @as(u256, 80),
-        .max_fee_per_gas = @as(u256, 150),
-        .gas_limit = 21_000,
-        .to = Address{ .bytes = [_]u8{0x22} ++ [_]u8{0} ** 19 },
-        .value = 0,
-        .data = &[_]u8{},
-        .access_list = &[_]tx_mod.AccessListItem{},
-        .y_parity = 0,
-        .r = [_]u8{0} ** 32,
-        .s = [_]u8{0} ** 32,
-    };
-
-    const base_fee = BaseFeePerGas.from(100);
-    const priority = try effective_priority_fee_per_gas(tx, base_fee);
-    try std.testing.expectEqual(U256.from_u64(50), priority);
-}
-
-test "effective_priority_fee_per_gas - 1559 rejects when base fee exceeds max fee" {
-    const Address = primitives.Address;
-
-    const tx = tx_mod.Eip1559Transaction{
-        .chain_id = 1,
-        .nonce = 0,
-        .max_priority_fee_per_gas = @as(u256, 10),
-        .max_fee_per_gas = @as(u256, 100),
-        .gas_limit = 21_000,
-        .to = Address{ .bytes = [_]u8{0x33} ++ [_]u8{0} ** 19 },
-        .value = 0,
-        .data = &[_]u8{},
-        .access_list = &[_]tx_mod.AccessListItem{},
-        .y_parity = 0,
-        .r = [_]u8{0} ** 32,
-        .s = [_]u8{0} ** 32,
-    };
-
-    const base_fee = BaseFeePerGas.from(200);
-    try std.testing.expectError(
-        error.MaxFeePerGasBelowBaseFee,
-        effective_priority_fee_per_gas(tx, base_fee),
+    try std.testing.expectEqual(
+        @as(i32, 1),
+        compare_fee_market_priority(
+            x_gas_price,
+            x_max_fee,
+            x_max_priority,
+            y_gas_price,
+            y_max_fee,
+            y_max_priority,
+            base_fee,
+            true,
+        ),
     );
 }
 
-test "effective_priority_fee_per_gas - 1559 rejects when priority exceeds max fee" {
-    const Address = primitives.Address;
+test "compare_fee_market_priority — EIP-1559 legacy fallback uses gas price" {
+    const base_fee = BaseFeePerGas.fromGwei(10);
 
-    const tx = tx_mod.Eip1559Transaction{
-        .chain_id = 1,
-        .nonce = 0,
-        .max_priority_fee_per_gas = @as(u256, 200),
-        .max_fee_per_gas = @as(u256, 100),
-        .gas_limit = 21_000,
-        .to = Address{ .bytes = [_]u8{0x34} ++ [_]u8{0} ** 19 },
-        .value = 0,
-        .data = &[_]u8{},
-        .access_list = &[_]tx_mod.AccessListItem{},
-        .y_parity = 0,
-        .r = [_]u8{0} ** 32,
-        .s = [_]u8{0} ** 32,
-    };
+    const x_gas_price = GasPrice.fromGwei(50);
+    const x_max_fee = MaxFeePerGas.fromGwei(0);
+    const x_max_priority = MaxPriorityFeePerGas.fromGwei(0);
 
-    const base_fee = BaseFeePerGas.from(1);
-    try std.testing.expectError(
-        error.PriorityFeeGreaterThanMaxFee,
-        effective_priority_fee_per_gas(tx, base_fee),
+    const y_gas_price = GasPrice.fromGwei(0);
+    const y_max_fee = MaxFeePerGas.fromGwei(40);
+    const y_max_priority = MaxPriorityFeePerGas.fromGwei(2);
+
+    try std.testing.expectEqual(
+        @as(i32, -1),
+        compare_fee_market_priority(
+            x_gas_price,
+            x_max_fee,
+            x_max_priority,
+            y_gas_price,
+            y_max_fee,
+            y_max_priority,
+            base_fee,
+            true,
+        ),
     );
 }
 
-test "effective_priority_fee_per_gas - legacy rejects when gas price below base fee" {
-    const Address = primitives.Address;
+test "compare_fee_market_priority — EIP-1559 ties on effective gas price use max fee" {
+    const base_fee = BaseFeePerGas.fromGwei(10);
 
-    const tx = tx_mod.LegacyTransaction{
-        .nonce = 0,
-        .gas_price = @as(u256, 10),
-        .gas_limit = 21_000,
-        .to = Address{ .bytes = [_]u8{0x35} ++ [_]u8{0} ** 19 },
-        .value = 0,
-        .data = &[_]u8{},
-        .v = 0,
-        .r = [_]u8{0} ** 32,
-        .s = [_]u8{0} ** 32,
-    };
+    const x_max_fee = MaxFeePerGas.fromGwei(20);
+    const x_max_priority = MaxPriorityFeePerGas.fromGwei(5);
 
-    const base_fee = BaseFeePerGas.from(11);
-    try std.testing.expectError(
-        error.GasPriceBelowBaseFee,
-        effective_priority_fee_per_gas(tx, base_fee),
+    const y_max_fee = MaxFeePerGas.fromGwei(25);
+    const y_max_priority = MaxPriorityFeePerGas.fromGwei(5);
+
+    const x_gas_price = GasPrice.fromGwei(0);
+    const y_gas_price = GasPrice.fromGwei(0);
+
+    try std.testing.expectEqual(
+        @as(i32, 1),
+        compare_fee_market_priority(
+            x_gas_price,
+            x_max_fee,
+            x_max_priority,
+            y_gas_price,
+            y_max_fee,
+            y_max_priority,
+            base_fee,
+            true,
+        ),
     );
 }
 
-test "effective_priority_fee_per_gas - 4844 uses fee market fields" {
-    const Address = primitives.Address;
-    const VersionedHash = primitives.Blob.VersionedHash;
+test "compare_fee_market_priority — EIP-1559 caps priority by max fee minus base fee" {
+    const base_fee = BaseFeePerGas.fromGwei(25);
 
-    const hashes = [_]VersionedHash{
-        VersionedHash{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 31 },
-    };
+    const x_max_fee = MaxFeePerGas.fromGwei(27);
+    const x_max_priority = MaxPriorityFeePerGas.fromGwei(5);
 
-    const tx = tx_mod.Eip4844Transaction{
-        .chain_id = 1,
-        .nonce = 0,
-        .max_priority_fee_per_gas = @as(u256, 50),
-        .max_fee_per_gas = @as(u256, 120),
-        .gas_limit = 21_000,
-        .to = Address{ .bytes = [_]u8{0x36} ++ [_]u8{0} ** 19 },
-        .value = 0,
-        .data = &[_]u8{},
-        .access_list = &[_]tx_mod.AccessListItem{},
-        .max_fee_per_blob_gas = @as(u256, 500),
-        .blob_versioned_hashes = &hashes,
-        .y_parity = 0,
-        .r = [_]u8{0} ** 32,
-        .s = [_]u8{0} ** 32,
-    };
+    const y_max_fee = MaxFeePerGas.fromGwei(28);
+    const y_max_priority = MaxPriorityFeePerGas.fromGwei(1);
 
-    const base_fee = BaseFeePerGas.from(100);
-    const priority = try effective_priority_fee_per_gas(tx, base_fee);
-    try std.testing.expectEqual(U256.from_u64(20), priority);
+    const x_gas_price = GasPrice.fromGwei(0);
+    const y_gas_price = GasPrice.fromGwei(0);
+
+    try std.testing.expectEqual(
+        @as(i32, -1),
+        compare_fee_market_priority(
+            x_gas_price,
+            x_max_fee,
+            x_max_priority,
+            y_gas_price,
+            y_max_fee,
+            y_max_priority,
+            base_fee,
+            true,
+        ),
+    );
 }
 
-test "effective_priority_fee_per_gas - 7702 uses fee market fields" {
-    const Address = primitives.Address;
-    const Authorization = primitives.Authorization.Authorization;
+test "compare_fee_market_priority — EIP-1559 max fee below base fee uses max fee" {
+    const base_fee = BaseFeePerGas.fromGwei(30);
 
-    const tx = tx_mod.Eip7702Transaction{
-        .chain_id = 1,
-        .nonce = 0,
-        .max_priority_fee_per_gas = @as(u256, 60),
-        .max_fee_per_gas = @as(u256, 140),
-        .gas_limit = 21_000,
-        .to = Address{ .bytes = [_]u8{0x37} ++ [_]u8{0} ** 19 },
-        .value = 0,
-        .data = &[_]u8{},
-        .access_list = &[_]tx_mod.AccessListItem{},
-        .authorization_list = &[_]Authorization{},
-        .y_parity = 0,
-        .r = [_]u8{0} ** 32,
-        .s = [_]u8{0} ** 32,
-    };
+    const x_max_fee = MaxFeePerGas.fromGwei(25);
+    const x_max_priority = MaxPriorityFeePerGas.fromGwei(2);
 
-    const base_fee = BaseFeePerGas.from(100);
-    const priority = try effective_priority_fee_per_gas(tx, base_fee);
-    try std.testing.expectEqual(U256.from_u64(40), priority);
+    const y_max_fee = MaxFeePerGas.fromGwei(28);
+    const y_max_priority = MaxPriorityFeePerGas.fromGwei(1);
+
+    const x_gas_price = GasPrice.fromGwei(0);
+    const y_gas_price = GasPrice.fromGwei(0);
+
+    try std.testing.expectEqual(
+        @as(i32, 1),
+        compare_fee_market_priority(
+            x_gas_price,
+            x_max_fee,
+            x_max_priority,
+            y_gas_price,
+            y_max_fee,
+            y_max_priority,
+            base_fee,
+            true,
+        ),
+    );
+}
+
+test "compare_fee_market_priority — legacy compares gas price descending" {
+    const base_fee = BaseFeePerGas.fromGwei(0);
+
+    const x_gas_price = GasPrice.fromGwei(30);
+    const y_gas_price = GasPrice.fromGwei(20);
+
+    const x_max_fee = MaxFeePerGas.fromGwei(0);
+    const x_max_priority = MaxPriorityFeePerGas.fromGwei(0);
+    const y_max_fee = MaxFeePerGas.fromGwei(0);
+    const y_max_priority = MaxPriorityFeePerGas.fromGwei(0);
+
+    try std.testing.expectEqual(
+        @as(i32, -1),
+        compare_fee_market_priority(
+            x_gas_price,
+            x_max_fee,
+            x_max_priority,
+            y_gas_price,
+            y_max_fee,
+            y_max_priority,
+            base_fee,
+            false,
+        ),
+    );
+}
+
+test "compare_fee_market_priority — equality returns zero" {
+    const base_fee = BaseFeePerGas.fromGwei(10);
+
+    const gas_price = GasPrice.fromGwei(20);
+    const max_fee = MaxFeePerGas.fromGwei(20);
+    const max_priority = MaxPriorityFeePerGas.fromGwei(5);
+
+    try std.testing.expectEqual(
+        @as(i32, 0),
+        compare_fee_market_priority(
+            gas_price,
+            max_fee,
+            max_priority,
+            gas_price,
+            max_fee,
+            max_priority,
+            base_fee,
+            true,
+        ),
+    );
 }

@@ -1,82 +1,99 @@
-# Context: [pass 1/5] phase-4-blockchain (Block Chain Management)
+# [Pass 1/5] Phase 4: Block Chain Management - Context
 
 ## Goal (from prd/GUILLOTINE_CLIENT_PLAN.md)
+Manage the block chain structure and validation. Planned modules:
+- client/blockchain/chain.zig (chain management)
+- client/blockchain/validator.zig (block validation)
 
-- Manage the block chain structure and validation.
-- Key components: `client/blockchain/chain.zig`, `client/blockchain/validator.zig`.
-- Architecture reference: `nethermind/src/Nethermind/Nethermind.Blockchain/`.
-- Voltaire reference: `voltaire/packages/voltaire-zig/src/blockchain/`.
-- Test fixtures: `ethereum-tests/BlockchainTests/`.
+## Spec References (from prd/ETHEREUM_SPECS_REFERENCE.md)
+Authoritative specs and tests:
+- execution-specs/src/ethereum/forks/*/fork.py (block validation, state transition)
+- yellowpaper/Paper.tex Section 11 (Block Finalisation)
+- devp2p/caps/eth.md (block and header exchange)
+- ethereum-tests/BlockchainTests/
+- execution-spec-tests/fixtures/blockchain_tests/
+- execution-spec-tests/fixtures/blockchain_tests_engine/ (listed in PRD; not present in this repo)
 
-## Specs to Read First (from prd/ETHEREUM_SPECS_REFERENCE.md + execution-specs)
+## execution-specs fork.py (prague)
+Key validation and transition touchpoints in execution-specs/src/ethereum/forks/prague/fork.py:
+- BlockChain structure: chain_id, state, blocks list
+- state_transition: validate_header, apply_body, compute state root / tx root / receipts root / logs bloom / withdrawals root / requests hash, then verify header fields
+- validate_header: gas limit checks, base fee calculation, timestamp monotonicity, block number increment, extra_data length, PoS header constraints (difficulty=0, nonce=0, ommers_hash=EMPTY_OMMER_HASH), parent_hash from parent header
+- calculate_base_fee_per_gas: gas target logic and bounded base fee change
+- apply_body and transaction processing: block gas used, blob gas used, sender recovery, fee checks
 
-- `execution-specs/src/ethereum/forks/*/fork.py` (block validation per fork).
-- Yellow Paper Section 11 (Block Finalization) under `yellowpaper/`.
-- Tests: `ethereum-tests/BlockchainTests/` and `execution-spec-tests/fixtures/blockchain_tests/`.
+## EIP-1559 base fee rules
+Relevant base fee and gas limit checks in EIPs/EIPS/eip-1559.md:
+- header gas_used must be <= gas_limit
+- gas_limit change bounds vs parent (delta <= parent / 1024)
+- base fee computed from parent gas used and target, with MAX_CHANGE_DENOMINATOR bounds
 
-### execution-specs spot check (cancun fork)
+## Yellow Paper Section 11 (Block Finalisation)
+Key block-level rules in yellowpaper/Paper.tex (Section 11):
+- Finalisation stages: execute withdrawals, validate transactions, verify state
+- Withdrawals increase recipient balance by gwei amount, no gas cost, no failure
+- gasUsed in header equals accumulated gas used after final transaction
+- State validation ties header state root to post-transaction and post-withdrawal state via TRIE
 
-Source: `execution-specs/src/ethereum/forks/cancun/fork.py`
+## devp2p ETH protocol (caps/eth.md)
+Chain and header exchange details:
+- Status exchange gates session activation; size limits on messages
+- Header sync by GetBlockHeaders, then bodies via GetBlockBodies
+- Retrieved block bodies must validate against headers before execution
+- Block header encoding fields used for validation and body matching
 
-- `BlockChain` dataclass holds `blocks`, `state`, `chain_id`.
-- `state_transition(chain, block)`:
-- Validates header with `validate_header` and rejects non-empty `ommers`.
-- Builds `vm.BlockEnvironment` from header fields, applies body, computes roots/bloom.
-- Validates `gas_used`, `transactions_root`, `state_root`, `receipt_root`, `bloom`, `withdrawals_root`, `blob_gas_used`.
-- Appends block and keeps only the latest 255 blocks in `chain.blocks`.
-- `validate_header(chain, header)`:
-- Enforces `header.number >= 1` and proper parent linkage.
-- Checks `excess_blob_gas`, `gas_used <= gas_limit`, and `base_fee_per_gas` via `calculate_base_fee_per_gas`.
-- Enforces timestamp increase, number increment, `extra_data <= 32`.
-- Requires `difficulty == 0`, `nonce == 0`, `ommers_hash == EMPTY_OMMER_HASH`.
-- Verifies `parent_hash` via RLP of parent header.
+## Nethermind references
+Primary architecture reference:
+- nethermind/src/Nethermind/Nethermind.Blockchain/
 
-## Nethermind.Db Reference Inventory
+Nethermind.Db listing (requested for context):
+- IDb.cs, IReadOnlyDb.cs, IColumnsDb.cs, IFullDb.cs
+- DbProvider.cs, DbProviderExtensions.cs, DbNames.cs
+- RocksDbSettings.cs, RocksDbMergeEnumerator.cs
+- MemDb.cs, MemDbFactory.cs, MemColumnsDb.cs
+- ReadOnlyDb.cs, ReadOnlyColumnsDb.cs, ReadOnlyDbProvider.cs
+- PruningConfig.cs, PruningMode.cs, FullPruning/
+- BlobTxsColumns.cs, ReceiptsColumns.cs, MetadataDbKeys.cs
+- InMemoryColumnBatch.cs, InMemoryWriteBatch.cs
 
-Listed from `nethermind/src/Nethermind/Nethermind.Db/`:
+## Voltaire primitives to use (never reimplement)
+Relevant APIs under /Users/williamcory/voltaire/packages/voltaire-zig/src:
+- blockchain/Blockchain.zig (Blockchain)
+- blockchain/BlockStore.zig (BlockStore)
+- blockchain/ForkBlockCache.zig (ForkBlockCache)
+- primitives/Block/ (Block, Header, Transactions, Receipts)
+- primitives/Hash/Hash.zig (Hash)
+- primitives/Address/Address.zig (Address)
+- state-manager/ (state access and snapshots)
+- evm/ (EVM execution integration)
+- crypto/ (keccak256 and hashing primitives)
 
-- Core DB interfaces: `IDb.cs`, `IColumnsDb.cs`, `IDbFactory.cs`, `IDbProvider.cs`, `IFullDb.cs`, `IReadOnlyDb.cs`, `IReadOnlyDbProvider.cs`, `ITunableDb.cs`, `IMergeOperator.cs`.
-- Providers/config: `DbProvider.cs`, `DbProviderExtensions.cs`, `DbNames.cs`, `DbExtensions.cs`, `PruningConfig.cs`, `PruningMode.cs`, `RocksDbSettings.cs`.
-- In-memory: `MemDb.cs`, `MemDbFactory.cs`, `MemColumnsDb.cs`, `InMemoryColumnBatch.cs`, `InMemoryWriteBatch.cs`.
-- Read-only wrappers: `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs`, `ReadOnlyDbProvider.cs`.
-- Maintenance/metrics: `Metrics.cs`, `RocksDbMergeEnumerator.cs`, `FullPruning/`, `FullPruningTrigger.cs`, `FullPruningCompletionBehavior.cs`.
-- Columns/metadata: `BlobTxsColumns.cs`, `ReceiptsColumns.cs`, `MetadataDbKeys.cs`.
-- Other: `NullDb.cs`, `NullRocksDbFactory.cs`, `SimpleFilePublicKeyDb.cs`, `CompressingDb.cs`.
+## Existing Zig files to integrate with
+src/host.zig
+- HostInterface vtable for get/set balance, code, storage, nonce
+- Uses primitives.Address.Address and u256
 
-## Voltaire Zig Primitives
+## Test fixtures
+ethereum-tests/BlockchainTests/
+- Canonical JSON blockchain fixtures
 
-- Attempted to list `/Users/williamcory/voltaire/packages/voltaire-zig/src/` and `voltaire/packages/voltaire-zig/src`, but both paths do not exist in this workspace. The Voltaire Zig primitives need to be located or the submodule path updated before implementation.
-- Available Voltaire root at `/Users/williamcory/voltaire/src/` contains `blockchain/`, `block/`, `state-manager/`, `primitives/`, `evm/`, `jsonrpc/`, and `crypto/` alongside Zig entrypoints (`root.zig`, `c_api.zig`, `log.zig`).
+execution-spec-tests fixtures:
+- execution-spec-tests/fixtures/blockchain_tests/ (symlink to ethereum-tests/BlockchainTests)
+- execution-spec-tests/fixtures/blockchain_tests_engine/ (missing in this repo)
 
-## Existing EVM Host Interface (src/host.zig)
+Additional ethereum-tests assets:
+- ethereum-tests/fixtures_blockchain_tests.tgz (archived fixtures)
 
-- `HostInterface` vtable provides minimal external state access:
-- `getBalance` / `setBalance`
-- `getCode` / `setCode`
-- `getStorage` / `setStorage`
-- `getNonce` / `setNonce`
-
-## Test Fixtures (filesystem)
-
-- `ethereum-tests/ABITests/`
-- `ethereum-tests/BasicTests/`
-- `ethereum-tests/BlockchainTests/`
-- `ethereum-tests/DifficultyTests/`
-- `ethereum-tests/EOFTests/`
-- `ethereum-tests/GenesisTests/`
-- `ethereum-tests/JSONSchema/`
-- `ethereum-tests/KeyStoreTests/`
-- `ethereum-tests/LegacyTests/`
-- `ethereum-tests/PoWTests/`
-- `ethereum-tests/RLPTests/`
-- `ethereum-tests/TransactionTests/`
-- `ethereum-tests/TrieTests/`
-- `ethereum-tests/fixtures_blockchain_tests.tgz`
-- `ethereum-tests/fixtures_general_state_tests.tgz`
-- `execution-spec-tests/` exists but is empty in this workspace (no fixtures present).
-
-## Notes for Implementation
-
-- Read fork-specific `fork.py` before coding validation logic; mirror logic per active fork.
-- Use Voltaire Zig primitives for all Ethereum types (path currently missing).
-- Use the existing EVM in `src/` and the `HostInterface` for external state access.
+## Paths read in this pass
+- prd/GUILLOTINE_CLIENT_PLAN.md
+- prd/ETHEREUM_SPECS_REFERENCE.md
+- execution-specs/src/ethereum/forks/prague/fork.py
+- EIPs/EIPS/eip-1559.md
+- yellowpaper/Paper.tex
+- devp2p/caps/eth.md
+- src/host.zig
+- nethermind/src/Nethermind/Nethermind.Db/
+- /Users/williamcory/voltaire/packages/voltaire-zig/src/
+- /Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/
+- ethereum-tests/
+- execution-spec-tests/fixtures/

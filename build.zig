@@ -33,7 +33,7 @@ pub fn build(b: *std.Build) void {
     const precompiles_mod = primitives_dep.module("precompiles");
     const blockchain_mod = primitives_dep.module("blockchain");
     const jsonrpc_mod = b.addModule("jsonrpc", .{
-        .root_source_file = primitives_dep.path("src/jsonrpc/root.zig"),
+        .root_source_file = primitives_dep.path("packages/voltaire-zig/src/jsonrpc/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -118,9 +118,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("client/db/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
-        },
     });
 
     const client_db_tests = b.addTest(.{
@@ -156,9 +153,8 @@ pub fn build(b: *std.Build) void {
     const client_trie_test_step = b.step("test-trie", "Run Merkle Patricia Trie tests");
     client_trie_test_step.dependOn(&run_client_trie_tests.step);
 
-    // Trie integration tests (ethereum-tests/TrieTests fixtures)
-    const trie_fixture_mod = b.addModule("trie_fixtures", .{
-        .root_source_file = b.path("test/trie/fixtures.zig"),
+    const nethermind_trie_diff_mod = b.addModule("nethermind_trie_diff", .{
+        .root_source_file = b.path("scripts/nethermind-diff-trie.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -168,16 +164,18 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const trie_fixture_tests = b.addTest(.{
-        .root_module = trie_fixture_mod,
+    const nethermind_trie_diff_exe = b.addExecutable(.{
+        .name = "nethermind_trie_diff",
+        .root_module = nethermind_trie_diff_mod,
     });
 
-    const run_trie_fixture_tests = b.addRunArtifact(trie_fixture_tests);
-    run_trie_fixture_tests.setCwd(b.path("."));
-    test_step.dependOn(&run_trie_fixture_tests.step);
-
-    const trie_fixture_step = b.step("test-trie-fixtures", "Run trie fixture integration tests");
-    trie_fixture_step.dependOn(&run_trie_fixture_tests.step);
+    const run_nethermind_trie_diff = b.addRunArtifact(nethermind_trie_diff_exe);
+    const nethermind_diff_step = b.step("nethermind-diff", "Run Nethermind trie differential test");
+    nethermind_diff_step.dependOn(&run_nethermind_trie_diff.step);
+    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test") orelse false;
+    if (include_nethermind_diff) {
+        test_step.dependOn(&run_nethermind_trie_diff.step);
+    }
 
     // Client State module (world state journal + snapshot/restore)
     const client_state_mod = b.addModule("client_state", .{
@@ -199,6 +197,49 @@ pub fn build(b: *std.Build) void {
 
     const client_state_test_step = b.step("test-state", "Run world state journal tests");
     client_state_test_step.dependOn(&run_client_state_tests.step);
+
+    // Client Network module (devp2p networking)
+    const client_network_mod = b.addModule("client_network", .{
+        .root_source_file = b.path("client/network/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+        },
+    });
+
+    const client_network_tests = b.addTest(.{
+        .root_module = client_network_mod,
+    });
+
+    const run_client_network_tests = b.addRunArtifact(client_network_tests);
+    test_step.dependOn(&run_client_network_tests.step);
+    unit_test_step.dependOn(&run_client_network_tests.step);
+
+    const client_network_test_step = b.step("test-network", "Run devp2p networking tests");
+    client_network_test_step.dependOn(&run_client_network_tests.step);
+
+    // Client Sync module (full + snap synchronization)
+    const client_sync_mod = b.addModule("client_sync", .{
+        .root_source_file = b.path("client/sync/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+        },
+    });
+
+    const client_sync_tests = b.addTest(.{
+        .root_module = client_sync_mod,
+    });
+
+    const run_client_sync_tests = b.addRunArtifact(client_sync_tests);
+    test_step.dependOn(&run_client_sync_tests.step);
+    unit_test_step.dependOn(&run_client_sync_tests.step);
+
+    const client_sync_test_step = b.step("test-sync", "Run synchronization tests");
+    client_sync_test_step.dependOn(&run_client_sync_tests.step);
 
     // Client Blockchain module (chain management)
     const client_blockchain_mod = b.addModule("client_blockchain", .{
@@ -268,6 +309,28 @@ pub fn build(b: *std.Build) void {
     const client_engine_test_step = b.step("test-engine", "Run Engine API tests");
     client_engine_test_step.dependOn(&run_client_engine_tests.step);
 
+    // Runner CLI (entry point)
+    const client_runner_mod = b.addModule("client_runner", .{
+        .root_source_file = b.path("client/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "evm", .module = evm_mod },
+        },
+    });
+
+    const client_runner_tests = b.addTest(.{
+        .root_module = client_runner_mod,
+    });
+
+    const run_client_runner_tests = b.addRunArtifact(client_runner_tests);
+    test_step.dependOn(&run_client_runner_tests.step);
+    unit_test_step.dependOn(&run_client_runner_tests.step);
+
+    const client_runner_test_step = b.step("test-runner", "Run runner CLI tests");
+    client_runner_test_step.dependOn(&run_client_runner_tests.step);
+
     // Client EVM module (EVM ↔ WorldState integration)
     const state_manager_mod = primitives_dep.module("state-manager");
 
@@ -293,12 +356,19 @@ pub fn build(b: *std.Build) void {
     const client_evm_test_step = b.step("test-evm-adapter", "Run EVM ↔ WorldState integration tests");
     client_evm_test_step.dependOn(&run_client_evm_tests.step);
 
+    const bench_utils_mod = b.addModule("bench_utils", .{
+        .root_source_file = b.path("client/bench_utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Client EVM benchmark executable
     const client_evm_bench_mod = b.addModule("client_evm_bench", .{
         .root_source_file = b.path("client/evm/bench.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
             .{ .name = "primitives", .module = primitives_mod },
             .{ .name = "evm", .module = evm_mod },
             .{ .name = "state-manager", .module = state_manager_mod },
@@ -319,6 +389,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("client/state/bench.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+        },
     });
 
     const client_state_bench = b.addExecutable(.{
@@ -331,12 +404,6 @@ pub fn build(b: *std.Build) void {
     bench_state_step.dependOn(&run_client_state_bench.step);
 
     // Client Blockchain benchmark executable
-    const bench_utils_mod = b.addModule("bench_utils", .{
-        .root_source_file = b.path("client/bench_utils.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     const client_blockchain_bench_mod = b.addModule("client_blockchain_bench", .{
         .root_source_file = b.path("client/blockchain/bench.zig"),
         .target = target,
@@ -453,6 +520,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "evm", .module = evm_mod },
             .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "client_blockchain", .module = client_blockchain_mod },
         },
     });
 

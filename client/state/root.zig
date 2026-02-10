@@ -18,11 +18,13 @@
 /// - `ChangeTag`     — Change classification enum (just_cache, update, create, delete, touch)
 /// - `Entry`         — Single change record (key + value + tag)
 /// - `JournalError`  — Error set for journal operations (InvalidSnapshot, OutOfMemory)
+/// - `Snapshot`      — Composite snapshot positions (state + storage)
 /// - `AccountState`  — Voltaire account state type (re-exported)
 /// - `is_empty`       — EIP-161 empty account predicate
 /// - `is_totally_empty` — Empty account with empty storage predicate
 /// - `is_account_alive` — Exists + not empty predicate (account != EMPTY_ACCOUNT)
-/// - `has_code_or_nonce` — Code-or-nonce predicate (for CREATE collision check)
+/// - `has_code_or_nonce` — Code-or-nonce predicate (EIP-684 collision check)
+/// - `has_code_or_nonce_or_storage` — Code/nonce/storage predicate (EIP-7610)
 ///
 /// ## Usage
 ///
@@ -57,6 +59,10 @@ pub const ChangeTag = journal.ChangeTag;
 /// Error set for journal operations.
 pub const JournalError = journal.JournalError;
 
+// Snapshot types
+/// Composite snapshot positions for state + persistent/transient storage.
+pub const Snapshot = state.Snapshot;
+
 // Account types and helpers
 /// Voltaire account state type — the canonical Ethereum account representation.
 pub const AccountState = account.AccountState;
@@ -78,6 +84,9 @@ pub const is_totally_empty = account.is_totally_empty;
 
 /// Check whether an account has code or a non-zero nonce.
 pub const has_code_or_nonce = account.has_code_or_nonce;
+
+/// Check whether an account has code, nonce, or non-empty storage (EIP-7610).
+pub const has_code_or_nonce_or_storage = account.has_code_or_nonce_or_storage;
 
 /// Check whether an account exists and is not empty.
 pub const is_account_alive = account.is_account_alive;

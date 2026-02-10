@@ -1,4 +1,6 @@
 const std = @import("std");
+const primitives = @import("primitives");
+const TraceConfig = primitives.TraceConfig;
 
 /// EIP-3155 compatible trace entry
 pub const TraceEntry = struct {
@@ -84,11 +86,13 @@ pub const Tracer = struct {
     entries: std.ArrayList(TraceEntry),
     allocator: std.mem.Allocator,
     enabled: bool = false,
+    config: TraceConfig = TraceConfig.from(),
 
     pub fn init(allocator: std.mem.Allocator) Tracer {
         return .{
             .entries = std.ArrayList(TraceEntry){},
             .allocator = allocator,
+            .config = TraceConfig.from(),
         };
     }
 
@@ -96,12 +100,18 @@ pub const Tracer = struct {
         // Free allocated memory in entries
         for (self.entries.items) |entry| {
             if (entry.memory) |mem| {
-                self.allocator.free(mem);
+                if (mem.len > 0) {
+                    self.allocator.free(mem);
+                }
             }
             if (entry.returnData) |data| {
-                self.allocator.free(data);
+                if (data.len > 0) {
+                    self.allocator.free(data);
+                }
             }
-            self.allocator.free(entry.stack);
+            if (entry.stack.len > 0) {
+                self.allocator.free(entry.stack);
+            }
             self.allocator.free(entry.opName);
             if (entry.error_msg) |msg| {
                 self.allocator.free(msg);
@@ -133,10 +143,30 @@ pub const Tracer = struct {
     ) !void {
         if (!self.enabled) return;
 
-        // Duplicate dynamic data
-        const mem_copy = if (memory) |m| try self.allocator.dupe(u8, m) else null;
-        const stack_copy = try self.allocator.dupe(u256, stack);
-        const return_copy = if (return_data) |r| try self.allocator.dupe(u8, r) else null;
+        const track_memory = self.config.tracksMemory();
+        const track_stack = self.config.tracksStack();
+        const track_return = self.config.enable_return_data;
+
+        const mem_copy = if (track_memory) blk: {
+            if (memory) |m| {
+                if (m.len == 0) break :blk &[_]u8{};
+                break :blk try self.allocator.dupe(u8, m);
+            }
+            break :blk null;
+        } else null;
+
+        const stack_copy = if (track_stack) blk: {
+            if (stack.len == 0) break :blk &[_]u256{};
+            break :blk try self.allocator.dupe(u256, stack);
+        } else &[_]u256{};
+
+        const return_copy = if (track_return) blk: {
+            if (return_data) |r| {
+                if (r.len == 0) break :blk &[_]u8{};
+                break :blk try self.allocator.dupe(u8, r);
+            }
+            break :blk null;
+        } else null;
         const op_name_copy = try self.allocator.dupe(u8, op_name);
 
         const entry = TraceEntry{

@@ -255,7 +255,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 return 0;
             }
 
-            return try self.access_list_manager.accessAddress(address);
+            return try self.access_list_manager.access_address(address);
         }
 
         /// Access a storage slot and return the gas cost (EIP-2929 warm/cold)
@@ -270,7 +270,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
             }
 
-            return try self.access_list_manager.accessStorageSlot(contract_address, slot);
+            return try self.access_list_manager.access_storage_slot(contract_address, slot);
         }
 
         /// Set balance with copy-on-write snapshot for revert handling
@@ -312,53 +312,9 @@ pub fn Evm(comptime config: EvmConfig) type {
             }
         }
 
-        /// Restore storage and original_storage to pre-call state after a revert/exception.
-        fn restore_storage_on_revert(
-            self: *Self,
-            storage_snapshot: *const std.AutoHashMap(StorageKey, u256),
-            original_storage_snapshot: *const std.AutoHashMap(StorageKey, u256),
-        ) !void {
-            // Identify slots added during the call (exist in original_storage but not in snapshot)
-            var added_slots = std.ArrayList(StorageKey){};
-            try added_slots.ensureTotalCapacity(self.arena.allocator(), 10);
-            var orig_check_it = self.storage.original_storage.iterator();
-            while (orig_check_it.next()) |entry| {
-                if (!original_storage_snapshot.contains(entry.key_ptr.*)) {
-                    try added_slots.append(self.arena.allocator(), entry.key_ptr.*);
-                }
-            }
-
-            // Restore original_storage
-            self.storage.original_storage.clearRetainingCapacity();
-            var original_storage_restore_it = original_storage_snapshot.iterator();
-            while (original_storage_restore_it.next()) |entry| {
-                try self.storage.original_storage.put(entry.key_ptr.*, entry.value_ptr.*);
-            }
-
-            // Restore storage values
-            var storage_restore_it = storage_snapshot.iterator();
-            while (storage_restore_it.next()) |entry| {
-                if (self.host) |h| {
-                    const addr = primitives.Address{ .bytes = entry.key_ptr.*.address };
-                    h.setStorage(addr, entry.key_ptr.*.slot, entry.value_ptr.*);
-                } else {
-                    try self.storage.storage.put(entry.key_ptr.*, entry.value_ptr.*);
-                }
-            }
-
-            // Delete slots that were added during the call
-            for (added_slots.items) |slot_key| {
-                if (self.host) |h| {
-                    h.setStorage(Address{ .bytes = slot_key.address }, slot_key.slot, 0);
-                } else {
-                    _ = self.storage.storage.remove(slot_key);
-                }
-            }
-        }
-
         /// Pre-warm addresses for transaction initialization
-        fn preWarmAddresses(self: *Self, addresses: []const primitives.Address) !void {
-            self.access_list_manager.preWarmAddresses(addresses) catch {
+        fn pre_warm_addresses(self: *Self, addresses: []const primitives.Address) !void {
+            self.access_list_manager.pre_warm_addresses(addresses) catch {
                 return errors.CallError.StorageError;
             };
         }
@@ -512,7 +468,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             }
 
             // Pre-warm origin, target, and coinbase
-            try self.preWarmAddresses(warm[0..count]);
+            try self.pre_warm_addresses(warm[0..count]);
 
             // Pre-warm precompiles
             // EIP-2929: Precompiles are always warm at transaction start
@@ -532,7 +488,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             while (i < precompile_count) : (i += 1) {
                 precompile_addrs[i] = primitives.Address.fromU256(i + 1);
             }
-            try self.preWarmAddresses(precompile_addrs[0..precompile_count]);
+            try self.pre_warm_addresses(precompile_addrs[0..precompile_count]);
         }
 
         /// Set bytecode for the next call() invocation
@@ -619,7 +575,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // Pre-warm access list (EIP-2929/EIP-2930)
             if (access_list) |list| {
-                self.access_list_manager.preWarmFromAccessList(list) catch {
+                self.access_list_manager.pre_warm_from_access_list(list) catch {
                     return makeFailure(self.arena.allocator(), 0);
                 };
             }
@@ -676,7 +632,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     self.access_list_manager.clear();
 
                     // Clear transient storage at end of transaction (EIP-1153)
-                    self.storage.clearTransient();
+                    self.storage.clear_transient();
 
                     // Delete selfdestructed accounts at end of transaction (EIP-6780)
                     var selfdestruct_it = self.selfdestructed_accounts.iterator();
@@ -735,7 +691,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 // For non-precompile empty accounts, return success with no output
                 // Reset transaction-scoped caches
                 self.access_list_manager.clear();
-                self.storage.clearTransient();
+                self.storage.clear_transient();
                 self.selfdestructed_accounts.clearRetainingCapacity();
 
                 return CallResult{
@@ -817,7 +773,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.access_list_manager.clear();
 
             // Clear transient storage at end of transaction (EIP-1153)
-            self.storage.clearTransient();
+            self.storage.clear_transient();
 
             // Clear logs buffer for next transaction
             self.logs.clearRetainingCapacity();
@@ -957,7 +913,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
                 // Clean up transaction state (safe now)
                 self.access_list_manager.clear();
-                self.storage.clearTransient();
+                self.storage.clear_transient();
 
                 return .{ .result = CallResult{
                     .success = success,
@@ -991,6 +947,88 @@ pub fn Evm(comptime config: EvmConfig) type {
             log.debug("dumpStateChanges: No injector, returning empty", .{});
             self.pending_state_changes_len = 0;
             return &.{};
+        }
+
+        fn restore_call_revert_state(
+            self: *Self,
+            refund_snapshot: u64,
+            access_list_snapshot: *const AccessListSnapshot,
+            original_storage_snapshot: *const std.AutoHashMap(StorageKey, u256),
+            storage_snapshot: *const std.AutoHashMap(StorageKey, u256),
+            balance_snapshot: *const std.AutoHashMap(primitives.Address, u256),
+            transient_snapshot: *const std.AutoHashMap(StorageKey, u256),
+            selfdestruct_snapshot: *const std.AutoHashMap(primitives.Address, void),
+        ) !void {
+            // Restore gas refunds on failure
+            // Per Python: incorporate_child_on_error does NOT add child's refund_counter
+            self.gas_refund = refund_snapshot;
+
+            // Restore warm addresses and storage slots on failure (EIP-2929)
+            try self.access_list_manager.restore(access_list_snapshot.*);
+
+            // Restore storage on failure
+            // IMPORTANT: Identify slots to delete BEFORE restoring original_storage
+            // First, identify slots that were added during the call (exist in original_storage but not in snapshot)
+            var added_slots = std.ArrayList(StorageKey){};
+            try added_slots.ensureTotalCapacity(self.arena.allocator(), 10);
+            var orig_check_it = self.storage.original_storage.iterator();
+            while (orig_check_it.next()) |entry| {
+                if (!original_storage_snapshot.contains(entry.key_ptr.*)) {
+                    try added_slots.append(self.arena.allocator(), entry.key_ptr.*);
+                }
+            }
+
+            // Second, restore original_storage to remove entries added during the call
+            self.storage.original_storage.clearRetainingCapacity();
+            var original_storage_restore_it = original_storage_snapshot.iterator();
+            while (original_storage_restore_it.next()) |entry| {
+                try self.storage.original_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+
+            // Third, restore storage values from snapshot
+            var storage_restore_it = storage_snapshot.iterator();
+            while (storage_restore_it.next()) |entry| {
+                if (self.host) |h| {
+                    const addr = primitives.Address{ .bytes = entry.key_ptr.*.address };
+                    h.setStorage(addr, entry.key_ptr.*.slot, entry.value_ptr.*);
+                } else {
+                    try self.storage.storage.put(entry.key_ptr.*, entry.value_ptr.*);
+                }
+            }
+
+            // Fourth, delete slots that were added during the call
+            for (added_slots.items) |slot_key| {
+                if (self.host) |h| {
+                    h.setStorage(Address{ .bytes = slot_key.address }, slot_key.slot, 0);
+                } else {
+                    _ = self.storage.storage.remove(slot_key);
+                }
+            }
+
+            // Restore transient storage on failure (EIP-1153)
+            self.storage.clear_transient();
+            var restore_it = transient_snapshot.iterator();
+            while (restore_it.next()) |entry| {
+                try self.storage.transient.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+
+            // Restore selfdestructed_accounts on failure (EIP-6780)
+            // This ensures that SELFDESTRUCT operations in reverted calls don't affect the final state
+            self.selfdestructed_accounts.clearRetainingCapacity();
+            var restore_selfdestruct_it = selfdestruct_snapshot.iterator();
+            while (restore_selfdestruct_it.next()) |entry| {
+                try self.selfdestructed_accounts.put(entry.key_ptr.*, {});
+            }
+
+            // Restore balances on failure (handles SELFDESTRUCT balance transfers and value transfers)
+            var balance_restore_it = balance_snapshot.iterator();
+            while (balance_restore_it.next()) |entry| {
+                if (self.host) |h| {
+                    h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
+                } else {
+                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
+                }
+            }
         }
 
         /// Handle inner call from frame (like evm.inner_call)
@@ -1273,50 +1311,17 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.frames.items[self.frames.items.len - 1].execute() catch {
                 _ = self.frames.pop();
 
-                // Restore gas refunds on failure
-                // Per Python: incorporate_child_on_error does NOT add child's refund_counter
-                self.gas_refund = refund_snapshot;
-
-                // Restore warm addresses and storage slots on failure (EIP-2929)
-                self.access_list_manager.restore(access_list_snapshot) catch {
+                self.restore_call_revert_state(
+                    refund_snapshot,
+                    &access_list_snapshot,
+                    &original_storage_snapshot,
+                    &storage_snapshot,
+                    &balance_snapshot,
+                    &transient_snapshot,
+                    &selfdestruct_snapshot,
+                ) catch {
                     return makeFailure(self.arena.allocator(), 0);
                 };
-
-                // Restore storage on failure
-                self.restore_storage_on_revert(&storage_snapshot, &original_storage_snapshot) catch {
-                    return makeFailure(self.arena.allocator(), 0);
-                };
-
-                // Restore balances on failure (handles SELFDESTRUCT balance transfers)
-                var balance_restore_it = balance_snapshot.iterator();
-                while (balance_restore_it.next()) |entry| {
-                    if (self.host) |h| {
-                        h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
-                    } else {
-                        self.balances.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                            return makeFailure(self.arena.allocator(), 0);
-                        };
-                    }
-                }
-
-                // Restore transient storage on failure (EIP-1153)
-                self.storage.clearTransient();
-                var restore_it = transient_snapshot.iterator();
-                while (restore_it.next()) |entry| {
-                    self.storage.transient.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                        // Critical: cannot restore transient storage - return failure with remaining gas
-                        return makeFailure(self.arena.allocator(), 0);
-                    };
-                }
-
-                // Restore selfdestructed_accounts on failure (EIP-6780)
-                self.selfdestructed_accounts.clearRetainingCapacity();
-                var restore_selfdestruct_it = selfdestruct_snapshot.iterator();
-                while (restore_selfdestruct_it.next()) |entry| {
-                    self.selfdestructed_accounts.put(entry.key_ptr.*, {}) catch {
-                        return makeFailure(self.arena.allocator(), 0);
-                    };
-                }
 
                 return makeFailure(self.arena.allocator(), 0);
             };
@@ -1342,62 +1347,19 @@ pub fn Evm(comptime config: EvmConfig) type {
             };
             // std.debug.print("DEBUG inner_call result: address={any} success={} reverted={} frames={}\n", .{address.bytes, result.success, frame.reverted, self.frames.items.len});
 
-            // Restore gas refunds on revert
-            // Per Python: incorporate_child_on_error does NOT add child's refund_counter
-            // This applies to both reverts and exceptional halts
+            // Restore revert-only state
             if (frame.reverted) {
-                self.gas_refund = refund_snapshot;
-            }
-
-            // Restore warm addresses and storage slots on revert (EIP-2929)
-            if (frame.reverted) {
-                self.access_list_manager.restore(access_list_snapshot) catch {
+                self.restore_call_revert_state(
+                    refund_snapshot,
+                    &access_list_snapshot,
+                    &original_storage_snapshot,
+                    &storage_snapshot,
+                    &balance_snapshot,
+                    &transient_snapshot,
+                    &selfdestruct_snapshot,
+                ) catch {
                     return makeFailure(self.arena.allocator(), 0);
                 };
-            }
-
-            // Restore storage on revert
-            if (frame.reverted) {
-                self.restore_storage_on_revert(&storage_snapshot, &original_storage_snapshot) catch {
-                    return makeFailure(self.arena.allocator(), 0);
-                };
-            }
-
-            // Restore transient storage on revert (EIP-1153)
-            if (frame.reverted) {
-                self.storage.clearTransient();
-                var restore_it = transient_snapshot.iterator();
-                while (restore_it.next()) |entry| {
-                    self.storage.transient.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                        return makeFailure(self.arena.allocator(), 0);
-                    };
-                }
-            }
-
-            // Restore selfdestructed_accounts on revert (EIP-6780)
-            // This ensures that SELFDESTRUCT operations in reverted calls don't affect the final state
-            if (frame.reverted) {
-                self.selfdestructed_accounts.clearRetainingCapacity();
-                var restore_selfdestruct_it = selfdestruct_snapshot.iterator();
-                while (restore_selfdestruct_it.next()) |entry| {
-                    self.selfdestructed_accounts.put(entry.key_ptr.*, {}) catch {
-                        return makeFailure(self.arena.allocator(), 0);
-                    };
-                }
-            }
-
-            // Restore balances on revert (handles SELFDESTRUCT balance transfers and value transfers)
-            if (frame.reverted) {
-                var balance_restore_it = balance_snapshot.iterator();
-                while (balance_restore_it.next()) |entry| {
-                    if (self.host) |h| {
-                        h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
-                    } else {
-                        self.balances.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                            return makeFailure(self.arena.allocator(), 0);
-                        };
-                    }
-                }
             }
 
             // Pop frame from stack
@@ -1588,7 +1550,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             // Per Python reference: accessed_addresses.add(contract_address) happens
             // BEFORE collision check and nonce increment
             if (self.hardfork.isAtLeast(.BERLIN)) {
-                try self.access_list_manager.preWarmAddresses(&[_]primitives.Address{new_address});
+                try self.access_list_manager.pre_warm_addresses(&[_]primitives.Address{new_address});
             }
 
             // Check for address collision (code, nonce, or storage already exists)

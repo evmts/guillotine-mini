@@ -5,9 +5,11 @@ This script scans the execution-specs directory and creates a Zig test file
 for each JSON test file.
 """
 
-import os
 import json
+import os
+import shutil
 import sys
+import tarfile
 from pathlib import Path
 
 
@@ -21,6 +23,40 @@ def sanitize_test_name(name: str) -> str:
     if sanitized and sanitized[0].isdigit():
         sanitized = "test_" + sanitized
     return sanitized
+
+
+def ensure_blockchain_fixtures(specs_root: Path, repo_root: Path) -> None:
+    """Ensure blockchain fixtures exist at execution-spec-tests/fixtures/blockchain_tests."""
+    if specs_root.exists() and any(specs_root.rglob("*.json")):
+        return
+
+    if specs_root.exists():
+        shutil.rmtree(specs_root)
+
+    specs_root.parent.mkdir(parents=True, exist_ok=True)
+
+    legacy_root = repo_root / "ethereum-tests" / "BlockchainTests"
+    if legacy_root.exists() and any(legacy_root.rglob("*.json")):
+        try:
+            os.symlink(legacy_root, specs_root, target_is_directory=True)
+            print(f"Linked blockchain fixtures from {legacy_root}")
+            return
+        except OSError:
+            shutil.copytree(legacy_root, specs_root)
+            print(f"Copied blockchain fixtures from {legacy_root}")
+            return
+
+    tar_path = repo_root / "ethereum-tests" / "fixtures_blockchain_tests.tgz"
+    if tar_path.exists():
+        with tarfile.open(tar_path, "r:gz") as tar:
+            tar.extractall(specs_root.parent)
+        extracted_root = specs_root.parent / "BlockchainTests"
+        if extracted_root.exists() and not specs_root.exists():
+            extracted_root.rename(specs_root)
+        print(f"Extracted blockchain fixtures from {tar_path}")
+        return
+
+    print("Warning: No blockchain fixtures found; blockchain tests will be empty.")
 
 
 def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path, repo_root: Path) -> int:
@@ -127,6 +163,7 @@ def main():
     else:  # blockchain
         specs_root = repo_root / "execution-spec-tests" / "fixtures" / "blockchain_tests"
         output_root = repo_root / "test" / "specs" / "generated_blockchain"
+        ensure_blockchain_fixtures(specs_root, repo_root)
 
     # Clean output directory
     if output_root.exists():

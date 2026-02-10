@@ -45,22 +45,6 @@ fn make_result(name: []const u8, ops: usize, elapsed_ns: u64) BenchResult {
     };
 }
 
-fn init_chain_with_blocks(
-    n: usize,
-    allocator: std.mem.Allocator,
-    chain: *Chain,
-) ![]Block.Block {
-    chain.* = try Chain.init(allocator, null);
-    return build_blocks(n, allocator);
-}
-
-fn process_blocks(chain: *Chain, blocks: []Block.Block) !void {
-    for (blocks) |block| {
-        try chain.putBlock(block);
-        try chain.setCanonicalHead(block.hash);
-    }
-}
-
 fn build_blocks(n: usize, allocator: std.mem.Allocator) ![]Block.Block {
     const blocks = try allocator.alloc(Block.Block, n);
     if (n == 0) return blocks;
@@ -86,33 +70,29 @@ fn build_blocks(n: usize, allocator: std.mem.Allocator) ![]Block.Block {
 
 /// Benchmark: process N blocks through Chain (putBlock + setCanonicalHead).
 fn bench_block_processing(n: usize) !u64 {
-    // Warmup
-    for (0..WARMUP_ITERS) |_| {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-
-        var chain: Chain = undefined;
-        const blocks = try init_chain_with_blocks(n, allocator, &chain);
-        defer chain.deinit();
-
-        try process_blocks(&chain, blocks);
-    }
-
-    // Timed
     var total_ns: u64 = 0;
-    for (0..BENCH_ITERS) |_| {
+    const total_iters = WARMUP_ITERS + BENCH_ITERS;
+    for (0..total_iters) |iter| {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
 
-        var chain: Chain = undefined;
-        const blocks = try init_chain_with_blocks(n, allocator, &chain);
+        var chain = try Chain.init(allocator, null);
         defer chain.deinit();
 
-        var timer = try std.time.Timer.start();
-        try process_blocks(&chain, blocks);
-        total_ns += timer.read();
+        const blocks = try build_blocks(n, allocator);
+
+        var timer: ?std.time.Timer = null;
+        if (iter >= WARMUP_ITERS) {
+            timer = try std.time.Timer.start();
+        }
+        for (blocks) |block| {
+            try chain.putBlock(block);
+            try chain.setCanonicalHead(block.hash);
+        }
+        if (timer) |*active| {
+            total_ns += active.read();
+        }
     }
     return total_ns / BENCH_ITERS;
 }

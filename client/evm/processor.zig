@@ -17,6 +17,17 @@ const intrinsic_gas = @import("intrinsic_gas.zig");
 const calculate_intrinsic_gas = intrinsic_gas.calculate_intrinsic_gas;
 const MAX_INIT_CODE_SIZE = intrinsic_gas.MAX_INIT_CODE_SIZE;
 
+fn assert_supported_tx_type(comptime Tx: type, comptime context: []const u8) void {
+    if (Tx != tx_mod.LegacyTransaction and
+        Tx != tx_mod.Eip2930Transaction and
+        Tx != tx_mod.Eip1559Transaction and
+        Tx != tx_mod.Eip4844Transaction and
+        Tx != tx_mod.Eip7702Transaction)
+    {
+        @compileError("Unsupported transaction type for " ++ context);
+    }
+}
+
 /// Validate a transaction per execution-specs and return its intrinsic gas.
 ///
 /// This performs the static checks that do not require state access:
@@ -28,18 +39,10 @@ pub fn validate_transaction(
     hardfork: Hardfork,
 ) error{ InsufficientGas, NonceOverflow, InitCodeTooLarge, UnsupportedTransactionType }!u64 {
     const Tx = @TypeOf(tx);
-    comptime {
-        // NOTE: Voltaire Zig primitives do not yet expose EIP-2930 transactions.
-        if (Tx != tx_mod.LegacyTransaction and
-            Tx != tx_mod.Eip1559Transaction and
-            Tx != tx_mod.Eip4844Transaction and
-            Tx != tx_mod.Eip7702Transaction)
-        {
-            @compileError("Unsupported transaction type for validate_transaction");
-        }
-    }
+    comptime assert_supported_tx_type(Tx, "validate_transaction");
 
     const required_fork: ?Hardfork = comptime blk: {
+        if (Tx == tx_mod.Eip2930Transaction) break :blk .BERLIN;
         if (Tx == tx_mod.Eip1559Transaction) break :blk .LONDON;
         if (Tx == tx_mod.Eip4844Transaction) break :blk .CANCUN;
         if (Tx == tx_mod.Eip7702Transaction) break :blk .PRAGUE;
@@ -50,32 +53,7 @@ pub fn validate_transaction(
     }
 
     const is_create = if (comptime Tx == tx_mod.Eip4844Transaction) false else tx.to == null;
-
-    var access_list_address_count: u64 = 0;
-    var access_list_storage_key_count: u64 = 0;
-    if (comptime Tx == tx_mod.Eip1559Transaction or
-        Tx == tx_mod.Eip4844Transaction or
-        Tx == tx_mod.Eip7702Transaction)
-    {
-        access_list_address_count = @intCast(tx.access_list.len);
-        for (tx.access_list) |entry| {
-            access_list_storage_key_count += @intCast(entry.storage_keys.len);
-        }
-    }
-
-    var authorization_count: u64 = 0;
-    if (comptime Tx == tx_mod.Eip7702Transaction) {
-        authorization_count = @intCast(tx.authorization_list.len);
-    }
-
-    const intrinsic = calculate_intrinsic_gas(.{
-        .data = tx.data,
-        .is_create = is_create,
-        .access_list_address_count = access_list_address_count,
-        .access_list_storage_key_count = access_list_storage_key_count,
-        .authorization_count = authorization_count,
-        .hardfork = hardfork,
-    });
+    const intrinsic = calculate_intrinsic_gas(tx, hardfork);
 
     const calldata_floor = intrinsic_gas.calculate_calldata_floor_gas(tx.data, hardfork);
     const required_gas = if (calldata_floor > intrinsic) calldata_floor else intrinsic;
@@ -87,6 +65,36 @@ pub fn validate_transaction(
     }
 
     return intrinsic;
+}
+
+/// Calculate the effective gas price for a transaction, enforcing base fee rules.
+///
+/// For EIP-1559 style transactions, this applies:
+/// `effective = base_fee + min(max_priority_fee, max_fee - base_fee)`.
+/// For legacy/EIP-2930 transactions, `effective = gas_price` and must be
+/// >= the base fee (post-London).
+pub fn calculate_effective_gas_price(
+    tx: anytype,
+    base_fee_per_gas: u256,
+) error{ PriorityFeeGreaterThanMaxFee, InsufficientMaxFeePerGas, GasPriceBelowBaseFee, UnsupportedTransactionType }!u256 {
+    const Tx = @TypeOf(tx);
+    comptime assert_supported_tx_type(Tx, "calculate_effective_gas_price");
+
+    if (comptime Tx == tx_mod.LegacyTransaction or Tx == tx_mod.Eip2930Transaction) {
+        if (tx.gas_price < base_fee_per_gas) return error.GasPriceBelowBaseFee;
+        return tx.gas_price;
+    }
+
+    if (tx.max_fee_per_gas < tx.max_priority_fee_per_gas) return error.PriorityFeeGreaterThanMaxFee;
+    if (tx.max_fee_per_gas < base_fee_per_gas) return error.InsufficientMaxFeePerGas;
+
+    const max_priority_allowed = tx.max_fee_per_gas - base_fee_per_gas;
+    const priority_fee = if (tx.max_priority_fee_per_gas < max_priority_allowed)
+        tx.max_priority_fee_per_gas
+    else
+        max_priority_allowed;
+
+    return base_fee_per_gas + priority_fee;
 }
 
 // =============================================================================
@@ -155,16 +163,10 @@ test "validate_transaction — init code size limit (Shanghai+)" {
     const init_code = try allocator.alloc(u8, size);
     defer allocator.free(init_code);
 
-    const intrinsic = intrinsic_gas.calculate_intrinsic_gas(.{
-        .data = init_code,
-        .is_create = true,
-        .hardfork = .SHANGHAI,
-    });
-
-    const tx = tx_mod.LegacyTransaction{
+    var tx = tx_mod.LegacyTransaction{
         .nonce = 0,
         .gas_price = 0,
-        .gas_limit = intrinsic,
+        .gas_limit = 0,
         .to = null,
         .value = 0,
         .data = init_code,
@@ -172,6 +174,8 @@ test "validate_transaction — init code size limit (Shanghai+)" {
         .r = [_]u8{0} ** 32,
         .s = [_]u8{0} ** 32,
     };
+    const intrinsic = intrinsic_gas.calculate_intrinsic_gas(tx, .SHANGHAI);
+    tx.gas_limit = intrinsic;
 
     try std.testing.expectError(error.InitCodeTooLarge, validate_transaction(tx, .SHANGHAI));
 }
@@ -210,6 +214,39 @@ test "validate_transaction — eip1559 access list intrinsic gas" {
     try std.testing.expectEqual(@as(u64, expected_gas), intrinsic);
 }
 
+test "validate_transaction — eip2930 access list intrinsic gas" {
+    const Address = primitives.Address;
+
+    const key1 = [_]u8{0x0A} ** 32;
+    const key2 = [_]u8{0x0B} ** 32;
+    const keys = [_][32]u8{ key1, key2 };
+
+    const access_list = [_]tx_mod.AccessListItem{
+        .{ .address = Address{ .bytes = [_]u8{0x5A} ++ [_]u8{0} ** 19 }, .storage_keys = &keys },
+    };
+
+    const expected_gas = intrinsic_gas.TX_BASE_COST +
+        intrinsic_gas.TX_ACCESS_LIST_ADDRESS_COST +
+        (2 * intrinsic_gas.TX_ACCESS_LIST_STORAGE_KEY_COST);
+
+    const tx = tx_mod.Eip2930Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .gas_price = 0,
+        .gas_limit = expected_gas,
+        .to = Address{ .bytes = [_]u8{0x5B} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &access_list,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const intrinsic = try validate_transaction(tx, .BERLIN);
+    try std.testing.expectEqual(@as(u64, expected_gas), intrinsic);
+}
+
 test "validate_transaction — eip1559 rejected before London" {
     const Address = primitives.Address;
 
@@ -229,6 +266,26 @@ test "validate_transaction — eip1559 rejected before London" {
     };
 
     try std.testing.expectError(error.UnsupportedTransactionType, validate_transaction(tx, .BERLIN));
+}
+
+test "validate_transaction — eip2930 rejected before Berlin" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip2930Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .gas_price = 0,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x6A} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.UnsupportedTransactionType, validate_transaction(tx, .ISTANBUL));
 }
 
 test "validate_transaction — eip4844 rejected before Cancun" {
@@ -320,15 +377,10 @@ test "validate_transaction — prague calldata floor enforced" {
     const Address = primitives.Address;
 
     const data = [_]u8{0x01}; // one non-zero byte => floor > intrinsic
-    const intrinsic = intrinsic_gas.calculate_intrinsic_gas(.{
-        .data = &data,
-        .hardfork = .PRAGUE,
-    });
-
-    const tx = tx_mod.LegacyTransaction{
+    var tx = tx_mod.LegacyTransaction{
         .nonce = 0,
         .gas_price = 0,
-        .gas_limit = intrinsic,
+        .gas_limit = 0,
         .to = Address{ .bytes = [_]u8{0xAA} ++ [_]u8{0} ** 19 },
         .value = 0,
         .data = &data,
@@ -336,6 +388,8 @@ test "validate_transaction — prague calldata floor enforced" {
         .r = [_]u8{0} ** 32,
         .s = [_]u8{0} ** 32,
     };
+    const intrinsic = intrinsic_gas.calculate_intrinsic_gas(tx, .PRAGUE);
+    tx.gas_limit = intrinsic;
 
     try std.testing.expectError(error.InsufficientGas, validate_transaction(tx, .PRAGUE));
 }
@@ -383,4 +437,105 @@ test "validate_transaction — eip7702 authorization intrinsic gas" {
 
     const intrinsic = try validate_transaction(tx, .PRAGUE);
     try std.testing.expectEqual(@as(u64, expected), intrinsic);
+}
+
+test "calculate_effective_gas_price — legacy ok" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = 100,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x10} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const effective = try calculate_effective_gas_price(tx, 10);
+    try std.testing.expectEqual(@as(u256, 100), effective);
+}
+
+test "calculate_effective_gas_price — legacy rejects below base fee" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = 5,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x11} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.GasPriceBelowBaseFee, calculate_effective_gas_price(tx, 10));
+}
+
+test "calculate_effective_gas_price — eip1559 caps priority fee" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 20,
+        .max_fee_per_gas = 25,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x12} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const effective = try calculate_effective_gas_price(tx, 10);
+    try std.testing.expectEqual(@as(u256, 25), effective);
+}
+
+test "calculate_effective_gas_price — eip1559 priority fee above max fee" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 12,
+        .max_fee_per_gas = 10,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x13} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.PriorityFeeGreaterThanMaxFee, calculate_effective_gas_price(tx, 1));
+}
+
+test "calculate_effective_gas_price — eip1559 max fee below base fee" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 9,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x14} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    try std.testing.expectError(error.InsufficientMaxFeePerGas, calculate_effective_gas_price(tx, 10));
 }

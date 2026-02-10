@@ -2,7 +2,10 @@ const std = @import("std");
 const testing = std.testing;
 const evm_mod = @import("evm");
 const primitives = @import("primitives");
+const client_blockchain = @import("client_blockchain");
 const Address = primitives.Address.Address;
+const BlockHeader = primitives.BlockHeader;
+const Hash = primitives.Hash;
 const test_host_mod = @import("test_host.zig");
 const TestHost = test_host_mod.TestHost;
 const StorageSlotKey = test_host_mod.StorageSlotKey;
@@ -25,6 +28,105 @@ pub const Config = struct {
         return .{ .include_engine_tests = include_engine };
     }
 };
+
+fn extractHeaderJson(value: std.json.Value) ?std.json.Value {
+    if (value != .object) return null;
+    if (value.object.get("blockHeader")) |header| return header;
+    if (value.object.get("rlp_decoded")) |decoded| {
+        if (decoded.object.get("blockHeader")) |header| return header;
+    }
+    if (value.object.get("parentHash") != null or value.object.get("number") != null) {
+        return value;
+    }
+    return null;
+}
+
+fn fillHeaderFromJson(
+    allocator: std.mem.Allocator,
+    header_json: std.json.Value,
+    header: *BlockHeader.BlockHeader,
+) !?[]u8 {
+    if (header_json.object.get("difficulty")) |diff| {
+        header.difficulty = try parseU256FromJson(diff);
+    }
+    if (header_json.object.get("nonce")) |nonce| {
+        header.nonce = try parseFixedHexBytes(BlockHeader.NONCE_SIZE, allocator, nonce);
+    }
+    if (header_json.object.get("uncleHash")) |uncle_hash| {
+        header.ommers_hash = try parseFixedHexBytes(Hash.SIZE, allocator, uncle_hash);
+    } else if (header_json.object.get("ommersHash")) |ommers_hash| {
+        header.ommers_hash = try parseFixedHexBytes(Hash.SIZE, allocator, ommers_hash);
+    }
+    if (header_json.object.get("mixHash")) |mix_hash| {
+        header.mix_hash = try parseFixedHexBytes(Hash.SIZE, allocator, mix_hash);
+    }
+    if (header_json.object.get("gasLimit")) |gas_limit| {
+        header.gas_limit = try parseIntFromJson(gas_limit);
+    }
+    if (header_json.object.get("gasUsed")) |gas_used| {
+        header.gas_used = try parseIntFromJson(gas_used);
+    }
+    if (header_json.object.get("timestamp")) |timestamp| {
+        header.timestamp = try parseIntFromJson(timestamp);
+    }
+    if (header_json.object.get("number")) |number| {
+        header.number = try parseIntFromJson(number);
+    }
+    if (header_json.object.get("baseFeePerGas")) |base_fee| {
+        header.base_fee_per_gas = try parseU256FromJson(base_fee);
+    }
+    if (header_json.object.get("parentHash")) |parent_hash| {
+        header.parent_hash = try parseFixedHexBytes(Hash.SIZE, allocator, parent_hash);
+    }
+    if (header_json.object.get("extraData")) |extra| {
+        if (extra == .string) {
+            const extra_bytes = try primitives.Hex.hexToBytes(allocator, extra.string);
+            header.extra_data = extra_bytes;
+            return extra_bytes;
+        }
+    }
+    return null;
+}
+
+fn validateBlockHeaderConstants(
+    allocator: std.mem.Allocator,
+    hardfork: Hardfork,
+    block: std.json.Value,
+    parent_block: ?std.json.Value,
+) !void {
+    const header_json = extractHeaderJson(block) orelse return;
+
+    var header = BlockHeader.init();
+    const header_extra = try fillHeaderFromJson(allocator, header_json, &header);
+    defer if (header_extra) |extra| allocator.free(extra);
+
+    var parent_header_storage = BlockHeader.init();
+    var parent_header: ?*const BlockHeader.BlockHeader = null;
+    var parent_extra: ?[]u8 = null;
+    if (parent_block) |parent| {
+        if (extractHeaderJson(parent)) |parent_json| {
+            parent_extra = try fillHeaderFromJson(allocator, parent_json, &parent_header_storage);
+            parent_header = &parent_header_storage;
+        }
+    }
+    defer if (parent_extra) |extra| allocator.free(extra);
+
+    const PreMergeValidator = struct {
+        pub fn validate(
+            _: *const BlockHeader.BlockHeader,
+            _: client_blockchain.HeaderValidationContext,
+        ) client_blockchain.ValidationError!void {
+            return;
+        }
+    };
+    const MergeValidator = client_blockchain.merge_header_validator(PreMergeValidator);
+    const ctx = client_blockchain.HeaderValidationContext{
+        .allocator = allocator,
+        .hardfork = hardfork,
+        .parent_header = parent_header,
+    };
+    try MergeValidator.validate(&header, ctx);
+}
 
 // Taylor series approximation of factor * e^(numerator/denominator)
 // This implements the fake_exponential function from EIP-4844
@@ -1066,12 +1168,42 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         // Blockchain tests: collect transactions from all blocks
         if (test_case.object.get("blocks")) |blocks_json| {
             if (blocks_json == .array) {
+                var parent_block: ?std.json.Value = null;
+                if (test_case.object.get("genesisBlockHeader")) |genesis| {
+                    parent_block = genesis;
+                }
                 for (blocks_json.array.items) |block| {
+                    const has_expect_exception = block.object.get("expectException") != null;
+                    if (hardfork) |hf| {
+                        validateBlockHeaderConstants(allocator, hf, block, parent_block) catch |err| switch (err) {
+                            client_blockchain.ValidationError.InvalidDifficulty,
+                            client_blockchain.ValidationError.InvalidMixHash,
+                            client_blockchain.ValidationError.InvalidNonce,
+                            client_blockchain.ValidationError.InvalidOmmersHash,
+                            client_blockchain.ValidationError.InvalidExtraDataLength,
+                            client_blockchain.ValidationError.InvalidGasLimit,
+                            client_blockchain.ValidationError.InvalidGasUsed,
+                            client_blockchain.ValidationError.InvalidTimestamp,
+                            client_blockchain.ValidationError.InvalidBaseFee,
+                            client_blockchain.ValidationError.MissingBaseFee,
+                            client_blockchain.ValidationError.InvalidParentHash,
+                            client_blockchain.ValidationError.InvalidBlockNumber,
+                            client_blockchain.ValidationError.MissingParentHeader,
+                            client_blockchain.ValidationError.BaseFeeOverflow,
+                            => {
+                                if (has_expect_exception) break;
+                                return err;
+                            },
+                            else => return err,
+                        };
+                    }
+                    if (has_expect_exception) break;
                     if (block.object.get("transactions")) |txs| {
                         if (txs == .array) {
                             try transactions_list.appendSlice(allocator, txs.array.items);
                         }
                     }
+                    parent_block = block;
                 }
             }
         }
@@ -2300,6 +2432,19 @@ fn parseU256FromJson(value: std.json.Value) !u256 {
         .number_string => |s| if (s.len == 0) 0 else try std.fmt.parseInt(u256, s, 0),
         else => 1,
     };
+}
+
+fn parseFixedHexBytes(comptime N: usize, allocator: std.mem.Allocator, value: std.json.Value) ![N]u8 {
+    if (value != .string) return primitives.Hex.HexError.InvalidHexFormat;
+
+    const bytes = try primitives.Hex.hexToBytes(allocator, value.string);
+    defer allocator.free(bytes);
+
+    if (bytes.len > N) return primitives.Hex.HexError.InvalidLength;
+
+    var out: [N]u8 = [_]u8{0} ** N;
+    @memcpy(out[N - bytes.len ..], bytes);
+    return out;
 }
 
 fn parseAddress(addr: []const u8) !Address {
