@@ -19,6 +19,7 @@ export const BlobsSupportMode = {
   StorageWithReorgs: "StorageWithReorgs",
 } as const;
 
+/** Supported blob transaction handling modes. */
 export type BlobsSupportMode =
   (typeof BlobsSupportMode)[keyof typeof BlobsSupportMode];
 
@@ -63,6 +64,7 @@ export const TxPoolConfigInputSchema = Schema.Struct({
   minBlobTxPriorityFee: MinBlobTxPriorityFeeInputSchema,
 });
 
+/** Schema for validated txpool configuration. */
 export const TxPoolConfigSchema = Schema.Struct({
   peerNotificationThreshold: NonNegativeIntSchema,
   minBaseFeeThreshold: NonNegativeIntSchema,
@@ -87,6 +89,7 @@ export const TxPoolConfigSchema = Schema.Struct({
 
 /** Configuration for the transaction pool. */
 export type TxPoolConfig = Schema.Schema.Type<typeof TxPoolConfigSchema>;
+/** Input configuration for the txpool prior to decoding. */
 export type TxPoolConfigInput = Schema.Schema.Encoded<
   typeof TxPoolConfigInputSchema
 >;
@@ -132,6 +135,7 @@ const TransactionSerializedSchema =
     Uint8Array
   >;
 
+/** Result when attempting to add a transaction to the pool. */
 export type TxPoolAddResult =
   | {
       readonly _tag: "Added";
@@ -238,6 +242,7 @@ export class TxPoolBlobSenderLimitExceededError extends Data.TaggedError(
   readonly maxPending: number;
 }> {}
 
+/** Validation failures for txpool admission. */
 export type TxPoolValidationError =
   | InvalidTxPoolTransactionError
   | TxPoolTransactionEncodingError
@@ -248,6 +253,7 @@ export type TxPoolValidationError =
   | TxPoolBlobSupportDisabledError
   | TxPoolPriorityFeeTooLowError;
 
+/** Errors returned when adding a transaction to the pool. */
 export type TxPoolAddError =
   | TxPoolValidationError
   | TxPoolFullError
@@ -263,30 +269,42 @@ type TxPoolAddOutcome =
 
 /** Transaction pool service interface. */
 export interface TxPoolService {
+  /** Retrieve the total pending transaction count. */
   readonly getPendingCount: () => Effect.Effect<number, never>;
+  /** Retrieve the total pending blob transaction count. */
   readonly getPendingBlobCount: () => Effect.Effect<number, never>;
+  /** Retrieve all pending transactions. */
   readonly getPendingTransactions: () => Effect.Effect<
     ReadonlyArray<Transaction.Any>,
     never
   >;
+  /** Retrieve pending transactions for a sender. */
   readonly getPendingTransactionsBySender: (
     sender: Address.AddressType,
   ) => Effect.Effect<ReadonlyArray<Transaction.Any>, never>;
+  /** Validate a transaction against txpool rules. */
   readonly validateTransaction: (
     tx: Transaction.Any,
   ) => Effect.Effect<ValidatedTransaction, TxPoolValidationError>;
+  /** Add a transaction to the pool. */
   readonly addTransaction: (
     tx: Transaction.Any,
   ) => Effect.Effect<TxPoolAddResult, TxPoolAddError>;
+  /** Remove a transaction by hash. */
   readonly removeTransaction: (
     hash: Hash.HashType,
   ) => Effect.Effect<boolean, never>;
+  /** Check whether blob transactions are supported. */
   readonly supportsBlobs: () => Effect.Effect<boolean, never>;
+  /** Check whether txs are accepted when the node is not synced. */
   readonly acceptTxWhenNotSynced: () => Effect.Effect<boolean, never>;
 }
 
 /** Context tag for the transaction pool. */
 export class TxPool extends Context.Tag("TxPool")<TxPool, TxPoolService>() {}
+
+const withTxPool = <A, E>(f: (pool: TxPoolService) => Effect.Effect<A, E>) =>
+  Effect.flatMap(TxPool, f);
 
 const parseMinBlobTxPriorityFee = (value: MinBlobTxPriorityFeeInput) =>
   Effect.try({
@@ -721,63 +739,35 @@ export const TxPoolTest = (
 
 /** Retrieve the total pending transaction count. */
 export const getPendingCount = () =>
-  Effect.gen(function* () {
-    const pool = yield* TxPool;
-    return yield* pool.getPendingCount();
-  });
+  withTxPool((pool) => pool.getPendingCount());
 
 /** Retrieve the total pending blob transaction count. */
 export const getPendingBlobCount = () =>
-  Effect.gen(function* () {
-    const pool = yield* TxPool;
-    return yield* pool.getPendingBlobCount();
-  });
+  withTxPool((pool) => pool.getPendingBlobCount());
 
 /** Retrieve pending transactions. */
 export const getPendingTransactions = () =>
-  Effect.gen(function* () {
-    const pool = yield* TxPool;
-    return yield* pool.getPendingTransactions();
-  });
+  withTxPool((pool) => pool.getPendingTransactions());
 
 /** Retrieve pending transactions for a sender. */
 export const getPendingTransactionsBySender = (sender: Address.AddressType) =>
-  Effect.gen(function* () {
-    const pool = yield* TxPool;
-    return yield* pool.getPendingTransactionsBySender(sender);
-  });
+  withTxPool((pool) => pool.getPendingTransactionsBySender(sender));
 
 /** Validate a transaction against txpool rules. */
 export const validateTransaction = (tx: Transaction.Any) =>
-  Effect.gen(function* () {
-    const pool = yield* TxPool;
-    return yield* pool.validateTransaction(tx);
-  });
+  withTxPool((pool) => pool.validateTransaction(tx));
 
 /** Add a transaction to the pool. */
 export const addTransaction = (tx: Transaction.Any) =>
-  Effect.gen(function* () {
-    const pool = yield* TxPool;
-    return yield* pool.addTransaction(tx);
-  });
+  withTxPool((pool) => pool.addTransaction(tx));
 
 /** Remove a transaction from the pool by hash. */
 export const removeTransaction = (hash: Hash.HashType) =>
-  Effect.gen(function* () {
-    const pool = yield* TxPool;
-    return yield* pool.removeTransaction(hash);
-  });
+  withTxPool((pool) => pool.removeTransaction(hash));
 
 /** Check whether blob transactions are supported by configuration. */
-export const supportsBlobs = () =>
-  Effect.gen(function* () {
-    const pool = yield* TxPool;
-    return yield* pool.supportsBlobs();
-  });
+export const supportsBlobs = () => withTxPool((pool) => pool.supportsBlobs());
 
 /** Check whether txs are accepted when the node is not synced. */
 export const acceptTxWhenNotSynced = () =>
-  Effect.gen(function* () {
-    const pool = yield* TxPool;
-    return yield* pool.acceptTxWhenNotSynced();
-  });
+  withTxPool((pool) => pool.acceptTxWhenNotSynced());
