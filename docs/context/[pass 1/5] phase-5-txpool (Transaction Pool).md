@@ -1,74 +1,94 @@
-# [pass 1/5] phase-5-txpool (Transaction Pool) — Context
+# [pass 1/5] phase-5-txpool (Transaction Pool)
 
-This file gathers focused references to guide implementation of the Transaction Pool in Guillotine (Zig), following the repo’s constraints:
-- Always use Voltaire primitives (no custom duplicate types)
-- Always use existing guillotine-mini EVM (no reimplementation)
-- Mirror Nethermind architecture idiomatically in Zig
-- Prefer comptime dependency injection
-- Write small, atomic, testable units
+## Goal (from `prd/GUILLOTINE_CLIENT_PLAN.md`)
+- Implement transaction pool for pending transactions.
+- Key components: `client/txpool/pool.zig`, `client/txpool/sorter.zig`.
+- Reference: `nethermind/src/Nethermind/Nethermind.TxPool/`.
 
-## Phase Goals (from prd/GUILLOTINE_CLIENT_PLAN.md)
-Path: `prd/GUILLOTINE_CLIENT_PLAN.md` → “Phase 5: Transaction Pool (`phase-5-txpool`)
-- Goal: Implement the transaction pool for pending transactions.
-- Key Components:
-  - `client/txpool/pool.zig` — Transaction pool core
-  - `client/txpool/sorter.zig` — Priority sorting (by gas tip/price)
-- Architectural Reference: `nethermind/src/Nethermind/Nethermind.TxPool/`
+## Specs (from `prd/ETHEREUM_SPECS_REFERENCE.md`)
+- EIP-1559 fee market (type-2 tx, base fee / max fee / priority fee).
+- EIP-2930 access lists (type-1 tx with access list costing).
+- EIP-4844 blob transactions (type-3 tx with blob fields + blob gas accounting).
 
-## Relevant Specs (from prd/ETHEREUM_SPECS_REFERENCE.md)
-Path: `prd/ETHEREUM_SPECS_REFERENCE.md` → Phase 5 specs
-- `EIPs/EIPS/eip-1559.md` — Fee market; defines base fee and `effective_gas_price` for inclusion policy
-- `EIPs/EIPS/eip-2930.md` — Access lists; affects intrinsic gas and warm slots at tx start
-- `EIPs/EIPS/eip-4844.md` — Blob transactions; blob gas accounting coexists with EIP-1559 base fee
+### Relevant spec files
+- `EIPs/EIPS/eip-1559.md`
+  - Defines type-2 tx payload fields `max_priority_fee_per_gas`, `max_fee_per_gas` and intrinsic gas rules (inherits EIP-2930 access list costs).
+  - `GASPRICE` opcode returns effective gas price (txpool sorting should use max fee / tip semantics).
+- `EIPs/EIPS/eip-2930.md`
+  - Defines type-1 tx payload + access list format and intrinsic access list gas costs.
+- `EIPs/EIPS/eip-4844.md`
+  - Defines type-3 blob tx payload (adds `max_fee_per_blob_gas`, `blob_versioned_hashes`) and header fields `blob_gas_used` / `excess_blob_gas`.
 
-Notes for txpool policy:
-- Admission checks must validate type-specific static rules (signature, chain id, intrinsic gas, max fees relative to base fee, access lists format).
-- Replacement rules must account for dynamic-fee semantics (e.g., bump thresholds evaluated on effective tip). Exact policy will mirror Nethermind and be configurable, but correctness is constrained by EIP-1559/4844.
+## Nethermind reference
+- TxPool module: `nethermind/src/Nethermind/Nethermind.TxPool/` (primary architecture reference).
 
-## Nethermind Reference (DB module inventory)
-Path: `nethermind/src/Nethermind/Nethermind.Db/`
-Key files to understand storage/abstractions used elsewhere:
-- `IDb.cs`, `IReadOnlyDb.cs`, `ITunableDb.cs` — DB interfaces
-- `IDbProvider.cs`, `IReadOnlyDbProvider.cs`, `DbProvider.cs`, `DbProviderExtensions.cs` — Provider abstractions
-- `DbNames.cs`, `MetadataDbKeys.cs` — Named column families/keys
-- `RocksDbSettings.cs`, `CompressingDb.cs`, `RocksDbMergeEnumerator.cs` — RocksDB specifics
-- `MemDb.cs`, `MemDbFactory.cs`, `InMemoryColumnBatch.cs`, `InMemoryWriteBatch.cs`, `MemColumnsDb.cs` — In-memory variants for tests
-- `ReadOnlyDb.cs`, `ReadOnlyDbProvider.cs`, `NullDb.cs`, `NullRocksDbFactory.cs` — Special providers
-- `ReceiptsColumns.cs`, `BlobTxsColumns.cs`, `Blooms/`, `FullPruning*/`, `SimpleFilePublicKeyDb.cs` — Columns and utilities
+## Nethermind.Db inventory (requested listing)
+From `nethermind/src/Nethermind/Nethermind.Db/`:
+- `BlobTxsColumns.cs`
+- `CompressingDb.cs`
+- `DbProvider.cs`
+- `DbExtensions.cs`
+- `DbNames.cs`
+- `IColumnsDb.cs`
+- `IDb.cs`
+- `IDbFactory.cs`
+- `IDbProvider.cs`
+- `IFullDb.cs`
+- `IMergeOperator.cs`
+- `IPruningConfig.cs`
+- `IReadOnlyDb.cs`
+- `IReadOnlyDbProvider.cs`
+- `ITunableDb.cs`
+- `InMemoryColumnBatch.cs`
+- `InMemoryWriteBatch.cs`
+- `MemColumnsDb.cs`
+- `MemDb.cs`
+- `MemDbFactory.cs`
+- `MetadataDbKeys.cs`
+- `Metrics.cs`
+- `Nethermind.Db.csproj`
+- `NullDb.cs`
+- `NullRocksDbFactory.cs`
+- `PruningConfig.cs`
+- `PruningMode.cs`
+- `ReadOnlyColumnsDb.cs`
+- `ReadOnlyDb.cs`
+- `ReadOnlyDbProvider.cs`
+- `ReceiptsColumns.cs`
+- `RocksDbMergeEnumerator.cs`
+- `RocksDbSettings.cs`
+- `SimpleFilePublicKeyDb.cs`
+- Directories: `Blooms/`, `FullPruning/`
 
-Purpose: Even though txpool is primarily memory-resident, persistence and indexing patterns follow these abstractions.
+## Voltaire Zig APIs
+- Requested path `/Users/williamcory/voltaire/packages/voltaire-zig/src/` does not exist on disk.
+  - Checked `/Users/williamcory/voltaire` and searched for `voltaire-zig` in that repo; no matches found.
+  - If this should point elsewhere, update path before next pass.
 
-## Voltaire APIs (must-use primitives)
-Root: `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/`
-Key modules for txpool:
-- Transactions & fees: `Transaction`, `AccessList`, `BaseFeePerGas`, `MaxFeePerGas`, `MaxPriorityFeePerGas`, `EffectiveGasPrice`, `FeeMarket`, `Gas`, `GasPrice`
-- Identity & hashes: `Address`, `Hash`, `TransactionHash`, `Nonce`
-- Encoding & validity: `Rlp`, `Hex`, `Signature`
-- Blobs (EIP-4844): `Blob`
-- Chain/fork helpers: `Hardfork`, `ForkTransition`, `Eips`
+## Existing Zig Host Interface
+From `src/host.zig`:
+- `HostInterface` provides minimal EVM host access: `getBalance`, `setBalance`, `getCode`, `setCode`, `getStorage`, `setStorage`, `getNonce`, `setNonce`.
+- The EVM `inner_call` uses `CallParams/CallResult` and does not call this host interface for nested calls.
 
-Do not introduce custom mirrors of these types. Reuse `primitives.*` consistently.
-
-## Host Interface (existing EVM host adapter surface)
-Path: `src/host.zig`
-- `HostInterface` exposes external state access for EVM: `getBalance/setBalance`, `getCode/setCode`, `getStorage/setStorage`, `getNonce/setNonce` using `primitives.Address` and builtin `u256`.
-- Note: Nested calls are handled internally by EVM and do not go through this host. Txpool should not depend on EVM internals; use primitives + chain state abstraction when validating admission (e.g., sender nonce, balance bounds for max upfront cost).
-
-## Test Fixtures (ethereum-tests/) — useful paths
-Root: `ethereum-tests/`
-- `TransactionTests/ttEIP1559` — EIP-1559 transaction vectors
-- `TransactionTests/ttEIP2930` — Access list transaction vectors
-- `TransactionTests/ttGasPrice` — Gas price constraints
-- `TransactionTests/ttNonce` — Nonce corner cases
-- `TransactionTests/ttSignature` — Signature validation
-- `TransactionTests/ttWrongRLP` — RLP decoding robustness
-- `TrieTests/` — RLP/Trie helpers if needed for indexing
-- `BlockchainTests/` — Integration context; not directly txpool, but useful for end-to-end
+## Test fixtures (ethereum-tests)
+Top-level directories under `ethereum-tests/`:
+- `ABITests/`
+- `BasicTests/`
+- `BlockchainTests/`
+- `DifficultyTests/`
+- `EOFTests/`
+- `GenesisTests/`
+- `JSONSchema/`
+- `KeyStoreTests/`
+- `LegacyTests/`
+- `PoWTests/`
+- `RLPTests/`
+- `TransactionTests/`
+- `TrieTests/`
+- `docs/`
+- `src/`
+- `fixtures_blockchain_tests.tgz`
+- `fixtures_general_state_tests.tgz`
 
 ## Summary
-- Goal: Implement `client/txpool/{pool.zig, sorter.zig}` per plan.
-- Specs: EIP-1559, EIP-2930, EIP-4844 are the normative constraints for tx admission, pricing, and typed transactions.
-- Architecture: Follow Nethermind module boundaries; DB abstractions inform indexing/caching patterns.
-- Primitives: Rely exclusively on Voltaire primitives (`primitives.Transaction`, fee types, `Address`, `Nonce`, etc.).
-- Host: `src/host.zig` gives current external state hooks; txpool validation will require world-state access for sender nonce and balance checks.
-- Tests: Use `ethereum-tests/TransactionTests/*` for decoding/validation; add unit tests for pool policy (admission, replacement, eviction, sorting).
+Collected phase-5 txpool goals, relevant EIP specs (1559/2930/4844), Nethermind.Db inventory, host interface details, and ethereum-tests fixture locations. The Voltaire Zig path specified in the instructions is missing in `/Users/williamcory/voltaire` and needs correction before pulling Zig API references.
