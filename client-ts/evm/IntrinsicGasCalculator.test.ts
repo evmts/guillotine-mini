@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { Address, Hash, Transaction } from "voltaire-effect/primitives";
+import { Address, Hash, Hex, Transaction } from "voltaire-effect/primitives";
 import {
   IntrinsicGasCalculatorTest,
   calculateIntrinsicGas,
@@ -29,6 +29,9 @@ const makeAddress = (lastByte: number): Address.AddressType => {
   return addr;
 };
 
+const encodeAddress = (address: Address.AddressType): string =>
+  Hex.fromBytes(address);
+
 const EMPTY_SIGNATURE = {
   r: new Uint8Array(32),
   s: new Uint8Array(32),
@@ -43,7 +46,7 @@ const makeLegacyTx = (
     nonce: 0n,
     gasPrice: 1n,
     gasLimit: 100_000n,
-    to,
+    to: to === null ? null : encodeAddress(to),
     value: 0n,
     data,
     v: 27n,
@@ -60,10 +63,13 @@ const makeAccessListTx = (
     nonce: 0n,
     gasPrice: 1n,
     gasLimit: 100_000n,
-    to: Address.zero(),
+    to: encodeAddress(Address.zero()),
     value: 0n,
     data: new Uint8Array(0),
-    accessList,
+    accessList: accessList.map((entry) => ({
+      address: encodeAddress(entry.address),
+      storageKeys: entry.storageKeys,
+    })),
     yParity: 0,
     r: EMPTY_SIGNATURE.r,
     s: EMPTY_SIGNATURE.s,
@@ -79,11 +85,14 @@ const makeSetCodeTx = (
     maxPriorityFeePerGas: 1n,
     maxFeePerGas: 2n,
     gasLimit: 100_000n,
-    to: Address.zero(),
+    to: encodeAddress(Address.zero()),
     value: 0n,
     data: new Uint8Array(0),
     accessList: [],
-    authorizationList,
+    authorizationList: authorizationList.map((entry) => ({
+      ...entry,
+      address: encodeAddress(entry.address),
+    })),
     yParity: 0,
     r: EMPTY_SIGNATURE.r,
     s: EMPTY_SIGNATURE.s,

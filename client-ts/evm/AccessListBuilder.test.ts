@@ -55,6 +55,9 @@ const makeSlot = (lastByte: number): StorageSlotType => {
   return slot as StorageSlotType;
 };
 
+const encodeAddress = (address: Address.AddressType): string =>
+  Hex.fromBytes(address);
+
 const EMPTY_SIGNATURE = {
   r: new Uint8Array(32),
   s: new Uint8Array(32),
@@ -66,7 +69,7 @@ const makeLegacyTx = (): Transaction.Legacy =>
     nonce: 0n,
     gasPrice: 1n,
     gasLimit: 100_000n,
-    to: Address.zero(),
+    to: encodeAddress(Address.zero()),
     value: 0n,
     data: new Uint8Array(0),
     v: 27n,
@@ -83,10 +86,13 @@ const makeAccessListTx = (
     nonce: 0n,
     gasPrice: 1n,
     gasLimit: 100_000n,
-    to: Address.zero(),
+    to: encodeAddress(Address.zero()),
     value: 0n,
     data: new Uint8Array(0),
-    accessList,
+    accessList: accessList.map((entry) => ({
+      address: encodeAddress(entry.address),
+      storageKeys: entry.storageKeys,
+    })),
     yParity: 0,
     r: EMPTY_SIGNATURE.r,
     s: EMPTY_SIGNATURE.s,

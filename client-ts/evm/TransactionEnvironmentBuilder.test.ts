@@ -42,6 +42,9 @@ const makeAddress = (lastByte: number): Address.AddressType => {
   return addr;
 };
 
+const encodeAddress = (address: Address.AddressType): string =>
+  Hex.fromBytes(address);
+
 const makeLegacyTx = (
   gasLimit: bigint,
   data: Uint8Array = new Uint8Array(0),
@@ -51,7 +54,7 @@ const makeLegacyTx = (
     nonce: 0n,
     gasPrice: 1n,
     gasLimit,
-    to: Address.zero(),
+    to: encodeAddress(Address.zero()),
     value: 0n,
     data,
     v: 27n,
@@ -76,7 +79,7 @@ const makeEip4844Tx = (
     maxPriorityFeePerGas: 1n,
     maxFeePerGas: 2n,
     gasLimit,
-    to: Address.zero(),
+    to: encodeAddress(Address.zero()),
     value: 0n,
     data: new Uint8Array(0),
     accessList: [],

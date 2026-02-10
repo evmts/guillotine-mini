@@ -12,6 +12,7 @@ Each JSON file containing test cases becomes ONE Zig file with ONE test function
 import os
 import json
 import sys
+import tarfile
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -149,10 +150,29 @@ def scan_test_directory(
     return json_files
 
 
+def ensure_general_state_tests(repo_root: Path) -> None:
+    fixtures_dir = repo_root / "ethereum-tests" / "GeneralStateTests"
+    if fixtures_dir.exists():
+        return
+
+    archive_path = repo_root / "ethereum-tests" / "fixtures_general_state_tests.tgz"
+    if not archive_path.exists():
+        print(
+            f"Warning: GeneralStateTests fixtures not found at {fixtures_dir} or {archive_path}",
+            file=sys.stderr,
+        )
+        return
+
+    print(f"Extracting {archive_path} -> {fixtures_dir}")
+    with tarfile.open(archive_path, "r:gz") as archive:
+        archive.extractall(path=repo_root / "ethereum-tests")
+
+
 def main():
     # Get the repository root
     script_dir = Path(__file__).parent
     repo_root = script_dir.parent
+    ensure_general_state_tests(repo_root)
 
     # Define test sources
     test_sources = [

@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { Bytes, Hash, Hex } from "voltaire-effect/primitives";
 import type { BytesType } from "./Node";
 import { TrieHashTest } from "./hash";
+import { coerceEffect } from "./internal/effect";
 import { makeBytesHelpers } from "./internal/primitives";
 import { TriePatricializeTest } from "./patricialize";
 import { EMPTY_TRIE_ROOT, TrieRootTest } from "./root";
@@ -57,7 +58,7 @@ describe("Trie", () => {
 
   it.effect("rejects invalid key input", () =>
     Effect.gen(function* () {
-      const invalidKey = new Uint8Array([1, 2, 3]) as BytesType;
+      const invalidKey = null as unknown as BytesType;
       const result = yield* get(invalidKey).pipe(Effect.either);
       if (result._tag === "Left") {
         assert.isTrue(result.left instanceof TrieError);
@@ -70,7 +71,7 @@ describe("Trie", () => {
   it.effect("rejects invalid value input", () =>
     Effect.gen(function* () {
       const key = bytesFromHex("0x07");
-      const invalidValue = new Uint8Array([4, 5, 6]) as BytesType;
+      const invalidValue = null as unknown as BytesType;
       const result = yield* put(key, invalidValue).pipe(Effect.either);
       if (result._tag === "Left") {
         assert.isTrue(result.left instanceof TrieError);
@@ -91,7 +92,9 @@ describe("Trie", () => {
   it.effect("empty trie root matches the canonical empty hash", () =>
     Effect.gen(function* () {
       const hash = yield* root();
-      assert.isTrue(Hash.equals(hash, EMPTY_TRIE_ROOT));
+      assert.isTrue(
+        yield* coerceEffect<boolean, never>(Hash.equals(hash, EMPTY_TRIE_ROOT)),
+      );
     }).pipe(Effect.provide(trieLayer())),
   );
 
@@ -119,7 +122,9 @@ describe("Trie", () => {
       const result = yield* get(key);
       assert.isTrue(Bytes.equals(result, EmptyBytes));
       const hash = yield* root();
-      assert.isTrue(Hash.equals(hash, EMPTY_TRIE_ROOT));
+      assert.isTrue(
+        yield* coerceEffect<boolean, never>(Hash.equals(hash, EMPTY_TRIE_ROOT)),
+      );
     }).pipe(Effect.provide(trieLayer())),
   );
 
@@ -138,7 +143,11 @@ describe("Trie", () => {
         return yield* root();
       }).pipe(Effect.provide(trieLayer(true)));
 
-      assert.isFalse(Hash.equals(plainRoot, securedRoot));
+      assert.isFalse(
+        yield* coerceEffect<boolean, never>(
+          Hash.equals(plainRoot, securedRoot),
+        ),
+      );
     }),
   );
 

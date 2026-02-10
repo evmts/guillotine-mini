@@ -15,9 +15,10 @@ const BlockHeaderSchema = BlockHeader.Schema as unknown as Schema.Schema<
   BlockHeaderType,
   unknown
 >;
-const EmptyOmmerHashHex = Hex.fromString(
-  "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
-);
+type HexType = ReturnType<typeof Hex.fromBytes>;
+
+const EmptyOmmerHashHex =
+  "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347" as HexType;
 
 const BASE_FEE_MAX_CHANGE_DENOMINATOR = 8n;
 const ELASTICITY_MULTIPLIER = 2n;

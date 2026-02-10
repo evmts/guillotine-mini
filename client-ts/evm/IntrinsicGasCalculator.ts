@@ -156,7 +156,7 @@ const authorizationCost = (
 const validateTransaction = (
   tx: Transaction.Any,
 ): Effect.Effect<Transaction.Any, InvalidTransactionError> =>
-  Schema.decode(TransactionSchema)(tx).pipe(
+  Schema.validate(TransactionSchema)(tx).pipe(
     Effect.mapError(
       (cause) =>
         new InvalidTransactionError({

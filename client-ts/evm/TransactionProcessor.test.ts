@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
 import * as Schema from "effect/Schema";
-import { Address, Blob, Transaction } from "voltaire-effect/primitives";
+import { Address, Blob, Hex, Transaction } from "voltaire-effect/primitives";
 import {
   calculateEffectiveGasPrice,
   checkMaxGasFeeAndBalance,
@@ -41,13 +41,16 @@ const EMPTY_SIGNATURE = {
   s: new Uint8Array(32),
 };
 
+const encodeAddress = (address: Address.AddressType): string =>
+  Hex.fromBytes(address);
+
 const makeLegacyTx = (gasPrice: bigint): Transaction.Legacy =>
   Schema.validateSync(LegacySchema)({
     type: Transaction.Type.Legacy,
     nonce: 0n,
     gasPrice,
     gasLimit: 100_000n,
-    to: Address.zero(),
+    to: encodeAddress(Address.zero()),
     value: 0n,
     data: new Uint8Array(0),
     v: 27n,
@@ -66,7 +69,7 @@ const makeEip1559Tx = (
     maxPriorityFeePerGas,
     maxFeePerGas,
     gasLimit: 100_000n,
-    to: Address.zero(),
+    to: encodeAddress(Address.zero()),
     value: 0n,
     data: new Uint8Array(0),
     accessList: [],
@@ -86,7 +89,7 @@ const makeEip4844Tx = (
   maxPriorityFeePerGas: bigint,
   maxFeePerBlobGas: bigint,
   blobVersionedHashes: Uint8Array[],
-  to: Transaction.EIP4844["to"] | null = Address.zero(),
+  to: Address.AddressType | null = Address.zero(),
 ): Transaction.EIP4844 =>
   Schema.validateSync(Eip4844Schema)({
     type: Transaction.Type.EIP4844,
@@ -95,7 +98,7 @@ const makeEip4844Tx = (
     maxPriorityFeePerGas,
     maxFeePerGas,
     gasLimit: 100_000n,
-    to,
+    to: to === null ? null : encodeAddress(to),
     value: 0n,
     data: new Uint8Array(0),
     accessList: [],
