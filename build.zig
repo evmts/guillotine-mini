@@ -388,6 +388,26 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Client Network benchmark (RLPx frame helpers)
+    const client_network_bench_mod = b.addModule("client_network_bench", .{
+        .root_source_file = b.path("client/network/rlpx/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+            .{ .name = "client_network", .module = client_network_mod },
+        },
+    });
+
+    const client_network_bench = b.addExecutable(.{
+        .name = "bench_network_rlpx",
+        .root_module = client_network_bench_mod,
+    });
+
+    const run_client_network_bench = b.addRunArtifact(client_network_bench);
+    const bench_network_step = b.step("bench-network", "Run devp2p RLPx micro-benchmarks");
+    bench_network_step.dependOn(&run_client_network_bench.step);
+
     // Client EVM benchmark executable
     const client_evm_bench_mod = b.addModule("client_evm_bench", .{
         .root_source_file = b.path("client/evm/bench.zig"),
