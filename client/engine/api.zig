@@ -62,18 +62,30 @@ pub const EngineApi = struct {
 
     /// Engine API error codes per execution-apis common definitions.
     pub const ErrorCode = struct {
+        /// JSON-RPC error code integer type.
         pub const Code = primitives.Int32.Int32;
 
+        /// -32700: Invalid JSON was received by the server.
         pub const parse_error: Code = -32700;
+        /// -32600: The JSON sent is not a valid Request object.
         pub const invalid_request: Code = -32600;
+        /// -32601: The method does not exist / is not available.
         pub const method_not_found: Code = -32601;
+        /// -32602: Invalid method parameter(s).
         pub const invalid_params: Code = -32602;
+        /// -32603: Internal JSON-RPC error.
         pub const internal_error: Code = -32603;
+        /// -32000: Generic client error while processing request.
         pub const server_error: Code = -32000;
+        /// -38001: Payload does not exist / is not available.
         pub const unknown_payload: Code = -38001;
+        /// -38002: Forkchoice state is invalid / inconsistent.
         pub const invalid_forkchoice_state: Code = -38002;
+        /// -38003: Payload attributes are invalid / inconsistent.
         pub const invalid_payload_attributes: Code = -38003;
+        /// -38004: Number of requested entities is too large.
         pub const too_large_request: Code = -38004;
+        /// -38005: Payload belongs to a fork that is not supported.
         pub const unsupported_fork: Code = -38005;
     };
 
