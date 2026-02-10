@@ -12,18 +12,22 @@ const PeerInfoModule = primitives.PeerInfo;
 const PeerInfo = PeerInfoModule.PeerInfo;
 const Receipt = primitives.Receipt;
 
+fn has_prefix_ci(name: []const u8, prefix: []const u8) bool {
+    return name.len >= prefix.len and std.ascii.eqlIgnoreCase(name[0..prefix.len], prefix);
+}
+
 /// Return the maximum number of block bodies to request from a peer.
 /// Mirrors Nethermind per-client sync limits for GetBlockBodies.
 pub fn max_bodies_per_request(peer: PeerInfo) usize {
     const name = peer.name;
-    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Besu")) return 128;
-    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Geth")) return 128;
-    if (name.len >= 10 and std.ascii.eqlIgnoreCase(name[0..10], "Nethermind")) return 256;
-    if (name.len >= 6 and std.ascii.eqlIgnoreCase(name[0..6], "Parity")) return 256;
-    if (name.len >= 12 and std.ascii.eqlIgnoreCase(name[0..12], "OpenEthereum")) return 256;
-    if (name.len >= 7 and std.ascii.eqlIgnoreCase(name[0..7], "Trinity")) return 128;
-    if (name.len >= 6 and std.ascii.eqlIgnoreCase(name[0..6], "Erigon")) return 128;
-    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Reth")) return 128;
+    if (has_prefix_ci(name, "Besu")) return 128;
+    if (has_prefix_ci(name, "Geth")) return 128;
+    if (has_prefix_ci(name, "Nethermind")) return 256;
+    if (has_prefix_ci(name, "Parity")) return 256;
+    if (has_prefix_ci(name, "OpenEthereum")) return 256;
+    if (has_prefix_ci(name, "Trinity")) return 128;
+    if (has_prefix_ci(name, "Erigon")) return 128;
+    if (has_prefix_ci(name, "Reth")) return 128;
     return 32;
 }
 
@@ -31,14 +35,14 @@ pub fn max_bodies_per_request(peer: PeerInfo) usize {
 /// Mirrors Nethermind per-client sync limits for GetReceipts.
 pub fn max_receipts_per_request(peer: PeerInfo) usize {
     const name = peer.name;
-    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Besu")) return 256;
-    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Geth")) return 256;
-    if (name.len >= 10 and std.ascii.eqlIgnoreCase(name[0..10], "Nethermind")) return 256;
-    if (name.len >= 6 and std.ascii.eqlIgnoreCase(name[0..6], "Parity")) return 256;
-    if (name.len >= 12 and std.ascii.eqlIgnoreCase(name[0..12], "OpenEthereum")) return 256;
-    if (name.len >= 7 and std.ascii.eqlIgnoreCase(name[0..7], "Trinity")) return 256;
-    if (name.len >= 6 and std.ascii.eqlIgnoreCase(name[0..6], "Erigon")) return 256;
-    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Reth")) return 256;
+    if (has_prefix_ci(name, "Besu")) return 256;
+    if (has_prefix_ci(name, "Geth")) return 256;
+    if (has_prefix_ci(name, "Nethermind")) return 256;
+    if (has_prefix_ci(name, "Parity")) return 256;
+    if (has_prefix_ci(name, "OpenEthereum")) return 256;
+    if (has_prefix_ci(name, "Trinity")) return 256;
+    if (has_prefix_ci(name, "Erigon")) return 256;
+    if (has_prefix_ci(name, "Reth")) return 256;
     return 128;
 }
 
@@ -46,14 +50,14 @@ pub fn max_receipts_per_request(peer: PeerInfo) usize {
 /// Mirrors Nethermind per-client sync limits for GetBlockHeaders.
 pub fn max_headers_per_request(peer: PeerInfo) usize {
     const name = peer.name;
-    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Besu")) return 512;
-    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Geth")) return 192;
-    if (name.len >= 10 and std.ascii.eqlIgnoreCase(name[0..10], "Nethermind")) return 512;
-    if (name.len >= 6 and std.ascii.eqlIgnoreCase(name[0..6], "Parity")) return 1024;
-    if (name.len >= 12 and std.ascii.eqlIgnoreCase(name[0..12], "OpenEthereum")) return 1024;
-    if (name.len >= 7 and std.ascii.eqlIgnoreCase(name[0..7], "Trinity")) return 192;
-    if (name.len >= 6 and std.ascii.eqlIgnoreCase(name[0..6], "Erigon")) return 192;
-    if (name.len >= 4 and std.ascii.eqlIgnoreCase(name[0..4], "Reth")) return 192;
+    if (has_prefix_ci(name, "Besu")) return 512;
+    if (has_prefix_ci(name, "Geth")) return 192;
+    if (has_prefix_ci(name, "Nethermind")) return 512;
+    if (has_prefix_ci(name, "Parity")) return 1024;
+    if (has_prefix_ci(name, "OpenEthereum")) return 1024;
+    if (has_prefix_ci(name, "Trinity")) return 192;
+    if (has_prefix_ci(name, "Erigon")) return 192;
+    if (has_prefix_ci(name, "Reth")) return 192;
     return 192;
 }
 
