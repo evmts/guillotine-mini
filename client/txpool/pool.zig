@@ -18,6 +18,7 @@ pub const TxPoolConfig = struct {
         storage_with_reorgs,
 
         fn is_persistent_storage(self: BlobsSupportMode) bool {
+            // Helper methods are intentionally module-private; promote to pub if reuse outside this module is required.
             return self == .storage or self == .storage_with_reorgs;
         }
 
