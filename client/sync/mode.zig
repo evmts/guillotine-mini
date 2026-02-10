@@ -42,6 +42,35 @@ pub const SyncMode = struct {
         full | db_load | fast_headers | fast_bodies | fast_receipts | snap_sync | beacon_headers | updating_pivot;
 };
 
+// Compile-time bit-layout parity guards (Nethermind SyncMode.cs).
+comptime {
+    // Base flags exact bit positions.
+    if (SyncMode.waiting_for_block != (1 << 0)) @compileError("SyncMode.waiting_for_block must be bit 0");
+    if (SyncMode.disconnected != (1 << 1)) @compileError("SyncMode.disconnected must be bit 1");
+    if (SyncMode.fast_blocks != (1 << 2)) @compileError("SyncMode.fast_blocks must be bit 2");
+    if (SyncMode.fast_sync != (1 << 3)) @compileError("SyncMode.fast_sync must be bit 3");
+    if (SyncMode.state_nodes != (1 << 4)) @compileError("SyncMode.state_nodes must be bit 4");
+    if (SyncMode.full != (1 << 5)) @compileError("SyncMode.full must be bit 5");
+    // Bit 6 intentionally unused in Nethermind; keep gap.
+    if ((SyncMode.all & (1 << 6)) != 0) @compileError("SyncMode bit 6 must remain unused for parity with Nethermind");
+    if (SyncMode.db_load != (1 << 7)) @compileError("SyncMode.db_load must be bit 7");
+
+    // Composed fast_* and higher bits.
+    if (SyncMode.fast_headers != (SyncMode.fast_blocks | (1 << 8))) @compileError("SyncMode.fast_headers layout changed");
+    if (SyncMode.fast_bodies != (SyncMode.fast_blocks | (1 << 9))) @compileError("SyncMode.fast_bodies layout changed");
+    if (SyncMode.fast_receipts != (SyncMode.fast_blocks | (1 << 10))) @compileError("SyncMode.fast_receipts layout changed");
+    if (SyncMode.snap_sync != (1 << 11)) @compileError("SyncMode.snap_sync must be bit 11");
+    if (SyncMode.beacon_headers != (1 << 12)) @compileError("SyncMode.beacon_headers must be bit 12");
+    if (SyncMode.updating_pivot != (1 << 13)) @compileError("SyncMode.updating_pivot must be bit 13");
+
+    // all must include every declared flag and no extra bits.
+    const expected_all: u32 =
+        SyncMode.waiting_for_block | SyncMode.disconnected | SyncMode.fast_blocks | SyncMode.fast_sync |
+        SyncMode.state_nodes | SyncMode.full | SyncMode.db_load | SyncMode.fast_headers | SyncMode.fast_bodies |
+        SyncMode.fast_receipts | SyncMode.snap_sync | SyncMode.beacon_headers | SyncMode.updating_pivot;
+    if (SyncMode.all != expected_all) @compileError("SyncMode.all must be the OR of all declared flags");
+}
+
 test "SyncMode bit flags uniqueness and composition" {
     // Ensure no overlap among base flags (excluding composed fast_* variants).
     const bases = [_]u32{
