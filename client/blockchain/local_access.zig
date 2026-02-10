@@ -18,15 +18,44 @@ const Block = primitives.Block;
 /// NOTE: This intentionally avoids the unified `getBlockByHash` to guarantee
 /// local-only semantics. If Voltaire exposes first-class local getters in the
 /// future, switch the implementation here to those accessors.
-pub inline fn getBlockLocal(chain: *Chain, hash: primitives.Hash.Hash) ?Block.Block {
+pub inline fn get_block_local(chain: *Chain, hash: primitives.Hash.Hash) ?Block.Block {
     return chain.block_store.getBlock(hash);
 }
 
 /// Returns a canonical block by number from the local store only.
-pub inline fn getBlockByNumberLocal(chain: *Chain, number: u64) ?Block.Block {
+pub inline fn get_block_by_number_local(chain: *Chain, number: u64) ?Block.Block {
     return chain.block_store.getBlockByNumber(number);
 }
 
 test {
     @import("std").testing.refAllDecls(@This());
+}
+
+test "local_access: returns null for missing" {
+    const std = @import("std");
+    var chain = try Chain.init(std.testing.allocator, null);
+    defer chain.deinit();
+
+    try std.testing.expect(get_block_local(&chain, primitives.Hash.ZERO) == null);
+    try std.testing.expect(get_block_by_number_local(&chain, 0) == null);
+}
+
+test "local_access: gets block by hash and number after canonical" {
+    const std = @import("std");
+
+    var chain = try Chain.init(std.testing.allocator, null);
+    defer chain.deinit();
+
+    const block = try Block.genesis(1, std.testing.allocator);
+    try chain.putBlock(block);
+
+    const by_hash = get_block_local(&chain, block.hash) orelse return error.UnexpectedNull;
+    try std.testing.expect(@import("primitives").Hash.equals(&block.hash, &by_hash.hash));
+
+    // Not canonical yet → number lookup should be null.
+    try std.testing.expect(get_block_by_number_local(&chain, 0) == null);
+
+    try chain.setCanonicalHead(block.hash);
+    const by_number = get_block_by_number_local(&chain, 0) orelse return error.UnexpectedNull;
+    try std.testing.expect(@import("primitives").Hash.equals(&block.hash, &by_number.hash));
 }

@@ -106,7 +106,7 @@ pub fn canonical_hash(chain: *Chain, number: u64) ?Hash.Hash {
 ///   explicit and do not cross abstraction boundaries.
 pub fn get_block_local(chain: *Chain, hash: Hash.Hash) ?Block.Block {
     // Centralized local-only access via adapter to avoid field access leakage.
-    return local_access.getBlockLocal(chain, hash);
+    return local_access.get_block_local(chain, hash);
 }
 
 /// Returns a canonical block by number from the local store only.
@@ -116,7 +116,7 @@ pub fn get_block_local(chain: *Chain, hash: Hash.Hash) ?Block.Block {
 ///   and do not trigger remote fetches.
 pub fn get_block_by_number_local(chain: *Chain, number: u64) ?Block.Block {
     // Centralized local-only access via adapter to avoid field access leakage.
-    return local_access.getBlockByNumberLocal(chain, number);
+    return local_access.get_block_by_number_local(chain, number);
 }
 
 /// Returns the parent block of the given header from the local store only.
