@@ -62,6 +62,7 @@ Key takeaways for Zig implementation:
 Notes:
 - Voltaire’s `Blockchain` and `BlockStore` already model canonical chain and orphans; Phase 4 should integrate these, not re-create them.
 - Prefer comptime DI to compose a `Chain` façade over `BlockStore` with pluggable persistence.
+- Avoid storage encapsulation leakage: local-only reads must go through `client/blockchain/local_access.zig` instead of touching `Blockchain.block_store` directly. This concentrates knowledge of Voltaire internals in one place and preserves a stable façade for the client.
 
 ## guillotine-mini Host Interface (how EVM state is accessed)
 - `src/host.zig` — Minimal HostInterface for balances, code, storage, nonces.
@@ -78,6 +79,5 @@ Implication for Phase 4:
   - `execution-spec-tests/fixtures/blockchain_tests/` → symlink to `ethereum-tests/BlockchainTests`
 
 ## Immediate Implementation Targets (scope framing)
-- `client/blockchain/chain.zig` — thin wrapper over Voltaire `BlockStore` + canonical helpers and persistence DI hooks.
+- `client/blockchain/chain.zig` — thin wrapper over Voltaire `BlockStore` + canonical helpers and persistence DI hooks. Head snapshot helpers expose `head_block_of_with_policy(chain, max_attempts)`; default is a single retry (2 attempts) to balance consistency and overhead under contention.
 - `client/blockchain/validator.zig` — fork-dispatch + header/body checks mirroring `execution-specs/*/fork.py` (no EVM reimplementation; reuse existing EVM for tx execution in later phases).
-

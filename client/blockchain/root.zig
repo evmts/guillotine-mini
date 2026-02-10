@@ -2,6 +2,7 @@
 const chain = @import("chain.zig");
 const validator = @import("validator.zig");
 const blockchain = @import("blockchain");
+const local_access = @import("local_access.zig");
 
 // -- Public API --------------------------------------------------------------
 
@@ -23,9 +24,9 @@ pub const is_canonical_or_fetch = chain.is_canonical_or_fetch;
 /// Existence check (local or fork-cache).
 pub const has_block = chain.has_block;
 /// Local-only block lookup (no fork-cache fetch/allocations).
-pub const get_block_local = chain.get_block_local;
+pub const get_block_local = chain.get_block_local; // implemented via local_access adapter
 /// Local-only canonical block lookup by number (no fork-cache fetch/allocations).
-pub const get_block_by_number_local = chain.get_block_by_number_local;
+pub const get_block_by_number_local = chain.get_block_by_number_local; // via local_access
 /// Local-only parent block lookup (no fork-cache fetch/allocations).
 pub const get_parent_block_local = chain.get_parent_block_local;
 /// Local-only parent header lookup returning typed ValidationError.
@@ -35,6 +36,7 @@ pub const canonical_hash = chain.canonical_hash;
 /// Generic comptime DI helpers for head reads.
 pub const head_hash_of = chain.head_hash_of;
 pub const head_block_of = chain.head_block_of;
+pub const head_block_of_with_policy = chain.head_block_of_with_policy;
 pub const head_number_of = chain.head_number_of;
 /// Safe/finalized head helpers (local-only).
 pub const safe_head_hash_of = chain.safe_head_hash_of;

@@ -3,6 +3,7 @@ const std = @import("std");
 const blockchain = @import("blockchain");
 const primitives = @import("primitives");
 const validator = @import("validator.zig");
+const local_access = @import("local_access.zig");
 const Block = primitives.Block;
 const Hash = primitives.Hash;
 const BlockHeader = primitives.BlockHeader;
@@ -104,7 +105,8 @@ pub fn canonical_hash(chain: *Chain, number: u64) ?Hash.Hash {
 /// - Mirrors Nethermind's storage/provider split where local reads are
 ///   explicit and do not cross abstraction boundaries.
 pub fn get_block_local(chain: *Chain, hash: Hash.Hash) ?Block.Block {
-    return chain.block_store.getBlock(hash);
+    // Centralized local-only access via adapter to avoid field access leakage.
+    return local_access.getBlockLocal(chain, hash);
 }
 
 /// Returns a canonical block by number from the local store only.
@@ -113,7 +115,8 @@ pub fn get_block_local(chain: *Chain, hash: Hash.Hash) ?Block.Block {
 /// - Mirrors Nethermind semantics where local canonical lookups are explicit
 ///   and do not trigger remote fetches.
 pub fn get_block_by_number_local(chain: *Chain, number: u64) ?Block.Block {
-    return chain.block_store.getBlockByNumber(number);
+    // Centralized local-only access via adapter to avoid field access leakage.
+    return local_access.getBlockByNumberLocal(chain, number);
 }
 
 /// Returns the parent block of the given header from the local store only.
@@ -147,8 +150,14 @@ pub fn head_hash_of(chain: anytype) !?Hash.Hash {
 }
 
 /// Generic, comptime-injected head block reader for any chain-like type.
-pub fn head_block_of(chain: anytype) !?Block.Block {
-    const max_attempts: usize = 2;
+/// Generic, comptime-injected head block reader with configurable retry policy.
+///
+/// Parameters:
+/// - `max_attempts`: number of reads allowed when head changes during read.
+///   Trade-off: higher values increase stability under contention but add extra
+///   reads. Default of 2 mirrors Nethermind snapshot semantics (one retry,
+///   then return the first consistent snapshot).
+pub fn head_block_of_with_policy(chain: anytype, max_attempts: usize) !?Block.Block {
     var attempt: usize = 0;
     while (attempt < max_attempts) : (attempt += 1) {
         const before = chain.getHeadBlockNumber() orelse return null;
@@ -159,6 +168,12 @@ pub fn head_block_of(chain: anytype) !?Block.Block {
         if (attempt + 1 == max_attempts) return hb; // return 'before' snapshot
     }
     return null; // defensive
+}
+
+/// Generic, comptime-injected head block reader for any chain-like type.
+/// Uses default retry policy of 2 attempts; see `head_block_of_with_policy`.
+pub fn head_block_of(chain: anytype) !?Block.Block {
+    return head_block_of_with_policy(chain, 2);
 }
 
 /// Generic, comptime-injected head number reader for any chain-like type.
@@ -177,11 +192,14 @@ pub fn head_number_of(chain: anytype) ?u64 {
 /// These helpers intentionally do not fetch; pair with `*_or_fetch` variants if
 /// remote reads are acceptable in the call site.
 pub fn safe_head_hash_of(fc: anytype) ?Hash.Hash {
+    // Enforce pointer receivers via deref type-check (no copies of large structs).
+    _ = fc.*;
     // Intentionally a thin wrapper to keep DI surface consistent.
     return fc.getSafeHash();
 }
 
 pub fn finalized_head_hash_of(fc: anytype) ?Hash.Hash {
+    _ = fc.*;
     // Intentionally a thin wrapper to keep DI surface consistent.
     return fc.getFinalizedHash();
 }
@@ -193,12 +211,14 @@ inline fn block_from_hash_opt(chain: *Chain, maybe_hash: ?Hash.Hash) ?Block.Bloc
 
 /// Local-only safe head block lookup (no fork-cache fetch/allocations at this layer).
 pub fn safe_head_block_of(chain: *Chain, fc: anytype) ?Block.Block {
+    _ = fc.*;
     // Local-only view; use fork-cache layer at call sites if remote fetches are acceptable.
     return block_from_hash_opt(chain, fc.getSafeHash());
 }
 
 /// Local-only finalized head block lookup (no fork-cache fetch/allocations at this layer).
 pub fn finalized_head_block_of(chain: *Chain, fc: anytype) ?Block.Block {
+    _ = fc.*;
     // Local-only view; use fork-cache layer at call sites if remote fetches are acceptable.
     return block_from_hash_opt(chain, fc.getFinalizedHash());
 }
@@ -704,6 +724,21 @@ test "Chain - generic head helpers are race-resilient" {
     try std.testing.expect(h1 != null);
     const b1 = try head_block_of(&chain);
     try std.testing.expect(b1 != null);
+}
+
+test "Chain - head_block_of_with_policy returns head snapshot" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+    try chain.setCanonicalHead(genesis.hash);
+
+    const hb = try head_block_of_with_policy(&chain, 1);
+    try std.testing.expect(hb != null);
+    try std.testing.expectEqual(@as(u64, 0), hb.?.header.number);
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &hb.?.hash);
 }
 
 test "Chain - is_canonical reflects reorgs" {
