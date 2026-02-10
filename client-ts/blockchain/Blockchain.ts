@@ -121,6 +121,15 @@ export class GenesisMismatchError extends Data.TaggedError(
   readonly actual: BlockHashType;
 }> {}
 
+/** Error raised when forkchoice points are inconsistent with the head chain. */
+export class ForkChoiceStateInconsistentError extends Data.TaggedError(
+  "ForkChoiceStateInconsistentError",
+)<{
+  readonly head: BlockHashType;
+  readonly hash: BlockHashType;
+  readonly role: "safe" | "finalized";
+}> {}
+
 /** Union of blockchain errors. */
 export type BlockchainError =
   | BlockTreeError
@@ -128,7 +137,8 @@ export type BlockchainError =
   | GenesisNotInitializedError
   | InvalidGenesisBlockError
   | CanonicalChainInvalidError
-  | GenesisMismatchError;
+  | GenesisMismatchError
+  | ForkChoiceStateInconsistentError;
 
 /** Blockchain service interface (chain manager). */
 export interface BlockchainService {
@@ -266,10 +276,11 @@ const makeBlockchain = Effect.gen(function* () {
       ),
     );
 
-  const ensureCanonicalChain = (headHash: BlockHashType) =>
+  const collectCanonicalChainHashes = (headHash: BlockHashType) =>
     Effect.gen(function* () {
       const genesisHash = yield* ensureGenesisInitialized();
       let currentHash = headHash;
+      const chainHashes = new Set<string>();
 
       while (true) {
         const currentBlock = yield* store.getBlock(currentHash);
@@ -280,6 +291,7 @@ const makeBlockchain = Effect.gen(function* () {
         }
 
         const block = Option.getOrThrow(currentBlock);
+        chainHashes.add(Hex.fromBytes(block.hash));
         const number = Schema.encodeSync(BlockNumberBigIntSchema)(
           block.header.number,
         );
@@ -293,7 +305,7 @@ const makeBlockchain = Effect.gen(function* () {
               }),
             );
           }
-          return;
+          return chainHashes;
         }
 
         const parentHash = block.header.parentHash;
@@ -322,6 +334,27 @@ const makeBlockchain = Effect.gen(function* () {
         }
 
         currentHash = parentHash;
+      }
+    });
+
+  const ensureCanonicalChain = (headHash: BlockHashType) =>
+    collectCanonicalChainHashes(headHash).pipe(Effect.asVoid);
+
+  const ensureForkChoiceHashOnHeadChain = (
+    chainHashes: Set<string>,
+    head: BlockHashType,
+    hash: BlockHashType,
+    role: "safe" | "finalized",
+  ) =>
+    Effect.gen(function* () {
+      if (!chainHashes.has(Hex.fromBytes(hash))) {
+        return yield* Effect.fail(
+          new ForkChoiceStateInconsistentError({
+            head,
+            hash,
+            role,
+          }),
+        );
       }
     });
 
@@ -444,54 +477,8 @@ const makeBlockchain = Effect.gen(function* () {
   const getForkChoiceState = () =>
     Ref.get(state).pipe(Effect.map((current) => current.forkChoice));
 
-  const forkChoiceUpdated = (update: ForkChoiceUpdate) =>
+  const applyCanonicalHead = (hash: BlockHashType) =>
     Effect.gen(function* () {
-      yield* ensureGenesisInitialized();
-
-      const headExists = yield* store.hasBlock(update.head);
-      if (!headExists) {
-        return yield* Effect.fail(
-          new BlockNotFoundError({ hash: update.head }),
-        );
-      }
-
-      yield* ensureCanonicalChain(update.head);
-
-      if (Option.isSome(update.safe)) {
-        const safeHash = Option.getOrThrow(update.safe);
-        const safeExists = yield* store.hasBlock(safeHash);
-        if (!safeExists) {
-          return yield* Effect.fail(new BlockNotFoundError({ hash: safeHash }));
-        }
-      }
-
-      if (Option.isSome(update.finalized)) {
-        const finalizedHash = Option.getOrThrow(update.finalized);
-        const finalizedExists = yield* store.hasBlock(finalizedHash);
-        if (!finalizedExists) {
-          return yield* Effect.fail(
-            new BlockNotFoundError({ hash: finalizedHash }),
-          );
-        }
-      }
-
-      yield* Ref.update(state, (current) => ({
-        ...current,
-        forkChoice: {
-          head: Option.some(update.head),
-          safe: update.safe,
-          finalized: update.finalized,
-        },
-      }));
-
-      yield* publishEvent(BlockchainEvent.forkChoiceUpdated(update));
-    });
-
-  const subscribe = () => PubSub.subscribe(events);
-
-  const setCanonicalHead = (hash: BlockHashType) =>
-    Effect.gen(function* () {
-      yield* ensureCanonicalChain(hash);
       yield* store.setCanonicalHead(hash);
 
       const headBlock = yield* store.getBlock(hash);
@@ -511,6 +498,62 @@ const makeBlockchain = Effect.gen(function* () {
       }));
       yield* updateBestKnownNumber(head.header.number);
       yield* publishEvent(BlockchainEvent.canonicalHeadUpdated(head));
+    });
+
+  const forkChoiceUpdated = (update: ForkChoiceUpdate) =>
+    Effect.gen(function* () {
+      const chainHashes = yield* collectCanonicalChainHashes(update.head);
+
+      if (Option.isSome(update.safe)) {
+        const safeHash = Option.getOrThrow(update.safe);
+        const safeExists = yield* store.hasBlock(safeHash);
+        if (!safeExists) {
+          return yield* Effect.fail(new BlockNotFoundError({ hash: safeHash }));
+        }
+        yield* ensureForkChoiceHashOnHeadChain(
+          chainHashes,
+          update.head,
+          safeHash,
+          "safe",
+        );
+      }
+
+      if (Option.isSome(update.finalized)) {
+        const finalizedHash = Option.getOrThrow(update.finalized);
+        const finalizedExists = yield* store.hasBlock(finalizedHash);
+        if (!finalizedExists) {
+          return yield* Effect.fail(
+            new BlockNotFoundError({ hash: finalizedHash }),
+          );
+        }
+        yield* ensureForkChoiceHashOnHeadChain(
+          chainHashes,
+          update.head,
+          finalizedHash,
+          "finalized",
+        );
+      }
+
+      yield* applyCanonicalHead(update.head);
+
+      yield* Ref.update(state, (current) => ({
+        ...current,
+        forkChoice: {
+          head: Option.some(update.head),
+          safe: update.safe,
+          finalized: update.finalized,
+        },
+      }));
+
+      yield* publishEvent(BlockchainEvent.forkChoiceUpdated(update));
+    });
+
+  const subscribe = () => PubSub.subscribe(events);
+
+  const setCanonicalHead = (hash: BlockHashType) =>
+    Effect.gen(function* () {
+      yield* ensureCanonicalChain(hash);
+      yield* applyCanonicalHead(hash);
     });
 
   return {
