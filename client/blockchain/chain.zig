@@ -160,27 +160,39 @@ pub fn head_number_of(chain: anytype) ?u64 {
 /// These helpers intentionally do not fetch; pair with `*_or_fetch` variants if
 /// remote reads are acceptable in the call site.
 pub fn safe_head_hash_of(fc: anytype) ?Hash.Hash {
+    comptime {
+        if (@typeInfo(@TypeOf(fc)) != .Pointer) @compileError("safe_head_hash_of expects a pointer to a forkchoice provider");
+    }
     // Intentionally a thin wrapper to keep DI surface consistent.
     return fc.getSafeHash();
 }
 
 pub fn finalized_head_hash_of(fc: anytype) ?Hash.Hash {
+    comptime {
+        if (@typeInfo(@TypeOf(fc)) != .Pointer) @compileError("finalized_head_hash_of expects a pointer to a forkchoice provider");
+    }
     // Intentionally a thin wrapper to keep DI surface consistent.
     return fc.getFinalizedHash();
 }
 
 /// Local-only safe head block lookup (no fork-cache fetch/allocations at this layer).
 pub fn safe_head_block_of(chain: *Chain, fc: anytype) ?Block.Block {
+    comptime {
+        if (@typeInfo(@TypeOf(fc)) != .Pointer) @compileError("safe_head_block_of expects a pointer to a forkchoice provider");
+    }
     // Local-only view; use fork-cache layer at call sites if remote fetches are acceptable.
     const h = fc.getSafeHash() orelse return null;
-    return chain.block_store.getBlock(h);
+    return get_block_local(chain, h);
 }
 
 /// Local-only finalized head block lookup (no fork-cache fetch/allocations at this layer).
 pub fn finalized_head_block_of(chain: *Chain, fc: anytype) ?Block.Block {
+    comptime {
+        if (@typeInfo(@TypeOf(fc)) != .Pointer) @compileError("finalized_head_block_of expects a pointer to a forkchoice provider");
+    }
     // Local-only view; use fork-cache layer at call sites if remote fetches are acceptable.
     const h = fc.getFinalizedHash() orelse return null;
-    return chain.block_store.getBlock(h);
+    return get_block_local(chain, h);
 }
 
 test {
