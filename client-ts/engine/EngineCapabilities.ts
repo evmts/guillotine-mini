@@ -95,19 +95,23 @@ const validateCapabilityList = (
     );
   });
 
+const cloneCapabilities = (
+  methods: ReadonlyArray<string>,
+): ReadonlyArray<string> => [...methods];
+
 const makeEngineCapabilities = (
   supportedExecutionMethods: ReadonlyArray<string>,
 ) =>
   Effect.gen(function* () {
     yield* validateCapabilityList("response", supportedExecutionMethods);
-    const advertisedMethods = [...supportedExecutionMethods];
+    const advertisedMethods = cloneCapabilities(supportedExecutionMethods);
 
     const exchangeCapabilities = (
       consensusClientMethods: ReadonlyArray<string>,
     ) =>
       Effect.gen(function* () {
         yield* validateCapabilityList("request", consensusClientMethods);
-        return advertisedMethods;
+        return cloneCapabilities(advertisedMethods);
       });
 
     return {
