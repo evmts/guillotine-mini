@@ -18,7 +18,6 @@ const primitives = @import("primitives");
 const Block = primitives.Block;
 const BlockHeader = primitives.BlockHeader;
 const BlockBody = primitives.BlockBody;
-const Hash = primitives.Hash;
 const bench_utils = @import("bench_utils");
 const BenchResult = bench_utils.BenchResult;
 const format_ns = bench_utils.format_ns;
