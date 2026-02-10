@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Either from "effect/Either";
 import { Address, Hex, RuntimeCode } from "voltaire-effect/primitives";
 import {
   HostAdapterTest,
@@ -12,6 +13,7 @@ import {
   setNonce,
   setStorage,
 } from "./HostAdapter";
+import { MissingAccountError } from "../state/State";
 
 const provideHost = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(HostAdapterTest));
@@ -112,6 +114,21 @@ describe("HostAdapter", () => {
         yield* setStorage(addr, slot, value);
         const stored = yield* getStorage(addr, slot);
         assert.strictEqual(storageValueHex(stored), storageValueHex(value));
+      }),
+    ),
+  );
+
+  it.effect("fails when writing storage for a missing account", () =>
+    provideHost(
+      Effect.gen(function* () {
+        const addr = makeAddress(6);
+        const slot = makeSlot(6);
+        const value = makeStorageValue(9);
+        const result = yield* Effect.either(setStorage(addr, slot, value));
+        assert.isTrue(Either.isLeft(result));
+        if (Either.isLeft(result)) {
+          assert.isTrue(result.left instanceof MissingAccountError);
+        }
       }),
     ),
   );
