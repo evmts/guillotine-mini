@@ -2,14 +2,12 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import {
+  Db,
   type DbService,
   type DbSnapshot,
   type WriteBatch,
-  type BytesType,
-  DbNames,
-  ReadFlags,
-  WriteFlags,
-} from "./Db";
+} from "./DbAdapter";
+import type { BytesType } from "./DbTypes";
 
 const makeSnapshot = (): DbSnapshot => ({
   get: (_key, _flags) => Effect.succeed(Option.none()),
@@ -30,15 +28,15 @@ const makeWriteBatch = (): WriteBatch => ({
 
 const makeDbService = (): DbService =>
   ({
-    name: DbNames.state,
-    get: (_key, _flags = ReadFlags.None) => Effect.succeed(Option.none()),
+    name: "state",
+    get: (_key, _flags) => Effect.succeed(Option.none()),
     getMany: (keys) =>
       Effect.succeed(keys.map((key) => ({ key, value: Option.none() }))),
     getAll: (_ordered) => Effect.succeed([]),
     getAllKeys: (_ordered) => Effect.succeed([]),
     getAllValues: (_ordered) => Effect.succeed([]),
-    put: (_key, _value, _flags = WriteFlags.None) => Effect.void,
-    merge: (_key, _value, _flags = WriteFlags.None) => Effect.void,
+    put: (_key, _value, _flags) => Effect.void,
+    merge: (_key, _value, _flags) => Effect.void,
     remove: (_key) => Effect.void,
     has: (_key) => Effect.succeed(false),
     createSnapshot: () =>
