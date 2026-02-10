@@ -44,6 +44,7 @@ import {
   TransientStorageTest,
 } from "../state/TransientStorage";
 import {
+  NoActiveTransactionError,
   transactionDepth,
   TransactionBoundaryTest,
 } from "../state/TransactionBoundary";
@@ -763,6 +764,21 @@ describe("TransactionProcessor.checkInclusionAvailabilityAndSenderCode", () => {
 });
 
 describe("TransactionProcessor execution boundaries", () => {
+  it.effect("runInCallFrameBoundary requires an active transaction scope", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const outcome = yield* Effect.either(
+          runInCallFrameBoundary(Effect.succeed("ok")),
+        );
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof NoActiveTransactionError);
+        }
+      }),
+    ),
+  );
+
   it.effect(
     "runInTransactionBoundary commits world and transient changes",
     () =>

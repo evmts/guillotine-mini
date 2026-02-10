@@ -16,7 +16,9 @@ import { WorldState } from "../state/State";
 import {
   beginTransaction,
   commitTransaction,
+  NoActiveTransactionError,
   rollbackTransaction,
+  transactionDepth,
   type TransactionBoundary,
   type TransactionBoundaryError,
 } from "../state/TransactionBoundary";
@@ -814,7 +816,13 @@ const makeTransactionProcessor = Effect.gen(function* () {
     runWithinBoundary(effect);
 
   const runInCallFrameBoundary = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    runWithinBoundary(effect);
+    Effect.gen(function* () {
+      const depth = yield* transactionDepth();
+      if (depth === 0) {
+        return yield* Effect.fail(new NoActiveTransactionError({ depth }));
+      }
+      return yield* runWithinBoundary(effect);
+    });
 
   return {
     calculateEffectiveGasPrice,
