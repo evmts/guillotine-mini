@@ -1,4 +1,8 @@
 /// Block header validation helpers for post-merge (PoS) rules.
+///
+/// Implements post-merge header invariants and base-fee progression per
+/// execution-specs and relevant EIPs (e.g., EIP-1559, EIP-4844). No custom
+/// primitives are introduced; everything is expressed via Voltaire types.
 const std = @import("std");
 const primitives = @import("primitives");
 const Blob = primitives.Blob;
