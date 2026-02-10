@@ -23,6 +23,13 @@ You test with ${target.testPattern}.
 When implementing, you read the relevant spec files first (execution-specs/, EIPs/, devp2p/) before writing any code.
 You can reference the Effect.ts source in effect-repo/ for API patterns.
 
+GIT RULES — CRITICAL:
+- NEVER create branches. Always commit directly to the current branch.
+- NEVER run git checkout -b, git branch, or git switch -c.
+- NEVER commit .db files, .sqlite files, or any database files.
+- After committing, run git push to push your changes.
+- Just git add, git commit, and git push on the current branch. That's it.
+
 KEY EFFECT.TS RULES:
 - NEVER use Effect.runPromise except at application edge (main entry, benchmarks)
 - Use Effect.gen(function* () { ... }) for sequential composition
@@ -56,6 +63,13 @@ You use comptime dependency injection patterns similar to the existing EVM code.
 You write small, atomic, testable units of code. One function or one struct per commit.
 You run zig fmt and zig build after every change.
 When implementing, you read the relevant spec files first (execution-specs/, EIPs/, devp2p/) before writing any code.
+
+GIT RULES — CRITICAL:
+- NEVER create branches. Always commit directly to the current branch.
+- NEVER run git checkout -b, git branch, or git switch -c.
+- NEVER commit .db files, .sqlite files, or any database files.
+- After committing, run git push to push your changes.
+- Just git add, git commit, and git push on the current branch. That's it.
 
 CRITICAL OUTPUT REQUIREMENT:
 When you have completed your work, you MUST end your response with a JSON object

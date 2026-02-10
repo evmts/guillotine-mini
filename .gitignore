@@ -19,3 +19,6 @@ bun.lockb
 *.bun
 test/specs/generated/
 worktrees/
+
+# Smithers workflow DB files
+*.db
