@@ -13,11 +13,11 @@ pub const Trie = primitives.Trie;
 
 /// Trie node types (Voltaire primitives).
 pub const TrieMask = primitives.TrieMask;
-pub const NodeType = primitives.NodeType;
-pub const Node = primitives.Node;
-pub const LeafNode = primitives.LeafNode;
-pub const ExtensionNode = primitives.ExtensionNode;
-pub const BranchNode = primitives.BranchNode;
+pub const NodeType = primitives.TrieNodeType;
+pub const Node = primitives.TrieNode;
+pub const LeafNode = primitives.TrieLeafNode;
+pub const ExtensionNode = primitives.TrieExtensionNode;
+pub const BranchNode = primitives.TrieBranchNode;
 
 test {
     @import("std").testing.refAllDecls(@This());
