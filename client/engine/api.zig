@@ -31,9 +31,10 @@ const engine_method_prefix = "engine_";
 
 /// Vtable-based Engine API interface.
 ///
-/// Currently exposes `engine_exchangeCapabilities` only. The handler is
-/// responsible for enforcing spec rules (e.g., versioned method names and
-/// excluding `engine_exchangeCapabilities` from responses).
+/// Exposes `engine_exchangeCapabilities`, `engine_getClientVersionV1`, and
+/// `engine_exchangeTransitionConfigurationV1`. Each handler validates its
+/// inputs/outputs per execution-apis: capability lists must be engine_*
+/// and versioned (and responses must exclude `engine_exchangeCapabilities`).
 pub const EngineApi = struct {
     /// Type-erased pointer to the concrete Engine API implementation.
     ptr: *anyopaque,
