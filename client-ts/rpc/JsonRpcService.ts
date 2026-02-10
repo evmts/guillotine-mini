@@ -5,11 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type { JsonRpcRequest } from "./JsonRpcRequest";
-import type {
-  JsonRpcErrorName,
-  JsonRpcErrorNameBySource,
-  JsonRpcErrorSource,
-} from "./JsonRpcErrors";
+import type { JsonRpcErrorNameBySource } from "./JsonRpcErrors";
 import {
   JsonRpcResponseEncoder,
   type InvalidJsonRpcResponseError,
@@ -17,18 +13,29 @@ import {
   type JsonValue,
 } from "./JsonRpcResponse";
 
+type JsonRpcMethodExecutionErrorPayload =
+  | Readonly<{
+      source: "EIP-1474";
+      name: JsonRpcErrorNameBySource["EIP-1474"];
+      data?: JsonValue;
+    }>
+  | Readonly<{
+      source: "Nethermind";
+      name: JsonRpcErrorNameBySource["Nethermind"];
+      data?: JsonValue;
+    }>;
+
+/** Error raised by method handlers to map domain failures into JSON-RPC errors. */
 export class JsonRpcMethodExecutionError extends Data.TaggedError(
   "JsonRpcMethodExecutionError",
-)<{
-  readonly source: JsonRpcErrorSource;
-  readonly name: JsonRpcErrorName;
-  readonly data?: JsonValue;
-}> {}
+)<JsonRpcMethodExecutionErrorPayload> {}
 
+/** Handler contract for a single JSON-RPC method implementation. */
 export type JsonRpcMethodHandler = (
   request: JsonRpcRequest,
 ) => Effect.Effect<JsonValue, JsonRpcMethodExecutionError>;
 
+/** Service contract for dispatching JSON-RPC requests to method handlers. */
 export interface JsonRpcServiceService {
   readonly sendRequest: (
     request: JsonRpcRequest,
@@ -48,11 +55,6 @@ const normalizeMethod = (method: string): string => method.trim();
 
 const isNotification = (request: JsonRpcRequest): boolean =>
   request.id === undefined;
-
-const asNameForSource = <Source extends JsonRpcErrorSource>(
-  source: Source,
-  name: JsonRpcErrorName,
-): JsonRpcErrorNameBySource[Source] => name as JsonRpcErrorNameBySource[Source];
 
 const makeJsonRpcService = (
   handlers: Readonly<Record<string, JsonRpcMethodHandler>>,
@@ -88,13 +90,13 @@ const makeJsonRpcService = (
             executionError.source === "EIP-1474"
               ? yield* encoder.errorByName(
                   "EIP-1474",
-                  asNameForSource("EIP-1474", executionError.name),
+                  executionError.name,
                   request.id,
                   executionError.data,
                 )
               : yield* encoder.errorByName(
                   "Nethermind",
-                  asNameForSource("Nethermind", executionError.name),
+                  executionError.name,
                   request.id,
                   executionError.data,
                 );
@@ -115,10 +117,12 @@ const makeJsonRpcService = (
     } satisfies JsonRpcServiceService;
   });
 
+/** Live JSON-RPC dispatch layer parameterized by method handlers. */
 export const JsonRpcServiceLive = (
   handlers: Readonly<Record<string, JsonRpcMethodHandler>>,
 ) => Layer.effect(JsonRpcService, makeJsonRpcService(handlers));
 
+/** Dispatch a JSON-RPC request with the configured service implementation. */
 export const sendJsonRpcRequest = (request: JsonRpcRequest) =>
   Effect.gen(function* () {
     const service = yield* JsonRpcService;
