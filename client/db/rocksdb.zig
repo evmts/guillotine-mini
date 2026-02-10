@@ -80,13 +80,18 @@ pub const DbSettings = struct {
 pub const RocksDatabase = struct {
     /// Which logical database partition this instance represents.
     name: DbName,
+    /// Filesystem path for the RocksDB instance (caller-owned).
+    path: []const u8,
 
-    /// Create a new RocksDatabase stub for the given partition.
+    /// Create a new RocksDatabase stub for the given settings.
     ///
     /// In the real implementation, this would open a RocksDB instance
     /// at a derived path. Currently, no resources are allocated.
-    pub fn init(name: DbName) RocksDatabase {
-        return .{ .name = name };
+    pub fn init(settings: DbSettings) RocksDatabase {
+        return .{
+            .name = settings.name,
+            .path = settings.path,
+        };
     }
 
     /// Release all resources. Currently a no-op (stub has no resources).
@@ -137,7 +142,8 @@ pub const RocksDatabase = struct {
 // ---------------------------------------------------------------------------
 
 test "RocksDatabase: get returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.state);
+    const settings = DbSettings.init(.state, "/tmp/guillotine-state");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     const iface = db.database();
@@ -145,7 +151,8 @@ test "RocksDatabase: get returns StorageError (unimplemented stub)" {
 }
 
 test "RocksDatabase: put returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.code);
+    const settings = DbSettings.init(.code, "/tmp/guillotine-code");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     const iface = db.database();
@@ -153,7 +160,8 @@ test "RocksDatabase: put returns StorageError (unimplemented stub)" {
 }
 
 test "RocksDatabase: put with null returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.headers);
+    const settings = DbSettings.init(.headers, "/tmp/guillotine-headers");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     const iface = db.database();
@@ -161,7 +169,8 @@ test "RocksDatabase: put with null returns StorageError (unimplemented stub)" {
 }
 
 test "RocksDatabase: delete returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.blocks);
+    const settings = DbSettings.init(.blocks, "/tmp/guillotine-blocks");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     const iface = db.database();
@@ -169,26 +178,31 @@ test "RocksDatabase: delete returns StorageError (unimplemented stub)" {
 }
 
 test "RocksDatabase: contains returns StorageError (unimplemented stub)" {
-    var db = RocksDatabase.init(.receipts);
+    const settings = DbSettings.init(.receipts, "/tmp/guillotine-receipts");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     const iface = db.database();
     try std.testing.expectError(error.StorageError, iface.contains("key"));
 }
 
-test "RocksDatabase: name is accessible after init" {
-    var db = RocksDatabase.init(.headers);
+test "RocksDatabase: name and path are accessible after init" {
+    const settings = DbSettings.init(.headers, "/tmp/guillotine-headers");
+    var db = RocksDatabase.init(settings);
     defer db.deinit();
 
     try std.testing.expectEqual(DbName.headers, db.name);
+    try std.testing.expectEqualStrings("/tmp/guillotine-headers", db.path);
     try std.testing.expectEqualStrings("headers", db.name.to_string());
 }
 
 test "RocksDatabase: multiple instances with different names" {
-    var db1 = RocksDatabase.init(.state);
+    const settings1 = DbSettings.init(.state, "/tmp/guillotine-state");
+    var db1 = RocksDatabase.init(settings1);
     defer db1.deinit();
 
-    var db2 = RocksDatabase.init(.code);
+    const settings2 = DbSettings.init(.code, "/tmp/guillotine-code");
+    var db2 = RocksDatabase.init(settings2);
     defer db2.deinit();
 
     try std.testing.expectEqual(DbName.state, db1.name);
