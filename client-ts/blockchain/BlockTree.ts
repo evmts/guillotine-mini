@@ -39,10 +39,6 @@ const BlockNumberSchema = BlockNumber.BigInt as unknown as Schema.Schema<
   BlockNumberType,
   bigint
 >;
-const BlockNumberBigIntSchema = BlockNumber.BigInt as unknown as Schema.Schema<
-  BlockNumberType,
-  bigint
->;
 
 /** Error raised when a block number is invalid. */
 export class InvalidBlockNumberError extends Data.TaggedError(
@@ -131,7 +127,7 @@ const decodeBlockNumber = (number: BlockNumberType) =>
 const blockHashKey = (hash: BlockHashType): BlockHashKey => Hex.fromBytes(hash);
 
 const blockNumberKey = (number: BlockNumberType): BlockNumberKey =>
-  Schema.encodeSync(BlockNumberBigIntSchema)(number);
+  Schema.encodeSync(BlockNumberSchema)(number);
 
 const makeBlockTree = Effect.gen(function* () {
   const store = yield* BlockStore;
