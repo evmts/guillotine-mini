@@ -24,8 +24,10 @@ type TransientStorageJournalEntry = {
   readonly previous: StorageValueType;
 };
 
+/** Snapshot identifier for transient storage journaling. */
 export type TransientStorageSnapshot = number;
 
+/** Sentinel snapshot value when no transient storage snapshots exist. */
 export const EMPTY_SNAPSHOT: TransientStorageSnapshot = -1;
 
 type SnapshotEntry = {
@@ -33,6 +35,7 @@ type SnapshotEntry = {
   readonly journalLength: number;
 };
 
+/** Error raised when a snapshot is not tracked by transient storage. */
 export class UnknownTransientSnapshotError extends Data.TaggedError(
   "UnknownTransientSnapshotError",
 )<{
@@ -40,6 +43,7 @@ export class UnknownTransientSnapshotError extends Data.TaggedError(
   readonly depth: number;
 }> {}
 
+/** Service interface for EIP-1153 transient storage. */
 export interface TransientStorageService {
   readonly get: (
     address: Address.AddressType,
@@ -60,6 +64,7 @@ export interface TransientStorageService {
   readonly clear: () => Effect.Effect<void>;
 }
 
+/** Context tag for transient storage. */
 export class TransientStorage extends Context.Tag("TransientStorage")<
   TransientStorage,
   TransientStorageService
@@ -235,32 +240,40 @@ const makeTransientStorage = Effect.sync(() => {
   } satisfies TransientStorageService;
 });
 
+/** Production transient storage layer. */
 export const TransientStorageLive: Layer.Layer<TransientStorage> = Layer.effect(
   TransientStorage,
   makeTransientStorage,
 );
 
+/** Deterministic transient storage layer for tests. */
 export const TransientStorageTest: Layer.Layer<TransientStorage> =
   TransientStorageLive;
 
+/** Read a transient storage slot (zero if unset). */
 export const getTransientStorage = (
   address: Address.AddressType,
   slot: StorageSlotType,
 ) => withTransientStorage((storage) => storage.get(address, slot));
 
+/** Set a transient storage slot (zero clears the slot). */
 export const setTransientStorage = (
   address: Address.AddressType,
   slot: StorageSlotType,
   value: StorageValueType,
 ) => withTransientStorage((storage) => storage.set(address, slot, value));
 
+/** Capture a transient storage snapshot. */
 export const takeSnapshot = () =>
   withTransientStorage((storage) => storage.takeSnapshot());
 
+/** Restore transient storage to a snapshot. */
 export const restoreSnapshot = (snapshot: TransientStorageSnapshot) =>
   withTransientStorage((storage) => storage.restoreSnapshot(snapshot));
 
+/** Commit transient storage changes since a snapshot. */
 export const commitSnapshot = (snapshot: TransientStorageSnapshot) =>
   withTransientStorage((storage) => storage.commitSnapshot(snapshot));
 
+/** Clear all transient storage and snapshot history. */
 export const clear = () => withTransientStorage((storage) => storage.clear());

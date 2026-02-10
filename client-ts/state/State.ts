@@ -413,12 +413,7 @@ const makeWorldState = Effect.gen(function* () {
       return index;
     });
 
-  const dropSnapshotsFromRestore = (index: number) => {
-    snapshotStack.splice(index);
-    clearCreatedIfNoSnapshots();
-  };
-
-  const dropSnapshotsFromCommit = (index: number) => {
+  const dropSnapshotsFrom = (index: number) => {
     snapshotStack.splice(index);
     clearCreatedIfNoSnapshots();
   };
@@ -427,14 +422,14 @@ const makeWorldState = Effect.gen(function* () {
     Effect.gen(function* () {
       const index = yield* lookupSnapshotIndex(snapshot);
       yield* journal.restore(snapshot, applyRevert);
-      dropSnapshotsFromRestore(index);
+      dropSnapshotsFrom(index);
     });
 
   const commitSnapshot = (snapshot: WorldStateSnapshot) =>
     Effect.gen(function* () {
       const index = yield* lookupSnapshotIndex(snapshot);
       yield* journal.commit(snapshot);
-      dropSnapshotsFromCommit(index);
+      dropSnapshotsFrom(index);
     });
 
   const clear = () =>
