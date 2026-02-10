@@ -46,6 +46,7 @@ Listed from `nethermind/src/Nethermind/Nethermind.Db/`:
 ## Voltaire Zig Primitives
 
 - Attempted to list `/Users/williamcory/voltaire/packages/voltaire-zig/src/` and `voltaire/packages/voltaire-zig/src`, but both paths do not exist in this workspace. The Voltaire Zig primitives need to be located or the submodule path updated before implementation.
+- Available Voltaire root at `/Users/williamcory/voltaire/src/` contains `blockchain/`, `block/`, `state-manager/`, `primitives/`, `evm/`, `jsonrpc/`, and `crypto/` alongside Zig entrypoints (`root.zig`, `c_api.zig`, `log.zig`).
 
 ## Existing EVM Host Interface (src/host.zig)
 
@@ -57,8 +58,21 @@ Listed from `nethermind/src/Nethermind/Nethermind.Db/`:
 
 ## Test Fixtures (filesystem)
 
+- `ethereum-tests/ABITests/`
+- `ethereum-tests/BasicTests/`
 - `ethereum-tests/BlockchainTests/`
+- `ethereum-tests/DifficultyTests/`
+- `ethereum-tests/EOFTests/`
+- `ethereum-tests/GenesisTests/`
+- `ethereum-tests/JSONSchema/`
+- `ethereum-tests/KeyStoreTests/`
+- `ethereum-tests/LegacyTests/`
+- `ethereum-tests/PoWTests/`
+- `ethereum-tests/RLPTests/`
+- `ethereum-tests/TransactionTests/`
+- `ethereum-tests/TrieTests/`
 - `ethereum-tests/fixtures_blockchain_tests.tgz`
+- `ethereum-tests/fixtures_general_state_tests.tgz`
 - `execution-spec-tests/` exists but is empty in this workspace (no fixtures present).
 
 ## Notes for Implementation
