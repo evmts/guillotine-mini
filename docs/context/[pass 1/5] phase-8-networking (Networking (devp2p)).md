@@ -1,122 +1,112 @@
-# [Pass 1/5] Phase 8: Networking (devp2p) — Implementation Context
+# [Pass 1/5] Phase 8: Networking (devp2p) - Focused Context
 
-## Phase Goal
+## 1. Phase Goal and Scope
 
-Implement devp2p networking for peer communication.
+Source: `prd/GUILLOTINE_CLIENT_PLAN.md`
 
-**Key Components** (from plan):
-- `client/net/rlpx.zig` - RLPx transport (handshake + framing)
-- `client/net/discovery.zig` - discv4/v5 discovery
-- `client/net/eth.zig` - eth/68 protocol
+- Goal: implement devp2p networking for peer communication.
+- Planned Zig component targets:
+- `client/net/rlpx.zig` (RLPx transport)
+- `client/net/discovery.zig` (discv4/discv5)
+- `client/net/eth.zig` (eth protocol)
+- Structural reference for this phase: `nethermind/src/Nethermind/Nethermind.Network/`.
 
-**Reference Architecture**:
-- Nethermind: `nethermind/src/Nethermind/Nethermind.Network/`
-- devp2p specs: `devp2p/`
+## 2. Spec Files to Anchor Implementation
 
----
+Source: `prd/ETHEREUM_SPECS_REFERENCE.md` (Phase 8 section)
 
-## 1. Spec References (Read First)
+- `devp2p/rlpx.md`
+- `devp2p/caps/eth.md`
+- `devp2p/caps/snap.md`
+- `devp2p/discv4.md`
+- `devp2p/discv5/discv5.md`
+- `devp2p/enr.md`
 
-### Core devp2p specs
-- `devp2p/rlpx.md` - RLPx transport: ECIES handshake, key derivation, AES-CTR framing, keccak-based MACs, capability multiplexing.
-- `devp2p/caps/eth.md` - ETH protocol (target eth/68 per local refs): Status handshake, chain sync, tx exchange, message size limits.
-- `devp2p/caps/snap.md` - SNAP protocol (snap/1): snapshot state sync requests and Merkle-proven ranges.
-- `devp2p/discv4.md` - Discovery v4: UDP packets, Kademlia routing, ping/pong/FindNode/Neighbors, endpoint proof, 1280-byte max.
-- `devp2p/discv5/discv5.md` - Discovery v5 overview and sub-spec pointers.
-- `devp2p/discv5/discv5-wire.md` - Discovery v5 wire format: masked headers, AES-CTR masking, AES-GCM messages, WHOAREYOU handshake.
-- `devp2p/enr.md` - ENR format: RLP list, max size 300 bytes, v4 identity scheme, key ordering rules.
+Quick extraction from the docs above:
 
-### EIPs referenced by devp2p
-- `EIPs/EIPS/eip-8.md` - Forward compatibility rules (ignore version mismatches, extra fields, RLPx auth/ack RLP encoding).
-- `EIPs/EIPS/eip-778.md` - ENR canonical format, RLP encoding, v4 identity scheme.
-- `EIPs/EIPS/eip-868.md` - discv4 ENR extension (ENRRequest/ENRResponse, ping/pong enr-seq field).
+- `devp2p/rlpx.md`: handshake (auth/ack), ECDH-derived secrets, AES-CTR frame encryption, keccak-based ingress/egress MAC streams, capability negotiation.
+- `devp2p/caps/eth.md`: status handshake gate, sync and tx exchange semantics, request/response size constraints, current protocol text documents `eth/69`.
+- `devp2p/caps/snap.md`: `snap/1` state-range and trie retrieval protocol; explicitly designed to run side-by-side with `eth`.
+- `devp2p/discv4.md`: UDP wire packets, Kademlia table with `k=16`, endpoint proof, `Ping/Pong/FindNode/Neighbors/ENRRequest/ENRResponse`.
+- `devp2p/discv5/discv5.md`: v5 overview; points to dedicated wire/theory/rationale specs.
+- `devp2p/enr.md`: ENR encoding/signing constraints, sorted unique key/value pairs, 300-byte max encoded size.
 
----
+Relevant EIPs read for compatibility and ENR behavior:
 
-## 2. Nethermind Reference (Networking)
+- `EIPs/EIPS/eip-8.md` (devp2p/discovery/RLPx forward compatibility rules)
+- `EIPs/EIPS/eip-778.md` (ENR canonical format)
+- `EIPs/EIPS/eip-868.md` (discv4 ENR extension packets/fields)
+- `EIPs/EIPS/eip-1459.md` (DNS-based ENR tree bootstrapping; status: stagnant)
 
-Location: `nethermind/src/Nethermind/Nethermind.Network/`
+Execution-specs note:
 
-Key areas to mirror structurally:
-- `Discovery/` - discovery v4/v5 logic, node table, ENR handling
-- `Rlpx/` - RLPx handshake, framing, capability mux
-- `P2P/` - devp2p base protocol, hello/status
-- `IP/`, `Config/`, `StaticNodes/`, `TrustedNodes/` - endpoint handling and node sources
-- Core management: `PeerManager.cs`, `PeerPool.cs`, `ProtocolsManager.cs`, `SessionMonitor.cs`
+- `execution-specs/` is primarily execution/fork semantics and tests; phase-8 wire/networking authority is `devp2p/` + networking EIPs above.
 
-### Requested Listing: Nethermind DB Module Inventory
-Location: `nethermind/src/Nethermind/Nethermind.Db/`
+## 3. Requested Nethermind DB Inventory
 
-Key files (for cross-module reference):
-- `IDb.cs`, `IReadOnlyDb.cs`, `IFullDb.cs` - core DB interfaces
-- `IColumnsDb.cs`, `ITunableDb.cs` - column families and tuning
-- `DbProvider.cs`, `IDbProvider.cs`, `IDbFactory.cs` - DB provider and factories
-- `MemDb.cs`, `MemColumnsDb.cs`, `InMemoryWriteBatch.cs` - in-memory backends
-- `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs` - read-only wrappers
-- `RocksDbSettings.cs`, `RocksDbMergeEnumerator.cs` - RocksDB support
-- `Metrics.cs` - DB metrics
+Requested path: `nethermind/src/Nethermind/Nethermind.Db/`
 
----
+Key files from directory listing:
 
-## 3. Voltaire Primitives (Must Use)
+- DB interfaces: `IDb.cs`, `IReadOnlyDb.cs`, `IFullDb.cs`, `IColumnsDb.cs`, `ITunableDb.cs`
+- Providers/factories: `DbProvider.cs`, `IDbProvider.cs`, `IDbFactory.cs`, `DbProviderExtensions.cs`
+- Implementations: `MemDb.cs`, `MemColumnsDb.cs`, `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs`, `NullDb.cs`
+- Batching/writes: `InMemoryWriteBatch.cs`, `InMemoryColumnBatch.cs`
+- Pruning: `IPruningConfig.cs`, `PruningConfig.cs`, `PruningMode.cs`, `FullPruning/FullPruningDb.cs`
+- RocksDB support: `RocksDbSettings.cs`, `RocksDbMergeEnumerator.cs`, `NullRocksDbFactory.cs`
+- Misc support: `DbNames.cs`, `MetadataDbKeys.cs`, `Metrics.cs`, `SimpleFilePublicKeyDb.cs`
 
-Location: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
+## 4. Voltaire Zig API Surface (Requested Listing + Relevant APIs)
 
-Relevant primitives for devp2p (do not reimplement):
-- `primitives/Rlp/Rlp.zig` - RLP encode/decode helpers
-- `primitives/PeerId/PeerId.zig` - enode URL parsing/formatting, 64-byte node id
-- `primitives/ForkId/ForkId.zig` - EIP-2124 RLP encoding/compat checks for eth Status handshake
-- `primitives/SnappyParameters/snappy_parameters.zig` - MaxSnappyLength = 16 MiB (EIP-706 alignment)
-- `primitives/ProtocolVersion/ProtocolVersion.zig` - `ETH_66/67/68`, `SNAP_1`
-- `primitives/NetworkId/NetworkId.zig`
-- `primitives/Bytes/`, `primitives/Bytes32/`, `primitives/Hash/`, `primitives/Hex/`
-- `primitives/PublicKey/`, `primitives/PrivateKey/`, `primitives/Signature/`
+Requested path listed: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
 
-Relevant crypto primitives:
-- `crypto/secp256k1.zig` - node identity keys, signatures, ECDH
-- `crypto/keccak256_accel.zig` / `crypto/keccak256_c.zig` - RLPx MACs, ENR hashing
-- `crypto/sha256_accel.zig` - discv5-related hashing
-- `crypto/aes_gcm.zig` - discv5 packet encryption (AES-GCM)
-- `crypto/constant_time.zig` - constant-time helpers
+Top-level API anchors:
 
----
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/root.zig`
+- Exposes `Primitives` and `Crypto` modules.
 
-## 4. Existing Zig EVM Integration Surface
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/root.zig`
+- Notable networking-relevant exports: `Address`, `Hash`, `Hex`, `Rlp`, `Bytes`, `Bytes32`, `PublicKey`, `PrivateKey`, `Signature`, `ForkId`, `PeerId`, `ProtocolVersion`, `NetworkId`, `Transaction`, `Block`, `BlockHeader`.
 
-### Host Interface
-File: `src/host.zig`
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/crypto/root.zig`
+- Notable exports: `secp256k1`, `HashUtils`, `Crypto`, `aes_gcm`, `chacha20_poly1305`, `keccak_asm`, `Keccak256_Accel`.
 
-- Defines `HostInterface` (ptr + vtable) for external state access.
-- Vtable pattern is the reference for comptime DI-style polymorphism in Zig.
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/root.zig`
+- Exposes `BlockStore`, `ForkBlockCache`, `Blockchain`.
 
----
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/jsonrpc/root.zig`
+- Exposes typed `JsonRpc`, `eth`, `debug`, `engine` method modules.
 
-## 5. Test Fixtures and Networking Suites
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/c_api.zig`
+- Exposes C bindings for core primitives (`primitives_address_*`, `primitives_hash_*`, `primitives_keccak256`, `primitives_hex_*`, etc.).
 
-devp2p suites:
-- `hive/` - devp2p integration tests
+## 5. Existing Zig Host Interface
 
-ethereum-tests inventory (requested listing):
-- `ethereum-tests/ABITests/`
-- `ethereum-tests/BasicTests/`
-- `ethereum-tests/BlockchainTests/`
-- `ethereum-tests/DifficultyTests/`
-- `ethereum-tests/EOFTests/`
-- `ethereum-tests/GenesisTests/`
-- `ethereum-tests/JSONSchema/`
-- `ethereum-tests/KeyStoreTests/`
-- `ethereum-tests/LegacyTests/`
-- `ethereum-tests/PoWTests/`
-- `ethereum-tests/RLPTests/`
-- `ethereum-tests/TransactionTests/`
-- `ethereum-tests/TrieTests/`
+Source: `src/host.zig`
 
-Fixture tarballs:
-- `ethereum-tests/fixtures_blockchain_tests.tgz`
-- `ethereum-tests/fixtures_general_state_tests.tgz`
+- `HostInterface` is a pointer + vtable abstraction for external state access.
+- Vtable methods: `get/setBalance`, `get/setCode`, `get/setStorage`, `get/setNonce`.
+- File explicitly notes nested EVM calls are handled by `EVM.inner_call` and not routed through this host interface.
 
----
+## 6. Ethereum Tests Fixture Paths (Requested Listing)
+
+Top-level and immediate subdirs under `ethereum-tests/`:
+
+- `ethereum-tests/ABITests`
+- `ethereum-tests/BasicTests`
+- `ethereum-tests/BlockchainTests` (`InvalidBlocks`, `ValidBlocks`)
+- `ethereum-tests/DifficultyTests` (`dfArrowGlacier`, `dfByzantium`, `dfConstantinople`, `dfEIP2384`, `dfFrontier`, `dfGrayGlacier`, `dfHomestead`)
+- `ethereum-tests/EOFTests` (`EIP5450`, `efExample`, `efStack`, `efValidation`, `ori`)
+- `ethereum-tests/GenesisTests`
+- `ethereum-tests/JSONSchema`
+- `ethereum-tests/KeyStoreTests`
+- `ethereum-tests/LegacyTests`
+- `ethereum-tests/PoWTests`
+- `ethereum-tests/RLPTests` (`RandomRLPTests`)
+- `ethereum-tests/TransactionTests` (`ttAddress`, `ttData`, `ttEIP1559`, `ttEIP2028`, `ttEIP2930`, `ttEIP3860`, `ttGasLimit`, `ttGasPrice`, `ttNonce`, `ttRSValue`, `ttSignature`, `ttVValue`, `ttValue`, `ttWrongRLP`)
+- `ethereum-tests/TrieTests`
+- `ethereum-tests/src` (`BlockchainTestsFiller`, `DifficultyTestsFiller`, `EOFTestsFiller`, `InvalidRLP`, `Templates`, `TransactionTestsFiller`)
 
 ## Summary
 
-Collected phase-8 networking goals and Zig module targets, read devp2p specs for RLPx, ETH, SNAP, discv4/v5, and ENR, and pulled the related EIPs (EIP-8, EIP-778, EIP-868). Mapped Nethermind’s networking module structure (Discovery, RLPx, P2P, peer/session management) and captured the requested Nethermind DB inventory. Listed relevant Voltaire primitives and crypto building blocks required for devp2p, noted the `HostInterface` vtable DI pattern, and recorded devp2p and ethereum-tests fixture locations.
+Collected phase-8 goals from the PRD, confirmed the exact devp2p specs and networking EIPs to drive implementation, captured the requested Nethermind DB file inventory, enumerated relevant Voltaire Zig API modules and exports, summarized `src/host.zig` HostInterface behavior, and documented concrete `ethereum-tests` fixture paths to support future networking and sync validation work.
