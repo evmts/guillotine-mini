@@ -28,6 +28,12 @@ pub inline fn encodeFrameSize24(size: usize) ![3]u8 {
     };
 }
 
+/// Decodes a 24-bit big-endian frame size from the RLPx header bytes.
+/// The input must be exactly three bytes as per RLPx framing.
+pub inline fn decodeFrameSize24(bytes: [3]u8) usize {
+    return (@as(usize, bytes[0]) << 16) | (@as(usize, bytes[1]) << 8) | @as(usize, bytes[2]);
+}
+
 test "calculate padding returns zero for aligned sizes" {
     try std.testing.expectEqual(@as(usize, 0), calculate_padding(0));
     try std.testing.expectEqual(@as(usize, 0), calculate_padding(BlockSize));
@@ -61,4 +67,19 @@ test "encodeFrameSize24: encodes boundaries" {
 
 test "encodeFrameSize24: rejects values > 24-bit" {
     try std.testing.expectError(error.InvalidFrameSize, encodeFrameSize24(ProtocolMaxFrameSize + 1));
+}
+
+test "decodeFrameSize24: decodes boundaries" {
+    try std.testing.expectEqual(@as(usize, 0), decodeFrameSize24(.{ 0x00, 0x00, 0x00 }));
+    try std.testing.expectEqual(@as(usize, 1), decodeFrameSize24(.{ 0x00, 0x00, 0x01 }));
+    try std.testing.expectEqual(ProtocolMaxFrameSize, decodeFrameSize24(.{ 0xFF, 0xFF, 0xFF }));
+}
+
+test "decodeFrameSize24: roundtrips representative values" {
+    const values = [_]usize{ 0, 1, 15, 16, 255, 256, 1024, 4096, 65535, 70000, 1_000_000, ProtocolMaxFrameSize };
+    inline for (values) |v| {
+        const enc = try encodeFrameSize24(v);
+        const dec = decodeFrameSize24(enc);
+        try std.testing.expectEqual(v, dec);
+    }
 }
