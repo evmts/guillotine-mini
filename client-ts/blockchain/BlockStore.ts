@@ -126,13 +126,16 @@ const makeBlockStore = Effect.gen(function* () {
   } satisfies BlockStoreService;
 });
 
+const BlockStoreMemoryLayer: Layer.Layer<BlockStore, BlockStoreError> =
+  Layer.scoped(BlockStore, makeBlockStore);
+
 /** In-memory production block store layer. */
 export const BlockStoreMemoryLive: Layer.Layer<BlockStore, BlockStoreError> =
-  Layer.scoped(BlockStore, makeBlockStore);
+  BlockStoreMemoryLayer;
 
 /** In-memory deterministic block store layer for tests. */
 export const BlockStoreMemoryTest: Layer.Layer<BlockStore, BlockStoreError> =
-  Layer.scoped(BlockStore, makeBlockStore);
+  BlockStoreMemoryLayer;
 
 const withBlockStore = <A, E, R>(
   f: (service: BlockStoreService) => Effect.Effect<A, E, R>,
