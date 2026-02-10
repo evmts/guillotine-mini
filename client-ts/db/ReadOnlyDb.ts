@@ -150,19 +150,20 @@ const makeReadOnlyReader = (
   const getAll = (ordered?: boolean) =>
     Effect.gen(function* () {
       const baseEntries = yield* base.getAll(false);
-      const merged = new Map<string, BytesType>();
+      const entries: Array<DbEntry> = [];
 
       for (const entry of baseEntries) {
         const keyHex = yield* encodeKey(entry.key);
-        merged.set(keyHex, entry.value);
+        if (overlay.has(keyHex)) {
+          continue;
+        }
+        entries.push({
+          key: cloneBytes(entry.key),
+          value: cloneBytes(entry.value),
+        });
       }
 
       for (const [keyHex, value] of overlay.entries()) {
-        merged.set(keyHex, value);
-      }
-
-      const entries: Array<DbEntry> = [];
-      for (const [keyHex, value] of merged.entries()) {
         entries.push({ key: decodeKey(keyHex), value: cloneBytes(value) });
       }
 
@@ -174,16 +175,54 @@ const makeReadOnlyReader = (
     });
 
   const getAllKeys = (ordered?: boolean) =>
-    pipe(
-      getAll(ordered),
-      Effect.map((entries) => entries.map((entry) => entry.key)),
-    );
+    ordered
+      ? pipe(
+          getAll(true),
+          Effect.map((entries) => entries.map((entry) => entry.key)),
+        )
+      : Effect.gen(function* () {
+          const baseKeys = yield* base.getAllKeys(false);
+          const keys: Array<BytesType> = [];
+
+          for (const key of baseKeys) {
+            const keyHex = yield* encodeKey(key);
+            if (overlay.has(keyHex)) {
+              continue;
+            }
+            keys.push(cloneBytes(key));
+          }
+
+          for (const keyHex of overlay.keys()) {
+            keys.push(decodeKey(keyHex));
+          }
+
+          return keys;
+        });
 
   const getAllValues = (ordered?: boolean) =>
-    pipe(
-      getAll(ordered),
-      Effect.map((entries) => entries.map((entry) => entry.value)),
-    );
+    ordered
+      ? pipe(
+          getAll(true),
+          Effect.map((entries) => entries.map((entry) => entry.value)),
+        )
+      : Effect.gen(function* () {
+          const baseEntries = yield* base.getAll(false);
+          const values: Array<BytesType> = [];
+
+          for (const entry of baseEntries) {
+            const keyHex = yield* encodeKey(entry.key);
+            if (overlay.has(keyHex)) {
+              continue;
+            }
+            values.push(cloneBytes(entry.value));
+          }
+
+          for (const value of overlay.values()) {
+            values.push(cloneBytes(value));
+          }
+
+          return values;
+        });
 
   const has = (key: BytesType) =>
     Effect.gen(function* () {
