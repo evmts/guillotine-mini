@@ -19,8 +19,8 @@ pub inline fn calculate_padding(size: usize) usize {
 
 /// Encodes a frame size as a 24-bit big-endian integer for the RLPx header.
 /// Errors when `size` exceeds the protocol's 24-bit representable limit.
-pub inline fn encodeFrameSize24(size: usize) ![3]u8 {
-    if (size > ProtocolMaxFrameSize) return error.InvalidFrameSize;
+pub inline fn encodeFrameSize24(size: usize) FrameError![3]u8 {
+    if (size > ProtocolMaxFrameSize) return FrameError.InvalidFrameSize;
     var out: [3]u8 = undefined;
     // Use std.mem primitives for well-defined u24 big-endian encoding.
     std.mem.writeInt(u24, &out, @as(u24, @intCast(size)), .big);
@@ -70,7 +70,7 @@ test "encodeFrameSize24: encodes boundaries" {
 }
 
 test "encodeFrameSize24: rejects values > 24-bit" {
-    try std.testing.expectError(error.InvalidFrameSize, encodeFrameSize24(ProtocolMaxFrameSize + 1));
+    try std.testing.expectError(FrameError.InvalidFrameSize, encodeFrameSize24(ProtocolMaxFrameSize + 1));
 }
 
 test "decodeFrameSize24: decodes boundaries" {
@@ -87,3 +87,7 @@ test "decodeFrameSize24: roundtrips representative values" {
         try std.testing.expectEqual(v, dec);
     }
 }
+/// Public, stable error set for frame helpers to avoid error-set widening.
+pub const FrameError = error{
+    InvalidFrameSize,
+};
