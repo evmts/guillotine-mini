@@ -116,22 +116,32 @@ pub fn get_block_by_number_local(chain: *Chain, number: u64) ?Block.Block {
 
 /// Generic, comptime-injected head hash reader for any chain-like type.
 pub fn head_hash_of(chain: anytype) !?Hash.Hash {
-    const before = chain.getHeadBlockNumber() orelse return null;
-    const block = try chain.getBlockByNumber(before);
-    const hb = block orelse return null;
-    const after = chain.getHeadBlockNumber() orelse return null;
-    if (after != before) return null;
-    return hb.hash;
+    const max_attempts: usize = 2;
+    var attempt: usize = 0;
+    while (attempt < max_attempts) : (attempt += 1) {
+        const before = chain.getHeadBlockNumber() orelse return null;
+        const maybe_block = try chain.getBlockByNumber(before);
+        const hb = maybe_block orelse return null;
+        const after = chain.getHeadBlockNumber() orelse return null;
+        if (after == before) return hb.hash;
+        if (attempt + 1 == max_attempts) return hb.hash; // return 'before' snapshot
+    }
+    return null; // defensive
 }
 
 /// Generic, comptime-injected head block reader for any chain-like type.
 pub fn head_block_of(chain: anytype) !?Block.Block {
-    const before = chain.getHeadBlockNumber() orelse return null;
-    const block = try chain.getBlockByNumber(before);
-    const hb = block orelse return null;
-    const after = chain.getHeadBlockNumber() orelse return null;
-    if (after != before) return null;
-    return hb;
+    const max_attempts: usize = 2;
+    var attempt: usize = 0;
+    while (attempt < max_attempts) : (attempt += 1) {
+        const before = chain.getHeadBlockNumber() orelse return null;
+        const maybe_block = try chain.getBlockByNumber(before);
+        const hb = maybe_block orelse return null;
+        const after = chain.getHeadBlockNumber() orelse return null;
+        if (after == before) return hb;
+        if (attempt + 1 == max_attempts) return hb; // return 'before' snapshot
+    }
+    return null; // defensive
 }
 
 /// Generic, comptime-injected head number reader for any chain-like type.
