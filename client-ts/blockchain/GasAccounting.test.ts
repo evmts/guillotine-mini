@@ -11,8 +11,8 @@ import {
   InvalidEffectiveGasPriceError,
   InvalidRefundAmountError,
 } from "./GasAccounting";
-import { RefundCalculatorLive } from "./RefundCalculator";
-import { ReleaseSpecLive } from "./ReleaseSpec";
+import { RefundCalculatorLive } from "../evm/RefundCalculator";
+import { ReleaseSpecLive } from "../evm/ReleaseSpec";
 
 const provideGasAccounting =
   (hardfork: Hardfork.HardforkType) =>

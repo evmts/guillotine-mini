@@ -8,7 +8,7 @@ import {
   RefundCalculator,
   type RefundCalculatorError,
   RefundCalculatorTest,
-} from "./RefundCalculator";
+} from "../evm/RefundCalculator";
 
 const GasBigIntSchema = Gas.BigInt as unknown as Schema.Schema<
   Gas.GasType,
