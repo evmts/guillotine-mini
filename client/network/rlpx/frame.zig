@@ -34,9 +34,9 @@ pub inline fn decodeFrameSize24(bytes: [3]u8) usize {
     return @as(usize, @intCast(v));
 }
 
-// TODO(rlpx): Add an integration test at the header/decoder layer that rejects
-// oversized frames (> 24-bit) before decode/dispatch. This guards invariants
-// and prevents downstream allocations. Not implemented here by design.
+// NOTE(rlpx): Integration test plan — Add a header/decoder-level test ensuring
+// nodes reject any incoming frame with size > u24::max prior to decryption or
+// allocation. This hardens invariants and prevents resource waste. (Future work.)
 
 test "calculate padding returns zero for aligned sizes" {
     try std.testing.expectEqual(@as(usize, 0), calculate_padding(0));
