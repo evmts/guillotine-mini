@@ -69,7 +69,13 @@ export const DbNameSchema = Schema.Union(
 export type DbName = Schema.Schema.Type<typeof DbNameSchema>;
 
 /** Column DB name union derived from the column DB name constants. */
-export type ColumnDbName = (typeof ColumnDbNames)[keyof typeof ColumnDbNames];
+export const ColumnDbNameSchema = Schema.Union(
+  Schema.Literal(ColumnDbNames.receipts),
+  Schema.Literal(ColumnDbNames.blobTransactions),
+);
+
+/** Column DB name union derived from the column DB name schema. */
+export type ColumnDbName = Schema.Schema.Type<typeof ColumnDbNameSchema>;
 
 /** Standard DB name union derived from the standard DB name constants. */
 export type StandardDbName =

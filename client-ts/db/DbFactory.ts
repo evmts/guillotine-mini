@@ -2,17 +2,19 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Path from "node:path";
 import {
   Db,
   DbMemoryLive,
   DbRocksStubLive,
   type DbConfig,
-  type DbError,
   type DbService,
 } from "./Db";
+import { DbError } from "./DbError";
 import {
   BlobTxsColumns,
+  ColumnDbNameSchema,
   DbNames,
   ReceiptsColumns,
   type BlobTxsColumn,
@@ -33,15 +35,33 @@ export type ColumnDbServices = {
   readonly [DbNames.blobTransactions]: ColumnsDbService<BlobTxsColumn>;
 };
 
-const receiptsColumns = Object.values(
-  ReceiptsColumns,
-) as ReadonlyArray<ReceiptsColumn>;
-const blobTxsColumns = Object.values(
-  BlobTxsColumns,
-) as ReadonlyArray<BlobTxsColumn>;
-const columnSpecs: Record<ColumnDbName, ReadonlyArray<string>> = {
-  [DbNames.receipts]: receiptsColumns,
-  [DbNames.blobTransactions]: blobTxsColumns,
+const receiptsColumns = [
+  ReceiptsColumns.Default,
+  ReceiptsColumns.Transactions,
+  ReceiptsColumns.Blocks,
+] as const satisfies ReadonlyArray<ReceiptsColumn>;
+
+const blobTxsColumns = [
+  BlobTxsColumns.FullBlobTxs,
+  BlobTxsColumns.LightBlobTxs,
+  BlobTxsColumns.ProcessedTxs,
+] as const satisfies ReadonlyArray<BlobTxsColumn>;
+
+type CreateColumnsDb = {
+  (config: {
+    readonly name: typeof DbNames.receipts;
+  }): Effect.Effect<
+    ColumnDbServices[typeof DbNames.receipts],
+    DbError,
+    Scope.Scope
+  >;
+  (config: {
+    readonly name: typeof DbNames.blobTransactions;
+  }): Effect.Effect<
+    ColumnDbServices[typeof DbNames.blobTransactions],
+    DbError,
+    Scope.Scope
+  >;
 };
 
 /** Factory service for constructing DB backends from config. */
@@ -50,9 +70,7 @@ export interface DbFactoryService {
     config: DbConfig,
   ) => Effect.Effect<DbService, DbError, Scope.Scope>;
   readonly getFullDbPath: (config: DbConfig) => string;
-  readonly createColumnsDb: <Name extends ColumnDbName>(config: {
-    readonly name: Name;
-  }) => Effect.Effect<ColumnDbServices[Name], DbError, Scope.Scope>;
+  readonly createColumnsDb: CreateColumnsDb;
 }
 
 /** Context tag for DB factory implementations. */
@@ -64,37 +82,111 @@ export class DbFactory extends Context.Tag("DbFactory")<
 const buildDb = (layer: Layer.Layer<Db, DbError>) =>
   Layer.build(layer).pipe(Effect.map((context) => Context.get(context, Db)));
 
-const buildDbRecord = <Key extends string>(
-  keys: ReadonlyArray<Key>,
-  build: (key: Key) => Effect.Effect<DbService, DbError, Scope.Scope>,
-) =>
-  Effect.gen(function* () {
-    const entries: Array<readonly [Key, DbService]> = [];
-
-    for (const key of keys) {
-      const db = yield* build(key);
-      entries.push([key, db]);
-    }
-
-    return Object.fromEntries(entries) as Record<Key, DbService>;
+const validateColumnDbName = (
+  name: unknown,
+): Effect.Effect<ColumnDbName, DbError> =>
+  Effect.try({
+    try: () => Schema.decodeUnknownSync(ColumnDbNameSchema)(name),
+    catch: (cause) =>
+      new DbError({
+        message: `Invalid column DB name: ${String(name)}`,
+        cause,
+      }),
   });
 
-const buildColumnsDb = <Name extends ColumnDbName>(
-  config: { readonly name: Name },
-  buildDbByName: (name: Name) => Effect.Effect<DbService, DbError, Scope.Scope>,
-): Effect.Effect<ColumnDbServices[Name], DbError, Scope.Scope> =>
+const buildReceiptsColumnsDb = (
+  buildDbByName: (
+    name: typeof DbNames.receipts,
+  ) => Effect.Effect<DbService, DbError, Scope.Scope>,
+): Effect.Effect<
+  ColumnDbServices[typeof DbNames.receipts],
+  DbError,
+  Scope.Scope
+> =>
   Effect.gen(function* () {
-    const columns = columnSpecs[config.name];
-    const columnDbs = yield* buildDbRecord(columns, () =>
-      buildDbByName(config.name),
-    );
+    const defaultDb = yield* buildDbByName(DbNames.receipts);
+    const transactionsDb = yield* buildDbByName(DbNames.receipts);
+    const blocksDb = yield* buildDbByName(DbNames.receipts);
 
     return {
-      name: config.name,
-      columns,
-      getColumnDb: (column: (typeof columns)[number]) => columnDbs[column],
-    } as ColumnDbServices[Name];
+      name: DbNames.receipts,
+      columns: receiptsColumns,
+      getColumnDb: (column: ReceiptsColumn) => {
+        switch (column) {
+          case ReceiptsColumns.Default:
+            return defaultDb;
+          case ReceiptsColumns.Transactions:
+            return transactionsDb;
+          case ReceiptsColumns.Blocks:
+            return blocksDb;
+        }
+      },
+    } satisfies ColumnDbServices[typeof DbNames.receipts];
   });
+
+const buildBlobTxsColumnsDb = (
+  buildDbByName: (
+    name: typeof DbNames.blobTransactions,
+  ) => Effect.Effect<DbService, DbError, Scope.Scope>,
+): Effect.Effect<
+  ColumnDbServices[typeof DbNames.blobTransactions],
+  DbError,
+  Scope.Scope
+> =>
+  Effect.gen(function* () {
+    const fullBlobTxsDb = yield* buildDbByName(DbNames.blobTransactions);
+    const lightBlobTxsDb = yield* buildDbByName(DbNames.blobTransactions);
+    const processedTxsDb = yield* buildDbByName(DbNames.blobTransactions);
+
+    return {
+      name: DbNames.blobTransactions,
+      columns: blobTxsColumns,
+      getColumnDb: (column: BlobTxsColumn) => {
+        switch (column) {
+          case BlobTxsColumns.FullBlobTxs:
+            return fullBlobTxsDb;
+          case BlobTxsColumns.LightBlobTxs:
+            return lightBlobTxsDb;
+          case BlobTxsColumns.ProcessedTxs:
+            return processedTxsDb;
+        }
+      },
+    } satisfies ColumnDbServices[typeof DbNames.blobTransactions];
+  });
+
+const makeCreateColumnsDb = (
+  buildDbByName: (
+    name: ColumnDbName,
+  ) => Effect.Effect<DbService, DbError, Scope.Scope>,
+): CreateColumnsDb => {
+  function createColumnsDb(config: {
+    readonly name: typeof DbNames.receipts;
+  }): Effect.Effect<
+    ColumnDbServices[typeof DbNames.receipts],
+    DbError,
+    Scope.Scope
+  >;
+  function createColumnsDb(config: {
+    readonly name: typeof DbNames.blobTransactions;
+  }): Effect.Effect<
+    ColumnDbServices[typeof DbNames.blobTransactions],
+    DbError,
+    Scope.Scope
+  >;
+  function createColumnsDb(config: { readonly name: ColumnDbName }) {
+    return Effect.gen(function* () {
+      const validatedName = yield* validateColumnDbName(config.name);
+
+      if (validatedName === DbNames.receipts) {
+        return yield* buildReceiptsColumnsDb(buildDbByName);
+      }
+
+      return yield* buildBlobTxsColumnsDb(buildDbByName);
+    });
+  }
+
+  return createColumnsDb;
+};
 
 const isExplicitlyRelativePath = (value: string) =>
   value.startsWith("./") ||
@@ -124,17 +216,17 @@ const resolveDbPath = (config: DbConfig): string => {
 const memoryDbFactory = {
   createDb: (config: DbConfig) => buildDb(DbMemoryLive(config)),
   getFullDbPath: (config: DbConfig) => resolveDbPath(config),
-  createColumnsDb: <Name extends ColumnDbName>(config: {
-    readonly name: Name;
-  }) => buildColumnsDb(config, (name) => buildDb(DbMemoryLive({ name }))),
+  createColumnsDb: makeCreateColumnsDb((name) =>
+    buildDb(DbMemoryLive({ name })),
+  ),
 } satisfies DbFactoryService;
 
 const rocksStubDbFactory = {
   createDb: (config: DbConfig) => buildDb(DbRocksStubLive(config)),
   getFullDbPath: (config: DbConfig) => resolveDbPath(config),
-  createColumnsDb: <Name extends ColumnDbName>(config: {
-    readonly name: Name;
-  }) => buildColumnsDb(config, (name) => buildDb(DbRocksStubLive({ name }))),
+  createColumnsDb: makeCreateColumnsDb((name) =>
+    buildDb(DbRocksStubLive({ name })),
+  ),
 } satisfies DbFactoryService;
 
 /** Memory-backed DB factory layer. */
@@ -169,6 +261,28 @@ export const getFullDbPath = (config: DbConfig) =>
   withDbFactory((factory) => Effect.succeed(factory.getFullDbPath(config)));
 
 /** Create a column DB from the configured factory. */
-export const createColumnsDb = <Name extends ColumnDbName>(config: {
-  readonly name: Name;
-}) => withDbFactory((factory) => factory.createColumnsDb(config));
+export function createColumnsDb(config: {
+  readonly name: typeof DbNames.receipts;
+}): Effect.Effect<
+  ColumnDbServices[typeof DbNames.receipts],
+  DbError,
+  Scope.Scope | DbFactory
+>;
+export function createColumnsDb(config: {
+  readonly name: typeof DbNames.blobTransactions;
+}): Effect.Effect<
+  ColumnDbServices[typeof DbNames.blobTransactions],
+  DbError,
+  Scope.Scope | DbFactory
+>;
+export function createColumnsDb(config: { readonly name: ColumnDbName }) {
+  if (config.name === DbNames.receipts) {
+    return withDbFactory((factory) =>
+      factory.createColumnsDb({ name: DbNames.receipts }),
+    );
+  }
+
+  return withDbFactory((factory) =>
+    factory.createColumnsDb({ name: DbNames.blobTransactions }),
+  );
+}
