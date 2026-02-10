@@ -72,6 +72,36 @@ const emptyAccount: AccountState.AccountStateType = {
   __tag: "AccountState",
 };
 
+const baseLog: Receipt.LogType = {
+  address: Address.zero(),
+  topics: [Hash.ZERO],
+  data: new Uint8Array([0x01]),
+  blockNumber: 0n,
+  transactionHash: Hash.ZERO,
+  transactionIndex: 0,
+  blockHash: Hash.ZERO,
+  logIndex: 0,
+  removed: false,
+};
+
+const baseReceiptFields = {
+  transactionHash: Hash.ZERO,
+  blockNumber: 0n,
+  blockHash: Hash.ZERO,
+  transactionIndex: 0,
+  from: Address.zero(),
+  to: Address.zero(),
+  cumulativeGasUsed: 1n,
+  gasUsed: 1n,
+  effectiveGasPrice: 0n,
+  contractAddress: null,
+  logs: [baseLog],
+  logsBloom: new Uint8Array(256),
+};
+
+const encodeLogs = (logs: readonly Receipt.LogType[]) =>
+  logs.map((log) => [log.address, Array.from(log.topics), log.data]);
+
 describe("trie account value encoding", () => {
   it.effect("encodes empty accounts with minimal integer bytes", () =>
     Effect.gen(function* () {
@@ -154,30 +184,7 @@ describe("trie value encoding", () => {
   it.effect("encodes receipts as RLP lists", () =>
     Effect.gen(function* () {
       const receipt: Receipt.ReceiptType = {
-        transactionHash: Hash.ZERO,
-        blockNumber: 0n,
-        blockHash: Hash.ZERO,
-        transactionIndex: 0,
-        from: Address.zero(),
-        to: Address.zero(),
-        cumulativeGasUsed: 1n,
-        gasUsed: 1n,
-        effectiveGasPrice: 0n,
-        contractAddress: null,
-        logs: [
-          {
-            address: Address.zero(),
-            topics: [Hash.ZERO],
-            data: new Uint8Array([0x01]),
-            blockNumber: 0n,
-            transactionHash: Hash.ZERO,
-            transactionIndex: 0,
-            blockHash: Hash.ZERO,
-            logIndex: 0,
-            removed: false,
-          },
-        ],
-        logsBloom: new Uint8Array(256),
+        ...baseReceiptFields,
         root: Hash.ZERO,
         type: "legacy",
       };
@@ -187,15 +194,68 @@ describe("trie value encoding", () => {
         root,
         bytesFromHex("0x01"),
         receipt.logsBloom,
-        receipt.logs.map((log) => [
-          log.address,
-          Array.from(log.topics),
-          log.data,
-        ]),
+        encodeLogs(receipt.logs),
       ]);
       const encoded = yield* encodeTrieValue(receipt);
 
       assert.isTrue(Bytes.equals(encoded, bytesFromUint8Array(expected)));
+    }),
+  );
+
+  it.effect("encodes status-based receipts without state roots", () =>
+    Effect.gen(function* () {
+      const receipt: Receipt.ReceiptType = {
+        ...baseReceiptFields,
+        status: 1,
+        type: "legacy",
+      };
+
+      const expected = yield* encodeRlp([
+        bytesFromHex("0x01"),
+        bytesFromHex("0x01"),
+        receipt.logsBloom,
+        encodeLogs(receipt.logs),
+      ]);
+      const encoded = yield* encodeTrieValue(receipt);
+
+      assert.isTrue(Bytes.equals(encoded, bytesFromUint8Array(expected)));
+    }),
+  );
+
+  it.effect("prefixes typed receipts with the transaction type byte", () =>
+    Effect.gen(function* () {
+      const receipt: Receipt.ReceiptType = {
+        ...baseReceiptFields,
+        status: 1,
+        type: "eip1559",
+      };
+
+      const payload = yield* encodeRlp([
+        bytesFromHex("0x01"),
+        bytesFromHex("0x01"),
+        receipt.logsBloom,
+        encodeLogs(receipt.logs),
+      ]);
+      const expected = new Uint8Array(payload.length + 1);
+      expected[0] = 0x02;
+      expected.set(payload, 1);
+
+      const encoded = yield* encodeTrieValue(receipt);
+
+      assert.isTrue(Bytes.equals(encoded, bytesFromUint8Array(expected)));
+    }),
+  );
+
+  it.effect("fails on unsupported trie values", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.either(
+        encodeTrieValue({} as unknown as Parameters<typeof encodeTrieValue>[0]),
+      );
+
+      assert.isTrue(Either.isLeft(result));
+      if (Either.isLeft(result)) {
+        assert.isTrue(result.left instanceof TrieValueEncodingError);
+      }
     }),
   );
 });
