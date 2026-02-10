@@ -2,23 +2,23 @@ import { ToolLoopAgent as Agent, stepCountIs } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { CodexAgent } from "smithers";
 import { read, grep, bash } from "smithers/tools";
-import { WHAT_WE_ARE_DOING } from "./claude";
+import { getInstructions } from "./claude";
+import type { Target } from "../targets";
+import { ZIG_TARGET } from "../targets";
 
 const CODEX_MODEL = process.env.CODEX_MODEL ?? "gpt-5.2-codex";
 const USE_CLI = process.env.USE_CLI_AGENTS !== "0" && process.env.USE_CLI_AGENTS !== "false";
+const REPO_ROOT = new URL("../../..", import.meta.url).pathname.replace(/\/$/, "");
 
-const CODEX_INSTRUCTIONS = `${WHAT_WE_ARE_DOING}
+function getCodexInstructions(target: Target): string {
+  const base = getInstructions(target);
+  const checklist = target.reviewChecklist.map((item, i) => `${i + 1}. ${item}`).join("\n");
 
-You are a ruthless, meticulous code reviewer for a high-performance Ethereum execution client in Zig.
+  return `${base}
+
+You are a ruthless, meticulous code reviewer for a high-performance Ethereum execution client in ${target.id === "effect" ? "Effect.ts" : "Zig"}.
 You review code for:
-1. Correctness against Ethereum specs (execution-specs/, EIPs/)
-2. Architecture consistency with Nethermind (nethermind/)
-3. Proper use of Voltaire primitives — flag any custom type that duplicates what Voltaire provides
-4. Proper use of comptime dependency injection
-5. Error handling — NEVER allow catch {} or silent error suppression
-6. Performance — this must be faster than Nethermind (C#), every allocation matters
-7. Test coverage — every public function must have tests
-8. Security — no secret leaks, no undefined behavior
+${checklist}
 You are EXTREMELY strict. If something can be improved, it MUST be flagged.
 
 CRITICAL OUTPUT REQUIREMENT:
@@ -30,23 +30,28 @@ Example:
 \`\`\`
 This JSON output is REQUIRED. The workflow cannot continue without it.
 ALWAYS include the JSON at the END of your final response.`;
+}
 
-const apiAgent = new Agent({
-  model: openai(CODEX_MODEL),
-  tools: { read, grep, bash },
-  instructions: CODEX_INSTRUCTIONS,
-  stopWhen: stepCountIs(100),
-  maxOutputTokens: 8192,
-});
+export function makeCodex(target: Target) {
+  const instructions = getCodexInstructions(target);
 
-const REPO_ROOT = new URL("../../..", import.meta.url).pathname.replace(/\/$/, "");
+  const apiAgent = new Agent({
+    model: openai(CODEX_MODEL),
+    tools: { read, grep, bash },
+    instructions,
+    stopWhen: stepCountIs(100),
+    maxOutputTokens: 8192,
+  });
 
-const cliAgent = new CodexAgent({
-  model: CODEX_MODEL,
-  systemPrompt: CODEX_INSTRUCTIONS,
-  yolo: true,
-  cwd: REPO_ROOT,
-  config: { model_reasoning_effort: "xhigh" },
-});
+  const cliAgent = new CodexAgent({
+    model: CODEX_MODEL,
+    systemPrompt: instructions,
+    yolo: true,
+    cwd: REPO_ROOT,
+    config: { model_reasoning_effort: "xhigh" },
+  });
 
-export const codex = USE_CLI ? cliAgent : apiAgent;
+  return USE_CLI ? cliAgent : apiAgent;
+}
+
+export const codex = makeCodex(ZIG_TARGET);

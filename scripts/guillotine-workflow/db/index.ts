@@ -39,7 +39,8 @@ export const schema = {
   final_review: finalReviewTable,
 };
 
-export const db = drizzle("./guillotine.db", { schema });
+const dbTarget = process.env.WORKFLOW_TARGET ?? "zig";
+export const db = drizzle(`./${dbTarget}-guillotine.db`, { schema });
 
 (db as any).$client.exec(`
   CREATE TABLE IF NOT EXISTS input (

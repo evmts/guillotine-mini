@@ -11,7 +11,7 @@ export type JsonRpcErrorDefinition = Readonly<{
   source: JsonRpcErrorSource;
 }>;
 
-export const JsonRpcErrorCatalog = {
+const JsonRpcErrorCatalogEip1474 = {
   ParseError: {
     code: -32700,
     message: "Parse error",
@@ -72,6 +72,9 @@ export const JsonRpcErrorCatalog = {
     message: "JSON-RPC version not supported",
     source: "EIP-1474",
   },
+} as const satisfies Record<string, JsonRpcErrorDefinition>;
+
+const JsonRpcErrorCatalogNethermind = {
   None: {
     code: 0,
     message: "No error",
@@ -82,12 +85,12 @@ export const JsonRpcErrorCatalog = {
     message: "Execution reverted",
     source: "Nethermind",
   },
-  ResourceNotFoundNethermind: {
+  ResourceNotFound: {
     code: -32000,
     message: "Resource not found",
     source: "Nethermind",
   },
-  TransactionRejectedNethermind: {
+  TransactionRejected: {
     code: -32010,
     message: "Transaction rejected",
     source: "Nethermind",
@@ -224,14 +227,29 @@ export const JsonRpcErrorCatalog = {
   },
 } as const satisfies Record<string, JsonRpcErrorDefinition>;
 
-export type JsonRpcErrorName = keyof typeof JsonRpcErrorCatalog;
-export type JsonRpcErrorCode =
-  (typeof JsonRpcErrorCatalog)[JsonRpcErrorName]["code"];
+export const JsonRpcErrorCatalog = {
+  "EIP-1474": JsonRpcErrorCatalogEip1474,
+  Nethermind: JsonRpcErrorCatalogNethermind,
+} as const satisfies Record<
+  JsonRpcErrorSource,
+  Record<string, JsonRpcErrorDefinition>
+>;
+
+type JsonRpcErrorCatalogBySource = typeof JsonRpcErrorCatalog;
+
+export type JsonRpcErrorNameBySource = {
+  [Source in JsonRpcErrorSource]: keyof JsonRpcErrorCatalogBySource[Source];
+};
+
+export type JsonRpcErrorName = JsonRpcErrorNameBySource[JsonRpcErrorSource];
+export type JsonRpcErrorCode = JsonRpcErrorDefinition["code"];
 
 const defaultMessageByCode = new Map<number, string>();
-for (const definition of Object.values(JsonRpcErrorCatalog)) {
-  if (!defaultMessageByCode.has(definition.code)) {
-    defaultMessageByCode.set(definition.code, definition.message);
+for (const catalog of Object.values(JsonRpcErrorCatalog)) {
+  for (const definition of Object.values(catalog)) {
+    if (!defaultMessageByCode.has(definition.code)) {
+      defaultMessageByCode.set(definition.code, definition.message);
+    }
   }
 }
 
@@ -239,7 +257,10 @@ const lookupMessageForCode = (code: number) =>
   Option.fromNullable(defaultMessageByCode.get(code));
 
 export interface JsonRpcErrorRegistryService {
-  readonly byName: (name: JsonRpcErrorName) => JsonRpcErrorDefinition;
+  readonly byName: <Source extends JsonRpcErrorSource>(
+    source: Source,
+    name: JsonRpcErrorNameBySource[Source],
+  ) => JsonRpcErrorDefinition;
   readonly messageForCode: (code: number) => Option.Option<string>;
 }
 
@@ -250,7 +271,7 @@ export class JsonRpcErrorRegistry extends Context.Tag("JsonRpcErrorRegistry")<
 
 const makeJsonRpcErrorRegistry = () =>
   ({
-    byName: (name) => JsonRpcErrorCatalog[name],
+    byName: (source, name) => JsonRpcErrorCatalog[source][name],
     messageForCode: (code) => lookupMessageForCode(code),
   }) satisfies JsonRpcErrorRegistryService;
 
@@ -259,10 +280,13 @@ export const JsonRpcErrorRegistryLive = Layer.succeed(
   makeJsonRpcErrorRegistry(),
 );
 
-export const jsonRpcErrorByName = (name: JsonRpcErrorName) =>
+export const jsonRpcErrorByName = <Source extends JsonRpcErrorSource>(
+  source: Source,
+  name: JsonRpcErrorNameBySource[Source],
+) =>
   Effect.gen(function* () {
     const registry = yield* JsonRpcErrorRegistry;
-    return registry.byName(name);
+    return registry.byName(source, name);
   });
 
 export const jsonRpcErrorMessageForCode = (code: number) =>

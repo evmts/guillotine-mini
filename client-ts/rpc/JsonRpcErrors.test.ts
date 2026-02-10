@@ -33,8 +33,8 @@ const expectedEip1474: ExpectedMap = {
 const expectedNethermind: ExpectedMap = {
   None: { code: 0, message: "No error" },
   ExecutionReverted: { code: 3, message: "Execution reverted" },
-  ResourceNotFoundNethermind: { code: -32000, message: "Resource not found" },
-  TransactionRejectedNethermind: {
+  ResourceNotFound: { code: -32000, message: "Resource not found" },
+  TransactionRejected: {
     code: -32010,
     message: "Transaction rejected",
   },
@@ -95,7 +95,9 @@ describe("JsonRpcErrors", () => {
     Effect.gen(function* () {
       for (const [name, expected] of entries(expectedEip1474)) {
         const actual =
-          JsonRpcErrorCatalog[name as keyof typeof JsonRpcErrorCatalog];
+          JsonRpcErrorCatalog["EIP-1474"][
+            name as keyof (typeof JsonRpcErrorCatalog)["EIP-1474"]
+          ];
         assert.strictEqual(actual.code, expected.code);
         assert.strictEqual(actual.message, expected.message);
         assert.strictEqual(actual.source, "EIP-1474");
@@ -107,7 +109,9 @@ describe("JsonRpcErrors", () => {
     Effect.gen(function* () {
       for (const [name, expected] of entries(expectedNethermind)) {
         const actual =
-          JsonRpcErrorCatalog[name as keyof typeof JsonRpcErrorCatalog];
+          JsonRpcErrorCatalog.Nethermind[
+            name as keyof typeof JsonRpcErrorCatalog.Nethermind
+          ];
         assert.strictEqual(actual.code, expected.code);
         assert.strictEqual(actual.message, expected.message);
         assert.strictEqual(actual.source, "Nethermind");
@@ -117,7 +121,7 @@ describe("JsonRpcErrors", () => {
 
   it.effect("resolves registry lookups", () =>
     Effect.gen(function* () {
-      const parseError = yield* jsonRpcErrorByName("ParseError");
+      const parseError = yield* jsonRpcErrorByName("EIP-1474", "ParseError");
       assert.strictEqual(parseError.code, -32700);
       assert.strictEqual(parseError.message, "Parse error");
 

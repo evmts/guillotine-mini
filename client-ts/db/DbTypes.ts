@@ -23,6 +23,29 @@ export const DbNames = {
   peers: "peers",
 } as const;
 
+/** DB names backed by column databases in Nethermind. */
+export const ColumnDbNames = {
+  receipts: DbNames.receipts,
+  blobTransactions: DbNames.blobTransactions,
+} as const;
+
+/** DB names backed by standard key/value stores. */
+export const StandardDbNames = {
+  storage: DbNames.storage,
+  state: DbNames.state,
+  code: DbNames.code,
+  blocks: DbNames.blocks,
+  headers: DbNames.headers,
+  blockNumbers: DbNames.blockNumbers,
+  blockInfos: DbNames.blockInfos,
+  badBlocks: DbNames.badBlocks,
+  bloom: DbNames.bloom,
+  metadata: DbNames.metadata,
+  discoveryNodes: DbNames.discoveryNodes,
+  discoveryV5Nodes: DbNames.discoveryV5Nodes,
+  peers: DbNames.peers,
+} as const;
+
 /** Schema for validating DB names at boundaries. */
 export const DbNameSchema = Schema.Union(
   Schema.Literal(DbNames.storage),
@@ -45,10 +68,39 @@ export const DbNameSchema = Schema.Union(
 /** DB name union derived from the DB name schema. */
 export type DbName = Schema.Schema.Type<typeof DbNameSchema>;
 
+/** Column DB name union derived from the column DB name constants. */
+export type ColumnDbName = (typeof ColumnDbNames)[keyof typeof ColumnDbNames];
+
+/** Standard DB name union derived from the standard DB name constants. */
+export type StandardDbName =
+  (typeof StandardDbNames)[keyof typeof StandardDbNames];
+
 /** Configuration for a DB layer. */
 export interface DbConfig {
   readonly name: DbName;
 }
+
+/** Receipt DB columns (Nethermind ReceiptsColumns parity). */
+export const ReceiptsColumns = {
+  default: "default",
+  transactions: "transactions",
+  blocks: "blocks",
+} as const;
+
+/** Receipt DB column name union. */
+export type ReceiptsColumn =
+  (typeof ReceiptsColumns)[keyof typeof ReceiptsColumns];
+
+/** Blob transaction DB columns (Nethermind BlobTxsColumns parity). */
+export const BlobTxsColumns = {
+  fullBlobTxs: "fullBlobTxs",
+  lightBlobTxs: "lightBlobTxs",
+  processedTxs: "processedTxs",
+} as const;
+
+/** Blob transaction DB column name union. */
+export type BlobTxsColumn =
+  (typeof BlobTxsColumns)[keyof typeof BlobTxsColumns];
 
 /** Schema for validating DB configuration at boundaries. */
 export const DbConfigSchema = Schema.Struct({

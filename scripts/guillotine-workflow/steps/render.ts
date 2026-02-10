@@ -2,11 +2,24 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { MDXContent } from "mdx/types";
 
+type PromptComponent = MDXContent | ((props: Record<string, any>) => string);
+
 export function render(
-  Component: MDXContent,
+  Component: PromptComponent,
   props: Record<string, any> = {},
 ): string {
-  const html = renderToStaticMarkup(React.createElement(Component, props));
+  // Plain TS function — just call it
+  if (typeof Component === "function" && !Component.prototype?.isReactComponent) {
+    try {
+      const result = Component(props);
+      if (typeof result === "string") return result.trim();
+    } catch {
+      // Fall through to MDX rendering
+    }
+  }
+
+  // MDX component — render via React
+  const html = renderToStaticMarkup(React.createElement(Component as MDXContent, props));
   return html
     .replace(/<[^>]+>/g, "")
     .replace(/&amp;/g, "&")
