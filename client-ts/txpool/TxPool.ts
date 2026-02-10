@@ -562,6 +562,26 @@ const minDefinedBigInt = (
   return left < right ? left : right;
 };
 
+type TxPoolFilterInput = {
+  readonly parsed: Transaction.Any;
+  readonly isBlob: boolean;
+  readonly currentFeePerBlobGas: bigint;
+  readonly effectiveGasLimit: bigint | null;
+};
+
+type TxPoolPostHashFilterInput = TxPoolFilterInput & {
+  readonly size: number;
+};
+
+type IncomingTxFilter<Ctx> = (
+  input: Ctx,
+) => Effect.Effect<void, TxPoolValidationError>;
+
+const runIncomingTxFilters = <Ctx>(
+  filters: ReadonlyArray<IncomingTxFilter<Ctx>>,
+  input: Ctx,
+) => Effect.forEach(filters, (filter) => filter(input), { discard: true });
+
 const makeTxPool = (config: TxPoolConfigInput) =>
   Effect.gen(function* () {
     const validatedConfig = yield* decodeConfig(config);
@@ -599,48 +619,121 @@ const makeTxPool = (config: TxPoolConfigInput) =>
         ),
       );
 
+    const notSupportedTxFilter: IncomingTxFilter<TxPoolFilterInput> = ({
+      isBlob,
+    }) => {
+      if (
+        isBlob &&
+        validatedConfig.blobsSupport === BlobsSupportMode.Disabled
+      ) {
+        return Effect.fail(
+          new TxPoolBlobSupportDisabledError({
+            message: "Blob transactions are disabled",
+          }),
+        );
+      }
+      return Effect.void;
+    };
+
+    const priorityFeeTooLowFilter: IncomingTxFilter<TxPoolFilterInput> = ({
+      isBlob,
+      parsed,
+    }) => {
+      if (
+        isBlob &&
+        parsed.maxPriorityFeePerGas < validatedConfig.minBlobTxPriorityFee
+      ) {
+        return Effect.fail(
+          new TxPoolPriorityFeeTooLowError({
+            minPriorityFeePerGas: validatedConfig.minBlobTxPriorityFee,
+            maxPriorityFeePerGas: parsed.maxPriorityFeePerGas,
+          }),
+        );
+      }
+      return Effect.void;
+    };
+
+    const blobBaseFeeFilter: IncomingTxFilter<TxPoolFilterInput> = ({
+      isBlob,
+      parsed,
+      currentFeePerBlobGas,
+    }) => {
+      if (
+        isBlob &&
+        validatedConfig.currentBlobBaseFeeRequired &&
+        parsed.maxFeePerBlobGas < currentFeePerBlobGas
+      ) {
+        return Effect.fail(
+          new TxPoolBlobFeeCapTooLowError({
+            currentFeePerBlobGas,
+            maxFeePerBlobGas: parsed.maxFeePerBlobGas,
+          }),
+        );
+      }
+      return Effect.void;
+    };
+
+    const gasLimitTxFilter: IncomingTxFilter<TxPoolFilterInput> = ({
+      parsed,
+      effectiveGasLimit,
+    }) => {
+      if (effectiveGasLimit !== null && parsed.gasLimit > effectiveGasLimit) {
+        return Effect.fail(
+          new TxPoolGasLimitExceededError({
+            gasLimit: parsed.gasLimit,
+            configuredLimit: effectiveGasLimit,
+          }),
+        );
+      }
+      return Effect.void;
+    };
+
+    const sizeTxFilter: IncomingTxFilter<TxPoolPostHashFilterInput> = ({
+      isBlob,
+      size,
+    }) => {
+      if (isBlob && validatedConfig.maxBlobTxSize !== null) {
+        if (size > validatedConfig.maxBlobTxSize) {
+          return Effect.fail(
+            new TxPoolMaxBlobTxSizeExceededError({
+              size,
+              maxSize: validatedConfig.maxBlobTxSize,
+            }),
+          );
+        }
+      }
+
+      if (!isBlob && validatedConfig.maxTxSize !== null) {
+        if (size > validatedConfig.maxTxSize) {
+          return Effect.fail(
+            new TxPoolMaxTxSizeExceededError({
+              size,
+              maxSize: validatedConfig.maxTxSize,
+            }),
+          );
+        }
+      }
+
+      return Effect.void;
+    };
+
+    const preHashFilters: ReadonlyArray<IncomingTxFilter<TxPoolFilterInput>> = [
+      notSupportedTxFilter,
+      priorityFeeTooLowFilter,
+      blobBaseFeeFilter,
+      gasLimitTxFilter,
+    ];
+
+    const postHashFilters: ReadonlyArray<
+      IncomingTxFilter<TxPoolPostHashFilterInput>
+    > = [sizeTxFilter];
+
     const validateTransaction = (tx: Transaction.Any) =>
       Effect.gen(function* () {
         const parsed = yield* decodeTransaction(tx);
         const isBlob = Transaction.isEIP4844(parsed);
         const currentBlockGasLimit = yield* headInfo.getBlockGasLimit();
-
-        if (
-          isBlob &&
-          validatedConfig.blobsSupport === BlobsSupportMode.Disabled
-        ) {
-          return yield* Effect.fail(
-            new TxPoolBlobSupportDisabledError({
-              message: "Blob transactions are disabled",
-            }),
-          );
-        }
-
-        if (
-          isBlob &&
-          parsed.maxPriorityFeePerGas < validatedConfig.minBlobTxPriorityFee
-        ) {
-          return yield* Effect.fail(
-            new TxPoolPriorityFeeTooLowError({
-              minPriorityFeePerGas: validatedConfig.minBlobTxPriorityFee,
-              maxPriorityFeePerGas: parsed.maxPriorityFeePerGas,
-            }),
-          );
-        }
-
-        if (isBlob && validatedConfig.currentBlobBaseFeeRequired) {
-          const currentFeePerBlobGas =
-            yield* headInfo.getCurrentFeePerBlobGas();
-          if (parsed.maxFeePerBlobGas < currentFeePerBlobGas) {
-            return yield* Effect.fail(
-              new TxPoolBlobFeeCapTooLowError({
-                currentFeePerBlobGas,
-                maxFeePerBlobGas: parsed.maxFeePerBlobGas,
-              }),
-            );
-          }
-        }
-
+        const currentFeePerBlobGas = yield* headInfo.getCurrentFeePerBlobGas();
         const configuredGasLimit =
           validatedConfig.gasLimit === null
             ? null
@@ -649,41 +742,21 @@ const makeTxPool = (config: TxPoolConfigInput) =>
           currentBlockGasLimit,
           configuredGasLimit,
         );
-        if (effectiveGasLimit !== null) {
-          if (parsed.gasLimit > effectiveGasLimit) {
-            return yield* Effect.fail(
-              new TxPoolGasLimitExceededError({
-                gasLimit: parsed.gasLimit,
-                configuredLimit: effectiveGasLimit,
-              }),
-            );
-          }
-        }
+        const filterInput = {
+          parsed,
+          isBlob,
+          currentFeePerBlobGas,
+          effectiveGasLimit,
+        } satisfies TxPoolFilterInput;
+
+        yield* runIncomingTxFilters(preHashFilters, filterInput);
 
         const encoded = yield* encodeTransaction(parsed);
         const size = encoded.length;
-
-        if (isBlob && validatedConfig.maxBlobTxSize !== null) {
-          if (size > validatedConfig.maxBlobTxSize) {
-            return yield* Effect.fail(
-              new TxPoolMaxBlobTxSizeExceededError({
-                size,
-                maxSize: validatedConfig.maxBlobTxSize,
-              }),
-            );
-          }
-        }
-
-        if (!isBlob && validatedConfig.maxTxSize !== null) {
-          if (size > validatedConfig.maxTxSize) {
-            return yield* Effect.fail(
-              new TxPoolMaxTxSizeExceededError({
-                size,
-                maxSize: validatedConfig.maxTxSize,
-              }),
-            );
-          }
-        }
+        yield* runIncomingTxFilters(postHashFilters, {
+          ...filterInput,
+          size,
+        } satisfies TxPoolPostHashFilterInput);
 
         const sender = yield* recoverSender(parsed);
         const hash = Transaction.hash(parsed);
