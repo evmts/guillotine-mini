@@ -4,6 +4,9 @@ const std = @import("std");
 pub const MacSize: usize = 16;
 pub const HeaderSize: usize = 16;
 pub const BlockSize: usize = 16;
+/// Maximum frame-size representable by the 24-bit RLPx header.
+pub const ProtocolMaxFrameSize: usize = (@as(usize, 1) << 24) - 1;
+/// Default fragmentation target for outbound frames; not a hard inbound limit.
 pub const DefaultMaxFrameSize: usize = BlockSize * 64;
 
 /// Returns the zero-fill padding required to align to the AES block size.
@@ -24,9 +27,10 @@ test "calculate padding returns remainder to block size" {
     try std.testing.expectEqual(@as(usize, 8), calculatePadding(BlockSize * 2 + 8));
 }
 
-test "frame constants mirror Nethermind defaults" {
+test "frame constants mirror Nethermind defaults and protocol limits" {
     try std.testing.expectEqual(@as(usize, 16), MacSize);
     try std.testing.expectEqual(@as(usize, 16), HeaderSize);
     try std.testing.expectEqual(@as(usize, 16), BlockSize);
     try std.testing.expectEqual(@as(usize, 1024), DefaultMaxFrameSize);
+    try std.testing.expectEqual(@as(usize, 0xFFFFFF), ProtocolMaxFrameSize);
 }
