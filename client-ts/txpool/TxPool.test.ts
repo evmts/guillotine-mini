@@ -3,7 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Either from "effect/Either";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { Address, Hex, Transaction } from "voltaire-effect/primitives";
+import { Address, Hash, Hex, Transaction } from "voltaire-effect/primitives";
 import {
   BlobsSupportMode,
   InvalidTxPoolConfigError,
@@ -12,6 +12,7 @@ import {
   TxPoolFullError,
   TxPoolLive,
   TxPoolPriorityFeeTooLowError,
+  TxPoolReplacementNotAllowedError,
   TxPoolSenderLimitExceededError,
   TxPoolTest,
   acceptTxWhenNotSynced,
@@ -64,6 +65,7 @@ const makeEip1559Tx = (
   nonce: bigint,
   maxPriorityFeePerGas = 1n,
   maxFeePerGas = 2n,
+  gasLimit = 100_000n,
 ): Transaction.EIP1559 =>
   Schema.validateSync(Eip1559Schema)({
     type: Transaction.Type.EIP1559,
@@ -71,7 +73,7 @@ const makeEip1559Tx = (
     nonce,
     maxPriorityFeePerGas,
     maxFeePerGas,
-    gasLimit: 100_000n,
+    gasLimit,
     to: encodeAddress(Address.zero()),
     value: 0n,
     data: new Uint8Array(0),
@@ -110,8 +112,11 @@ const makeSignedEip1559Tx = (
   nonce: bigint,
   maxPriorityFeePerGas = 1n,
   maxFeePerGas = 2n,
+  gasLimit = 100_000n,
 ): Transaction.EIP1559 =>
-  signDynamicFeeTx(makeEip1559Tx(nonce, maxPriorityFeePerGas, maxFeePerGas));
+  signDynamicFeeTx(
+    makeEip1559Tx(nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit),
+  );
 
 const makeSignedEip4844Tx = (
   nonce: bigint,
@@ -161,6 +166,85 @@ describe("TxPool", () => {
       const bySender = yield* getPendingTransactionsBySender(sender);
       assert.strictEqual(bySender.length, 1);
     }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
+  it.effect(
+    "rejects same-sender same-nonce replacements without required fee bump",
+    () =>
+      Effect.gen(function* () {
+        const existing = makeSignedEip1559Tx(0n, 1n, 2n);
+        const incoming = makeSignedEip1559Tx(0n, 1n, 2n, 100_001n);
+
+        const added = yield* addTransaction(existing);
+        assert.strictEqual(added._tag, "Added");
+
+        const outcome = yield* Effect.either(addTransaction(incoming));
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(
+            outcome.left instanceof TxPoolReplacementNotAllowedError,
+          );
+        }
+
+        const pending = yield* getPendingTransactions();
+        assert.strictEqual(pending.length, 1);
+        assert.strictEqual(
+          Hash.toHex(Transaction.hash(pending[0]!)),
+          Hash.toHex(Transaction.hash(existing)),
+        );
+      }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
+  it.effect(
+    "replaces same-sender same-nonce transaction when fee bump is sufficient",
+    () =>
+      Effect.gen(function* () {
+        const existing = makeSignedEip1559Tx(0n, 1n, 2n);
+        const replacement = makeSignedEip1559Tx(0n, 2n, 3n);
+
+        const first = yield* addTransaction(existing);
+        assert.strictEqual(first._tag, "Added");
+
+        const second = yield* addTransaction(replacement);
+        assert.strictEqual(second._tag, "Added");
+
+        const count = yield* getPendingCount();
+        assert.strictEqual(count, 1);
+
+        const sender = Transaction.getSender(replacement);
+        const bySender = yield* getPendingTransactionsBySender(sender);
+        assert.strictEqual(bySender.length, 1);
+        assert.strictEqual(
+          Hash.toHex(Transaction.hash(bySender[0]!)),
+          Hash.toHex(Transaction.hash(replacement)),
+        );
+      }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+  );
+
+  it.effect(
+    "allows valid same-nonce replacement when pool size and sender limit are saturated",
+    () =>
+      Effect.gen(function* () {
+        const existing = makeSignedEip1559Tx(0n, 1n, 2n);
+        const replacement = makeSignedEip1559Tx(0n, 2n, 3n);
+
+        const first = yield* addTransaction(existing);
+        assert.strictEqual(first._tag, "Added");
+
+        const second = yield* addTransaction(replacement);
+        assert.strictEqual(second._tag, "Added");
+
+        const count = yield* getPendingCount();
+        assert.strictEqual(count, 1);
+      }).pipe(
+        Effect.provide(
+          TxPoolLive({
+            ...TxPoolConfigDefaults,
+            size: 1,
+            maxPendingTxsPerSender: 1,
+          }),
+        ),
+      ),
   );
 
   it.effect("adds blob transactions and updates blob count", () =>

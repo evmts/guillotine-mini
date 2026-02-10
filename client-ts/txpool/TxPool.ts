@@ -10,6 +10,7 @@ import {
   MaxPriorityFeePerGas,
   Transaction,
 } from "voltaire-effect/primitives";
+import { compareReplacedTransactionByFee } from "./TxPoolSorter";
 
 /** Blob transaction support modes (Nethermind BlobsSupportMode parity). */
 export const BlobsSupportMode = {
@@ -242,6 +243,14 @@ export class TxPoolBlobSenderLimitExceededError extends Data.TaggedError(
   readonly maxPending: number;
 }> {}
 
+/** Error raised when a same-sender same-nonce replacement does not satisfy fee bump rules. */
+export class TxPoolReplacementNotAllowedError extends Data.TaggedError(
+  "TxPoolReplacementNotAllowedError",
+)<{
+  readonly incomingHash: Hash.HashType;
+  readonly existingHash: Hash.HashType;
+}> {}
+
 /** Validation failures for txpool admission. */
 export type TxPoolValidationError =
   | InvalidTxPoolTransactionError
@@ -258,7 +267,8 @@ export type TxPoolAddError =
   | TxPoolValidationError
   | TxPoolFullError
   | TxPoolSenderLimitExceededError
-  | TxPoolBlobSenderLimitExceededError;
+  | TxPoolBlobSenderLimitExceededError
+  | TxPoolReplacementNotAllowedError;
 
 type TxPoolAddOutcome =
   | TxPoolAddResult
@@ -475,6 +485,26 @@ const removeTransactionFromState = (
   };
 };
 
+const findCompetingTransactionBySenderAndNonce = (
+  state: TxPoolState,
+  senderKey: string,
+  nonce: bigint,
+): { readonly hashKey: string; readonly tx: Transaction.Any } | undefined => {
+  const hashes = state.senderIndex.get(senderKey);
+  if (!hashes) {
+    return undefined;
+  }
+
+  for (const hashKey of hashes) {
+    const tx = state.transactions.get(hashKey);
+    if (tx && tx.nonce === nonce) {
+      return { hashKey, tx };
+    }
+  }
+
+  return undefined;
+};
+
 const makeTxPool = (config: TxPoolConfigInput) =>
   Effect.gen(function* () {
     const validatedConfig = yield* decodeConfig(config);
@@ -630,15 +660,44 @@ const makeTxPool = (config: TxPoolConfigInput) =>
               return [{ _tag: "AlreadyKnown", hash: validated.hash }, state];
             }
 
+            const competing = findCompetingTransactionBySenderAndNonce(
+              state,
+              senderKey,
+              validated.tx.nonce,
+            );
+            const stateAfterReplacement =
+              competing === undefined
+                ? state
+                : removeTransactionFromState(state, competing.hashKey).next;
+
+            if (competing !== undefined) {
+              const comparison = compareReplacedTransactionByFee(
+                validated.tx,
+                competing.tx,
+              );
+              if (comparison !== -1) {
+                return [
+                  {
+                    _tag: "Rejected",
+                    error: new TxPoolReplacementNotAllowedError({
+                      incomingHash: validated.hash,
+                      existingHash: Transaction.hash(competing.tx),
+                    }),
+                  },
+                  state,
+                ];
+              }
+            }
+
             if (
               validatedConfig.size > 0 &&
-              state.transactions.size >= validatedConfig.size
+              stateAfterReplacement.transactions.size >= validatedConfig.size
             ) {
               return [
                 {
                   _tag: "Rejected",
                   error: new TxPoolFullError({
-                    size: state.transactions.size,
+                    size: stateAfterReplacement.transactions.size,
                     maxSize: validatedConfig.size,
                   }),
                 },
@@ -651,8 +710,9 @@ const makeTxPool = (config: TxPoolConfigInput) =>
               : validatedConfig.maxPendingTxsPerSender;
             if (pendingLimit > 0) {
               const pending = validated.isBlob
-                ? (state.blobSenderIndex.get(senderKey)?.size ?? 0)
-                : (state.senderIndex.get(senderKey)?.size ?? 0);
+                ? (stateAfterReplacement.blobSenderIndex.get(senderKey)?.size ??
+                  0)
+                : (stateAfterReplacement.senderIndex.get(senderKey)?.size ?? 0);
               if (pending >= pendingLimit) {
                 return [
                   {
@@ -675,7 +735,7 @@ const makeTxPool = (config: TxPoolConfigInput) =>
             }
 
             const nextState = addTransactionToState(
-              state,
+              stateAfterReplacement,
               validated,
               hashKey,
               senderKey,
