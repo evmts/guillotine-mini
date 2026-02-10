@@ -1,6 +1,6 @@
 /// Synchronization module entry point (phase-9-sync).
 const full = @import("full.zig");
-const manager = @import("manager.zig");
+const manager = @import("mode.zig");
 
 // -- Public API --------------------------------------------------------------
 
