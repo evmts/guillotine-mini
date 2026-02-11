@@ -102,7 +102,7 @@ pub fn canonical_hash(chain: *Chain, number: u64) ?Hash.Hash {
 /// - Never consults the fork cache; this is a pure local read.
 /// - Mirrors Nethermind usage where callers often validate canonicality using
 ///   the number→hash mapping without reading the full block.
-pub fn is_canonical_at(chain: *Chain, number: u64, hash: Hash.Hash) bool {
+fn is_canonical_at(chain: *Chain, number: u64, hash: Hash.Hash) bool {
     const canonical = canonical_hash(chain, number) orelse return false;
     return Hash.equals(&canonical, &hash);
 }
@@ -115,7 +115,7 @@ pub fn is_canonical_at(chain: *Chain, number: u64, hash: Hash.Hash) bool {
 /// - Otherwise compares `header.parent_hash` with the canonical hash recorded
 ///   at `header.number - 1` via the local number→hash map.
 /// - Never consults the fork cache and performs no allocations.
-pub fn is_parent_canonical_local(
+fn is_parent_canonical_local(
     chain: *Chain,
     header: *const BlockHeader.BlockHeader,
 ) bool {
