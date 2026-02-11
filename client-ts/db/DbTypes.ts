@@ -140,6 +140,12 @@ export const ReadFlags = {
   SkipDuplicateRead: ReadFlagsSchema.make(16),
   combine: (...flags: ReadFlags[]): ReadFlags =>
     ReadFlagsSchema.make(flags.reduce((acc, flag) => acc | flag, 0)),
+  has: (flags: ReadFlags, flag: ReadFlags): boolean => (flags & flag) !== 0,
+  add: (flags: ReadFlags, flag: ReadFlags): ReadFlags =>
+    ReadFlagsSchema.make(flags | flag),
+  remove: (flags: ReadFlags, flag: ReadFlags): ReadFlags =>
+    ReadFlagsSchema.make(flags & ~flag),
+  isNone: (flags: ReadFlags): boolean => flags === ReadFlags.None,
 } as const;
 
 const writeFlagsMask = 1 | 2;
@@ -163,6 +169,12 @@ export const WriteFlags = {
   LowPriorityAndNoWAL: WriteFlagsSchema.make(3),
   combine: (...flags: WriteFlags[]): WriteFlags =>
     WriteFlagsSchema.make(flags.reduce((acc, flag) => acc | flag, 0)),
+  has: (flags: WriteFlags, flag: WriteFlags): boolean => (flags & flag) !== 0,
+  add: (flags: WriteFlags, flag: WriteFlags): WriteFlags =>
+    WriteFlagsSchema.make(flags | flag),
+  remove: (flags: WriteFlags, flag: WriteFlags): WriteFlags =>
+    WriteFlagsSchema.make(flags & ~flag),
+  isNone: (flags: WriteFlags): boolean => flags === WriteFlags.None,
 } as const;
 
 /** Schema for DB metrics emitted by IDbMeta-compatible backends. */
