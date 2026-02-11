@@ -1,0 +1,32 @@
+name: Commit Message Lint
+
+on:
+  push:
+    branches:
+      - main
+      - '**'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate commit messages use allowed emoji prefixes
+        run: |
+          set -euo pipefail
+          range="${{ github.event.before }}..${{ github.sha }}"
+          # Fallback for first push on branch (before may be all zeros)
+          if [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]]; then
+            range="${{ github.sha }}~1..${{ github.sha }}" || true
+          fi
+          ok_regex='^(🐛 fix|♻️ refactor|🧪 test|⚡ perf)\([^)]+\): '
+          bad=0
+          while IFS= read -r subject; do
+            if [[ ! $subject =~ $ok_regex ]]; then
+              echo "::error title=Invalid commit prefix::'$subject' does not start with an allowed emoji prefix" >&2
+              bad=1
+            fi
+          done < <(git log --format=%s $range)
+          exit $bad
