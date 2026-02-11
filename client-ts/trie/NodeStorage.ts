@@ -291,6 +291,23 @@ const normalizeScheme = (
 const getHashNodeStoragePath = (nodeHash: Hash.HashType): BytesType =>
   bytesFromUint8Array(nodeHash);
 
+const getPathPrefixBytes = (path: TrieNodePath): Uint8Array => {
+  const prefix = new Uint8Array(8);
+  const fullBytes = Math.floor(path.length / 2);
+  const copyLength = Math.min(8, fullBytes);
+
+  if (copyLength > 0) {
+    prefix.set(path.bytes.subarray(0, copyLength), 0);
+  }
+
+  if (path.length % 2 === 1 && fullBytes < 8) {
+    const sourceByte = path.bytes[fullBytes];
+    prefix[fullBytes] = sourceByte === undefined ? 0 : sourceByte & 0xf0;
+  }
+
+  return prefix;
+};
+
 const getHalfPathNodeStoragePath = (
   addressHash: Hash.HashType | null,
   path: TrieNodePath,
@@ -298,10 +315,12 @@ const getHalfPathNodeStoragePath = (
 ): Effect.Effect<BytesType, TrieNodeStorageError> =>
   Effect.try({
     try: () => {
+      const pathPrefix = getPathPrefixBytes(path);
+
       if (addressHash === null) {
         const pathBytes = new Uint8Array(StateKeyLength);
         pathBytes[0] = path.length <= TopStateBoundary ? 0 : 1;
-        pathBytes.set(path.bytes.subarray(0, 8), 1);
+        pathBytes.set(pathPrefix, 1);
         pathBytes[9] = path.length;
         pathBytes.set(nodeHash, 10);
         return bytesFromUint8Array(pathBytes);
@@ -310,7 +329,7 @@ const getHalfPathNodeStoragePath = (
       const pathBytes = new Uint8Array(StoragePathLength);
       pathBytes[0] = 2;
       pathBytes.set(addressHash, 1);
-      pathBytes.set(path.bytes.subarray(0, 8), 33);
+      pathBytes.set(pathPrefix, 33);
       pathBytes[41] = path.length;
       pathBytes.set(nodeHash, 42);
       return bytesFromUint8Array(pathBytes);
