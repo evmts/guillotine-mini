@@ -23,22 +23,22 @@ inline fn has_signature(y_parity: anytype, r: [32]u8, s: [32]u8) bool {
 }
 
 /// Compute RLP-encoded length of an AccessList without allocations.
-inline fn rlpLenOfAccessList(list: []const tx_mod.AccessListItem) usize {
+inline fn rlp_len_of_access_list(list: []const tx_mod.AccessListItem) usize {
     var items_total: usize = 0;
     for (list) |it| {
         // AccessListItem = [ address: B_20, storage_keys: [B_32, ...] ]
-        const addr_len = rlpLenOfBytes(20, null);
+        const addr_len = rlp_len_of_bytes(20, null);
 
         var keys_items_total: usize = 0;
         for (it.storage_keys) |_| {
-            keys_items_total += rlpLenOfBytes(32, null);
+            keys_items_total += rlp_len_of_bytes(32, null);
         }
-        const keys_list_len = rlpLenOfList(keys_items_total);
+        const keys_list_len = rlp_len_of_list(keys_items_total);
 
         const item_payload = addr_len + keys_list_len;
-        items_total += rlpLenOfList(item_payload);
+        items_total += rlp_len_of_list(item_payload);
     }
-    return rlpLenOfList(items_total);
+    return rlp_len_of_list(items_total);
 }
 
 // -----------------------------------------------------------------------------
@@ -52,7 +52,7 @@ inline fn rlpLenOfAccessList(list: []const tx_mod.AccessListItem) usize {
 ///   next_nonce_in_order = current_nonce + pending_sender_txs
 ///
 /// Saturates on u64 overflow (returns `maxInt(u64)`). No allocations.
-pub fn next_nonce_in_order(current_nonce: u64, pending_sender_txs: u32) u64 {
+fn next_nonce_in_order(current_nonce: u64, pending_sender_txs: u32) u64 {
     const sum128: u128 = @as(u128, current_nonce) + @as(u128, pending_sender_txs);
     const max = std.math.maxInt(u64);
     return if (sum128 > max) max else @intCast(sum128);
@@ -123,7 +123,7 @@ pub fn enforce_nonce_gap(
 ///
 /// Mirrors Nethermind's `GapNonceFilter` using the local vtable-based
 /// `TxPool` + `HostInterface` dependencies.
-pub fn check_nonce_gap_for_sender(
+fn check_nonce_gap_for_sender(
     pool: TxPool,
     host: HostInterface,
     sender: Address,
@@ -302,10 +302,9 @@ test "check_nonce_gap_for_sender — rejects when beyond window and handles near
 /// - Applies `cfg.max_blob_tx_size` to blob txs (EIP-4844), else `cfg.max_tx_size`.
 /// - Returns an error when the encoded size exceeds the configured limit.
 pub fn fits_size_limits(
-    allocator: std.mem.Allocator,
     tx: anytype,
     cfg: TxPoolConfig,
-) (error{ MaxTxSizeExceeded, MaxBlobTxSizeExceeded } || std.mem.Allocator.Error)!void {
+) error{ MaxTxSizeExceeded, MaxBlobTxSizeExceeded }!void {
     const T = @TypeOf(tx);
     comptime {
         if (!(T == tx_mod.LegacyTransaction or
@@ -318,167 +317,161 @@ pub fn fits_size_limits(
         }
     }
 
-    // This function computes lengths without allocating; keep allocator in the
-    // signature for API stability and future-proofing, but mark it used.
-    _ = allocator;
-
-    // Use caller-provided allocator to avoid page allocator churn on hot path
-
     var len: usize = 0;
     if (comptime T == tx_mod.LegacyTransaction) {
         // Allocation-free, wire-accurate legacy RLP sizing (always includes v,r,s)
         var payload_len: usize = 0;
-        payload_len += rlpLenOfUInt(tx.nonce);
-        payload_len += rlpLenOfUInt(tx.gas_price);
-        payload_len += rlpLenOfUInt(tx.gas_limit);
+        payload_len += rlp_len_of_uint(tx.nonce);
+        payload_len += rlp_len_of_uint(tx.gas_price);
+        payload_len += rlp_len_of_uint(tx.gas_limit);
         if (tx.to) |_| {
-            payload_len += rlpLenOfBytes(20, null);
+            payload_len += rlp_len_of_bytes(20, null);
         } else {
-            payload_len += rlpLenOfBytes(0, null);
+            payload_len += rlp_len_of_bytes(0, null);
         }
-        payload_len += rlpLenOfUInt(tx.value);
+        payload_len += rlp_len_of_uint(tx.value);
         const first_legacy: ?u8 = if (tx.data.len == 1) tx.data[0] else null;
-        payload_len += rlpLenOfBytes(tx.data.len, first_legacy);
+        payload_len += rlp_len_of_bytes(tx.data.len, first_legacy);
         // Signature fields are part of the on-wire encoding
-        payload_len += rlpLenOfUInt(tx.v);
-        payload_len += rlpLenOfBytes(32, null); // r (encoded as bytes in primitives)
-        payload_len += rlpLenOfBytes(32, null); // s (encoded as bytes in primitives)
-        len = rlpLenOfList(payload_len);
+        payload_len += rlp_len_of_uint(tx.v);
+        payload_len += rlp_len_of_bytes(32, null); // r (encoded as bytes in primitives)
+        payload_len += rlp_len_of_bytes(32, null); // s (encoded as bytes in primitives)
+        len = rlp_len_of_list(payload_len);
     } else if (comptime T == tx_mod.Eip1559Transaction) {
         // Allocation-free, wire-accurate typed-2 sizing (always includes y_parity,r,s)
         var payload_len: usize = 0;
-        payload_len += rlpLenOfUInt(tx.chain_id);
-        payload_len += rlpLenOfUInt(tx.nonce);
-        payload_len += rlpLenOfUInt(tx.max_priority_fee_per_gas);
-        payload_len += rlpLenOfUInt(tx.max_fee_per_gas);
-        payload_len += rlpLenOfUInt(tx.gas_limit);
+        payload_len += rlp_len_of_uint(tx.chain_id);
+        payload_len += rlp_len_of_uint(tx.nonce);
+        payload_len += rlp_len_of_uint(tx.max_priority_fee_per_gas);
+        payload_len += rlp_len_of_uint(tx.max_fee_per_gas);
+        payload_len += rlp_len_of_uint(tx.gas_limit);
         if (tx.to) |_| {
-            payload_len += rlpLenOfBytes(20, null);
+            payload_len += rlp_len_of_bytes(20, null);
         } else {
-            payload_len += rlpLenOfBytes(0, null);
+            payload_len += rlp_len_of_bytes(0, null);
         }
-        payload_len += rlpLenOfUInt(tx.value);
+        payload_len += rlp_len_of_uint(tx.value);
         const first1559: ?u8 = if (tx.data.len == 1) tx.data[0] else null;
-        payload_len += rlpLenOfBytes(tx.data.len, first1559);
-        payload_len += rlpLenOfAccessList(tx.access_list);
+        payload_len += rlp_len_of_bytes(tx.data.len, first1559);
+        payload_len += rlp_len_of_access_list(tx.access_list);
         // Always account for signature triplet for on-wire size
-        payload_len += rlpLenOfUInt(tx.y_parity);
-        payload_len += rlpLenOfBytes(32, null); // r (encoded as bytes in primitives)
-        payload_len += rlpLenOfBytes(32, null); // s (encoded as bytes in primitives)
-        len = 1 + rlpLenOfList(payload_len);
+        payload_len += rlp_len_of_uint(tx.y_parity);
+        payload_len += rlp_len_of_bytes(32, null); // r (encoded as bytes in primitives)
+        payload_len += rlp_len_of_bytes(32, null); // s (encoded as bytes in primitives)
+        len = 1 + rlp_len_of_list(payload_len);
     } else if (comptime T == tx_mod.Eip2930Transaction) {
         // Allocation-free length calculation for EIP-2930 typed transaction (0x01)
         var payload_len: usize = 0;
-        payload_len += rlpLenOfUInt(tx.chain_id);
-        payload_len += rlpLenOfUInt(tx.nonce);
-        payload_len += rlpLenOfUInt(tx.gas_price);
-        payload_len += rlpLenOfUInt(tx.gas_limit);
+        payload_len += rlp_len_of_uint(tx.chain_id);
+        payload_len += rlp_len_of_uint(tx.nonce);
+        payload_len += rlp_len_of_uint(tx.gas_price);
+        payload_len += rlp_len_of_uint(tx.gas_limit);
 
         // to (nullable)
         if (tx.to) |_| {
-            payload_len += rlpLenOfBytes(20, null);
+            payload_len += rlp_len_of_bytes(20, null);
         } else {
-            payload_len += rlpLenOfBytes(0, null);
+            payload_len += rlp_len_of_bytes(0, null);
         }
 
-        payload_len += rlpLenOfUInt(tx.value);
+        payload_len += rlp_len_of_uint(tx.value);
         const first2930: ?u8 = if (tx.data.len == 1) tx.data[0] else null;
-        payload_len += rlpLenOfBytes(tx.data.len, first2930);
+        payload_len += rlp_len_of_bytes(tx.data.len, first2930);
 
         // access_list
-        payload_len += rlpLenOfAccessList(tx.access_list);
+        payload_len += rlp_len_of_access_list(tx.access_list);
 
         // Optional signature: y_parity, r, s
         if (has_signature(tx.y_parity, tx.r, tx.s)) {
-            payload_len += rlpLenOfUInt(tx.y_parity);
-            payload_len += rlpLenOfBytes(32, null);
-            payload_len += rlpLenOfBytes(32, null);
+            payload_len += rlp_len_of_uint(tx.y_parity);
+            payload_len += rlp_len_of_bytes(32, null);
+            payload_len += rlp_len_of_bytes(32, null);
         }
 
         // Typed envelope size = 1 (type) + rlp(list(payload))
-        len = 1 + rlpLenOfList(payload_len);
+        len = 1 + rlp_len_of_list(payload_len);
     } else if (comptime T == tx_mod.Eip4844Transaction) {
         // Length-only sizing for EIP-4844 to minimize allocations.
         var payload_len: usize = 0;
-        payload_len += rlpLenOfUInt(tx.chain_id);
-        payload_len += rlpLenOfUInt(tx.nonce);
-        payload_len += rlpLenOfUInt(tx.max_priority_fee_per_gas);
-        payload_len += rlpLenOfUInt(tx.max_fee_per_gas);
-        payload_len += rlpLenOfUInt(tx.gas_limit);
+        payload_len += rlp_len_of_uint(tx.chain_id);
+        payload_len += rlp_len_of_uint(tx.nonce);
+        payload_len += rlp_len_of_uint(tx.max_priority_fee_per_gas);
+        payload_len += rlp_len_of_uint(tx.max_fee_per_gas);
+        payload_len += rlp_len_of_uint(tx.gas_limit);
         // to (required by EIP-4844; MUST NOT be nil per EIP-4844)
-        payload_len += rlpLenOfBytes(20, null);
+        payload_len += rlp_len_of_bytes(20, null);
         // value
-        payload_len += rlpLenOfUInt(tx.value);
+        payload_len += rlp_len_of_uint(tx.value);
         // data
         const first: ?u8 = if (tx.data.len == 1) tx.data[0] else null;
-        payload_len += rlpLenOfBytes(tx.data.len, first);
+        payload_len += rlp_len_of_bytes(tx.data.len, first);
         // access_list (length-only)
-        payload_len += rlpLenOfAccessList(tx.access_list);
+        payload_len += rlp_len_of_access_list(tx.access_list);
         // max_fee_per_blob_gas
-        payload_len += rlpLenOfUInt(tx.max_fee_per_blob_gas);
+        payload_len += rlp_len_of_uint(tx.max_fee_per_blob_gas);
         // blob_versioned_hashes: each hash is 32 bytes → RLP item length fixed
-        const per_hash_len: usize = rlpLenOfBytes(32, null);
+        const per_hash_len: usize = rlp_len_of_bytes(32, null);
         const hashes_items_len: usize = tx.blob_versioned_hashes.len * per_hash_len;
-        payload_len += rlpLenOfList(hashes_items_len);
+        payload_len += rlp_len_of_list(hashes_items_len);
 
         // Optional signature: y_parity, r, s
         if (has_signature(tx.y_parity, tx.r, tx.s)) {
-            payload_len += rlpLenOfUInt(tx.y_parity);
-            payload_len += rlpLenOfBytes(32, null);
-            payload_len += rlpLenOfBytes(32, null);
+            payload_len += rlp_len_of_uint(tx.y_parity);
+            payload_len += rlp_len_of_bytes(32, null);
+            payload_len += rlp_len_of_bytes(32, null);
         }
 
         // Type prefix (0x03) + RLP(list header+payload). Blobs are NOT included.
-        len = 1 + rlpLenOfList(payload_len);
+        len = 1 + rlp_len_of_list(payload_len);
     } else if (comptime T == tx_mod.Eip7702Transaction) {
         // Length-only sizing for EIP-7702 (typed-4) to minimize allocations.
         var payload_len: usize = 0;
         // chain_id, nonce, fees, gas_limit
-        payload_len += rlpLenOfUInt(tx.chain_id);
-        payload_len += rlpLenOfUInt(tx.nonce);
-        payload_len += rlpLenOfUInt(tx.max_priority_fee_per_gas);
-        payload_len += rlpLenOfUInt(tx.max_fee_per_gas);
-        payload_len += rlpLenOfUInt(tx.gas_limit);
+        payload_len += rlp_len_of_uint(tx.chain_id);
+        payload_len += rlp_len_of_uint(tx.nonce);
+        payload_len += rlp_len_of_uint(tx.max_priority_fee_per_gas);
+        payload_len += rlp_len_of_uint(tx.max_fee_per_gas);
+        payload_len += rlp_len_of_uint(tx.gas_limit);
 
         // to (nullable)
         if (tx.to) |_| {
-            payload_len += rlpLenOfBytes(20, null);
+            payload_len += rlp_len_of_bytes(20, null);
         } else {
-            payload_len += rlpLenOfBytes(0, null);
+            payload_len += rlp_len_of_bytes(0, null);
         }
 
         // value, data
-        payload_len += rlpLenOfUInt(tx.value);
+        payload_len += rlp_len_of_uint(tx.value);
         const first7702: ?u8 = if (tx.data.len == 1) tx.data[0] else null;
-        payload_len += rlpLenOfBytes(tx.data.len, first7702);
+        payload_len += rlp_len_of_bytes(tx.data.len, first7702);
 
         // access_list (length-only)
-        payload_len += rlpLenOfAccessList(tx.access_list);
+        payload_len += rlp_len_of_access_list(tx.access_list);
 
         // authorization_list — compute length-only with y_parity derived from v
         var auth_items_encoded_total: usize = 0;
         for (tx.authorization_list) |auth| {
             var auth_payload: usize = 0;
-            auth_payload += rlpLenOfUInt(auth.chain_id);
-            auth_payload += rlpLenOfBytes(20, null);
-            auth_payload += rlpLenOfUInt(auth.nonce);
+            auth_payload += rlp_len_of_uint(auth.chain_id);
+            auth_payload += rlp_len_of_bytes(20, null);
+            auth_payload += rlp_len_of_uint(auth.nonce);
             const y_parity: u8 = if (auth.v == 27) 0 else if (auth.v == 28) 1 else @as(u8, @intCast(auth.v & 1));
-            auth_payload += rlpLenOfUInt(y_parity);
-            auth_payload += rlpLenOfBytes(32, null); // r
-            auth_payload += rlpLenOfBytes(32, null); // s
-            auth_items_encoded_total += rlpLenOfList(auth_payload);
+            auth_payload += rlp_len_of_uint(y_parity);
+            auth_payload += rlp_len_of_bytes(32, null); // r
+            auth_payload += rlp_len_of_bytes(32, null); // s
+            auth_items_encoded_total += rlp_len_of_list(auth_payload);
         }
-        payload_len += rlpLenOfList(auth_items_encoded_total);
+        payload_len += rlp_len_of_list(auth_items_encoded_total);
 
         // Optional transaction signature (y_parity, r, s)
         if (has_signature(tx.y_parity, tx.r, tx.s)) {
-            payload_len += rlpLenOfUInt(tx.y_parity);
-            payload_len += rlpLenOfBytes(32, null);
-            payload_len += rlpLenOfBytes(32, null);
+            payload_len += rlp_len_of_uint(tx.y_parity);
+            payload_len += rlp_len_of_bytes(32, null);
+            payload_len += rlp_len_of_bytes(32, null);
         }
 
         // Final typed envelope size
-        len = 1 + rlpLenOfList(payload_len);
+        len = 1 + rlp_len_of_list(payload_len);
     }
     // EIP-4844: Prefer specific blob-envelope limit when configured;
     // otherwise, fall back to the generic `max_tx_size` check below.
@@ -624,11 +617,11 @@ test "fits_size_limits — legacy within and over limit (wire size incl. v,r,s)"
 
     var cfg_ok = TxPoolConfig{}; // defaults allow ample size
     cfg_ok.max_tx_size = encoded.len; // exactly fits
-    try fits_size_limits(std.testing.allocator, tx, cfg_ok);
+    try fits_size_limits(tx, cfg_ok);
 
     var cfg_bad = TxPoolConfig{};
     cfg_bad.max_tx_size = encoded.len - 1; // too small
-    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(std.testing.allocator, tx, cfg_bad));
+    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(tx, cfg_bad));
 }
 
 test "fits_size_limits — eip1559 within and over limit (wire size incl. y_parity,r,s)" {
@@ -731,11 +724,11 @@ test "fits_size_limits — eip1559 within and over limit (wire size incl. y_pari
 
     var cfg_ok = TxPoolConfig{};
     cfg_ok.max_tx_size = encoded.len;
-    try fits_size_limits(std.testing.allocator, tx, cfg_ok);
+    try fits_size_limits(tx, cfg_ok);
 
     var cfg_bad = TxPoolConfig{};
     cfg_bad.max_tx_size = encoded.len - 1;
-    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(std.testing.allocator, tx, cfg_bad));
+    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(tx, cfg_bad));
 }
 
 test "fits_size_limits — eip4844 (blob) within and over blob limit" {
@@ -869,11 +862,11 @@ test "fits_size_limits — eip4844 (blob) within and over blob limit" {
 
     var cfg_ok = TxPoolConfig{};
     cfg_ok.max_blob_tx_size = encoded.len;
-    try fits_size_limits(std.testing.allocator, tx, cfg_ok);
+    try fits_size_limits(tx, cfg_ok);
 
     var cfg_bad = TxPoolConfig{};
     cfg_bad.max_blob_tx_size = encoded.len - 1;
-    try std.testing.expectError(error.MaxBlobTxSizeExceeded, fits_size_limits(std.testing.allocator, tx, cfg_bad));
+    try std.testing.expectError(error.MaxBlobTxSizeExceeded, fits_size_limits(tx, cfg_bad));
 }
 
 test "fits_size_limits — eip7702 within and over limit (unsigned)" {
@@ -969,11 +962,11 @@ test "fits_size_limits — eip7702 within and over limit (unsigned)" {
 
     var cfg_ok = TxPoolConfig{};
     cfg_ok.max_tx_size = encoded.len;
-    try fits_size_limits(allocator, tx, cfg_ok);
+    try fits_size_limits(tx, cfg_ok);
 
     var cfg_bad = TxPoolConfig{};
     cfg_bad.max_tx_size = encoded.len - 1;
-    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(allocator, tx, cfg_bad));
+    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(tx, cfg_bad));
 }
 
 test "fits_size_limits — eip7702 within and over limit (signed)" {
@@ -1085,11 +1078,11 @@ test "fits_size_limits — eip7702 within and over limit (signed)" {
 
     var cfg_ok = TxPoolConfig{};
     cfg_ok.max_tx_size = encoded.len;
-    try fits_size_limits(allocator, tx, cfg_ok);
+    try fits_size_limits(tx, cfg_ok);
 
     var cfg_bad = TxPoolConfig{};
     cfg_bad.max_tx_size = encoded.len - 1;
-    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(allocator, tx, cfg_bad));
+    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(tx, cfg_bad));
 }
 
 test "fits_size_limits — eip2930 within and over limit (with/without signature)" {
@@ -1187,9 +1180,9 @@ test "fits_size_limits — eip2930 within and over limit (with/without signature
 
     var cfg = TxPoolConfig{};
     cfg.max_tx_size = encoded_signed.len;
-    try fits_size_limits(allocator, tx_signed, cfg);
+    try fits_size_limits(tx_signed, cfg);
     cfg.max_tx_size = encoded_signed.len - 1;
-    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(allocator, tx_signed, cfg));
+    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(tx_signed, cfg));
 
     // Case B: to = null, no signature
     var tx_unsigned = tx_signed;
@@ -1254,9 +1247,9 @@ test "fits_size_limits — eip2930 within and over limit (with/without signature
     @memcpy(encoded_unsigned[1..], wrapped2.items);
 
     cfg.max_tx_size = encoded_unsigned.len;
-    try fits_size_limits(allocator, tx_unsigned, cfg);
+    try fits_size_limits(tx_unsigned, cfg);
     cfg.max_tx_size = encoded_unsigned.len - 1;
-    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(allocator, tx_unsigned, cfg));
+    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(tx_unsigned, cfg));
 }
 
 test "fits_gas_limit — passes when under/equal, errors when over (legacy)" {
@@ -1458,7 +1451,7 @@ test "enforce_min_priority_fee_for_blobs — min priority tip enforced for blob 
 // -----------------------------------------------------------------------------
 // Lightweight RLP length helpers (no allocations)
 // -----------------------------------------------------------------------------
-inline fn rlpLenOfList(payload_len: usize) usize {
+inline fn rlp_len_of_list(payload_len: usize) usize {
     // 0xC0 + len (<=55) OR 0xF7 + len_of_len + len
     if (payload_len <= 55) return 1 + payload_len;
     var tmp = payload_len;
@@ -1467,7 +1460,7 @@ inline fn rlpLenOfList(payload_len: usize) usize {
     return 1 + n + payload_len;
 }
 
-inline fn rlpLenOfBytes(len: usize, first_byte_if_len1: ?u8) usize {
+inline fn rlp_len_of_bytes(len: usize, first_byte_if_len1: ?u8) usize {
     // If a single byte less than 0x80, encoded as itself
     if (len == 1) {
         if (first_byte_if_len1) |b| if (b < 0x80) return 1;
@@ -1481,11 +1474,11 @@ inline fn rlpLenOfBytes(len: usize, first_byte_if_len1: ?u8) usize {
     return 1 + n + len;
 }
 
-inline fn rlpLenOfUInt(x: anytype) usize {
+inline fn rlp_len_of_uint(x: anytype) usize {
     const T = @TypeOf(x);
     comptime {
         if (!(@typeInfo(T) == .int and @typeInfo(T).int.signedness == .unsigned))
-            @compileError("rlpLenOfUInt expects an unsigned integer type");
+            @compileError("rlp_len_of_uint expects an unsigned integer type");
     }
     if (x == 0) return 1; // encoded as empty string (0x80)
     // Determine minimal byte length via bit-length to avoid shifts on small ints.

@@ -58,7 +58,7 @@ fn bench_admission(allocator: std.mem.Allocator, n_per_type: usize) bench.BenchR
             .s = [_]u8{0} ** 32,
         };
         for (0..n_per_type) |_| {
-            txpool.fits_size_limits(allocator, tx, cfg) catch unreachable;
+            txpool.fits_size_limits(tx, cfg) catch unreachable;
         }
         ops += n_per_type;
     }
@@ -80,7 +80,7 @@ fn bench_admission(allocator: std.mem.Allocator, n_per_type: usize) bench.BenchR
             .s = [_]u8{2} ** 32,
         };
         for (0..n_per_type) |_| {
-            txpool.fits_size_limits(allocator, tx, cfg) catch unreachable;
+            txpool.fits_size_limits(tx, cfg) catch unreachable;
         }
         ops += n_per_type;
     }
@@ -101,7 +101,7 @@ fn bench_admission(allocator: std.mem.Allocator, n_per_type: usize) bench.BenchR
             .s = [_]u8{0} ** 32,
         };
         for (0..n_per_type) |_| {
-            txpool.fits_size_limits(allocator, tx, cfg) catch unreachable;
+            txpool.fits_size_limits(tx, cfg) catch unreachable;
         }
         ops += n_per_type;
     }
@@ -126,7 +126,7 @@ fn bench_admission(allocator: std.mem.Allocator, n_per_type: usize) bench.BenchR
             .s = [_]u8{4} ** 32,
         };
         for (0..n_per_type) |_| {
-            txpool.fits_size_limits(allocator, tx, cfg) catch unreachable;
+            txpool.fits_size_limits(tx, cfg) catch unreachable;
         }
         ops += n_per_type;
     }
@@ -150,7 +150,7 @@ fn bench_admission(allocator: std.mem.Allocator, n_per_type: usize) bench.BenchR
             .s = [_]u8{0} ** 32,
         };
         for (0..n_per_type) |_| {
-            txpool.fits_size_limits(allocator, tx, cfg) catch unreachable;
+            txpool.fits_size_limits(tx, cfg) catch unreachable;
         }
         ops += n_per_type;
     }
