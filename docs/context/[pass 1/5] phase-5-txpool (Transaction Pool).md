@@ -18,6 +18,7 @@ Relevant spec files read:
 - `EIPs/EIPS/eip-1559.md`
 - `EIPs/EIPS/eip-2930.md`
 - `EIPs/EIPS/eip-4844.md`
+- `devp2p/caps/eth.md` (transaction exchange: NewPooledTransactionHashes, GetPooledTransactions, Transactions)
 - `execution-specs/src/ethereum/forks/berlin/transactions.py`
 - `execution-specs/src/ethereum/forks/london/transactions.py`
 - `execution-specs/src/ethereum/forks/cancun/transactions.py`
@@ -93,7 +94,7 @@ Txpool-relevant fixture roots:
 - `ethereum-tests/src/TransactionTestsFiller/`
 
 ## Notes
-- `devp2p/` is present but empty in this workspace checkout, so tx gossip wire details are taken from EIP-4844 networking section and phase references rather than local `devp2p/*.md` files.
+- `devp2p/` is present in this workspace; `devp2p/caps/eth.md` defines tx exchange semantics (NewPooledTransactionHashes, GetPooledTransactions, Transactions) and size/soft limits for message propagation that impact pool design.
 - Existing txpool Zig sources already present for behavior reference:
 - `client/txpool/pool.zig`
 - `client/txpool/sorter.zig`
