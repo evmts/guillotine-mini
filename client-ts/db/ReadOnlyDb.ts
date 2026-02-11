@@ -323,9 +323,7 @@ const makeReadOnlyReader = (
       }
       for (const [keyHex, value] of overlay.entries()) {
         const key = decodeKey(keyHex);
-        if (
-          options?.prefix && !startsWithBytes(key, options.prefix)
-        ) {
+        if (options?.prefix && !startsWithBytes(key, options.prefix)) {
           continue;
         }
         entries.push({ key, value: cloneBytes(value) });

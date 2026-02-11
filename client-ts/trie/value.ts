@@ -9,6 +9,7 @@ import {
   Transaction,
   Uint,
 } from "voltaire-effect/primitives";
+import { coerceEffect } from "./internal/effect";
 import type { BytesType } from "./Node";
 import { encodeRlp as encodeRlpGeneric } from "./internal/rlp";
 import { makeBytesHelpers } from "./internal/primitives";
