@@ -1,14 +1,13 @@
 const std = @import("std");
 const primitives = @import("primitives");
-const HostInterface = @import("../../src/host.zig").HostInterface;
+// Import HostInterface from the core guillotine module exposed in build.zig
+const HostInterface = @import("guillotine").HostInterface;
 
 const tx_mod = primitives.Transaction;
 const TxPoolConfig = @import("pool.zig").TxPoolConfig;
 const TxPool = @import("pool.zig").TxPool;
 const U256 = primitives.Denomination.U256;
 const GasLimit = primitives.Gas.GasLimit;
-const Address = primitives.Address;
-
 // -----------------------------------------------------------------------------
 // Internal helpers (no allocations)
 // -----------------------------------------------------------------------------
@@ -511,8 +510,6 @@ pub fn enforce_min_priority_fee_for_blobs(
 // =============================================================================
 
 test "fits_size_limits — legacy within and over limit" {
-    const Address = primitives.Address;
-
     const tx = tx_mod.LegacyTransaction{
         .nonce = 0,
         .gas_price = 1,
@@ -540,8 +537,6 @@ test "fits_size_limits — legacy within and over limit" {
 }
 
 test "fits_size_limits — eip1559 within and over limit" {
-    const Address = primitives.Address;
-
     const tx = tx_mod.Eip1559Transaction{
         .chain_id = 1,
         .nonce = 0,
@@ -572,7 +567,6 @@ test "fits_size_limits — eip1559 within and over limit" {
 }
 
 test "fits_size_limits — eip4844 (blob) within and over blob limit" {
-    const Address = primitives.Address;
     const VersionedHash = primitives.Blob.VersionedHash;
 
     const hashes = [_]VersionedHash{.{ .bytes = [_]u8{0xAA} ++ [_]u8{0} ** 31 }};
@@ -711,7 +705,6 @@ test "fits_size_limits — eip4844 (blob) within and over blob limit" {
 }
 
 test "fits_size_limits — eip7702 within and over limit (unsigned)" {
-    const Address = primitives.Address;
     const Authorization = primitives.Authorization.Authorization;
     const tx = tx_mod.Eip7702Transaction{
         .chain_id = 1,
@@ -812,7 +805,6 @@ test "fits_size_limits — eip7702 within and over limit (unsigned)" {
 }
 
 test "fits_size_limits — eip7702 within and over limit (signed)" {
-    const Address = primitives.Address;
     const Authorization = primitives.Authorization.Authorization;
     var tx = tx_mod.Eip7702Transaction{
         .chain_id = 1,
@@ -929,7 +921,6 @@ test "fits_size_limits — eip7702 within and over limit (signed)" {
 }
 
 test "fits_size_limits — eip2930 within and over limit (with/without signature)" {
-    const Address = primitives.Address;
     const rlp = primitives.Rlp;
 
     // Case A: with recipient and signature
@@ -1097,7 +1088,6 @@ test "fits_size_limits — eip2930 within and over limit (with/without signature
 }
 
 test "fits_gas_limit — passes when under/equal, errors when over (legacy)" {
-    const Address = primitives.Address;
     const tx = tx_mod.LegacyTransaction{
         .nonce = 0,
         .gas_price = 1,
@@ -1122,7 +1112,6 @@ test "fits_gas_limit — passes when under/equal, errors when over (legacy)" {
 }
 
 test "fits_gas_limit — works for typed txs (1559, 4844, 7702)" {
-    const Address = primitives.Address;
     const VersionedHash = primitives.Blob.VersionedHash;
     const Authorization = primitives.Authorization.Authorization;
 
@@ -1183,7 +1172,6 @@ test "fits_gas_limit — works for typed txs (1559, 4844, 7702)" {
 }
 
 test "enforce_min_priority_fee_for_blobs — no-op for non-blob txs" {
-    const Address = primitives.Address;
     const tx = tx_mod.Eip1559Transaction{
         .chain_id = 1,
         .nonce = 0,
@@ -1204,7 +1192,6 @@ test "enforce_min_priority_fee_for_blobs — no-op for non-blob txs" {
 }
 
 test "enforce_min_priority_fee_for_blobs — blob base fee required enforced" {
-    const Address = primitives.Address;
     const VersionedHash = primitives.Blob.VersionedHash;
     const hashes = [_]VersionedHash{.{ .bytes = [_]u8{0xB1} ++ [_]u8{0} ** 31 }};
 
@@ -1252,7 +1239,6 @@ test "enforce_min_priority_fee_for_blobs — blob base fee required enforced" {
 }
 
 test "enforce_min_priority_fee_for_blobs — min priority tip enforced for blob txs" {
-    const Address = primitives.Address;
     const VersionedHash = primitives.Blob.VersionedHash;
     const hashes = [_]VersionedHash{.{ .bytes = [_]u8{0xB2} ++ [_]u8{0} ** 31 }};
 

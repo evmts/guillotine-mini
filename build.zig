@@ -273,6 +273,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "primitives", .module = primitives_mod },
+            // Allow txpool code to access HostInterface via the core evm module
+            .{ .name = "guillotine", .module = mod },
         },
     });
 
