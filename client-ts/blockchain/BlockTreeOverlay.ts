@@ -3,6 +3,8 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { BlockNumber, Hex } from "voltaire-effect/primitives";
 import {
   BLOCK_TREE_INSTANCE_ID,
   BlockTree,
@@ -33,6 +35,14 @@ export class BlockTreeOverlay extends Context.Tag("BlockTreeOverlay")<
   BlockTreeOverlayService
 >() {}
 
+const BlockNumberBigIntSchema = BlockNumber.BigInt as unknown as Schema.Schema<
+  BlockNumberType,
+  bigint
+>;
+
+const blockNumberToBigInt = (number: BlockNumberType) =>
+  Schema.encodeSync(BlockNumberBigIntSchema)(number);
+
 const makeBlockTreeOverlay = Effect.gen(function* () {
   const baseTree = yield* ReadOnlyBlockTree;
   const overlayTree = yield* BlockTree;
@@ -56,6 +66,38 @@ export const makeBlockTreeOverlayService = (
   baseTree: ReadOnlyBlockTreeService,
   overlayTree: BlockTreeService,
 ): BlockTreeOverlayService => {
+  const materializeAncestryFromBase = (
+    hash: BlockHashType,
+    visited = new Set<string>(),
+  ) =>
+    Effect.gen(function* () {
+      const hashHex = Hex.fromBytes(hash);
+      if (visited.has(hashHex)) {
+        return;
+      }
+      visited.add(hashHex);
+
+      const presentInOverlay = yield* overlayTree.hasBlock(hash);
+      if (presentInOverlay) {
+        return;
+      }
+
+      const blockInBase = yield* baseTree.getBlock(hash);
+      if (Option.isNone(blockInBase)) {
+        return;
+      }
+
+      const block = Option.getOrThrow(blockInBase);
+      if (blockNumberToBigInt(block.header.number) > 0n) {
+        yield* materializeAncestryFromBase(block.header.parentHash, visited);
+      }
+
+      const stillMissing = !(yield* overlayTree.hasBlock(block.hash));
+      if (stillMissing) {
+        yield* overlayTree.putBlock(block);
+      }
+    });
+
   const readThroughOption = <A>(
     overlay: Effect.Effect<Option.Option<A>, BlockTreeError>,
     base: () => Effect.Effect<Option.Option<A>, BlockTreeError>,
@@ -105,10 +147,19 @@ export const makeBlockTreeOverlayService = (
       baseTree.isOrphan(hash),
     );
 
-  const putBlock = (block: BlockType) => overlayTree.putBlock(block);
+  const putBlock = (block: BlockType) =>
+    Effect.gen(function* () {
+      if (blockNumberToBigInt(block.header.number) > 0n) {
+        yield* materializeAncestryFromBase(block.header.parentHash);
+      }
+      yield* overlayTree.putBlock(block);
+    });
 
   const setCanonicalHead = (hash: BlockHashType) =>
-    overlayTree.setCanonicalHead(hash);
+    Effect.gen(function* () {
+      yield* materializeAncestryFromBase(hash);
+      yield* overlayTree.setCanonicalHead(hash);
+    });
 
   const getHeadBlockNumber = () =>
     readThroughOption(overlayTree.getHeadBlockNumber(), () =>
