@@ -480,8 +480,8 @@ test "Chain - is_canonical returns true for canonical block" {
     try chain.putBlock(genesis);
     try chain.setCanonicalHead(genesis.hash);
 
-    const result = is_canonical(&chain, genesis.hash);
-    try std.testing.expect(result);
+    const result_fetch = try is_canonical_or_fetch(&chain, genesis.hash);
+    try std.testing.expect(result_fetch);
 }
 
 test "Chain - is_canonical returns false for orphan block" {
