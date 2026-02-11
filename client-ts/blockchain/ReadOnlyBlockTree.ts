@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import {
+  BLOCK_TREE_INSTANCE_ID,
   BlockTree,
   type BlockHashType,
   type BlockNumberType,
@@ -13,6 +14,7 @@ import {
 
 /** Read-only block tree service interface. */
 export interface ReadOnlyBlockTreeService {
+  readonly [BLOCK_TREE_INSTANCE_ID]: symbol;
   readonly getBlock: (
     hash: BlockHashType,
   ) => Effect.Effect<Option.Option<BlockType>, BlockTreeError>;
@@ -46,6 +48,7 @@ const makeReadOnlyBlockTree = Effect.gen(function* () {
   const blockTree = yield* BlockTree;
 
   return {
+    [BLOCK_TREE_INSTANCE_ID]: blockTree[BLOCK_TREE_INSTANCE_ID],
     getBlock: (hash) => blockTree.getBlock(hash),
     getBlockByNumber: (number) => blockTree.getBlockByNumber(number),
     getCanonicalHash: (number) => blockTree.getCanonicalHash(number),

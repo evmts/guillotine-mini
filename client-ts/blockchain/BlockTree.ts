@@ -20,6 +20,11 @@ export type BlockHashType = BlockHash.BlockHashType;
 /** Block number type used for canonical indexing. */
 export type BlockNumberType = BlockNumber.BlockNumberType;
 
+/** Symbol used to identify a concrete block tree instance across wrappers. */
+export const BLOCK_TREE_INSTANCE_ID = Symbol.for(
+  "guillotine-mini/blockchain/BlockTreeInstanceId",
+);
+
 type BlockHashKey = string;
 type BlockNumberKey = bigint;
 
@@ -69,6 +74,7 @@ export type BlockTreeError =
 
 /** Block tree service interface (canonical chain + orphan tracking). */
 export interface BlockTreeService {
+  readonly [BLOCK_TREE_INSTANCE_ID]: symbol;
   readonly getBlock: (
     hash: BlockHashType,
   ) => Effect.Effect<Option.Option<BlockType>, BlockTreeError>;
@@ -131,6 +137,7 @@ const blockNumberKey = (number: BlockNumberType): BlockNumberKey =>
 
 const makeBlockTree = Effect.gen(function* () {
   const store = yield* BlockStore;
+  const instanceId = Symbol("BlockTreeInstance");
   const state = yield* Effect.acquireRelease(
     Effect.sync(
       () =>
@@ -320,6 +327,7 @@ const makeBlockTree = Effect.gen(function* () {
     Effect.sync(() => state.canonicalChain.size);
 
   return {
+    [BLOCK_TREE_INSTANCE_ID]: instanceId,
     getBlock,
     getBlockByNumber,
     getCanonicalHash,

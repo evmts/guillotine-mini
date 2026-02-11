@@ -1,8 +1,10 @@
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import {
+  BLOCK_TREE_INSTANCE_ID,
   BlockTree,
   type BlockHashType,
   type BlockNumberType,
@@ -18,6 +20,13 @@ import {
 /** Block tree overlay service (read-through base + write overlay). */
 export interface BlockTreeOverlayService extends BlockTreeService {}
 
+/** Error raised when base and overlay trees share the same backing instance. */
+export class BlockTreeOverlaySharedStateError extends Data.TaggedError(
+  "BlockTreeOverlaySharedStateError",
+)<{
+  readonly message: string;
+}> {}
+
 /** Context tag for the block tree overlay service. */
 export class BlockTreeOverlay extends Context.Tag("BlockTreeOverlay")<
   BlockTreeOverlay,
@@ -27,6 +36,17 @@ export class BlockTreeOverlay extends Context.Tag("BlockTreeOverlay")<
 const makeBlockTreeOverlay = Effect.gen(function* () {
   const baseTree = yield* ReadOnlyBlockTree;
   const overlayTree = yield* BlockTree;
+
+  if (
+    baseTree[BLOCK_TREE_INSTANCE_ID] === overlayTree[BLOCK_TREE_INSTANCE_ID]
+  ) {
+    return yield* Effect.fail(
+      new BlockTreeOverlaySharedStateError({
+        message:
+          "BlockTreeOverlay requires isolated base and overlay block tree instances",
+      }),
+    );
+  }
 
   return makeBlockTreeOverlayService(baseTree, overlayTree);
 });
@@ -140,6 +160,6 @@ export const makeBlockTreeOverlayService = (
 /** Block tree overlay layer. */
 export const BlockTreeOverlayLive: Layer.Layer<
   BlockTreeOverlay,
-  never,
+  BlockTreeOverlaySharedStateError,
   ReadOnlyBlockTree | BlockTree
 > = Layer.effect(BlockTreeOverlay, makeBlockTreeOverlay);
