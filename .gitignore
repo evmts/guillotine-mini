@@ -23,3 +23,10 @@ worktrees/
 # Smithers workflow DB files
 *.db
 .smithers/
+
+# Zig extra caches
+.zig-cache-global/
+.zig-cache-local/
+
+# Local build logs
+build_output.txt
