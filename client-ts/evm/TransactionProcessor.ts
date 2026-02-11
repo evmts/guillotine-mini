@@ -22,6 +22,10 @@ import {
   type TransactionBoundary,
   type TransactionBoundaryError,
 } from "../state/TransactionBoundary";
+import {
+  calculateClaimableRefund,
+  type RefundCalculatorError,
+} from "./RefundCalculator";
 
 /** Effective gas price breakdown for transaction execution. */
 export type EffectiveGasPrice = {
@@ -52,6 +56,19 @@ export type PreExecutionInclusionCheck = {
 /** Result of process-transaction pre-execution orchestration. */
 export type ProcessTransactionPreExecution = GasPurchase &
   PreExecutionInclusionCheck;
+
+/** Result of post-execution fee/refund settlement. */
+export type PostExecutionSettlement = {
+  readonly txGasUsedBeforeRefund: bigint;
+  readonly txGasRefund: bigint;
+  readonly txGasUsedAfterRefund: bigint;
+  readonly txGasLeft: bigint;
+  readonly gasRefundAmount: Balance.BalanceType;
+  readonly priorityFeePerGas: GasPrice.GasPriceType;
+  readonly transactionFee: Balance.BalanceType;
+  readonly senderBalanceAfterRefund: Balance.BalanceType;
+  readonly coinbaseBalanceAfterFee: Balance.BalanceType;
+};
 
 const TransactionSchema = Transaction.Schema as unknown as Schema.Schema<
   Transaction.Any,
@@ -214,6 +231,22 @@ export class BlockBlobGasLimitExceededError extends Data.TaggedError(
   readonly blobGasAvailable: bigint;
 }> {}
 
+/** Error raised when remaining gas exceeds transaction gas limit. */
+export class GasLeftExceedsGasLimitError extends Data.TaggedError(
+  "GasLeftExceedsGasLimitError",
+)<{
+  readonly txGasLimit: bigint;
+  readonly gasLeft: bigint;
+}> {}
+
+/** Error raised when calldata floor gas exceeds transaction gas limit. */
+export class CalldataFloorGasExceedsGasLimitError extends Data.TaggedError(
+  "CalldataFloorGasExceedsGasLimitError",
+)<{
+  readonly txGasLimit: bigint;
+  readonly calldataFloorGas: bigint;
+}> {}
+
 /** Error raised when sender has non-empty code that is not delegation code. */
 export class InvalidSenderAccountCodeError extends Data.TaggedError(
   "InvalidSenderAccountCodeError",
@@ -255,6 +288,15 @@ export type PreExecutionInclusionCheckError =
   | BlockGasLimitExceededError
   | BlockBlobGasLimitExceededError
   | InvalidSenderAccountCodeError;
+
+/** Union of post-execution settlement errors. */
+export type PostExecutionSettlementError =
+  | InvalidBalanceError
+  | InvalidGasPriceError
+  | GasPriceBelowBaseFeeError
+  | GasLeftExceedsGasLimitError
+  | CalldataFloorGasExceedsGasLimitError
+  | RefundCalculatorError;
 
 const runWithinBoundary = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
@@ -314,6 +356,20 @@ export interface TransactionProcessorService {
   ) => Effect.Effect<
     ProcessTransactionPreExecution,
     PreExecutionInclusionCheckError | GasPurchaseError,
+    WorldState
+  >;
+  readonly settlePostExecutionBalances: (
+    txGasLimit: bigint,
+    gasLeft: bigint,
+    refundCounter: bigint,
+    calldataFloorGas: bigint,
+    effectiveGasPrice: bigint,
+    baseFeePerGas: bigint,
+    sender: Address.AddressType,
+    coinbase: Address.AddressType,
+  ) => Effect.Effect<
+    PostExecutionSettlement,
+    PostExecutionSettlementError,
     WorldState
   >;
   readonly runInTransactionBoundary: <A, E, R>(
@@ -812,6 +868,104 @@ const makeTransactionProcessor = Effect.gen(function* () {
       } satisfies ProcessTransactionPreExecution;
     });
 
+  const settlePostExecutionBalances = (
+    txGasLimit: bigint,
+    gasLeft: bigint,
+    refundCounter: bigint,
+    calldataFloorGas: bigint,
+    effectiveGasPrice: bigint,
+    baseFeePerGas: bigint,
+    sender: Address.AddressType,
+    coinbase: Address.AddressType,
+  ) =>
+    Effect.gen(function* () {
+      if (gasLeft > txGasLimit) {
+        return yield* Effect.fail(
+          new GasLeftExceedsGasLimitError({
+            txGasLimit,
+            gasLeft,
+          }),
+        );
+      }
+
+      if (calldataFloorGas > txGasLimit) {
+        return yield* Effect.fail(
+          new CalldataFloorGasExceedsGasLimitError({
+            txGasLimit,
+            calldataFloorGas,
+          }),
+        );
+      }
+
+      const txGasUsedBeforeRefund = txGasLimit - gasLeft;
+      const claimableRefund = yield* calculateClaimableRefund(
+        txGasUsedBeforeRefund,
+        refundCounter,
+      );
+      const txGasRefund: bigint = claimableRefund;
+      const txGasUsedAfterRefundRaw = txGasUsedBeforeRefund - txGasRefund;
+      const txGasUsedAfterRefund =
+        txGasUsedAfterRefundRaw > calldataFloorGas
+          ? txGasUsedAfterRefundRaw
+          : calldataFloorGas;
+      const txGasLeft = txGasLimit - txGasUsedAfterRefund;
+
+      if (effectiveGasPrice < baseFeePerGas) {
+        return yield* Effect.fail(
+          new GasPriceBelowBaseFeeError({
+            gasPrice: effectiveGasPrice,
+            baseFeePerGas,
+          }),
+        );
+      }
+
+      const priorityFeePerGas = yield* decodeGasPrice(
+        effectiveGasPrice - baseFeePerGas,
+        "priority",
+      );
+      const gasRefundAmount = yield* decodeBalance(
+        txGasLeft * effectiveGasPrice,
+        "gas refund",
+      );
+      const transactionFee = yield* decodeBalance(
+        txGasUsedAfterRefund * priorityFeePerGas,
+        "transaction fee",
+      );
+
+      const worldState = yield* WorldState;
+      const senderAccount = yield* worldState.getAccount(sender);
+      const senderBalanceAfterRefund = yield* decodeBalance(
+        senderAccount.balance + gasRefundAmount,
+        "sender post-refund",
+      );
+      yield* worldState.setAccount(sender, {
+        ...senderAccount,
+        balance: senderBalanceAfterRefund,
+      });
+
+      const coinbaseAccount = yield* worldState.getAccount(coinbase);
+      const coinbaseBalanceAfterFee = yield* decodeBalance(
+        coinbaseAccount.balance + transactionFee,
+        "coinbase post-fee",
+      );
+      yield* worldState.setAccount(coinbase, {
+        ...coinbaseAccount,
+        balance: coinbaseBalanceAfterFee,
+      });
+
+      return {
+        txGasUsedBeforeRefund,
+        txGasRefund,
+        txGasUsedAfterRefund,
+        txGasLeft,
+        gasRefundAmount,
+        priorityFeePerGas,
+        transactionFee,
+        senderBalanceAfterRefund,
+        coinbaseBalanceAfterFee,
+      } satisfies PostExecutionSettlement;
+    });
+
   const runInTransactionBoundary = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     runWithinBoundary(effect);
 
@@ -830,6 +984,7 @@ const makeTransactionProcessor = Effect.gen(function* () {
     buyGasAndIncrementNonce,
     checkInclusionAvailabilityAndSenderCode,
     processTransaction,
+    settlePostExecutionBalances,
     runInTransactionBoundary,
     runInCallFrameBoundary,
   } satisfies TransactionProcessorService;
@@ -919,6 +1074,30 @@ export const processTransaction = (
       blockGasUsed,
       maxBlobGasPerBlock,
       blockBlobGasUsed,
+    ),
+  );
+
+/** Apply post-execution refund and coinbase fee settlement. */
+export const settlePostExecutionBalances = (
+  txGasLimit: bigint,
+  gasLeft: bigint,
+  refundCounter: bigint,
+  calldataFloorGas: bigint,
+  effectiveGasPrice: bigint,
+  baseFeePerGas: bigint,
+  sender: Address.AddressType,
+  coinbase: Address.AddressType,
+) =>
+  withTransactionProcessor((service) =>
+    service.settlePostExecutionBalances(
+      txGasLimit,
+      gasLeft,
+      refundCounter,
+      calldataFloorGas,
+      effectiveGasPrice,
+      baseFeePerGas,
+      sender,
+      coinbase,
     ),
   );
 

@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { Address, Blob, Hex, Transaction } from "voltaire-effect/primitives";
 import {
+  CalldataFloorGasExceedsGasLimitError,
   BlockBlobGasLimitExceededError,
   BlockGasLimitExceededError,
   buyGasAndIncrementNonce,
@@ -14,6 +15,7 @@ import {
   checkMaxGasFeeAndBalance,
   EmptyAuthorizationListError,
   GasPriceBelowBaseFeeError,
+  GasLeftExceedsGasLimitError,
   InsufficientMaxFeePerBlobGasError,
   InsufficientMaxFeePerGasError,
   InsufficientSenderBalanceError,
@@ -24,6 +26,7 @@ import {
   PriorityFeeGreaterThanMaxFeeError,
   runInCallFrameBoundary,
   runInTransactionBoundary,
+  settlePostExecutionBalances,
   TransactionNonceTooHighError,
   TransactionNonceTooLowError,
   TransactionTypeContractCreationError,
@@ -48,6 +51,7 @@ import {
   transactionDepth,
   TransactionBoundaryTest,
 } from "../state/TransactionBoundary";
+import { RefundCalculatorTest } from "./RefundCalculator";
 
 const provideProcessor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(TransactionProcessorTest));
@@ -57,6 +61,7 @@ const TransactionProcessorExecutionTest = Layer.mergeAll(
   TransactionBoundaryTest,
   WorldStateTest,
   TransientStorageTest,
+  RefundCalculatorTest,
 );
 
 const provideExecutionProcessor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -757,6 +762,164 @@ describe("TransactionProcessor.checkInclusionAvailabilityAndSenderCode", () => {
         assert.isTrue(Either.isLeft(outcome));
         if (Either.isLeft(outcome)) {
           assert.isTrue(outcome.left instanceof InvalidSenderAccountCodeError);
+        }
+      }),
+    ),
+  );
+});
+
+describe("TransactionProcessor.settlePostExecutionBalances", () => {
+  it.effect("refunds sender and pays coinbase priority fees", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xd1);
+        const coinbase = makeAddress(0xd2);
+        yield* setAccount(sender, makeAccount({ balance: 1_000_000n }));
+        yield* setAccount(coinbase, makeAccount({ balance: 500n }));
+
+        const result = yield* settlePostExecutionBalances(
+          100_000n,
+          30_000n,
+          40_000n,
+          0n,
+          10n,
+          7n,
+          sender,
+          coinbase,
+        );
+
+        assert.strictEqual(result.txGasUsedBeforeRefund, 70_000n);
+        assert.strictEqual(result.txGasRefund, 14_000n);
+        assert.strictEqual(result.txGasUsedAfterRefund, 56_000n);
+        assert.strictEqual(result.txGasLeft, 44_000n);
+        assert.strictEqual(result.gasRefundAmount, 440_000n);
+        assert.strictEqual(result.priorityFeePerGas, 3n);
+        assert.strictEqual(result.transactionFee, 168_000n);
+
+        const senderAccount = yield* getAccountOptional(sender);
+        const coinbaseAccount = yield* getAccountOptional(coinbase);
+        assert.strictEqual(senderAccount?.balance, 1_440_000n);
+        assert.strictEqual(coinbaseAccount?.balance, 168_500n);
+      }),
+    ),
+  );
+
+  it.effect("applies calldata floor gas after refund cap", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xd3);
+        const coinbase = makeAddress(0xd4);
+        yield* setAccount(sender, makeAccount({ balance: 1_000_000n }));
+        yield* setAccount(coinbase, makeAccount({ balance: 0n }));
+
+        const result = yield* settlePostExecutionBalances(
+          100_000n,
+          80_000n,
+          5_000n,
+          25_000n,
+          10n,
+          8n,
+          sender,
+          coinbase,
+        );
+
+        assert.strictEqual(result.txGasUsedBeforeRefund, 20_000n);
+        assert.strictEqual(result.txGasRefund, 4_000n);
+        assert.strictEqual(result.txGasUsedAfterRefund, 25_000n);
+        assert.strictEqual(result.txGasLeft, 75_000n);
+        assert.strictEqual(result.gasRefundAmount, 750_000n);
+        assert.strictEqual(result.transactionFee, 50_000n);
+
+        const senderAccount = yield* getAccountOptional(sender);
+        const coinbaseAccount = yield* getAccountOptional(coinbase);
+        assert.strictEqual(senderAccount?.balance, 1_750_000n);
+        assert.strictEqual(coinbaseAccount?.balance, 50_000n);
+      }),
+    ),
+  );
+
+  it.effect("fails when gas left exceeds transaction gas limit", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xd5);
+        const coinbase = makeAddress(0xd6);
+        const outcome = yield* Effect.either(
+          settlePostExecutionBalances(
+            21_000n,
+            21_001n,
+            0n,
+            0n,
+            10n,
+            1n,
+            sender,
+            coinbase,
+          ),
+        );
+
+        assert.strictEqual(Either.isLeft(outcome), true);
+        if (Either.isLeft(outcome)) {
+          assert.strictEqual(
+            outcome.left instanceof GasLeftExceedsGasLimitError,
+            true,
+          );
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when calldata floor exceeds transaction gas limit", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xd7);
+        const coinbase = makeAddress(0xd8);
+        const outcome = yield* Effect.either(
+          settlePostExecutionBalances(
+            21_000n,
+            10_000n,
+            0n,
+            21_001n,
+            10n,
+            1n,
+            sender,
+            coinbase,
+          ),
+        );
+
+        assert.strictEqual(Either.isLeft(outcome), true);
+        if (Either.isLeft(outcome)) {
+          assert.strictEqual(
+            outcome.left instanceof CalldataFloorGasExceedsGasLimitError,
+            true,
+          );
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails when effective gas price is below base fee", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xd9);
+        const coinbase = makeAddress(0xda);
+        const outcome = yield* Effect.either(
+          settlePostExecutionBalances(
+            100_000n,
+            50_000n,
+            0n,
+            0n,
+            5n,
+            10n,
+            sender,
+            coinbase,
+          ),
+        );
+
+        assert.strictEqual(Either.isLeft(outcome), true);
+        if (Either.isLeft(outcome)) {
+          assert.strictEqual(
+            outcome.left instanceof GasPriceBelowBaseFeeError,
+            true,
+          );
         }
       }),
     ),
