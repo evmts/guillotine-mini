@@ -2,115 +2,165 @@
 
 ## Goal (from `prd/GUILLOTINE_CLIENT_PLAN.md`)
 
-Connect the EVM to WorldState for transaction/block processing.
+Phase: `phase-3-evm-state`
 
-**Key components:**
+Primary goal: connect the EVM to WorldState for transaction/block processing.
+
+Planned components:
 - `client/evm/host_adapter.zig` — implement `HostInterface` using WorldState
 - `client/evm/processor.zig` — transaction processor
 
-**Reference files:**
-- Nethermind: `nethermind/src/Nethermind/Nethermind.Evm/`
-- guillotine-mini: `src/evm.zig`, `src/host.zig`
+Reference anchors:
+- Nethermind module boundary: `nethermind/src/Nethermind/Nethermind.Evm/`
+- Existing guillotine-mini behavior: `src/evm.zig`, `src/host.zig`
 
-## Specs (from `prd/ETHEREUM_SPECS_REFERENCE.md`)
+## Relevant Specs (from `prd/ETHEREUM_SPECS_REFERENCE.md` + direct reads)
 
-**Specs:**
-- `execution-specs/src/ethereum/forks/*/vm/__init__.py`
-- `execution-specs/src/ethereum/forks/*/fork.py` (transaction processing)
-
-**Tests:**
-- `ethereum-tests/GeneralStateTests/` (full suite)
-- `execution-spec-tests/tests/static/state_tests/`
-
-## Execution-specs transaction processing notes (from Osaka fork)
-
-Files read:
-- `execution-specs/src/ethereum/forks/osaka/vm/__init__.py`
+Core execution-spec files (directly relevant to tx/block processing and EVM-state handoff):
 - `execution-specs/src/ethereum/forks/osaka/fork.py`
+- `execution-specs/src/ethereum/forks/osaka/vm/__init__.py`
+- `execution-specs/src/ethereum/forks/osaka/state.py`
 
-**Block-scoped environment (`vm.BlockEnvironment`):**
-- Fields include `chain_id`, `state`, `block_gas_limit`, `block_hashes`, `coinbase`, `number`, `base_fee_per_gas`, `time`, `prev_randao`, `excess_blob_gas`, `parent_beacon_block_root`.
+Additional fork templates to mirror per-fork behavior differences:
+- `execution-specs/src/ethereum/forks/*/fork.py`
+- `execution-specs/src/ethereum/forks/*/vm/__init__.py`
+- `execution-specs/src/ethereum/forks/*/state.py`
+- `execution-specs/src/ethereum/forks/*/transactions.py`
 
-**Transaction-scoped environment (`vm.TransactionEnvironment`):**
-- Fields include `origin`, `gas_price`, `gas`, `access_list_addresses`, `access_list_storage_keys`, `transient_storage`, `blob_versioned_hashes`, `authorizations`, `index_in_block`, `tx_hash`.
+EIPs read for phase-3 execution semantics:
+- `EIPs/EIPS/eip-1559.md` — effective gas price, base fee, intrinsic gas basis for typed txs
+- `EIPs/EIPS/eip-2930.md` — access list typed tx and upfront access list costs
+- `EIPs/EIPS/eip-2929.md` — warm/cold account/storage access sets and gas rules
+- `EIPs/EIPS/eip-3529.md` — refund cap reduction and SELFDESTRUCT refund removal
+- `EIPs/EIPS/eip-3651.md` — warm coinbase behavior
+- `EIPs/EIPS/eip-3860.md` — initcode metering and max initcode constraints
+- `EIPs/EIPS/eip-4844.md` — blob tx fields, blob gas accounting, excess blob gas flow
+- `EIPs/EIPS/eip-6780.md` — SELFDESTRUCT account deletion constraints
+- `EIPs/EIPS/eip-7702.md` — authorization tuples for set-code transactions
 
-**Message / EVM model (`vm.Message`, `vm.Evm`):**
-- `Message` carries `block_env`, `tx_env`, `caller`, `target`, `current_target`, `gas`, `value`, `data`, `code_address`, `code`, `depth`, `is_static`, `accessed_addresses`, `accessed_storage_keys`, `disable_precompiles`, `parent_evm`.
-- `Evm` tracks runtime state: `pc`, `stack`, `memory`, `code`, `gas_left`, `logs`, `refund_counter`, `accounts_to_delete`, `return_data`, `error`, `accessed_addresses`, `accessed_storage_keys`.
+`devp2p/` relevance for this phase:
+- No direct wire-protocol dependency for core EVM↔WorldState integration.
+- Keep networking specs deferred to phase-8; only transaction execution semantics matter here.
 
-**Block execution flow (`apply_body`):**
-- Initialize a `BlockOutput` (tx trie, receipt trie, withdrawals trie, logs, gas used, blob gas used, requests).
-- Process system transactions (e.g., beacon roots, consolidation requests) before normal tx loop.
-- Loop decoded transactions and call `process_transaction`.
-- Process withdrawals (apply balance deltas + withdrawal trie updates).
+## Execution-spec Behavioral Notes to Preserve
 
-**Transaction execution flow (`process_transaction`):**
-- Insert transaction into `transactions_trie`.
-- `validate_transaction` returns intrinsic gas and calldata floor gas cost; `check_transaction` returns sender, effective gas price, blob hashes, blob gas used.
-- `increment_nonce`, debit sender for gas fees and blob gas, build access list sets (coinbase + explicit access list).
-- Build `TransactionEnvironment`, call `prepare_message`, then `process_message_call`.
-- Gas refund uses `min(gas_used // 5, refund_counter)`; adjust for calldata floor; refund sender; pay coinbase priority fee.
-- `destroy_account` for `accounts_to_delete` in tx output.
-- Update `block_output` (gas used, blob gas used, logs, receipts trie).
+From `execution-specs/src/ethereum/forks/osaka/fork.py` and `execution-specs/src/ethereum/forks/osaka/vm/__init__.py`:
 
-**State touch points to bridge in Zig:**
-- Account load/store: `get_account`, `set_account_balance`, `increment_nonce`, `destroy_account`.
-- Storage/code: per-call access list tracking plus `transient_storage` lifetime (per-tx reset).
-- Receipt + trie updates depend on RLP encoding and trie operations (`trie_set`).
+- `apply_body(...)` block flow:
+  - initialize `BlockOutput`
+  - execute system transactions (`BEACON_ROOTS_ADDRESS`, `HISTORY_STORAGE_ADDRESS`)
+  - decode txs, call `process_transaction(...)` per tx
+  - process withdrawals and general-purpose requests
 
-## Nethermind DB Architecture (directory listing)
+- `process_transaction(...)` flow:
+  - write tx into transactions trie via `trie_set`
+  - `validate_transaction(...)` and `check_transaction(...)`
+  - charge sender for execution gas + blob fee (if blob tx)
+  - increment sender nonce before EVM call
+  - seed tx-scoped access list sets and transient storage
+  - build `TransactionEnvironment` and `Message`, execute `process_message_call(...)`
+  - apply refund with cap (`min(gas_used // 5, refund_counter)`) and calldata floor adjustment
+  - refund sender leftover gas, pay coinbase priority fee
+  - process `accounts_to_delete` via `destroy_account(...)`
+  - update gas totals, blob gas totals, receipts trie, and logs
 
-Directory: `nethermind/src/Nethermind/Nethermind.Db/`
+- VM data model expectations:
+  - `BlockEnvironment` holds chain + block + fee + randomness + beacon root context
+  - `TransactionEnvironment` holds origin/gas/access-lists/transient-storage/blob-hashes/authorizations/tx-hash
+  - `Evm` tracks runtime mutable state: gas, stack/memory, logs, refund counter, deletion set, accessed sets
 
-**Key files present (selected):**
-- Interfaces: `IDb.cs`, `IColumnsDb.cs`, `IFullDb.cs`, `IReadOnlyDb.cs`, `ITunableDb.cs`, `IDbProvider.cs`, `IReadOnlyDbProvider.cs`, `IDbFactory.cs`, `IMergeOperator.cs`
-- Providers/implementations: `DbProvider.cs`, `DbProviderExtensions.cs`, `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs`, `MemDb.cs`, `MemColumnsDb.cs`, `NullDb.cs`
-- Pruning/maintenance: `IPruningConfig.cs`, `PruningConfig.cs`, `PruningMode.cs`, `FullPruning/`, `FullPruningTrigger.cs`
-- Columns/metadata: `ReceiptsColumns.cs`, `BlobTxsColumns.cs`, `MetadataDbKeys.cs`, `DbNames.cs`
-- Misc: `CompressingDb.cs`, `RocksDbSettings.cs`, `Metrics.cs`
+- State touch points (`state.py`):
+  - account read/write (`get_account`, `set_account`)
+  - account deletion (`destroy_account`) and storage wipe (`destroy_storage`)
+  - creation tracking (`mark_account_created`) affects SELFDESTRUCT semantics (EIP-6780)
 
-**Key takeaway for Zig:** keep DB interfaces clean and layered; EVM host adapter should depend on WorldState abstractions, not DB specifics.
+## Nethermind DB Architecture Reference (requested listing)
 
-## Voltaire primitives and state-manager APIs (directory listing)
+Directory listed: `nethermind/src/Nethermind/Nethermind.Db/`
 
-Root: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
-- `primitives/`
-- `state-manager/`
-- `evm/`
-- `blockchain/`
-- `crypto/`
-- `jsonrpc/`
-- `log.zig`, `root.zig`
+Key files (selected):
+- Interfaces:
+  - `nethermind/src/Nethermind/Nethermind.Db/IDb.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/IColumnsDb.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/IFullDb.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/IReadOnlyDb.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/IDbProvider.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/IDbFactory.cs`
+- Providers/impls:
+  - `nethermind/src/Nethermind/Nethermind.Db/DbProvider.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDb.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/MemColumnsDb.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/NullDb.cs`
+- Columns/config/pruning:
+  - `nethermind/src/Nethermind/Nethermind.Db/DbNames.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/ReceiptsColumns.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/BlobTxsColumns.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/PruningConfig.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/PruningMode.cs`
+  - `nethermind/src/Nethermind/Nethermind.Db/FullPruning/`
 
-**State-manager modules (public API from `state-manager/root.zig`):**
-- `StateManager` (primary API)
-- `JournaledState`
-- `ForkBackend`, `CacheConfig`, `Transport`, `RpcClient`
-- Cache types: `AccountCache`, `StorageCache`, `ContractCache`, `AccountState`, `StorageKey`
+Architecture takeaway for phase-3:
+- keep host adapter and tx processor dependent on state abstractions, not concrete DB storage details.
 
-**Relevant primitives to use (avoid custom types):**
-- `primitives.Address`, `primitives.Hash`, `primitives.Bytes`, `primitives.Bytes32`
-- `primitives.ChainId`, `primitives.Nonce`, `primitives.Block`, `primitives.BlockHeader`, `primitives.BlockBody`
-- `primitives.Transaction`, `primitives.Receipt`, `primitives.Log`
-- `primitives.AccountState`, `primitives.State`
+## Voltaire Zig APIs (requested listing)
 
-## Existing Zig Host Interface (vtable pattern)
+Listed root: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
 
-File: `src/host.zig`
-- `HostInterface` uses `ptr: *anyopaque` + `vtable: *const VTable`.
-- VTable exposes `getBalance`, `setBalance`, `getCode`, `setCode`, `getStorage`, `setStorage`, `getNonce`, `setNonce`.
-- Thin forwarding methods call through the vtable; reuse this DI pattern for WorldState-backed host.
+Relevant modules for phase-3 integration:
+- Primitives exports (`/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/root.zig`):
+  - `Address`, `Hash`, `Hex`, `Bytes`, `Bytes32`
+  - `Transaction`, `Receipt`, `Block`, `BlockHeader`, `BlockBody`
+  - `AccountState`, `State`, `Storage`, `AccessList`, `Authorization`
+  - `Gas`, `GasPrice`, `BaseFeePerGas`, `EffectiveGasPrice`, `FeeMarket`
+  - `Rlp`, `Bytecode`, `Opcode`, `EventLog`
 
-## Ethereum tests directory listing (fixtures)
+- State manager exports (`/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/root.zig`):
+  - `StateManager`
+  - `JournaledState`
+  - `ForkBackend`, `CacheConfig`, `Transport`, `RpcClient`
+  - cache-level types `AccountCache`, `StorageCache`, `ContractCache`, `AccountState`, `StorageKey`
 
-Directory: `ethereum-tests/`
-- `ABITests/`, `BasicTests/`, `BlockchainTests/`, `DifficultyTests/`, `EOFTests/`, `GenesisTests/`, `JSONSchema/`, `KeyStoreTests/`, `LegacyTests/`, `PoWTests/`, `RLPTests/`, `TransactionTests/`, `TrieTests/`
-- Tarballs: `fixtures_blockchain_tests.tgz`, `fixtures_general_state_tests.tgz` (expected to unpack to `GeneralStateTests/`)
+- EVM implementation files:
+  - `/Users/williamcory/voltaire/packages/voltaire-zig/src/evm/evm.zig`
+  - `/Users/williamcory/voltaire/packages/voltaire-zig/src/evm/host.zig`
 
-**Execution-spec-tests paths observed:**
-- `execution-spec-tests/tests/static/state_tests/`
-- `execution-spec-tests/tests/benchmark/stateful/`
+## Existing Guillotine-mini Host Interface (`src/host.zig`)
+
+Current `HostInterface` is a vtable bridge with these required methods:
+- `getBalance` / `setBalance`
+- `getCode` / `setCode`
+- `getStorage` / `setStorage`
+- `getNonce` / `setNonce`
+
+Design implication:
+- phase-3 host adapter should map these methods directly to WorldState operations with tx-scoped semantics handled in processor/EVM flow.
+
+## Ethereum Test Fixture Paths (requested directory listing)
+
+Top-level directories currently present under `ethereum-tests/`:
+- `ethereum-tests/ABITests/`
+- `ethereum-tests/BasicTests/`
+- `ethereum-tests/BlockchainTests/`
+- `ethereum-tests/DifficultyTests/`
+- `ethereum-tests/EOFTests/`
+- `ethereum-tests/GenesisTests/`
+- `ethereum-tests/JSONSchema/`
+- `ethereum-tests/KeyStoreTests/`
+- `ethereum-tests/LegacyTests/`
+- `ethereum-tests/PoWTests/`
+- `ethereum-tests/RLPTests/`
+- `ethereum-tests/TransactionTests/`
+- `ethereum-tests/TrieTests/`
+
+Relevant fixture archives/paths for phase-3:
+- `ethereum-tests/fixtures_general_state_tests.tgz` (contains `GeneralStateTests/...`)
+- `ethereum-tests/fixtures_blockchain_tests.tgz` (contains `BlockchainTests/...`)
+
+Execution-spec-tests in this checkout:
+- `execution-spec-tests/fixtures/`
+- `execution-spec-tests/fixtures/blockchain_tests/` (present, currently empty in this workspace)
 
 ## Summary
 
-Captured Phase 3 goals and key components; read Osaka execution-specs VM and transaction processing flow to identify EVM↔WorldState touch points (balances, nonces, storage/code, access lists, transient storage, account deletion, receipts/tries); recorded Nethermind DB interface layering files for architectural guidance; enumerated Voltaire state-manager API surface and primitives to reuse; confirmed guillotine-mini HostInterface vtable contract; and listed Ethereum/Execution-spec test fixture locations relevant to stateful EVM integration.
+This pass gathered concrete phase-3 references for EVM↔WorldState wiring: authoritative Osaka execution flows, EIP constraints that directly affect gas/access/refund/account-deletion behavior, Nethermind DB module boundaries for layering discipline, Voltaire primitive/state APIs to reuse, existing guillotine-mini host vtable contract, and available fixture paths (including `GeneralStateTests` inside tarball archives).
