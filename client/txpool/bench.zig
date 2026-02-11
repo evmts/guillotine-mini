@@ -34,7 +34,7 @@ fn mkVHash(byte: u8) VersionedHash {
     return .{ .bytes = [_]u8{byte} ++ [_]u8{0} ** 31 };
 }
 
-fn bench_admission(allocator: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
+fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
     // Config with generous size caps (should all pass)
     var cfg = txpool.TxPoolConfig{};
     cfg.max_tx_size = 256 * 1024; // legacy/1559/2930/7702
