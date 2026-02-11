@@ -23,6 +23,7 @@ import {
   decodeKey,
   encodeKey,
 } from "./DbUtils";
+import { Hex } from "voltaire-effect/primitives";
 
 /** Options for the read-only DB wrapper. */
 export interface ReadOnlyDbOptions {
@@ -54,7 +55,15 @@ type PreparedOverlayWriteOp =
 
 type DbReader = Pick<
   DbService,
-  "get" | "getMany" | "getAll" | "getAllKeys" | "getAllValues" | "has"
+  | "get"
+  | "getMany"
+  | "getAll"
+  | "getAllKeys"
+  | "getAllValues"
+  | "seek"
+  | "next"
+  | "range"
+  | "has"
 >;
 
 const readOnlyWriteError = () =>
@@ -143,6 +152,9 @@ const makeReadOnlyReader = (
       getAll: base.getAll,
       getAllKeys: base.getAllKeys,
       getAllValues: base.getAllValues,
+      seek: base.seek,
+      next: base.next,
+      range: base.range,
       has: base.has,
     } satisfies DbSnapshot;
   }
@@ -269,12 +281,69 @@ const makeReadOnlyReader = (
       return yield* base.has(key);
     });
 
+  const seek = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
+    Effect.gen(function* () {
+      const found = yield* base.seek(key, options);
+      if (Option.isNone(found)) return found;
+      const entry = Option.getOrThrow(found);
+      const keyHex = yield* encodeKey(entry.key);
+      const overlayValue = getOverlayValue(keyHex);
+      return Option.some<DbEntry>({
+        key: entry.key,
+        value:
+          overlayValue !== undefined ? cloneBytes(overlayValue) : entry.value,
+      });
+    });
+
+  const next = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
+    Effect.gen(function* () {
+      const found = yield* base.next(key, options);
+      if (Option.isNone(found)) return found;
+      const entry = Option.getOrThrow(found);
+      const keyHex = yield* encodeKey(entry.key);
+      const overlayValue = getOverlayValue(keyHex);
+      return Option.some<DbEntry>({
+        key: entry.key,
+        value:
+          overlayValue !== undefined ? cloneBytes(overlayValue) : entry.value,
+      });
+    });
+
+  const range = (options?: { readonly prefix?: BytesType }) =>
+    Effect.gen(function* () {
+      const baseEntries = yield* base.range(options);
+      const entries: Array<DbEntry> = [];
+      for (const entry of baseEntries) {
+        const keyHex = yield* encodeKey(entry.key);
+        if (overlay.has(keyHex)) continue;
+        entries.push({
+          key: cloneBytes(entry.key),
+          value: cloneBytes(entry.value),
+        });
+      }
+      for (const [keyHex, value] of overlay.entries()) {
+        const key = decodeKey(keyHex);
+        if (
+          options?.prefix &&
+          !Hex.fromBytes(key).startsWith(Hex.fromBytes(options.prefix))
+        ) {
+          continue;
+        }
+        entries.push({ key, value: cloneBytes(value) });
+      }
+      entries.sort((l, r) => compareBytes(l.key, r.key));
+      return entries;
+    });
+
   return {
     get,
     getMany,
     getAll,
     getAllKeys,
     getAllValues,
+    seek,
+    next,
+    range,
     has,
   } satisfies DbSnapshot;
 };
@@ -371,6 +440,9 @@ const makeReadOnlyDb = (options: ReadOnlyDbOptions = {}) =>
       getAll: reader.getAll,
       getAllKeys: reader.getAllKeys,
       getAllValues: reader.getAllValues,
+      seek: reader.seek,
+      next: reader.next,
+      range: reader.range,
       put,
       merge,
       remove,

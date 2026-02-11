@@ -76,12 +76,45 @@ const makeSnapshot = (store: Map<string, StoreEntry>): DbSnapshot => {
 
   const has = (key: BytesType) => Effect.succeed(store.has(keyOf(key)));
 
+  const sorted = () => orderEntries([...store.values()]);
+
+  const seek = (key: BytesType) =>
+    Effect.succeed(
+      (() => {
+        for (const { key: k, value } of sorted()) {
+          if (String(k) >= String(key)) return Option.some({ key: k, value });
+        }
+        return Option.none();
+      })(),
+    );
+
+  const next = (key: BytesType) =>
+    Effect.succeed(
+      (() => {
+        for (const { key: k, value } of sorted()) {
+          if (String(k) > String(key)) return Option.some({ key: k, value });
+        }
+        return Option.none();
+      })(),
+    );
+
+  const range = () =>
+    Effect.succeed<ReadonlyArray<DbEntry>>(
+      sorted().map(({ key, value }) => ({
+        key,
+        value,
+      })),
+    );
+
   return {
     get,
     getMany,
     getAll,
     getAllKeys,
     getAllValues,
+    seek,
+    next,
+    range,
     has,
   };
 };
@@ -193,6 +226,10 @@ const makeDbService = (hooks: Hooks = {}): DbService => {
         }),
     );
 
+  const seek = (key: BytesType) => snapshotView().seek(key);
+  const next = (key: BytesType) => snapshotView().next(key);
+  const range = () => snapshotView().range();
+
   return {
     name: "state",
     get,
@@ -200,6 +237,9 @@ const makeDbService = (hooks: Hooks = {}): DbService => {
     getAll,
     getAllKeys,
     getAllValues,
+    seek,
+    next,
+    range,
     put,
     merge,
     remove,

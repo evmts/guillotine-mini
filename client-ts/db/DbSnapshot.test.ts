@@ -62,4 +62,37 @@ describe("Db snapshots", () => {
       );
     }).pipe(Effect.provide(DbMemoryTest())),
   );
+
+  it.effect(
+    "snapshot iterator seek/next/range operate over snapshot view",
+    () =>
+      Effect.gen(function* () {
+        const a = toBytes("0x01");
+        const b = toBytes("0x0100");
+        const c = toBytes("0x02");
+
+        yield* put(a, toBytes("0xaa"));
+        yield* put(b, toBytes("0xbb"));
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const snapshot = yield* createSnapshot();
+
+            // mutate live DB after snapshot
+            yield* put(c, toBytes("0xcc"));
+
+            const s = yield* snapshot.seek(toBytes("0x00"));
+            const e = Option.getOrThrow(s);
+            assert.isTrue(Bytes.equals(e.key, b));
+
+            const n = yield* snapshot.next(b);
+            const e2 = Option.getOrThrow(n);
+            assert.isTrue(Bytes.equals(e2.key, a));
+
+            const all = yield* snapshot.range();
+            assert.strictEqual(all.length, 2);
+          }),
+        );
+      }).pipe(Effect.provide(DbMemoryTest())),
+  );
 });

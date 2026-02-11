@@ -123,6 +123,63 @@ const makeReader = (
       return entries.map(({ value }) => cloneBytes(value));
     });
 
+  const startsWith = (key: BytesType, prefix: BytesType): boolean => {
+    const k = key as Uint8Array;
+    const p = prefix as Uint8Array;
+    if (p.length > k.length) return false;
+    for (let i = 0; i < p.length; i++) {
+      if (k[i] !== p[i]) return false;
+    }
+    return true;
+  };
+
+  const withPrefix = (
+    entries: ReadonlyArray<StoreEntry>,
+    options?: { readonly prefix?: BytesType },
+  ) =>
+    options?.prefix
+      ? entries.filter((e) => startsWith(e.key, options.prefix!))
+      : entries;
+
+  const range = (options?: { readonly prefix?: BytesType }) =>
+    Effect.sync(() => {
+      const entries = withPrefix(orderEntries(collectEntries(store)), options);
+      return entries.map(({ key, value }) => ({
+        key,
+        value: cloneBytes(value),
+      }));
+    });
+
+  const seek = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
+    Effect.sync(() => {
+      const entries = withPrefix(orderEntries(collectEntries(store)), options);
+      for (const entry of entries) {
+        const cmp = compareBytes(entry.key, key);
+        if (cmp >= 0) {
+          return Option.some<DbEntry>({
+            key: entry.key,
+            value: cloneBytes(entry.value),
+          });
+        }
+      }
+      return Option.none<DbEntry>();
+    });
+
+  const next = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
+    Effect.sync(() => {
+      const entries = withPrefix(orderEntries(collectEntries(store)), options);
+      for (const entry of entries) {
+        const cmp = compareBytes(entry.key, key);
+        if (cmp > 0) {
+          return Option.some<DbEntry>({
+            key: entry.key,
+            value: cloneBytes(entry.value),
+          });
+        }
+      }
+      return Option.none<DbEntry>();
+    });
+
   const get = (key: BytesType, _flags?: ReadFlags) =>
     Effect.gen(function* () {
       const keyHex = yield* encodeKey(key);
@@ -163,6 +220,9 @@ const makeReader = (
     getAll,
     getAllKeys,
     getAllValues,
+    seek,
+    next,
+    range,
     has,
   };
 };
@@ -190,12 +250,24 @@ const makeNullSnapshot = (): DbSnapshot => {
 
   const has = (_key: BytesType) => Effect.succeed(false);
 
+  const range = (_options?: { readonly prefix?: BytesType }) =>
+    Effect.succeed<ReadonlyArray<DbEntry>>([]);
+
+  const seek = (_key: BytesType, _options?: { readonly prefix?: BytesType }) =>
+    Effect.succeed(Option.none<DbEntry>());
+
+  const next = (_key: BytesType, _options?: { readonly prefix?: BytesType }) =>
+    Effect.succeed(Option.none<DbEntry>());
+
   return {
     get,
     getMany,
     getAll,
     getAllKeys,
     getAllValues,
+    seek,
+    next,
+    range,
     has,
   };
 };
@@ -227,10 +299,17 @@ const makeMemoryDb = (config: DbConfig) =>
       totalWrites += count;
     };
 
-    const { get, getMany, getAll, getAllKeys, getAllValues, has } = makeReader(
-      store,
-      trackRead,
-    );
+    const {
+      get,
+      getMany,
+      getAll,
+      getAllKeys,
+      getAllValues,
+      seek,
+      next,
+      range,
+      has,
+    } = makeReader(store, trackRead);
 
     const put = (key: BytesType, value: BytesType, _flags?: WriteFlags) =>
       Effect.gen(function* () {
@@ -383,6 +462,9 @@ const makeMemoryDb = (config: DbConfig) =>
       getAll,
       getAllKeys,
       getAllValues,
+      seek,
+      next,
+      range,
       put,
       merge,
       remove,
@@ -462,6 +544,9 @@ const makeNullDb = (config: DbConfig) =>
       getAll: snapshot.getAll,
       getAllKeys: snapshot.getAllKeys,
       getAllValues: snapshot.getAllValues,
+      seek: snapshot.seek,
+      next: snapshot.next,
+      range: snapshot.range,
       put,
       merge,
       remove,
@@ -494,6 +579,19 @@ const makeRocksDb = (config: DbConfig) =>
 
     const getAllValues = (_ordered?: boolean) =>
       failRocksDbUnsupported<ReadonlyArray<BytesType>>("getAllValues");
+
+    const seek = (
+      _key: BytesType,
+      _options?: { readonly prefix?: BytesType },
+    ) => failRocksDbUnsupported<Option.Option<DbEntry>>("seek");
+
+    const next = (
+      _key: BytesType,
+      _options?: { readonly prefix?: BytesType },
+    ) => failRocksDbUnsupported<Option.Option<DbEntry>>("next");
+
+    const range = (_options?: { readonly prefix?: BytesType }) =>
+      failRocksDbUnsupported<ReadonlyArray<DbEntry>>("range");
 
     const put = (_key: BytesType, _value: BytesType, _flags?: WriteFlags) =>
       failRocksDbUnsupported<void>("put");
@@ -529,6 +627,9 @@ const makeRocksDb = (config: DbConfig) =>
       getAll,
       getAllKeys,
       getAllValues,
+      seek,
+      next,
+      range,
       put,
       merge,
       remove,
@@ -592,6 +693,22 @@ export const getAllKeys = (ordered?: boolean) =>
 /** Return all values. */
 export const getAllValues = (ordered?: boolean) =>
   withDb((db) => db.getAllValues(ordered));
+
+/** Seek to the first entry with key >= `key`, optionally restricted by `prefix`. */
+export const seek = (
+  key: BytesType,
+  options?: { readonly prefix?: BytesType },
+) => withDb((db) => db.seek(key, options));
+
+/** Move to the next entry with key > `key`, optionally restricted by `prefix`. */
+export const next = (
+  key: BytesType,
+  options?: { readonly prefix?: BytesType },
+) => withDb((db) => db.next(key, options));
+
+/** Return all entries, optionally restricted by a `prefix`. */
+export const range = (options?: { readonly prefix?: BytesType }) =>
+  withDb((db) => db.range(options));
 
 /** Store a value by key. */
 export const put = (key: BytesType, value: BytesType, flags?: WriteFlags) =>

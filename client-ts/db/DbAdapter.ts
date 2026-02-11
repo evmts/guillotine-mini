@@ -23,6 +23,11 @@ export interface DbGetEntry {
   readonly value: Option.Option<BytesType>;
 }
 
+/** Iterator options for prefix-scoped scans. */
+export interface IteratorOptions {
+  readonly prefix?: BytesType;
+}
+
 /** Read-only key/value view used for DB snapshots. */
 export interface DbSnapshot {
   readonly get: (
@@ -42,6 +47,20 @@ export interface DbSnapshot {
     ordered?: boolean,
   ) => Effect.Effect<ReadonlyArray<BytesType>, DbError>;
   readonly has: (key: BytesType) => Effect.Effect<boolean, DbError>;
+  /** Find the first entry whose key is >= `key`, optionally restricted by `prefix`. */
+  readonly seek: (
+    key: BytesType,
+    options?: IteratorOptions,
+  ) => Effect.Effect<Option.Option<DbEntry>, DbError>;
+  /** Find the next entry strictly greater than `key`, optionally restricted by `prefix`. */
+  readonly next: (
+    key: BytesType,
+    options?: IteratorOptions,
+  ) => Effect.Effect<Option.Option<DbEntry>, DbError>;
+  /** List all entries, optionally restricted by a `prefix`. Ordered using Nethermind byte ordering. */
+  readonly range: (
+    options?: IteratorOptions,
+  ) => Effect.Effect<ReadonlyArray<DbEntry>, DbError>;
 }
 
 /** Single write operation for batched commits. */
@@ -106,6 +125,17 @@ export interface DbService extends DbMetaService {
   readonly getAllValues: (
     ordered?: boolean,
   ) => Effect.Effect<ReadonlyArray<BytesType>, DbError>;
+  readonly seek: (
+    key: BytesType,
+    options?: IteratorOptions,
+  ) => Effect.Effect<Option.Option<DbEntry>, DbError>;
+  readonly next: (
+    key: BytesType,
+    options?: IteratorOptions,
+  ) => Effect.Effect<Option.Option<DbEntry>, DbError>;
+  readonly range: (
+    options?: IteratorOptions,
+  ) => Effect.Effect<ReadonlyArray<DbEntry>, DbError>;
   readonly put: (
     key: BytesType,
     value: BytesType,
