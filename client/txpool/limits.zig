@@ -405,7 +405,7 @@ pub fn fits_size_limits(
         payload_len += rlpLenOfUInt(tx.max_priority_fee_per_gas);
         payload_len += rlpLenOfUInt(tx.max_fee_per_gas);
         payload_len += rlpLenOfUInt(tx.gas_limit);
-        // to (always present for EIP-4844)
+        // to (required by EIP-4844; MUST NOT be nil per EIP-4844)
         payload_len += rlpLenOfBytes(20, null);
         // value
         payload_len += rlpLenOfUInt(tx.value);
@@ -428,7 +428,7 @@ pub fn fits_size_limits(
             payload_len += rlpLenOfBytes(32, null);
         }
 
-        // Type prefix (0x03) + RLP(list header+payload)
+        // Type prefix (0x03) + RLP(list header+payload). Blobs are NOT included.
         len = 1 + rlpLenOfList(payload_len);
     } else if (comptime T == tx_mod.Eip7702Transaction) {
         // Length-only sizing for EIP-7702 (typed-4) to minimize allocations.
@@ -546,7 +546,7 @@ pub fn enforce_min_priority_fee_for_blobs(
 // Tests
 // =============================================================================
 
-test "fits_size_limits — legacy within and over limit" {
+test "fits_size_limits — legacy within and over limit (wire size incl. v,r,s)" {
     const tx = tx_mod.LegacyTransaction{
         .nonce = 0,
         .gas_price = 1,
@@ -559,10 +559,68 @@ test "fits_size_limits — legacy within and over limit" {
         .s = [_]u8{0} ** 32,
     };
 
-    // Measure encoded size to craft thresholds deterministically
+    // Compute expected wire size manually: full signed legacy tx RLP
     const allocator = std.testing.allocator;
-    const encoded = try tx_mod.encodeLegacyForSigning(allocator, tx, 1);
-    defer allocator.free(encoded);
+    const rlp = primitives.Rlp;
+    var list = std.array_list.AlignedManaged(u8, null).init(allocator);
+    defer list.deinit();
+    {
+        const enc = try rlp.encode(allocator, tx.nonce);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.gas_price);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.gas_limit);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, &tx.to.?.bytes);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.value);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, tx.data);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.v);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, &tx.r);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, &tx.s);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    var wrapped = std.array_list.AlignedManaged(u8, null).init(allocator);
+    defer wrapped.deinit();
+    if (list.items.len <= 55) {
+        try wrapped.append(@as(u8, @intCast(0xc0 + list.items.len)));
+    } else {
+        const len_bytes = try rlp.encodeLength(allocator, list.items.len);
+        defer allocator.free(len_bytes);
+        try wrapped.append(@as(u8, @intCast(0xf7 + len_bytes.len)));
+        try wrapped.appendSlice(len_bytes);
+    }
+    try wrapped.appendSlice(list.items);
+    const encoded = wrapped.items;
 
     var cfg_ok = TxPoolConfig{}; // defaults allow ample size
     cfg_ok.max_tx_size = encoded.len; // exactly fits
@@ -573,7 +631,7 @@ test "fits_size_limits — legacy within and over limit" {
     try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(std.testing.allocator, tx, cfg_bad));
 }
 
-test "fits_size_limits — eip1559 within and over limit" {
+test "fits_size_limits — eip1559 within and over limit (wire size incl. y_parity,r,s)" {
     const tx = tx_mod.Eip1559Transaction{
         .chain_id = 1,
         .nonce = 0,
@@ -591,7 +649,84 @@ test "fits_size_limits — eip1559 within and over limit" {
     };
 
     const allocator = std.testing.allocator;
-    const encoded = try tx_mod.encodeEip1559ForSigning(allocator, tx);
+    // Build full typed-2 bytes manually to assert true wire size
+    const rlp = primitives.Rlp;
+    var list = std.array_list.AlignedManaged(u8, null).init(allocator);
+    defer list.deinit();
+    {
+        const enc = try rlp.encode(allocator, tx.chain_id);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.nonce);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.max_priority_fee_per_gas);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.max_fee_per_gas);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.gas_limit);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, &tx.to.?.bytes);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.value);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, tx.data);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try tx_mod.encodeAccessList(allocator, tx.access_list);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx.y_parity);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, &tx.r);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, &tx.s);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    var wrapped = std.array_list.AlignedManaged(u8, null).init(allocator);
+    defer wrapped.deinit();
+    if (list.items.len <= 55) {
+        try wrapped.append(@as(u8, @intCast(0xc0 + list.items.len)));
+    } else {
+        const len_bytes = try rlp.encodeLength(allocator, list.items.len);
+        defer allocator.free(len_bytes);
+        try wrapped.append(@as(u8, @intCast(0xf7 + len_bytes.len)));
+        try wrapped.appendSlice(len_bytes);
+    }
+    try wrapped.appendSlice(list.items);
+    const encoded = try allocator.alloc(u8, 1 + wrapped.items.len);
+    encoded[0] = 0x02;
+    @memcpy(encoded[1..], wrapped.items);
     defer allocator.free(encoded);
 
     var cfg_ok = TxPoolConfig{};
