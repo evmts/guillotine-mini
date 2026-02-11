@@ -492,6 +492,18 @@ export const getAllKeys = (ordered?: boolean) =>
 export const getAllValues = (ordered?: boolean) =>
   withReadOnlyDb((db) => db.getAllValues(ordered));
 
+/** Seek to the first entry with key >= `key`, optionally restricted by `prefix`. */
+export const seek = (key: BytesType, options?: IteratorOptions) =>
+  withReadOnlyDb((db) => db.seek(key, options));
+
+/** Move to the next entry with key > `key`, optionally restricted by `prefix`. */
+export const next = (key: BytesType, options?: IteratorOptions) =>
+  withReadOnlyDb((db) => db.next(key, options));
+
+/** Return all entries, optionally restricted by a `prefix`. */
+export const range = (options?: IteratorOptions) =>
+  withReadOnlyDb((db) => db.range(options));
+
 /** Write a value to the read-only DB overlay if enabled. */
 export const put = (key: BytesType, value: BytesType, flags?: WriteFlags) =>
   withReadOnlyDb((db) => db.put(key, value, flags));
