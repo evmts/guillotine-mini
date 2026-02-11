@@ -38,6 +38,23 @@ inline fn rlpLenOfAccessList(list: []const tx_mod.AccessListItem) usize {
     return rlpLenOfList(items_total);
 }
 
+// -----------------------------------------------------------------------------
+// Public helpers (no allocations)
+// -----------------------------------------------------------------------------
+/// Compute the furthest in-order nonce the pool should accept without a gap
+/// given the current account nonce and the number of already-pending
+/// transactions from the same sender.
+///
+/// Mirrors Nethermind's GapNonceFilter notion of
+///   next_nonce_in_order = current_nonce + pending_sender_txs
+///
+/// Saturates on u64 overflow (returns `maxInt(u64)`). No allocations.
+pub fn next_nonce_in_order(current_nonce: u64, pending_sender_txs: u32) u64 {
+    const sum128: u128 = @as(u128, current_nonce) + @as(u128, pending_sender_txs);
+    const max = std.math.maxInt(u64);
+    return if (sum128 > max) max else @intCast(sum128);
+}
+
 /// Validate a transaction's `gas_limit` against optional pool cap.
 ///
 /// - If `cfg.gas_limit` is `null`, this check is a no-op.
@@ -108,6 +125,16 @@ test "enforce_nonce_gap — accepts when within pending window" {
 
 test "enforce_nonce_gap — rejects when beyond pending window" {
     try std.testing.expectError(error.NonceGap, enforce_nonce_gap(14, 10, 3));
+}
+
+test "next_nonce_in_order — computes upper bound without overflow" {
+    try std.testing.expectEqual(@as(u64, 13), next_nonce_in_order(10, 3));
+    try std.testing.expectEqual(@as(u64, 10), next_nonce_in_order(10, 0));
+}
+
+test "next_nonce_in_order — saturates on u64 overflow" {
+    const near_max: u64 = std.math.maxInt(u64) - 1;
+    try std.testing.expectEqual(std.math.maxInt(u64), next_nonce_in_order(near_max, 3));
 }
 /// Validate the RLP-encoded size of a transaction against pool limits.
 ///
@@ -742,6 +769,174 @@ test "fits_size_limits — eip7702 within and over limit (signed)" {
     var cfg_bad = TxPoolConfig{};
     cfg_bad.max_tx_size = encoded.len - 1;
     try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(allocator, tx, cfg_bad));
+}
+
+test "fits_size_limits — eip2930 within and over limit (with/without signature)" {
+    const Address = primitives.Address;
+    const rlp = primitives.Rlp;
+
+    // Case A: with recipient and signature
+    var tx_signed = tx_mod.Eip2930Transaction{
+        .chain_id = 1,
+        .nonce = 7,
+        .gas_price = 3,
+        .gas_limit = 25_000,
+        .to = Address{ .bytes = [_]u8{0x66} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{ 0x01, 0x02, 0x03 },
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 1,
+        .r = [_]u8{9} ** 32,
+        .s = [_]u8{7} ** 32,
+    };
+
+    const allocator = std.testing.allocator;
+    // Manually encode typed-1 payload for expected length
+    var list = std.array_list.AlignedManaged(u8, null).init(allocator);
+    defer list.deinit();
+    {
+        const enc = try rlp.encode(allocator, tx_signed.chain_id);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx_signed.nonce);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx_signed.gas_price);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx_signed.gas_limit);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, &@as(Address, tx_signed.to.?).bytes);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx_signed.value);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, tx_signed.data);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try tx_mod.encodeAccessList(allocator, tx_signed.access_list);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx_signed.y_parity);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, &tx_signed.r);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, &tx_signed.s);
+        defer allocator.free(enc);
+        try list.appendSlice(enc);
+    }
+    var wrapped = std.array_list.AlignedManaged(u8, null).init(allocator);
+    defer wrapped.deinit();
+    if (list.items.len <= 55) {
+        try wrapped.append(@as(u8, @intCast(0xc0 + list.items.len)));
+    } else {
+        const len_bytes = try rlp.encodeLength(allocator, list.items.len);
+        defer allocator.free(len_bytes);
+        try wrapped.append(@as(u8, @intCast(0xf7 + len_bytes.len)));
+        try wrapped.appendSlice(len_bytes);
+    }
+    try wrapped.appendSlice(list.items);
+    const encoded_signed = try allocator.alloc(u8, 1 + wrapped.items.len);
+    defer allocator.free(encoded_signed);
+    encoded_signed[0] = 0x01;
+    @memcpy(encoded_signed[1..], wrapped.items);
+
+    var cfg = TxPoolConfig{};
+    cfg.max_tx_size = encoded_signed.len;
+    try fits_size_limits(allocator, tx_signed, cfg);
+    cfg.max_tx_size = encoded_signed.len - 1;
+    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(allocator, tx_signed, cfg));
+
+    // Case B: to = null, no signature
+    var tx_unsigned = tx_signed;
+    tx_unsigned.to = null;
+    tx_unsigned.y_parity = 0;
+    tx_unsigned.r = [_]u8{0} ** 32;
+    tx_unsigned.s = [_]u8{0} ** 32;
+
+    var list2 = std.array_list.AlignedManaged(u8, null).init(allocator);
+    defer list2.deinit();
+    {
+        const enc = try rlp.encode(allocator, tx_unsigned.chain_id);
+        defer allocator.free(enc);
+        try list2.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx_unsigned.nonce);
+        defer allocator.free(enc);
+        try list2.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx_unsigned.gas_price);
+        defer allocator.free(enc);
+        try list2.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encode(allocator, tx_unsigned.gas_limit);
+        defer allocator.free(enc);
+        try list2.appendSlice(enc);
+    }
+    // to = null → empty RLP string
+    try list2.append(0x80);
+    {
+        const enc = try rlp.encode(allocator, tx_unsigned.value);
+        defer allocator.free(enc);
+        try list2.appendSlice(enc);
+    }
+    {
+        const enc = try rlp.encodeBytes(allocator, tx_unsigned.data);
+        defer allocator.free(enc);
+        try list2.appendSlice(enc);
+    }
+    {
+        const enc = try tx_mod.encodeAccessList(allocator, tx_unsigned.access_list);
+        defer allocator.free(enc);
+        try list2.appendSlice(enc);
+    }
+    var wrapped2 = std.array_list.AlignedManaged(u8, null).init(allocator);
+    defer wrapped2.deinit();
+    if (list2.items.len <= 55) {
+        try wrapped2.append(@as(u8, @intCast(0xc0 + list2.items.len)));
+    } else {
+        const len_bytes = try rlp.encodeLength(allocator, list2.items.len);
+        defer allocator.free(len_bytes);
+        try wrapped2.append(@as(u8, @intCast(0xf7 + len_bytes.len)));
+        try wrapped2.appendSlice(len_bytes);
+    }
+    try wrapped2.appendSlice(list2.items);
+    const encoded_unsigned = try allocator.alloc(u8, 1 + wrapped2.items.len);
+    defer allocator.free(encoded_unsigned);
+    encoded_unsigned[0] = 0x01;
+    @memcpy(encoded_unsigned[1..], wrapped2.items);
+
+    cfg.max_tx_size = encoded_unsigned.len;
+    try fits_size_limits(allocator, tx_unsigned, cfg);
+    cfg.max_tx_size = encoded_unsigned.len - 1;
+    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(allocator, tx_unsigned, cfg));
 }
 
 test "fits_gas_limit — passes when under/equal, errors when over (legacy)" {
