@@ -113,44 +113,38 @@ export const makeBlockTreeOverlayService = (
   const readThroughOption = <A>(
     overlay: Effect.Effect<Option.Option<A>, BlockTreeError>,
     base: () => Effect.Effect<Option.Option<A>, BlockTreeError>,
+    onOverlayHit: (value: A) => Effect.Effect<void, BlockTreeError> = () =>
+      Effect.void,
   ) =>
     Effect.gen(function* () {
       const overlayValue = yield* overlay;
       if (Option.isSome(overlayValue)) {
+        yield* onOverlayHit(Option.getOrThrow(overlayValue));
         return overlayValue;
       }
       return yield* base();
     });
 
   const getBlock = (hash: BlockHashType) =>
-    Effect.gen(function* () {
-      const overlayValue = yield* overlayTree.getBlock(hash);
-      if (Option.isSome(overlayValue)) {
-        yield* rememberOverlayHash(Option.getOrThrow(overlayValue).hash);
-        return overlayValue;
-      }
-      return yield* baseTree.getBlock(hash);
-    });
+    readThroughOption(
+      overlayTree.getBlock(hash),
+      () => baseTree.getBlock(hash),
+      (block) => rememberOverlayHash(block.hash),
+    );
 
   const getBlockByNumber = (number: BlockNumberType) =>
-    Effect.gen(function* () {
-      const overlayValue = yield* overlayTree.getBlockByNumber(number);
-      if (Option.isSome(overlayValue)) {
-        yield* rememberOverlayHash(Option.getOrThrow(overlayValue).hash);
-        return overlayValue;
-      }
-      return yield* baseTree.getBlockByNumber(number);
-    });
+    readThroughOption(
+      overlayTree.getBlockByNumber(number),
+      () => baseTree.getBlockByNumber(number),
+      (block) => rememberOverlayHash(block.hash),
+    );
 
   const getCanonicalHash = (number: BlockNumberType) =>
-    Effect.gen(function* () {
-      const overlayValue = yield* overlayTree.getCanonicalHash(number);
-      if (Option.isSome(overlayValue)) {
-        yield* rememberOverlayHash(Option.getOrThrow(overlayValue));
-        return overlayValue;
-      }
-      return yield* baseTree.getCanonicalHash(number);
-    });
+    readThroughOption(
+      overlayTree.getCanonicalHash(number),
+      () => baseTree.getCanonicalHash(number),
+      (hash) => rememberOverlayHash(hash),
+    );
 
   const hasBlock = (hash: BlockHashType) =>
     Effect.gen(function* () {
@@ -273,6 +267,7 @@ export const makeBlockTreeOverlayService = (
     });
 
   return {
+    [BLOCK_TREE_INSTANCE_ID]: overlayTree[BLOCK_TREE_INSTANCE_ID],
     getBlock,
     getBlockByNumber,
     getCanonicalHash,

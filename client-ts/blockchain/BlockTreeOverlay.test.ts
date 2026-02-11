@@ -128,6 +128,14 @@ describe("BlockTreeOverlay", () => {
 
         yield* overlay.putBlock(genesis);
 
+        assert.notStrictEqual(
+          base[BLOCK_TREE_INSTANCE_ID],
+          overlayTree[BLOCK_TREE_INSTANCE_ID],
+        );
+        assert.strictEqual(
+          overlay[BLOCK_TREE_INSTANCE_ID],
+          overlayTree[BLOCK_TREE_INSTANCE_ID],
+        );
         assert.isTrue(yield* overlayTree.hasBlock(genesis.hash));
         assert.isFalse(yield* base.hasBlock(genesis.hash));
       }).pipe(Effect.provide(blockTreeOverlayIsolatedLive)),
