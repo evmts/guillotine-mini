@@ -1178,7 +1178,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     if (hardfork) |hf| {
                         validateBlockHeaderConstants(allocator, hf, block, parent_block) catch |err| switch (err) {
                             client_blockchain.ValidationError.InvalidDifficulty,
-                            client_blockchain.ValidationError.InvalidMixHash,
                             client_blockchain.ValidationError.InvalidNonce,
                             client_blockchain.ValidationError.InvalidOmmersHash,
                             client_blockchain.ValidationError.InvalidExtraDataLength,

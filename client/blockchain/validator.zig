@@ -13,7 +13,6 @@ const Hardfork = primitives.Hardfork;
 /// Errors returned by PoS header constant validation.
 pub const ValidationError = error{
     InvalidDifficulty,
-    InvalidMixHash,
     InvalidNonce,
     InvalidOmmersHash,
     InvalidExtraDataLength,
@@ -25,9 +24,14 @@ pub const ValidationError = error{
     InvalidParentHash,
     InvalidBlockNumber,
     MissingParentHeader,
-    BaseFeeOverflow,
+    // Arithmetic errors while computing base fee deltas (overflow/underflow)
+    BaseFeeMath,
+    // Cancun+ header must include blob_gas_used
+    MissingBlobGasUsed,
     MissingExcessBlobGas,
     InvalidExcessBlobGas,
+    // Pre-Cancun headers must not carry any 4844 fields
+    UnexpectedBlobFieldsPreCancun,
     OutOfMemory,
 };
 
@@ -85,12 +89,12 @@ fn calculate_base_fee_per_gas(
             u256,
             parent_base_fee_per_gas,
             @as(u256, gas_used_delta),
-        ) catch return ValidationError.BaseFeeOverflow;
+        ) catch return ValidationError.BaseFeeMath;
         const target_fee_gas_delta = parent_fee_gas_delta / @as(u256, parent_gas_target);
         var base_fee_per_gas_delta = target_fee_gas_delta / @as(u256, BASE_FEE_MAX_CHANGE_DENOMINATOR);
         if (base_fee_per_gas_delta == 0) base_fee_per_gas_delta = 1;
         return std.math.add(u256, parent_base_fee_per_gas, base_fee_per_gas_delta) catch
-            return ValidationError.BaseFeeOverflow;
+            return ValidationError.BaseFeeMath;
     }
 
     const gas_used_delta = parent_gas_target - parent_gas_used;
@@ -98,10 +102,10 @@ fn calculate_base_fee_per_gas(
         u256,
         parent_base_fee_per_gas,
         @as(u256, gas_used_delta),
-    ) catch return ValidationError.BaseFeeOverflow;
+    ) catch return ValidationError.BaseFeeMath;
     const target_fee_gas_delta = parent_fee_gas_delta / @as(u256, parent_gas_target);
     const base_fee_per_gas_delta = target_fee_gas_delta / @as(u256, BASE_FEE_MAX_CHANGE_DENOMINATOR);
-    if (parent_base_fee_per_gas < base_fee_per_gas_delta) return ValidationError.BaseFeeOverflow;
+    if (parent_base_fee_per_gas < base_fee_per_gas_delta) return ValidationError.BaseFeeMath;
     return parent_base_fee_per_gas - base_fee_per_gas_delta;
 }
 
