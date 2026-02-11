@@ -8,6 +8,7 @@ const TxPoolConfig = @import("pool.zig").TxPoolConfig;
 const TxPool = @import("pool.zig").TxPool;
 const U256 = primitives.Denomination.U256;
 const GasLimit = primitives.Gas.GasLimit;
+const Address = primitives.Address;
 // -----------------------------------------------------------------------------
 // Internal helpers (no allocations)
 // -----------------------------------------------------------------------------
@@ -317,18 +318,54 @@ pub fn fits_size_limits(
         }
     }
 
+    // This function computes lengths without allocating; keep allocator in the
+    // signature for API stability and future-proofing, but mark it used.
+    _ = allocator;
+
     // Use caller-provided allocator to avoid page allocator churn on hot path
 
     var len: usize = 0;
     if (comptime T == tx_mod.LegacyTransaction) {
-        // Chain ID is ignored for signed tx in encoder; use 1 as placeholder.
-        const bytes = try tx_mod.encodeLegacyForSigning(allocator, tx, 1);
-        defer allocator.free(bytes);
-        len = bytes.len;
+        // Allocation-free, wire-accurate legacy RLP sizing (always includes v,r,s)
+        var payload_len: usize = 0;
+        payload_len += rlpLenOfUInt(tx.nonce);
+        payload_len += rlpLenOfUInt(tx.gas_price);
+        payload_len += rlpLenOfUInt(tx.gas_limit);
+        if (tx.to) |_| {
+            payload_len += rlpLenOfBytes(20, null);
+        } else {
+            payload_len += rlpLenOfBytes(0, null);
+        }
+        payload_len += rlpLenOfUInt(tx.value);
+        const first_legacy: ?u8 = if (tx.data.len == 1) tx.data[0] else null;
+        payload_len += rlpLenOfBytes(tx.data.len, first_legacy);
+        // Signature fields are part of the on-wire encoding
+        payload_len += rlpLenOfUInt(tx.v);
+        payload_len += rlpLenOfBytes(32, null); // r (encoded as bytes in primitives)
+        payload_len += rlpLenOfBytes(32, null); // s (encoded as bytes in primitives)
+        len = rlpLenOfList(payload_len);
     } else if (comptime T == tx_mod.Eip1559Transaction) {
-        const bytes = try tx_mod.encodeEip1559ForSigning(allocator, tx);
-        defer allocator.free(bytes);
-        len = bytes.len;
+        // Allocation-free, wire-accurate typed-2 sizing (always includes y_parity,r,s)
+        var payload_len: usize = 0;
+        payload_len += rlpLenOfUInt(tx.chain_id);
+        payload_len += rlpLenOfUInt(tx.nonce);
+        payload_len += rlpLenOfUInt(tx.max_priority_fee_per_gas);
+        payload_len += rlpLenOfUInt(tx.max_fee_per_gas);
+        payload_len += rlpLenOfUInt(tx.gas_limit);
+        if (tx.to) |_| {
+            payload_len += rlpLenOfBytes(20, null);
+        } else {
+            payload_len += rlpLenOfBytes(0, null);
+        }
+        payload_len += rlpLenOfUInt(tx.value);
+        const first1559: ?u8 = if (tx.data.len == 1) tx.data[0] else null;
+        payload_len += rlpLenOfBytes(tx.data.len, first1559);
+        payload_len += rlpLenOfAccessList(tx.access_list);
+        // Always account for signature triplet for on-wire size
+        payload_len += rlpLenOfUInt(tx.y_parity);
+        payload_len += rlpLenOfBytes(32, null); // r (encoded as bytes in primitives)
+        payload_len += rlpLenOfBytes(32, null); // s (encoded as bytes in primitives)
+        len = 1 + rlpLenOfList(payload_len);
     } else if (comptime T == tx_mod.Eip2930Transaction) {
         // Allocation-free length calculation for EIP-2930 typed transaction (0x01)
         var payload_len: usize = 0;
