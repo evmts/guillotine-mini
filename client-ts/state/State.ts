@@ -398,6 +398,7 @@ const makeWorldState = Effect.gen(function* () {
         return;
       }
       for (const [slotKey, value] of slots) {
+        recordOriginalStorageValue(key, slotKey, value);
         yield* journal.append({
           key: storageJournalKey(key, slotKey),
           value: cloneStorageValue(value),
