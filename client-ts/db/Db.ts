@@ -28,6 +28,7 @@ import {
   compareBytes,
   decodeKey,
   encodeKey,
+  startsWithBytes,
 } from "./DbUtils";
 
 export * from "./DbTypes";
@@ -81,20 +82,27 @@ const orderEntries = (entries: Array<StoreEntry>): Array<StoreEntry> => {
 const listEntries = (
   store: Map<string, BytesType>,
   ordered = false,
+  getOrdered?: () => ReadonlyArray<StoreEntry>,
+  getUnordered?: () => ReadonlyArray<StoreEntry>,
 ): ReadonlyArray<DbEntry> => {
-  const entries = collectEntries(store);
-  if (ordered) {
-    orderEntries(entries);
-  }
-  return entries.map(({ key, value }) => ({
+  const baseEntries = ordered
+    ? getOrdered?.() ?? orderEntries(collectEntries(store))
+    : getUnordered?.() ?? collectEntries(store);
+  return baseEntries.map(({ key, value }) => ({
     key,
     value: cloneBytes(value),
   }));
 };
 
+type EntryCache = {
+  readonly getOrdered?: () => ReadonlyArray<StoreEntry>;
+  readonly getUnordered?: () => ReadonlyArray<StoreEntry>;
+};
+
 const makeReader = (
   store: Map<string, BytesType>,
   trackRead?: (count: number) => void,
+  cache?: EntryCache,
 ): DbSnapshot => {
   const noteRead = (count = 1) => {
     if (trackRead) {
@@ -103,12 +111,23 @@ const makeReader = (
   };
 
   const getAll = (ordered?: boolean) =>
-    Effect.sync(() => listEntries(store, Boolean(ordered)));
+    Effect.sync(() =>
+      listEntries(
+        store,
+        Boolean(ordered),
+        cache?.getOrdered,
+        cache?.getUnordered,
+      ),
+    );
 
   const getAllKeys = (ordered?: boolean) =>
     Effect.sync(() => {
       const keys = Array.from(store.keys(), (keyHex) => decodeKey(keyHex));
       if (ordered) {
+        const orderedEntries = cache?.getOrdered?.();
+        if (orderedEntries) {
+          return orderedEntries.map(({ key }) => key);
+        }
         keys.sort(compareBytes);
       }
       return keys;
@@ -117,33 +136,26 @@ const makeReader = (
   const getAllValues = (ordered?: boolean) =>
     Effect.sync(() => {
       if (!ordered) {
+        const unordered = cache?.getUnordered?.();
+        if (unordered) return unordered.map(({ value }) => cloneBytes(value));
         return Array.from(store.values(), (value) => cloneBytes(value));
       }
-      const entries = orderEntries(collectEntries(store));
+      const entries = cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
       return entries.map(({ value }) => cloneBytes(value));
     });
-
-  const startsWith = (key: BytesType, prefix: BytesType): boolean => {
-    const k = key as Uint8Array;
-    const p = prefix as Uint8Array;
-    if (p.length > k.length) return false;
-    for (let i = 0; i < p.length; i++) {
-      if (k[i] !== p[i]) return false;
-    }
-    return true;
-  };
 
   const withPrefix = (
     entries: ReadonlyArray<StoreEntry>,
     options?: { readonly prefix?: BytesType },
   ) =>
     options?.prefix
-      ? entries.filter((e) => startsWith(e.key, options.prefix!))
+      ? entries.filter((e) => startsWithBytes(e.key, options.prefix!))
       : entries;
 
   const range = (options?: { readonly prefix?: BytesType }) =>
     Effect.sync(() => {
-      const entries = withPrefix(orderEntries(collectEntries(store)), options);
+      const ordered = cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
+      const entries = withPrefix(ordered, options);
       return entries.map(({ key, value }) => ({
         key,
         value: cloneBytes(value),
@@ -152,7 +164,8 @@ const makeReader = (
 
   const seek = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
     Effect.sync(() => {
-      const entries = withPrefix(orderEntries(collectEntries(store)), options);
+      const ordered = cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
+      const entries = withPrefix(ordered, options);
       for (const entry of entries) {
         const cmp = compareBytes(entry.key, key);
         if (cmp >= 0) {
@@ -167,7 +180,8 @@ const makeReader = (
 
   const next = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
     Effect.sync(() => {
-      const entries = withPrefix(orderEntries(collectEntries(store)), options);
+      const ordered = cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
+      const entries = withPrefix(ordered, options);
       for (const entry of entries) {
         const cmp = compareBytes(entry.key, key);
         if (cmp > 0) {
@@ -290,13 +304,31 @@ const makeMemoryDb = (config: DbConfig) =>
       Effect.sync(() => new Map<string, BytesType>()),
       (map) => Effect.sync(() => map.clear()),
     );
-    let totalReads = 0;
-    let totalWrites = 0;
-    const trackRead = (count = 1) => {
-      totalReads += count;
+  let totalReads = 0;
+  let totalWrites = 0;
+  const trackRead = (count = 1) => {
+    totalReads += count;
+  };
+  const trackWrite = (count = 1) => {
+    totalWrites += count;
+  };
+
+    // Lightweight caches for ordered / unordered entry views
+    let cacheOrdered: ReadonlyArray<StoreEntry> | null = null;
+    let cacheUnordered: ReadonlyArray<StoreEntry> | null = null;
+    const resetCache = () => {
+      cacheOrdered = null;
+      cacheUnordered = null;
     };
-    const trackWrite = (count = 1) => {
-      totalWrites += count;
+    const getUnordered = () => {
+      if (cacheUnordered) return cacheUnordered;
+      cacheUnordered = collectEntries(store);
+      return cacheUnordered;
+    };
+    const getOrdered = () => {
+      if (cacheOrdered) return cacheOrdered;
+      cacheOrdered = orderEntries(getUnordered().slice());
+      return cacheOrdered;
     };
 
     const {
@@ -309,13 +341,14 @@ const makeMemoryDb = (config: DbConfig) =>
       next,
       range,
       has,
-    } = makeReader(store, trackRead);
+    } = makeReader(store, trackRead, { getOrdered, getUnordered });
 
     const put = (key: BytesType, value: BytesType, _flags?: WriteFlags) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
         const storedValue = yield* cloneBytesEffect(value);
         store.set(keyHex, storedValue);
+        resetCache();
         trackWrite();
       });
 
@@ -326,6 +359,7 @@ const makeMemoryDb = (config: DbConfig) =>
       Effect.gen(function* () {
         const keyHex = yield* encodeKey(key);
         store.delete(keyHex);
+        resetCache();
         trackWrite();
       });
 
@@ -341,7 +375,25 @@ const makeMemoryDb = (config: DbConfig) =>
           }),
           (snapshotStore) => Effect.sync(() => snapshotStore.clear()),
         ),
-        (snapshotStore) => makeReader(snapshotStore),
+        (snapshotStore) => {
+          // Snapshot is immutable; cache once lazily per snapshot
+          let snapOrdered: ReadonlyArray<StoreEntry> | null = null;
+          let snapUnordered: ReadonlyArray<StoreEntry> | null = null;
+          const getSnapUnordered = () => {
+            if (snapUnordered) return snapUnordered;
+            snapUnordered = collectEntries(snapshotStore);
+            return snapUnordered;
+          };
+          const getSnapOrdered = () => {
+            if (snapOrdered) return snapOrdered;
+            snapOrdered = orderEntries(getSnapUnordered().slice());
+            return snapOrdered;
+          };
+          return makeReader(snapshotStore, undefined, {
+            getOrdered: getSnapOrdered,
+            getUnordered: getSnapUnordered,
+          });
+        },
       );
 
     const flush = (_onlyWal?: boolean) =>
@@ -352,6 +404,7 @@ const makeMemoryDb = (config: DbConfig) =>
     const clear = () =>
       Effect.sync(() => {
         store.clear();
+        resetCache();
       });
 
     const compact = () =>
@@ -411,6 +464,7 @@ const makeMemoryDb = (config: DbConfig) =>
             trackWrite();
           }
         }
+        resetCache();
       });
 
     const startWriteBatch = () =>
@@ -421,6 +475,7 @@ const makeMemoryDb = (config: DbConfig) =>
               const keyHex = yield* encodeKey(key);
               const storedValue = yield* cloneBytesEffect(value);
               store.set(keyHex, storedValue);
+              resetCache();
               trackWrite();
             });
 
@@ -434,6 +489,7 @@ const makeMemoryDb = (config: DbConfig) =>
             Effect.gen(function* () {
               const keyHex = yield* encodeKey(key);
               store.delete(keyHex);
+              resetCache();
               trackWrite();
             });
 
