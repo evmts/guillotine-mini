@@ -1,120 +1,88 @@
-# [Pass 1/5] Phase 0: DB Abstraction Layer - Context
+# [pass 1/5] phase-0-db (DB Abstraction Layer)
 
-## Phase Goal
+This context file aggregates the minimal, high-signal references to implement Phase 0 (DB Abstraction Layer) in Effect.ts while mirroring Nethermind’s module boundaries and reusing the existing guillotine-mini EVM semantics.
 
-Source: `prd/GUILLOTINE_CLIENT_PLAN.md`
+## Goals (from prd/GUILLOTINE_CLIENT_PLAN.md)
+- Create a database abstraction layer for persistent storage.
+- Provide a generic DB interface, plus at least two backends:
+  - RocksDB backend for production
+  - In-memory backend for testing
+- Expected module mapping (Zig → Effect.ts):
+  - `client/db/adapter.zig` → `client-ts/src/db/Adapter.ts` (Context.Tag + Layer)
+  - `client/db/rocksdb.zig` → `client-ts/src/db/RocksDb.ts`
+  - `client/db/memory.zig` → `client-ts/src/db/Memory.ts`
 
-- Phase id: `phase-0-db`
-- Goal: create a database abstraction layer for persistent storage.
-- Planned components:
-- `client/db/adapter.zig`
-- `client/db/rocksdb.zig`
-- `client/db/memory.zig`
-- Structural reference: `nethermind/src/Nethermind/Nethermind.Db/`
-- Voltaire reference root: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
+## Specs (from prd/ETHEREUM_SPECS_REFERENCE.md)
+- Phase 0 has no external normative specs; design is an internal abstraction.
+- Primary architectural reference: Nethermind Db.
 
-## Relevant Specs
+## Nethermind reference (nethermind/src/Nethermind/Nethermind.Db/)
+Key interfaces and components to mirror idiomatically in Effect.ts (interfaces, providers, factories, implementations, tuning):
+- Interfaces:
+  - `IDb.cs` — base key/value database interface
+  - `IColumnsDb.cs` — multi-column/column-family interface
+  - `IFullDb.cs` — full-featured DB abstraction
+  - `IReadOnlyDb.cs`, `IReadOnlyDbProvider.cs` — read-only surfaces
+  - `IDbProvider.cs` — orchestrates access to named databases
+  - `IDbFactory.cs` — factory for opening DBs
+  - `ITunableDb.cs` — tuning hooks (compaction, cache sizes, etc.)
+  - `IMergeOperator.cs` — merge semantics for specific columns
+- Providers/Factories/Settings:
+  - `DbProvider.cs`, `DbProviderExtensions.cs`, `DbExtensions.cs`
+  - `RocksDbSettings.cs`, `NullRocksDbFactory.cs`, `MemDbFactory.cs`
+- Implementations:
+  - `MemDb.cs`, `MemColumnsDb.cs`, `InMemoryWriteBatch.cs`, `InMemoryColumnBatch.cs`
+  - `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs`, `NullDb.cs`
+  - `CompressingDb.cs`, `RocksDbMergeEnumerator.cs`
+- Schema/Columns & Meta:
+  - `DbNames.cs`, `MetadataDbKeys.cs`, `ReceiptsColumns.cs`, `BlobTxsColumns.cs`
+- Pruning:
+  - `PruningMode.cs`, `PruningConfig.cs`, `FullPruning`, `FullPruningTrigger.cs`, `FullPruningCompletionBehavior.cs`
+- Metrics:
+  - `Metrics.cs`
 
-Source: `prd/ETHEREUM_SPECS_REFERENCE.md`
+Design implications for Effect.ts:
+- Expose a small, typed `Db` service (Context.Tag) with column-aware operations and batched writes.
+- Separate `DbProvider` (opens named DBs with schema/columns) from concrete backends.
+- Provide `MemoryDb` for tests and `RocksDb` (or equivalent) for prod; surface tuning via config.
+- Model merge operators and pruning as optional capabilities.
 
-- For Phase 0 DB abstraction, normative Ethereum spec dependency is `N/A`.
-- Test expectation for this phase: unit tests only.
-- Adjacent spec files that drive DB consumers in later phases:
-- `execution-specs/src/ethereum/forks/frontier/state.py`
-- `execution-specs/src/ethereum/forks/frontier/trie.py`
-- `execution-specs/src/ethereum/forks/cancun/state.py`
-- `execution-specs/src/ethereum/forks/cancun/trie.py`
-- `execution-specs/src/ethereum/forks/prague/state.py`
-- `execution-specs/src/ethereum/forks/prague/trie.py`
+## Voltaire Zig sources (for adjacent storage/state patterns)
+Located at `/Users/williamcory/voltaire/packages/voltaire-zig/src/`.
+Relevant APIs and code patterns (for naming and data flow, not persistence):
+- `blockchain.BlockStore` — local in-memory block storage with canonical chain mapping
+  - Path: `.../blockchain/BlockStore.zig`
+- `blockchain.Blockchain`, `blockchain.ForkBlockCache` — orchestration + fork cache
+  - Path: `.../blockchain/{Blockchain.zig,ForkBlockCache.zig,root.zig}`
+- `state-manager.StateManager` & `state-manager.JournaledState` — overlay caches + journaling
+  - Path: `.../state-manager/{StateManager.zig,JournaledState.zig,root.zig}`
 
-## Nethermind DB Reference (Key Files)
+These show clean separation of orchestration vs. storage concerns and favor typed modules and explicit lifecycles — patterns to emulate in the Effect.ts service design.
 
-Listed from: `nethermind/src/Nethermind/Nethermind.Db/`
+## guillotine-mini EVM host (for state I/O surface)
+- Path: `src/host.zig`
+- `HostInterface.VTable` methods (vtable-based):
+  - `getBalance(addr) -> u256`, `setBalance(addr, u256)`
+  - `getCode(addr) -> []const u8`, `setCode(addr, []const u8)`
+  - `getStorage(addr, slot) -> u256`, `setStorage(addr, slot, u256)`
+  - `getNonce(addr) -> u64`, `setNonce(addr, u64)`
+Implication: DB layer must support account/storage/code/nonce primitives efficiently and atomically; the Effect.ts state layer will adapt this onto the EVM host.
 
-- `nethermind/src/Nethermind/Nethermind.Db/IDb.cs`
-- Core KV interface, batching, metadata (`Flush`, `Clear`, metrics), read helpers.
-- `nethermind/src/Nethermind/Nethermind.Db/IColumnsDb.cs`
-- Column-family abstraction (`GetColumnDb`), column batching and snapshots.
-- `nethermind/src/Nethermind/Nethermind.Db/IDbFactory.cs`
-- Backend factory boundary (`CreateDb`, `CreateColumnsDb`, db path resolution).
-- `nethermind/src/Nethermind/Nethermind.Db/IDbProvider.cs`
-- Named DB provider (`StateDb`, `CodeDb`, `ReceiptsDb`, `BlocksDb`, etc.).
-- `nethermind/src/Nethermind/Nethermind.Db/DbNames.cs`
-- Canonical logical names: `state`, `storage`, `code`, `headers`, `receipts`, `blobTransactions`, etc.
-- `nethermind/src/Nethermind/Nethermind.Db/DbProvider.cs`
-- DI-based keyed resolver for DB instances.
-- `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs`
-- In-memory full DB implementation with read/write counters and batched writes.
-- `nethermind/src/Nethermind/Nethermind.Db/MemColumnsDb.cs`
-- In-memory columns DB implementation keyed by enum columns.
-- `nethermind/src/Nethermind/Nethermind.Db/InMemoryWriteBatch.cs`
-- Batch emulation for stores that do not have native batch support.
-- `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDb.cs`
-- Read-only wrapper with optional in-memory write overlay.
-- `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDbProvider.cs`
-- Provider wrapper that memoizes read-only DB handles.
-- `nethermind/src/Nethermind/Nethermind.Db/CompressingDb.cs`
-- Wrapper example for transparent value transformation in DB boundary.
+## Spec and tests directories (for future phases; none required for Phase 0)
+- `execution-specs/` — authoritative Python EL spec (no direct DB spec)
+- `ethereum-tests/` — classic JSON fixtures
+  - `ethereum-tests/TrieTests/` (e.g., `trietest.json`, `hex_encoded_securetrie_test.json`)
+  - `ethereum-tests/BlockchainTests/`
+  - `ethereum-tests/TransactionTests/`
+  - Tarballs present: `fixtures_blockchain_tests.tgz`, `fixtures_general_state_tests.tgz`
+- `execution-spec-tests/fixtures/` → symlink to `ethereum-tests/BlockchainTests`
 
-## Voltaire Zig APIs (Relevant to DB Consumer Shape)
+## What we will implement in Effect.ts (next)
+- `Db` (Context.Tag): get/put/delete, column families, iterators, batch writes
+- `DbProvider` (Context.Tag): open named DBs with schema; lifecycle via `Layer.scoped`
+- Backends:
+  - `MemoryDb` (pure TS; for unit tests)
+  - `RocksDb` (native binding or pure-TS alternative) with tuning options
+- Errors as `Data.TaggedError`; no `never` error channels
+- All public functions covered with `@effect/vitest` tests (`it.effect()`)
 
-Listed from: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
-
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/root.zig`
-- Re-exports state APIs used by an execution client: `StateManager`, `JournaledState`, `ForkBackend`, cache types.
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/StateManager.zig`
-- State-facing contract includes `getBalance`, `getNonce`, `getCode`, `getStorage`, and matching setters plus checkpoint/snapshot.
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/StateCache.zig`
-- Account/storage/code cache structures with checkpoint/revert/commit semantics.
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/BlockStore.zig`
-- Local block persistence abstraction (hash map store + canonical chain mapping).
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/Blockchain.zig`
-- Orchestrates local store plus optional remote cache; clear read/write flow separation.
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/root.zig`
-- Primitive exports consumed by DB clients (`Address`, `Hash`, `Hex`, `Block`, `Transaction`, etc.).
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/State/state.zig`
-- State model primitives.
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/Storage/storage.zig`
-- Storage model primitives.
-
-## Existing Guillotine-mini Host Interface
-
-Read from: `src/host.zig`
-
-`HostInterface` methods:
-- `getBalance` / `setBalance`
-- `getCode` / `setCode`
-- `getStorage` / `setStorage`
-- `getNonce` / `setNonce`
-
-DB abstraction implication:
-- Backends must efficiently support account-level and storage-slot reads/writes used by host/state layers.
-
-## Ethereum Tests Directories (Fixture Paths)
-
-Listed from: `ethereum-tests/`
-
-- `ethereum-tests/BasicTests/`
-- `ethereum-tests/BlockchainTests/`
-- `ethereum-tests/TrieTests/`
-- `ethereum-tests/TransactionTests/`
-- `ethereum-tests/RLPTests/`
-- `ethereum-tests/EOFTests/`
-- `ethereum-tests/GenesisTests/`
-- `ethereum-tests/ABITests/`
-- `ethereum-tests/DifficultyTests/`
-- `ethereum-tests/KeyStoreTests/`
-- `ethereum-tests/PoWTests/`
-- `ethereum-tests/src/BlockchainTestsFiller/`
-- `ethereum-tests/src/TransactionTestsFiller/`
-- `ethereum-tests/src/EOFTestsFiller/`
-
-## Phase-0 DB Implementation Guidance (Effect.ts mapping)
-
-- Mirror Nethermind boundaries in TypeScript services:
-- DB core service (`get`, `set`, `delete`, `exists`, `batch`, `iterate`, `flush`).
-- Columns service (column-aware DB handles and column batch).
-- Provider/factory services for named DB instances.
-- Keep logical DB names explicit and stable for later state/trie/blockchain integration.
-- Treat read-only overlays and optional wrappers (like compression) as composable decorators around the base DB service.
-- Keep this phase infra-only: no fork rules, no EVM behavior, no protocol logic.
