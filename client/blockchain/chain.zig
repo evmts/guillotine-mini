@@ -275,15 +275,16 @@ pub fn head_number_of(chain: anytype) ?u64 {
 /// These helpers intentionally do not fetch; pair with `*_or_fetch` variants if
 /// remote reads are acceptable in the call site.
 pub fn safe_head_hash_of(fc: anytype) ?Hash.Hash {
-    // Enforce pointer receivers via deref type-check (no copies of large structs).
-    _ = fc.*;
-    // Intentionally a thin wrapper to keep DI surface consistent.
+    // Intentionally a thin wrapper to keep DI surface consistent. Callers
+    // should pass  by convention; we do not enforce pointer receivers at
+    // comptime as it reduces DI flexibility and diverges from repo style.
     return fc.getSafeHash();
 }
 
 pub fn finalized_head_hash_of(fc: anytype) ?Hash.Hash {
-    _ = fc.*;
-    // Intentionally a thin wrapper to keep DI surface consistent.
+    // Intentionally a thin wrapper to keep DI surface consistent. Callers
+    // should pass  by convention; we do not enforce pointer receivers at
+    // comptime as it reduces DI flexibility and diverges from repo style.
     return fc.getFinalizedHash();
 }
 
@@ -294,14 +295,12 @@ inline fn block_from_hash_opt(chain: *Chain, maybe_hash: ?Hash.Hash) ?Block.Bloc
 
 /// Local-only safe head block lookup (no fork-cache fetch/allocations at this layer).
 pub fn safe_head_block_of(chain: *Chain, fc: anytype) ?Block.Block {
-    _ = fc.*;
     // Local-only view; use fork-cache layer at call sites if remote fetches are acceptable.
     return block_from_hash_opt(chain, fc.getSafeHash());
 }
 
 /// Local-only finalized head block lookup (no fork-cache fetch/allocations at this layer).
 pub fn finalized_head_block_of(chain: *Chain, fc: anytype) ?Block.Block {
-    _ = fc.*;
     // Local-only view; use fork-cache layer at call sites if remote fetches are acceptable.
     return block_from_hash_opt(chain, fc.getFinalizedHash());
 }
