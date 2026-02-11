@@ -25,6 +25,7 @@ import {
   GasLeftExceedsGasLimitError,
   InsufficientMaxFeePerBlobGasError,
   InsufficientMaxFeePerGasError,
+  InvalidBalanceError,
   InsufficientSenderBalanceError,
   InvalidBlobVersionedHashError,
   InvalidSenderAccountCodeError,
@@ -398,6 +399,43 @@ describe("TransactionProcessor.checkMaxGasFeeAndBalance", () => {
     ),
   );
 
+  it.effect(
+    "prioritizes missing blob data before contract-creation checks",
+    () =>
+      provideProcessor(
+        Effect.gen(function* () {
+          const tx = makeEip4844Tx(10n, 1n, 1n, [], null);
+          const outcome = yield* Effect.either(
+            checkMaxGasFeeAndBalance(tx, 1n, 2n, 10_000_000n),
+          );
+          assert.isTrue(Either.isLeft(outcome));
+          if (Either.isLeft(outcome)) {
+            assert.isTrue(outcome.left instanceof NoBlobDataError);
+          }
+        }),
+      ),
+  );
+
+  it.effect(
+    "prioritizes invalid blob hash before blob-fee and contract-creation checks",
+    () =>
+      provideProcessor(
+        Effect.gen(function* () {
+          const invalidHash = makeBlobHash(0x02);
+          const tx = makeEip4844Tx(10n, 1n, 1n, [invalidHash], null);
+          const outcome = yield* Effect.either(
+            checkMaxGasFeeAndBalance(tx, 1n, 2n, 10_000_000n),
+          );
+          assert.isTrue(Either.isLeft(outcome));
+          if (Either.isLeft(outcome)) {
+            assert.isTrue(
+              outcome.left instanceof InvalidBlobVersionedHashError,
+            );
+          }
+        }),
+      ),
+  );
+
   it.effect("fails when blob versioned hash is invalid", () =>
     provideProcessor(
       Effect.gen(function* () {
@@ -586,6 +624,30 @@ describe("TransactionProcessor.buyGasAndIncrementNonce", () => {
         if (Either.isLeft(outcome)) {
           assert.isTrue(outcome.left instanceof TransactionNonceTooHighError);
         }
+      }),
+    ),
+  );
+
+  it.effect("ignores blob gas price input for non-blob transactions", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xb4);
+        const tx = makeEip1559Tx(10n, 1n);
+        yield* setAccount(
+          sender,
+          makeAccount({
+            nonce: tx.nonce,
+            balance: 2_000_000n,
+          }),
+        );
+
+        const result = yield* buyGasAndIncrementNonce(tx, sender, 5n, -1n);
+        assert.strictEqual(result.effectiveGasPrice, 6n);
+        assert.strictEqual(result.blobGasUsed, 0n);
+        assert.strictEqual(result.senderBalanceAfterGasBuy, 1_400_000n);
+
+        const account = yield* getAccountOptional(sender);
+        assert.strictEqual(account?.balance, 1_400_000n);
       }),
     ),
   );
@@ -946,6 +1008,47 @@ describe("TransactionProcessor.settlePostExecutionBalances", () => {
         }
       }),
     ),
+  );
+
+  it.effect(
+    "does not mutate sender when coinbase settlement validation fails",
+    () =>
+      provideExecutionProcessor(
+        Effect.gen(function* () {
+          const sender = makeAddress(0xdb);
+          const coinbase = makeAddress(0xdc);
+          const maxUint256 = (1n << 256n) - 1n;
+
+          yield* setAccount(sender, makeAccount({ balance: 1_000_000n }));
+          yield* setAccount(coinbase, makeAccount({ balance: maxUint256 }));
+
+          const outcome = yield* Effect.either(
+            settlePostExecutionBalances(
+              100_000n,
+              30_000n,
+              40_000n,
+              0n,
+              10n,
+              7n,
+              sender,
+              coinbase,
+            ),
+          );
+
+          assert.strictEqual(Either.isLeft(outcome), true);
+          if (Either.isLeft(outcome)) {
+            assert.strictEqual(
+              outcome.left instanceof InvalidBalanceError,
+              true,
+            );
+          }
+
+          const senderAccount = yield* getAccountOptional(sender);
+          const coinbaseAccount = yield* getAccountOptional(coinbase);
+          assert.strictEqual(senderAccount?.balance, 1_000_000n);
+          assert.strictEqual(coinbaseAccount?.balance, maxUint256);
+        }),
+      ),
   );
 });
 
