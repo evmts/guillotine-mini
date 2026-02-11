@@ -603,6 +603,10 @@ test "Chain - has_block reflects local and fork-cache presence" {
         // Verify has_block=true using the retrieved block's hash
         const fetched = (try chain.getBlockByNumber(0)).?;
         try std.testing.expect(has_block(&chain, fetched.hash));
+        if (get_block_local(&chain, fetched.hash) == null) try chain.putBlock(fetched);
+        try chain.setCanonicalHead(fetched.hash);
+        const ok_fetch = try is_canonical_or_fetch(&chain, fetched.hash);
+        try std.testing.expect(ok_fetch);
     }
 }
 
