@@ -10,6 +10,7 @@ import {
   BaseFeePerGas,
   Blob,
   GasPrice,
+  Receipt,
   Transaction,
 } from "voltaire-effect/primitives";
 import { WorldState } from "../state/State";
@@ -68,6 +69,22 @@ export type PostExecutionSettlement = {
   readonly transactionFee: Balance.BalanceType;
   readonly senderBalanceAfterRefund: Balance.BalanceType;
   readonly coinbaseBalanceAfterFee: Balance.BalanceType;
+};
+
+/** EVM output required for post-execution transaction finalization. */
+export type EvmTransactionExecutionOutput = {
+  readonly gasLeft: bigint;
+  readonly refundCounter: bigint;
+  readonly logs: ReadonlyArray<Receipt.LogType>;
+  readonly accountsToDelete: ReadonlyArray<Address.AddressType>;
+};
+
+/** Finalized per-transaction output for block-level gas accumulation. */
+export type FinalizedTransactionExecution = PostExecutionSettlement & {
+  readonly logs: ReadonlyArray<Receipt.LogType>;
+  readonly accountsToDelete: ReadonlyArray<Address.AddressType>;
+  readonly blockGasUsedDelta: bigint;
+  readonly blockBlobGasUsedDelta: bigint;
 };
 
 const TransactionSchema = Transaction.Schema as unknown as Schema.Schema<
@@ -369,6 +386,20 @@ export interface TransactionProcessorService {
     coinbase: Address.AddressType,
   ) => Effect.Effect<
     PostExecutionSettlement,
+    PostExecutionSettlementError,
+    WorldState
+  >;
+  readonly finalizeTransactionExecution: (
+    txGasLimit: bigint,
+    calldataFloorGas: bigint,
+    effectiveGasPrice: bigint,
+    baseFeePerGas: bigint,
+    sender: Address.AddressType,
+    coinbase: Address.AddressType,
+    txBlobGasUsed: bigint,
+    evmOutput: EvmTransactionExecutionOutput,
+  ) => Effect.Effect<
+    FinalizedTransactionExecution,
     PostExecutionSettlementError,
     WorldState
   >;
@@ -966,6 +997,44 @@ const makeTransactionProcessor = Effect.gen(function* () {
       } satisfies PostExecutionSettlement;
     });
 
+  const finalizeTransactionExecution = (
+    txGasLimit: bigint,
+    calldataFloorGas: bigint,
+    effectiveGasPrice: bigint,
+    baseFeePerGas: bigint,
+    sender: Address.AddressType,
+    coinbase: Address.AddressType,
+    txBlobGasUsed: bigint,
+    evmOutput: EvmTransactionExecutionOutput,
+  ) =>
+    Effect.gen(function* () {
+      const settlement = yield* settlePostExecutionBalances(
+        txGasLimit,
+        evmOutput.gasLeft,
+        evmOutput.refundCounter,
+        calldataFloorGas,
+        effectiveGasPrice,
+        baseFeePerGas,
+        sender,
+        coinbase,
+      );
+
+      const worldState = yield* WorldState;
+      yield* Effect.forEach(
+        evmOutput.accountsToDelete,
+        (address) => worldState.destroyAccount(address),
+        { discard: true },
+      );
+
+      return {
+        ...settlement,
+        logs: evmOutput.logs,
+        accountsToDelete: evmOutput.accountsToDelete,
+        blockGasUsedDelta: settlement.txGasUsedAfterRefund,
+        blockBlobGasUsedDelta: txBlobGasUsed,
+      } satisfies FinalizedTransactionExecution;
+    });
+
   const runInTransactionBoundary = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     runWithinBoundary(effect);
 
@@ -985,6 +1054,7 @@ const makeTransactionProcessor = Effect.gen(function* () {
     checkInclusionAvailabilityAndSenderCode,
     processTransaction,
     settlePostExecutionBalances,
+    finalizeTransactionExecution,
     runInTransactionBoundary,
     runInCallFrameBoundary,
   } satisfies TransactionProcessorService;
@@ -1098,6 +1168,30 @@ export const settlePostExecutionBalances = (
       baseFeePerGas,
       sender,
       coinbase,
+    ),
+  );
+
+/** Finalize post-EVM transaction effects and return block-accumulation deltas. */
+export const finalizeTransactionExecution = (
+  txGasLimit: bigint,
+  calldataFloorGas: bigint,
+  effectiveGasPrice: bigint,
+  baseFeePerGas: bigint,
+  sender: Address.AddressType,
+  coinbase: Address.AddressType,
+  txBlobGasUsed: bigint,
+  evmOutput: EvmTransactionExecutionOutput,
+) =>
+  withTransactionProcessor((service) =>
+    service.finalizeTransactionExecution(
+      txGasLimit,
+      calldataFloorGas,
+      effectiveGasPrice,
+      baseFeePerGas,
+      sender,
+      coinbase,
+      txBlobGasUsed,
+      evmOutput,
     ),
   );
 

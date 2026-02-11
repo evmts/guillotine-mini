@@ -4,7 +4,14 @@ import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { Address, Blob, Hex, Transaction } from "voltaire-effect/primitives";
+import {
+  Address,
+  Blob,
+  Hash,
+  Hex,
+  Receipt,
+  Transaction,
+} from "voltaire-effect/primitives";
 import {
   CalldataFloorGasExceedsGasLimitError,
   BlockBlobGasLimitExceededError,
@@ -22,6 +29,7 @@ import {
   InvalidBlobVersionedHashError,
   InvalidSenderAccountCodeError,
   NoBlobDataError,
+  finalizeTransactionExecution,
   processTransaction,
   PriorityFeeGreaterThanMaxFeeError,
   runInCallFrameBoundary,
@@ -178,6 +186,21 @@ const makeBlobHash = (versionByte: number): Uint8Array => {
   hash[0] = versionByte;
   return hash;
 };
+
+const makeReceiptLog = (
+  address: Address.AddressType,
+  logIndex: number,
+): Receipt.LogType => ({
+  address,
+  topics: [Hash.ZERO],
+  data: new Uint8Array([logIndex]),
+  blockNumber: 0n,
+  transactionHash: Hash.ZERO,
+  transactionIndex: 0,
+  blockHash: Hash.ZERO,
+  logIndex,
+  removed: false,
+});
 
 const makeEip4844Tx = (
   maxFeePerGas: bigint,
@@ -923,6 +946,117 @@ describe("TransactionProcessor.settlePostExecutionBalances", () => {
         }
       }),
     ),
+  );
+});
+
+describe("TransactionProcessor.finalizeTransactionExecution", () => {
+  it.effect(
+    "finalizes settlement, destroys accounts, and returns block deltas",
+    () =>
+      provideExecutionProcessor(
+        Effect.gen(function* () {
+          const sender = makeAddress(0xdb);
+          const coinbase = makeAddress(0xdc);
+          const toDelete = makeAddress(0xdd);
+          const txBlobGasUsed = toBigInt(Blob.GAS_PER_BLOB) * 2n;
+          const logs = [makeReceiptLog(makeAddress(0xde), 1)];
+
+          yield* setAccount(sender, makeAccount({ balance: 1_000_000n }));
+          yield* setAccount(coinbase, makeAccount({ balance: 500n }));
+          yield* setAccount(
+            toDelete,
+            makeAccount({ balance: 321n, nonce: 7n }),
+          );
+
+          const result = yield* finalizeTransactionExecution(
+            100_000n,
+            0n,
+            10n,
+            7n,
+            sender,
+            coinbase,
+            txBlobGasUsed,
+            {
+              gasLeft: 30_000n,
+              refundCounter: 40_000n,
+              logs,
+              accountsToDelete: [toDelete],
+            },
+          );
+
+          assert.strictEqual(result.txGasUsedAfterRefund, 56_000n);
+          assert.strictEqual(result.blockGasUsedDelta, 56_000n);
+          assert.strictEqual(result.blockBlobGasUsedDelta, txBlobGasUsed);
+          assert.strictEqual(result.logs.length, 1);
+          assert.strictEqual(result.logs[0]?.logIndex, 1);
+          assert.strictEqual(
+            Hex.fromBytes(result.logs[0]?.address ?? Address.zero()),
+            Hex.fromBytes(logs[0]?.address ?? Address.zero()),
+          );
+          assert.strictEqual(result.accountsToDelete.length, 1);
+          assert.strictEqual(
+            Hex.fromBytes(result.accountsToDelete[0] ?? Address.zero()),
+            Hex.fromBytes(toDelete),
+          );
+
+          const deletedAccount = yield* getAccountOptional(toDelete);
+          assert.strictEqual(deletedAccount, null);
+
+          const senderAccount = yield* getAccountOptional(sender);
+          const coinbaseAccount = yield* getAccountOptional(coinbase);
+          assert.strictEqual(senderAccount?.balance, 1_440_000n);
+          assert.strictEqual(coinbaseAccount?.balance, 168_500n);
+        }),
+      ),
+  );
+
+  it.effect(
+    "does not apply account destruction when settlement validation fails",
+    () =>
+      provideExecutionProcessor(
+        Effect.gen(function* () {
+          const sender = makeAddress(0xdf);
+          const coinbase = makeAddress(0xe0);
+          const toDelete = makeAddress(0xe1);
+
+          yield* setAccount(sender, makeAccount({ balance: 1_000n }));
+          yield* setAccount(coinbase, makeAccount({ balance: 2_000n }));
+          yield* setAccount(
+            toDelete,
+            makeAccount({ balance: 333n, nonce: 2n }),
+          );
+
+          const outcome = yield* Effect.either(
+            finalizeTransactionExecution(
+              21_000n,
+              0n,
+              10n,
+              1n,
+              sender,
+              coinbase,
+              0n,
+              {
+                gasLeft: 21_001n,
+                refundCounter: 0n,
+                logs: [],
+                accountsToDelete: [toDelete],
+              },
+            ),
+          );
+
+          assert.isTrue(Either.isLeft(outcome));
+          if (Either.isLeft(outcome)) {
+            assert.isTrue(outcome.left instanceof GasLeftExceedsGasLimitError);
+          }
+
+          const deletedAccount = yield* getAccountOptional(toDelete);
+          const senderAccount = yield* getAccountOptional(sender);
+          const coinbaseAccount = yield* getAccountOptional(coinbase);
+          assert.strictEqual(deletedAccount?.balance, 333n);
+          assert.strictEqual(senderAccount?.balance, 1_000n);
+          assert.strictEqual(coinbaseAccount?.balance, 2_000n);
+        }),
+      ),
   );
 });
 
