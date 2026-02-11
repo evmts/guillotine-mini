@@ -4,6 +4,7 @@ const std = @import("std");
 const server = @import("server.zig");
 const errors = @import("error.zig");
 const envelope = @import("envelope.zig");
+const response = @import("response.zig");
 
 /// JSON-RPC server configuration.
 pub const RpcServerConfig = server.RpcServerConfig;
@@ -11,6 +12,8 @@ pub const RpcServerConfig = server.RpcServerConfig;
 pub const JsonRpcErrorCode = errors.JsonRpcErrorCode;
 /// JSON-RPC envelope utilities (ID extraction, zero-copy)
 pub const Envelope = envelope;
+/// JSON-RPC response serializers
+pub const Response = response.Response;
 
 test {
     std.testing.refAllDecls(@This());
