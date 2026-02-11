@@ -12,6 +12,7 @@ import {
   type WriteBatch,
 } from "./DbAdapter";
 import type { BytesType } from "./DbTypes";
+import { toBytes } from "./testUtils";
 
 type StoreEntry = {
   readonly key: BytesType;
@@ -23,8 +24,8 @@ type Hooks = {
   readonly onWriteBatchRelease?: () => void;
 };
 
-const bytes = (...values: ReadonlyArray<number>): BytesType =>
-  new Uint8Array(values);
+// Note: Always use voltaire-effect primitives for bytes construction.
+// Tests must not instantiate raw Uint8Array directly.
 
 const keyOf = (key: BytesType): string => String(key);
 
@@ -220,8 +221,8 @@ describe("DbAdapter", () => {
     "wires Db Context.Tag through Layer and exercises IDb + IDbMeta",
     () =>
       Effect.gen(function* () {
-        const key = bytes(0x01);
-        const value = bytes(0x02);
+        const key = toBytes("0x01");
+        const value = toBytes("0x02");
 
         const service = makeDbService();
         const program = Effect.gen(function* () {
@@ -236,7 +237,7 @@ describe("DbAdapter", () => {
           assert.isTrue(Option.isSome(read));
           assert.deepStrictEqual(Option.getOrNull(read), value);
 
-          const many = yield* db.getMany([key, bytes(0xff)]);
+          const many = yield* db.getMany([key, toBytes("0xff")]);
           assert.strictEqual(many.length, 2);
           assert.isTrue(Option.isSome(many[0]!.value));
           assert.isTrue(Option.isNone(many[1]!.value));
@@ -268,8 +269,8 @@ describe("DbAdapter", () => {
         let snapshotReleases = 0;
         let writeBatchReleases = 0;
 
-        const key = bytes(0x03);
-        const value = bytes(0x04);
+        const key = toBytes("0x03");
+        const value = toBytes("0x04");
 
         const service = makeDbService({
           onSnapshotRelease: () => {

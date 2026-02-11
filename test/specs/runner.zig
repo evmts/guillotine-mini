@@ -1189,7 +1189,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                             client_blockchain.ValidationError.InvalidParentHash,
                             client_blockchain.ValidationError.InvalidBlockNumber,
                             client_blockchain.ValidationError.MissingParentHeader,
-                            client_blockchain.ValidationError.BaseFeeOverflow,
+                            client_blockchain.ValidationError.BaseFeeMath,
                             => {
                                 if (has_expect_exception) break;
                                 return err;
