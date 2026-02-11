@@ -135,13 +135,24 @@ fn validate_post_merge_header(
     const header_base_fee = header.base_fee_per_gas orelse return ValidationError.MissingBaseFee;
     if (expected_base_fee != header_base_fee) return ValidationError.InvalidBaseFee;
 
-    if (header.timestamp <= parent_header.timestamp) return ValidationError.InvalidTimestamp;
+    try validate_timestamp_strictly_greater(header, parent_header);
     if (header.number != parent_header.number + 1) return ValidationError.InvalidBlockNumber;
 
     try validate_pos_header_constants(header);
 
     const parent_hash = try BlockHeader.hash(parent_header, ctx.allocator);
     if (!Hash.equals(&header.parent_hash, &parent_hash)) return ValidationError.InvalidParentHash;
+}
+
+/// Ensures `header.timestamp` is strictly greater than `parent.timestamp`.
+///
+/// Matches execution-specs invariant across PoW/PoS forks (e.g., London+):
+/// child blocks must be created after their parents.
+pub fn validate_timestamp_strictly_greater(
+    header: *const BlockHeader.BlockHeader,
+    parent: *const BlockHeader.BlockHeader,
+) ValidationError!void {
+    if (header.timestamp <= parent.timestamp) return ValidationError.InvalidTimestamp;
 }
 
 fn is_post_merge(header: *const BlockHeader.BlockHeader, ctx: HeaderValidationContext) bool {
@@ -297,6 +308,30 @@ test "merge_header_validator - enforces PoS constants post-merge" {
         .parent_header = &parent,
     };
     try std.testing.expectError(ValidationError.InvalidNonce, MergeValidator.validate(&header, ctx));
+}
+
+test "validate_timestamp_strictly_greater - accepts strictly greater" {
+    var parent = BlockHeader.init();
+    parent.timestamp = 10;
+    var header = BlockHeader.init();
+    header.timestamp = 11;
+    try validate_timestamp_strictly_greater(&header, &parent);
+}
+
+test "validate_timestamp_strictly_greater - rejects equal" {
+    var parent = BlockHeader.init();
+    parent.timestamp = 42;
+    var header = BlockHeader.init();
+    header.timestamp = 42;
+    try std.testing.expectError(ValidationError.InvalidTimestamp, validate_timestamp_strictly_greater(&header, &parent));
+}
+
+test "validate_timestamp_strictly_greater - rejects less" {
+    var parent = BlockHeader.init();
+    parent.timestamp = 100;
+    var header = BlockHeader.init();
+    header.timestamp = 99;
+    try std.testing.expectError(ValidationError.InvalidTimestamp, validate_timestamp_strictly_greater(&header, &parent));
 }
 
 test "merge_header_validator - treats Shanghai+ as post-merge" {
