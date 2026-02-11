@@ -335,6 +335,27 @@ describe("WorldState", () => {
     ),
   );
 
+  it.effect(
+    "preserves original storage after destroyAccount within a snapshot",
+    () =>
+      provideWorldState(
+        Effect.gen(function* () {
+          const addr = makeAddress(0x2e);
+          const slot = makeSlot(0x06);
+          const value = makeStorageValue(0x2a);
+
+          yield* setAccount(addr, makeAccount({ nonce: 1n }));
+          yield* setStorage(addr, slot, value);
+          yield* takeSnapshot();
+
+          yield* destroyAccount(addr);
+
+          const original = yield* getStorageOriginal(addr, slot);
+          assert.strictEqual(storageValueHex(original), storageValueHex(value));
+        }),
+      ),
+  );
+
   it.effect("returns zero original storage for created accounts", () =>
     provideWorldState(
       Effect.gen(function* () {
@@ -470,6 +491,19 @@ describe("WorldState", () => {
     provideWorldState(
       Effect.gen(function* () {
         const outcome = yield* Effect.either(restoreSnapshot(5));
+        assert.isTrue(Either.isLeft(outcome));
+
+        if (Either.isLeft(outcome)) {
+          assert.isTrue(outcome.left instanceof UnknownSnapshotError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("fails to commit unknown snapshots", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const outcome = yield* Effect.either(commitSnapshot(5));
         assert.isTrue(Either.isLeft(outcome));
 
         if (Either.isLeft(outcome)) {
