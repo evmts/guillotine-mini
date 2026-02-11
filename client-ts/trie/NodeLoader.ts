@@ -3,7 +3,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { Bytes, Hash, Hex } from "voltaire-effect/primitives";
+import { Hash } from "voltaire-effect/primitives";
 import type { EncodedNode, TrieNode } from "./Node";
 import type { BytesType } from "./Node";
 import type { TrieNodePath } from "./NodeStorage";
@@ -40,13 +40,14 @@ const wrapRlpEncodeError = (cause: unknown) =>
     cause,
   });
 
-const { bytesFromUint8Array } = {
-  bytesFromUint8Array: (u8: Uint8Array): BytesType => Bytes.concat(u8),
-};
+import { makeBytesHelpers } from "./internal/primitives";
 
-const EmptyTrieRootHex = Hex.fromBytes(EMPTY_TRIE_ROOT);
+const { bytesFromUint8Array } = makeBytesHelpers(
+  (message) => new TrieNodeLoaderError({ message }),
+);
+
 const isEmptyTrieRoot = (hash: Hash.HashType): boolean =>
-  Hex.fromBytes(hash) === EmptyTrieRootHex;
+  Hash.equals(hash, EMPTY_TRIE_ROOT);
 
 const encodeRlp = (
   data: Parameters<typeof import("voltaire-effect/primitives").Rlp.encode>[0],
@@ -57,7 +58,7 @@ const encodeRlp = (
   );
 
 const decodeBytes = (
-  codec: { decode: (b: BytesType) => any },
+  codec: typeof TrieNodeCodec.Type,
   encoded: BytesType,
 ) =>
   coerceEffect<TrieNode, TrieNodeCodecError>(codec.decode(encoded)).pipe(
@@ -102,6 +103,9 @@ const makeTrieNodeLoader = (
           case "empty":
             return null;
           case "raw": {
+            if (ref.encoded !== undefined) {
+              return yield* decodeBytes(codec, ref.encoded);
+            }
             const encoded = yield* encodeRlp(ref.value);
             return yield* decodeBytes(codec, encoded);
           }
