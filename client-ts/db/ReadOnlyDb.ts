@@ -22,8 +22,8 @@ import {
   compareBytes,
   decodeKey,
   encodeKey,
+  startsWithBytes,
 } from "./DbUtils";
-import { Hex } from "voltaire-effect/primitives";
 
 /** Options for the read-only DB wrapper. */
 export interface ReadOnlyDbOptions {
@@ -324,8 +324,7 @@ const makeReadOnlyReader = (
       for (const [keyHex, value] of overlay.entries()) {
         const key = decodeKey(keyHex);
         if (
-          options?.prefix &&
-          !Hex.fromBytes(key).startsWith(Hex.fromBytes(options.prefix))
+          options?.prefix && !startsWithBytes(key, options.prefix)
         ) {
           continue;
         }
