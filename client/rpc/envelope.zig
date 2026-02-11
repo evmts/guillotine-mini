@@ -145,7 +145,7 @@ pub fn extractRequestId(input: []const u8) ExtractIdResult {
     if (v0 == '-' or std.ascii.isDigit(v0)) {
         var k = j;
         if (input[k] == '-') k += 1;
-        var start = k;
+        const start = k;
         while (k < input.len and std.ascii.isDigit(input[k])) : (k += 1) {}
         if (k == start) return .{ .err = .invalid_request }; // '-' not followed by digits
         // Ensure the token ends at a valid delimiter for JSON (ws, ',', '}')
@@ -212,7 +212,7 @@ test "extractRequestId: null id" {
         "}";
     const r = extractRequestId(req);
     switch (r) {
-        .id => |id| try std.testing.expect(@as(?void, if (id == .null) null else @compileError("")) == null),
+        .id => |id| try std.testing.expect(id == .null),
         .err => |_| return error.UnexpectedError,
     }
 }
@@ -226,7 +226,7 @@ test "extractRequestId: missing id -> null" {
         "}";
     const r = extractRequestId(req);
     switch (r) {
-        .id => |id| try std.testing.expect(@as(?void, if (id == .null) null else @compileError("")) == null),
+        .id => |id| try std.testing.expect(id == .null),
         .err => |_| return error.UnexpectedError,
     }
 }
