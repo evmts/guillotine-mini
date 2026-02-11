@@ -805,17 +805,17 @@ export const getAllValues = (ordered?: boolean) =>
 /** Seek to the first entry with key >= `key`, optionally restricted by `prefix`. */
 export const seek = (
   key: BytesType,
-  options?: { readonly prefix?: BytesType },
+  options?: IteratorOptions,
 ) => withDb((db) => db.seek(key, options));
 
 /** Move to the next entry with key > `key`, optionally restricted by `prefix`. */
 export const next = (
   key: BytesType,
-  options?: { readonly prefix?: BytesType },
+  options?: IteratorOptions,
 ) => withDb((db) => db.next(key, options));
 
 /** Return all entries, optionally restricted by a `prefix`. */
-export const range = (options?: { readonly prefix?: BytesType }) =>
+export const range = (options?: IteratorOptions) =>
   withDb((db) => db.range(options));
 
 /** Store a value by key. */
