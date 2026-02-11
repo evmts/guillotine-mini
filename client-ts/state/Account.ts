@@ -1,5 +1,5 @@
 import { AccountState } from "voltaire-effect/primitives";
-import { bytes32Equals } from "./internal/bytes";
+import { bytes32Equals, cloneBytes32 } from "./internal/bytes";
 
 /** Canonical AccountState type from voltaire-effect. */
 export type AccountStateType = AccountState.AccountStateType;
@@ -10,14 +10,26 @@ export const EMPTY_CODE_HASH = AccountState.EMPTY_CODE_HASH;
 /** Empty storage trie root hash, per Ethereum specification. */
 export const EMPTY_STORAGE_ROOT = AccountState.EMPTY_STORAGE_ROOT;
 
-/** Default empty account value. */
-export const EMPTY_ACCOUNT: AccountStateType = {
-  nonce: 0n,
-  balance: 0n,
-  codeHash: EMPTY_CODE_HASH,
-  storageRoot: EMPTY_STORAGE_ROOT,
+/** Optional overrides when constructing an account state. */
+export type AccountOverrides = Partial<Omit<AccountStateType, "__tag">>;
+
+/** Convenience constructor for canonical account values. */
+export const makeAccount = (
+  overrides: AccountOverrides = {},
+): AccountStateType => ({
+  nonce: overrides.nonce ?? 0n,
+  balance: overrides.balance ?? 0n,
+  codeHash: cloneBytes32(
+    overrides.codeHash ?? EMPTY_CODE_HASH,
+  ) as AccountStateType["codeHash"],
+  storageRoot: cloneBytes32(
+    overrides.storageRoot ?? EMPTY_STORAGE_ROOT,
+  ) as AccountStateType["storageRoot"],
   __tag: "AccountState",
-};
+});
+
+/** Default empty account value. */
+export const EMPTY_ACCOUNT: AccountStateType = makeAccount();
 
 /** True if the account has zero nonce and balance with empty code. */
 export const isEmpty = (account: AccountStateType): boolean =>

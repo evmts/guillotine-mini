@@ -7,6 +7,7 @@ import {
   isContract,
   isEmpty,
   isTotallyEmpty,
+  makeAccount,
   type AccountStateType,
 } from "./Account";
 
@@ -16,14 +17,34 @@ const customBytes32 = (byte: number): AccountStateType["codeHash"] => {
   return value as AccountStateType["codeHash"];
 };
 
-const makeAccount = (
-  overrides: Partial<Omit<AccountStateType, "__tag">> = {},
-): AccountStateType => ({
-  ...EMPTY_ACCOUNT,
-  ...overrides,
-});
-
 describe("Account helpers", () => {
+  it.effect("makeAccount constructs default empty accounts", () =>
+    Effect.gen(function* () {
+      const account = makeAccount();
+      assert.strictEqual(account.nonce, 0n);
+      assert.strictEqual(account.balance, 0n);
+      assert.isTrue(isTotallyEmpty(account));
+    }),
+  );
+
+  it.effect("makeAccount applies overrides", () =>
+    Effect.gen(function* () {
+      const account = makeAccount({ nonce: 9n, balance: 42n });
+      assert.strictEqual(account.nonce, 9n);
+      assert.strictEqual(account.balance, 42n);
+    }),
+  );
+
+  it.effect("makeAccount clones byte-array overrides", () =>
+    Effect.gen(function* () {
+      const codeHash = customBytes32(0x11);
+      const account = makeAccount({ codeHash });
+      codeHash[0] = 0x22;
+
+      assert.notStrictEqual(account.codeHash[0], codeHash[0]);
+    }),
+  );
+
   it.effect("treats EMPTY_ACCOUNT as empty, totally empty, and not alive", () =>
     Effect.gen(function* () {
       assert.isTrue(isEmpty(EMPTY_ACCOUNT));
