@@ -125,6 +125,9 @@ fn validate_post_merge_header(
 
     if (header.gas_used > header.gas_limit) return ValidationError.InvalidGasUsed;
 
+    // Enforce gas-limit delta rule explicitly before base-fee progression.
+    try validate_gas_limit_delta(header, parent_header);
+
     const parent_base_fee = parent_header.base_fee_per_gas orelse return ValidationError.MissingBaseFee;
     const expected_base_fee = try calculate_base_fee_per_gas(
         header.gas_limit,
