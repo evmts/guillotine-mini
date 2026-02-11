@@ -2,6 +2,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { BytesType } from "./Node";
+export type { NibbleList } from "./Node";
 import { makeBytesHelpers } from "./internal/primitives";
 
 /** Error raised when nibble encoding/decoding fails. */
@@ -32,9 +33,6 @@ export const NibbleListSchema: Schema.Schema<Uint8Array, Uint8Array> =
       message: () => "Nibble list must contain values between 0x0 and 0xf",
     }),
   );
-
-/** Nibble list type used by trie paths. */
-export type NibbleList = BytesType;
 
 /** Decoded hex-prefix path with leaf flag. */
 export interface HexPrefixDecoded {
