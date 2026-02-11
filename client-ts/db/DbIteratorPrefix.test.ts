@@ -22,19 +22,19 @@ describe("Db iterator prefix semantics", () => {
       // Start well below prefix: should return first entry within prefix (k1)
       const s0 = yield* seek(toBytes("0x0000"), { prefix });
       const e0 = expectSome(s0, "seek below prefix should find k1");
-      assert.isTrue(Bytes.equals(e0.key, k1));
+      assert.isTrue(Bytes.equals(e0.key as any, k1));
 
       // Start exactly at the prefix key: should return the prefix key if present
       // Nethermind ordering: 0x100001 < 0x1000, so seek(0x1000) lands on 0x1000
       const s1 = yield* seek(prefix, { prefix });
       const e1 = expectSome(s1, "seek at prefix should find prefix");
-      assert.isTrue(Bytes.equals(e1.key, prefix));
+      assert.isTrue(Bytes.equals(e1.key as any, prefix));
 
       // Start inside the prefix range but between entries
       const s2 = yield* seek(toBytes("0x100002"), { prefix });
       const e2 = expectSome(s2, "seek inside prefix should find k2");
       // With Nethermind ordering, k2 is the first >= 0x100002 within prefix
-      assert.isTrue(Bytes.equals(e2.key, k2));
+      assert.isTrue(Bytes.equals(e2.key as any, k2));
 
       // Start above the highest entry in the prefix: expect none
       const s3 = yield* seek(toBytes("0x100100"), { prefix });
@@ -55,17 +55,17 @@ describe("Db iterator prefix semantics", () => {
       // Next from below prefix returns first inside prefix
       const n0 = yield* next(toBytes("0x1fff"), { prefix });
       const e0 = expectSome(n0, "next from below should find k1");
-      assert.isTrue(Bytes.equals(e0.key, k1));
+      assert.isTrue(Bytes.equals(e0.key as any, k1));
 
       // Strictly greater: next from k1 within prefix should be k2
       const n1 = yield* next(k1, { prefix });
       const e1 = expectSome(n1, "next from k1 should find k2");
-      assert.isTrue(Bytes.equals(e1.key, k2));
+      assert.isTrue(Bytes.equals(e1.key as any, k2));
 
       // Next from k2 should be the prefix key (ordering: k1 < k2 < prefix)
       const n2 = yield* next(k2, { prefix });
       const e2 = expectSome(n2, "next from k2 should find prefix");
-      assert.isTrue(Bytes.equals(e2.key, prefix));
+      assert.isTrue(Bytes.equals(e2.key as any, prefix));
 
       // Next from the last key in prefix returns none
       const n3 = yield* next(prefix, { prefix });

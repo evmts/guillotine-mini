@@ -86,8 +86,8 @@ const listEntries = (
   getUnordered?: () => ReadonlyArray<StoreEntry>,
 ): ReadonlyArray<DbEntry> => {
   const baseEntries = ordered
-    ? getOrdered?.() ?? orderEntries(collectEntries(store))
-    : getUnordered?.() ?? collectEntries(store);
+    ? (getOrdered?.() ?? orderEntries(collectEntries(store)))
+    : (getUnordered?.() ?? collectEntries(store));
   return baseEntries.map(({ key, value }) => ({
     key,
     value: cloneBytes(value),
@@ -140,7 +140,8 @@ const makeReader = (
         if (unordered) return unordered.map(({ value }) => cloneBytes(value));
         return Array.from(store.values(), (value) => cloneBytes(value));
       }
-      const entries = cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
+      const entries =
+        cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
       return entries.map(({ value }) => cloneBytes(value));
     });
 
@@ -154,7 +155,8 @@ const makeReader = (
 
   const range = (options?: { readonly prefix?: BytesType }) =>
     Effect.sync(() => {
-      const ordered = cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
+      const ordered =
+        cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
       const entries = withPrefix(ordered, options);
       return entries.map(({ key, value }) => ({
         key,
@@ -164,7 +166,8 @@ const makeReader = (
 
   const seek = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
     Effect.sync(() => {
-      const ordered = cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
+      const ordered =
+        cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
       const entries = withPrefix(ordered, options);
       for (const entry of entries) {
         const cmp = compareBytes(entry.key, key);
@@ -180,7 +183,8 @@ const makeReader = (
 
   const next = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
     Effect.sync(() => {
-      const ordered = cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
+      const ordered =
+        cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
       const entries = withPrefix(ordered, options);
       for (const entry of entries) {
         const cmp = compareBytes(entry.key, key);
@@ -304,14 +308,14 @@ const makeMemoryDb = (config: DbConfig) =>
       Effect.sync(() => new Map<string, BytesType>()),
       (map) => Effect.sync(() => map.clear()),
     );
-  let totalReads = 0;
-  let totalWrites = 0;
-  const trackRead = (count = 1) => {
-    totalReads += count;
-  };
-  const trackWrite = (count = 1) => {
-    totalWrites += count;
-  };
+    let totalReads = 0;
+    let totalWrites = 0;
+    const trackRead = (count = 1) => {
+      totalReads += count;
+    };
+    const trackWrite = (count = 1) => {
+      totalWrites += count;
+    };
 
     // Lightweight caches for ordered / unordered entry views
     let cacheOrdered: ReadonlyArray<StoreEntry> | null = null;

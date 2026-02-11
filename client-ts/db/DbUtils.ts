@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { Bytes, Hex } from "voltaire-effect/primitives";
 import type { BytesType } from "./DbTypes";
 import { DbError } from "./DbError";
@@ -70,13 +71,19 @@ export const startsWithBytes = (key: BytesType, prefix: BytesType): boolean => {
 };
 
 /** Assert that an Option is Some and return the contained value for tests. */
-export const expectSome = <A>(option: Option.Option<A>, message?: string): A => {
+export const expectSome = <A>(
+  option: Option.Option<A>,
+  message?: string,
+): A => {
   if (Option.isSome(option)) return option.value;
   throw new Error(message ?? "Expected Some, got None");
 };
 
 /** Assert that an Option is None for tests. */
-export const expectNone = <A>(option: Option.Option<A>, message?: string): void => {
+export const expectNone = <A>(
+  option: Option.Option<A>,
+  message?: string,
+): void => {
   if (Option.isNone(option)) return;
   throw new Error(message ?? "Expected None, got Some");
 };
