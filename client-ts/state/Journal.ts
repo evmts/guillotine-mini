@@ -197,12 +197,13 @@ const makeJournal = <K, V>(): JournalService<K, V> => {
 };
 
 /** Production journal layer. */
-export const JournalLive = <K, V>(): Layer.Layer<Journal> =>
-  Layer.succeed(Journal, makeJournal<unknown, unknown>());
+export const JournalLive: Layer.Layer<Journal> = Layer.succeed(
+  Journal,
+  makeJournal<unknown, unknown>(),
+);
 
 /** Deterministic journal layer for tests. */
-export const JournalTest = <K, V>(): Layer.Layer<Journal> =>
-  JournalLive<K, V>();
+export const JournalTest: Layer.Layer<Journal> = JournalLive;
 
 const journalService = <K, V>() =>
   Effect.map(Journal, (journal) => journal as JournalService<K, V>);

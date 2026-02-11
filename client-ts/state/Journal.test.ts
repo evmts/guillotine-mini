@@ -41,9 +41,7 @@ const makeEntry = (
 });
 
 const provideJournal = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(
-    Effect.provide(JournalTest<Address.AddressType, AccountStateType>()),
-  );
+  effect.pipe(Effect.provide(JournalTest));
 
 describe("Journal", () => {
   it.effect("appends entries and returns sequential indices", () =>

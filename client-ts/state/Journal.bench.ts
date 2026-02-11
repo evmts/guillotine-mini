@@ -178,7 +178,7 @@ const main = Effect.gen(function* () {
 
 pipe(
   main,
-  Effect.provide(JournalLive<Address.AddressType, AccountStateType>()),
+  Effect.provide(JournalLive),
   Effect.tapErrorCause((cause) =>
     Effect.sync(() => {
       console.error("Benchmark failed");

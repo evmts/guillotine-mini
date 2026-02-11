@@ -715,7 +715,7 @@ export const WorldStateLive: Layer.Layer<WorldState, never, Journal> =
 
 /** Deterministic world state layer for tests. */
 export const WorldStateTest: Layer.Layer<WorldState> = WorldStateLive.pipe(
-  Layer.provide(JournalTest<WorldStateJournalKey, WorldStateJournalValue>()),
+  Layer.provide(JournalTest),
 );
 
 /** Read an optional account (None if not present). */
