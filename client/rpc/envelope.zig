@@ -78,13 +78,21 @@ pub fn extractRequestId(input: []const u8) ExtractIdResult {
                 if (depth == 1) expecting_key = true;
             },
             '}' => {
-                if (depth == 0) break else depth -= 1;
+                if (depth == 0) break;
+                depth -= 1;
                 if (depth == 1) expecting_key = false;
             },
             '[' => depth += 1,
-            ']' => if (depth == 0) break else depth -= 1,
-            ':' => if (depth == 1) expecting_key = false,
-            ',' => if (depth == 1) expecting_key = true,
+            ']' => {
+                if (depth == 0) break;
+                depth -= 1;
+            },
+            ':' => {
+                if (depth == 1) expecting_key = false;
+            },
+            ',' => {
+                if (depth == 1) expecting_key = true;
+            },
             else => {},
         }
     }
