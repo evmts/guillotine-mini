@@ -88,6 +88,34 @@ describe("TrieNodeLoader", () => {
     }).pipe(Effect.provide(TestLayer)),
   );
 
+  it.effect("uses raw.encoded fast path (no re-encode)", () =>
+    Effect.gen(function* () {
+      const nibbles = toBytes(new Uint8Array([0x0a]));
+      const compact = yield* nibbleListToCompact(nibbles, true);
+      const rawLeaf = {
+        type: "list",
+        value: [
+          { type: "bytes", value: compact },
+          { type: "bytes", value: bytesFromHex("0xdead") },
+        ],
+      } as const;
+
+      const pre = yield* encodeRlp(rawLeaf);
+      const encoded: BytesType = toBytes(pre);
+
+      const node = yield* loadTrieNode(
+        null,
+        { bytes: EMPTY_TRIE_ROOT, length: 0 },
+        { _tag: "raw", value: rawLeaf, encoded },
+      );
+      expect(node?._tag).toBe("leaf");
+      if (node?._tag !== "leaf") return;
+      const recompact = yield* nibbleListToCompact(node.restOfKey, true);
+      expect(Hex.fromBytes(recompact)).toBe(Hex.fromBytes(compact));
+      expect(Hex.fromBytes(node.value)).toBe("0xdead");
+    }).pipe(Effect.provide(TestLayer)),
+  );
+
   it.effect("loads hashed node via half-path scheme", () =>
     Effect.gen(function* () {
       const address = hashFromHex(`0x${"11".repeat(32)}`);
