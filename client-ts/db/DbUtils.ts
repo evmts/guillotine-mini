@@ -52,3 +52,19 @@ export const cloneBytesEffect = (
   Bytes.isBytes(value)
     ? Effect.succeed(cloneBytes(value))
     : Effect.fail(new DbError({ message: "Invalid DB value" }));
+
+/**
+ * Return true if `key` starts with `prefix` using byte-wise comparison.
+ *
+ * This avoids Hex <-> Bytes conversions on hot paths and guarantees that
+ * prefix filtering matches Nethermind's iterator expectations.
+ */
+export const startsWithBytes = (key: BytesType, prefix: BytesType): boolean => {
+  const k = key as Uint8Array;
+  const p = prefix as Uint8Array;
+  if (p.length > k.length) return false;
+  for (let i = 0; i < p.length; i++) {
+    if (k[i] !== p[i]) return false;
+  }
+  return true;
+};
