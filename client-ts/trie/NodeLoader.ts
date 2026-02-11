@@ -75,7 +75,11 @@ export interface TrieNodeLoaderService {
     path: TrieNodePath,
     ref: EncodedNode,
     readFlags?: ReadFlags,
-  ) => Effect.Effect<TrieNode | null, TrieNodeLoaderError>;
+  ) => Effect.Effect<
+    TrieNode | null,
+    TrieNodeLoaderError,
+    TrieNodeStorage | TrieNodeCodec
+  >;
 }
 
 /** Context tag for trie node loading. */
@@ -84,55 +88,44 @@ export class TrieNodeLoader extends Context.Tag("TrieNodeLoader")<
   TrieNodeLoaderService
 >() {}
 
-const makeTrieNodeLoader = (
-  storage: typeof TrieNodeStorage.Type,
-  codec: typeof TrieNodeCodec.Type,
-) =>
-  ({
-    load: (
-      addressHash: Hash.HashType | null,
-      path: TrieNodePath,
-      ref: EncodedNode,
-      readFlags: ReadFlags = ReadFlags.None,
-    ) =>
-      Effect.gen(function* () {
-        switch (ref._tag) {
-          case "empty":
-            return null;
-          case "raw": {
-            if (ref.encoded !== undefined) {
-              return yield* decodeBytes(codec, ref.encoded);
-            }
-            const encoded = yield* encodeRlp(ref.value);
-            return yield* decodeBytes(codec, encoded);
+const TrieNodeLoaderLayer = Layer.succeed(TrieNodeLoader, {
+  load: (
+    addressHash: Hash.HashType | null,
+    path: TrieNodePath,
+    ref: EncodedNode,
+    readFlags: ReadFlags = ReadFlags.None,
+  ) =>
+    Effect.gen(function* () {
+      const storage = yield* TrieNodeStorage;
+      const codec = yield* TrieNodeCodec;
+
+      switch (ref._tag) {
+        case "empty":
+          return null;
+        case "raw": {
+          if (ref.encoded !== undefined) {
+            return yield* decodeBytes(codec, ref.encoded);
           }
-          case "hash": {
-            if (isEmptyTrieRoot(ref.value)) {
-              return null;
-            }
-
-            const loaded = yield* storage
-              .get(addressHash, path, ref.value, readFlags)
-              .pipe(Effect.mapError(wrapStorageError));
-
-            if (Option.isNone(loaded)) {
-              return null;
-            }
-
-            return yield* decodeBytes(codec, loaded.value);
-          }
+          const encoded = yield* encodeRlp(ref.value);
+          return yield* decodeBytes(codec, encoded);
         }
-      }),
-  }) satisfies TrieNodeLoaderService;
+        case "hash": {
+          if (isEmptyTrieRoot(ref.value)) {
+            return null;
+          }
+          const loaded = yield* storage
+            .get(addressHash, path, ref.value, readFlags)
+            .pipe(Effect.mapError(wrapStorageError));
 
-const TrieNodeLoaderLayer = Layer.effect(
-  TrieNodeLoader,
-  Effect.gen(function* () {
-    const storage = yield* TrieNodeStorage;
-    const codec = yield* TrieNodeCodec;
-    return makeTrieNodeLoader(storage, codec);
-  }),
-);
+          if (Option.isNone(loaded)) {
+            return null;
+          }
+
+          return yield* decodeBytes(codec, loaded.value);
+        }
+      }
+    }),
+} satisfies TrieNodeLoaderService);
 
 /** Production trie node loader layer. */
 export const TrieNodeLoaderLive: Layer.Layer<
