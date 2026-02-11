@@ -10,7 +10,7 @@ import {
   Storage,
   StorageValue,
 } from "voltaire-effect/primitives";
-import { EMPTY_ACCOUNT, type AccountStateType } from "./Account";
+import { EMPTY_ACCOUNT, isEmpty, type AccountStateType } from "./Account";
 import {
   ChangeTag,
   type JournalEntry,
@@ -82,6 +82,9 @@ export interface WorldStateService {
   readonly getAccount: (
     address: Address.AddressType,
   ) => Effect.Effect<AccountStateType>;
+  readonly accountExistsAndIsEmpty: (
+    address: Address.AddressType,
+  ) => Effect.Effect<boolean>;
   readonly getCode: (
     address: Address.AddressType,
   ) => Effect.Effect<RuntimeCode.RuntimeCodeType>;
@@ -95,6 +98,9 @@ export interface WorldStateService {
   ) => Effect.Effect<void>;
   readonly destroyAccount: (
     address: Address.AddressType,
+  ) => Effect.Effect<void>;
+  readonly destroyTouchedEmptyAccounts: (
+    touchedAccounts: Iterable<Address.AddressType>,
   ) => Effect.Effect<void>;
   readonly markAccountCreated: (
     address: Address.AddressType,
@@ -271,6 +277,12 @@ const makeWorldState = Effect.gen(function* () {
   const getAccount = (address: Address.AddressType) =>
     Effect.map(getAccountOptional(address), (account) =>
       account ? account : cloneAccount(EMPTY_ACCOUNT),
+    );
+
+  const accountExistsAndIsEmpty = (address: Address.AddressType) =>
+    Effect.map(
+      getAccountOptional(address),
+      (account) => account !== null && isEmpty(account),
     );
 
   const getCode = (address: Address.AddressType) =>
@@ -521,6 +533,20 @@ const makeWorldState = Effect.gen(function* () {
       yield* setAccount(address, null);
     });
 
+  const destroyTouchedEmptyAccounts = (
+    touchedAccounts: Iterable<Address.AddressType>,
+  ) =>
+    Effect.forEach(
+      touchedAccounts,
+      (address) =>
+        Effect.gen(function* () {
+          if (yield* accountExistsAndIsEmpty(address)) {
+            yield* destroyAccount(address);
+          }
+        }),
+      { discard: true },
+    );
+
   const takeSnapshot = () =>
     Effect.gen(function* () {
       const journalSnapshot = yield* journal.takeSnapshot();
@@ -662,10 +688,12 @@ const makeWorldState = Effect.gen(function* () {
   return {
     getAccountOptional,
     getAccount,
+    accountExistsAndIsEmpty,
     getCode,
     setAccount,
     setCode,
     destroyAccount,
+    destroyTouchedEmptyAccounts,
     markAccountCreated,
     wasAccountCreated,
     getStorage,
@@ -695,6 +723,10 @@ export const getAccountOptional = (address: Address.AddressType) =>
 export const getAccount = (address: Address.AddressType) =>
   withWorldState((state) => state.getAccount(address));
 
+/** Check EIP-161 account existence+emptiness (non-existent is false). */
+export const accountExistsAndIsEmpty = (address: Address.AddressType) =>
+  withWorldState((state) => state.accountExistsAndIsEmpty(address));
+
 /** Read contract code (empty if unset). */
 export const getCode = (address: Address.AddressType) =>
   withWorldState((state) => state.getCode(address));
@@ -714,6 +746,12 @@ export const setCode = (
 /** Remove an account and its data from state. */
 export const destroyAccount = (address: Address.AddressType) =>
   withWorldState((state) => state.destroyAccount(address));
+
+/** Destroy touched accounts that exist and are empty (EIP-161 semantics). */
+export const destroyTouchedEmptyAccounts = (
+  touchedAccounts: Iterable<Address.AddressType>,
+) =>
+  withWorldState((state) => state.destroyTouchedEmptyAccounts(touchedAccounts));
 
 /** Mark an account as created in the current transaction. */
 export const markAccountCreated = (address: Address.AddressType) =>

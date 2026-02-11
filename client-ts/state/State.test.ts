@@ -9,11 +9,13 @@ import {
 } from "./Account";
 import {
   WorldStateTest,
+  accountExistsAndIsEmpty,
   MissingAccountError,
   UnknownSnapshotError,
   clear,
   commitSnapshot,
   destroyAccount,
+  destroyTouchedEmptyAccounts,
   getAccount,
   getAccountOptional,
   getCode,
@@ -88,6 +90,37 @@ describe("WorldState", () => {
     ),
   );
 
+  it.effect("accountExistsAndIsEmpty is false for missing accounts", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const existsAndIsEmpty = yield* accountExistsAndIsEmpty(Address.zero());
+        assert.isFalse(existsAndIsEmpty);
+      }),
+    ),
+  );
+
+  it.effect("accountExistsAndIsEmpty matches EIP-161 emptiness semantics", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const empty = makeAddress(0xa1);
+        const nonEmpty = makeAddress(0xa2);
+        const nonEmptyStorageRoot = new Uint8Array(32);
+        nonEmptyStorageRoot[nonEmptyStorageRoot.length - 1] = 0x01;
+
+        yield* setAccount(
+          empty,
+          makeAccount({
+            storageRoot: nonEmptyStorageRoot as AccountStateType["storageRoot"],
+          }),
+        );
+        yield* setAccount(nonEmpty, makeAccount({ nonce: 1n }));
+
+        assert.isTrue(yield* accountExistsAndIsEmpty(empty));
+        assert.isFalse(yield* accountExistsAndIsEmpty(nonEmpty));
+      }),
+    ),
+  );
+
   it.effect("sets, updates, and deletes accounts", () =>
     provideWorldState(
       Effect.gen(function* () {
@@ -107,6 +140,39 @@ describe("WorldState", () => {
         assert.isNull(deleted);
       }),
     ),
+  );
+
+  it.effect(
+    "destroyTouchedEmptyAccounts deletes only touched empty accounts",
+    () =>
+      provideWorldState(
+        Effect.gen(function* () {
+          const touchedEmpty = makeAddress(0xb1);
+          const touchedNonEmpty = makeAddress(0xb2);
+          const untouchedEmpty = makeAddress(0xb3);
+          const missingTouched = makeAddress(0xb4);
+
+          yield* setAccount(touchedEmpty, makeAccount());
+          yield* setAccount(touchedNonEmpty, makeAccount({ nonce: 1n }));
+          yield* setAccount(untouchedEmpty, makeAccount());
+
+          yield* destroyTouchedEmptyAccounts([
+            touchedEmpty,
+            touchedNonEmpty,
+            missingTouched,
+          ]);
+
+          const deleted = yield* getAccountOptional(touchedEmpty);
+          assert.isNull(deleted);
+
+          const preservedNonEmpty = yield* getAccountOptional(touchedNonEmpty);
+          assert.isNotNull(preservedNonEmpty);
+          assert.strictEqual(preservedNonEmpty?.nonce, 1n);
+
+          const untouched = yield* getAccountOptional(untouchedEmpty);
+          assert.isNotNull(untouched);
+        }),
+      ),
   );
 
   it.effect("returns empty code for missing accounts", () =>
