@@ -594,12 +594,6 @@ const evaluatePreExecutionGasForParsedTx = (
     let blobGasFeeValue = 0n;
 
     if (Transaction.isEIP4844(parsedTx)) {
-      if (parsedTx.to == null) {
-        return yield* Effect.fail(
-          new TransactionTypeContractCreationError({ type: parsedTx.type }),
-        );
-      }
-
       if (parsedTx.blobVersionedHashes.length === 0) {
         return yield* Effect.fail(
           new NoBlobDataError({ message: "no blob data in transaction" }),
@@ -632,6 +626,12 @@ const evaluatePreExecutionGasForParsedTx = (
         BigInt(parsedTx.blobVersionedHashes.length) * BLOB_GAS_PER_BLOB;
       blobGasFeeValue = blobGasUsed * parsedTx.maxFeePerBlobGas;
       maxGasFeeValue += blobGasFeeValue;
+
+      if (parsedTx.to == null) {
+        return yield* Effect.fail(
+          new TransactionTypeContractCreationError({ type: parsedTx.type }),
+        );
+      }
     }
 
     if (Transaction.isEIP7702(parsedTx) && parsedTx.to == null) {
@@ -711,12 +711,6 @@ const makeTransactionProcessor = Effect.gen(function* () {
     senderBalance: bigint,
   ) =>
     Effect.gen(function* () {
-      if (Transaction.isEIP4844(tx) && tx.to == null) {
-        return yield* Effect.fail(
-          new TransactionTypeContractCreationError({ type: tx.type }),
-        );
-      }
-
       const { parsedTx, baseFee } = yield* parseTransactionAndBaseFee(
         tx,
         baseFeePerGas,
