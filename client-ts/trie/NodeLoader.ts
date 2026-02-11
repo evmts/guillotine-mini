@@ -46,7 +46,7 @@ const { bytesFromUint8Array } = makeBytesHelpers(
   (message) => new TrieNodeLoaderError({ message }),
 );
 
-const isEmptyTrieRoot = (hash: Hash.HashType): boolean =>
+const isEmptyTrieRoot = (hash: Hash.HashType) =>
   Hash.equals(hash, EMPTY_TRIE_ROOT);
 
 const encodeRlp = (
@@ -57,10 +57,7 @@ const encodeRlp = (
     Effect.mapError(wrapRlpEncodeError),
   );
 
-const decodeBytes = (
-  codec: typeof TrieNodeCodec.Type,
-  encoded: BytesType,
-) =>
+const decodeBytes = (codec: typeof TrieNodeCodec.Type, encoded: BytesType) =>
   coerceEffect<TrieNode, TrieNodeCodecError>(codec.decode(encoded)).pipe(
     Effect.mapError(wrapCodecError),
   );
@@ -110,7 +107,9 @@ const makeTrieNodeLoader = (
             return yield* decodeBytes(codec, encoded);
           }
           case "hash": {
-            if (isEmptyTrieRoot(ref.value)) {
+            if (
+              yield* coerceEffect<boolean, never>(isEmptyTrieRoot(ref.value))
+            ) {
               return null;
             }
 
