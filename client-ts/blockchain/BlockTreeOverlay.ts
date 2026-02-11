@@ -43,6 +43,9 @@ const BlockNumberBigIntSchema = BlockNumber.BigInt as unknown as Schema.Schema<
 const blockNumberToBigInt = (number: BlockNumberType) =>
   Schema.encodeSync(BlockNumberBigIntSchema)(number);
 
+const blockNumberFromBigInt = (number: bigint): BlockNumberType =>
+  Schema.decodeSync(BlockNumberBigIntSchema)(number);
+
 const makeBlockTreeOverlay = Effect.gen(function* () {
   const baseTree = yield* ReadOnlyBlockTree;
   const overlayTree = yield* BlockTree;
@@ -66,6 +69,13 @@ export const makeBlockTreeOverlayService = (
   baseTree: ReadOnlyBlockTreeService,
   overlayTree: BlockTreeService,
 ): BlockTreeOverlayService => {
+  const trackedOverlayHashes = new Map<string, BlockHashType>();
+
+  const rememberOverlayHash = (hash: BlockHashType) =>
+    Effect.sync(() => {
+      trackedOverlayHashes.set(Hex.fromBytes(hash), hash);
+    });
+
   const materializeAncestryFromBase = (
     hash: BlockHashType,
     visited = new Set<string>(),
@@ -79,6 +89,7 @@ export const makeBlockTreeOverlayService = (
 
       const presentInOverlay = yield* overlayTree.hasBlock(hash);
       if (presentInOverlay) {
+        yield* rememberOverlayHash(hash);
         return;
       }
 
@@ -96,6 +107,7 @@ export const makeBlockTreeOverlayService = (
       if (stillMissing) {
         yield* overlayTree.putBlock(block);
       }
+      yield* rememberOverlayHash(block.hash);
     });
 
   const readThroughOption = <A>(
@@ -110,42 +122,55 @@ export const makeBlockTreeOverlayService = (
       return yield* base();
     });
 
-  const readThroughBoolean = (
-    overlay: Effect.Effect<boolean, BlockTreeError>,
-    base: () => Effect.Effect<boolean, BlockTreeError>,
-  ) =>
+  const getBlock = (hash: BlockHashType) =>
     Effect.gen(function* () {
-      const overlayValue = yield* overlay;
-      if (overlayValue) {
-        return true;
+      const overlayValue = yield* overlayTree.getBlock(hash);
+      if (Option.isSome(overlayValue)) {
+        yield* rememberOverlayHash(Option.getOrThrow(overlayValue).hash);
+        return overlayValue;
       }
-      return yield* base();
+      return yield* baseTree.getBlock(hash);
     });
 
-  const getBlock = (hash: BlockHashType) =>
-    readThroughOption(overlayTree.getBlock(hash), () =>
-      baseTree.getBlock(hash),
-    );
-
   const getBlockByNumber = (number: BlockNumberType) =>
-    readThroughOption(overlayTree.getBlockByNumber(number), () =>
-      baseTree.getBlockByNumber(number),
-    );
+    Effect.gen(function* () {
+      const overlayValue = yield* overlayTree.getBlockByNumber(number);
+      if (Option.isSome(overlayValue)) {
+        yield* rememberOverlayHash(Option.getOrThrow(overlayValue).hash);
+        return overlayValue;
+      }
+      return yield* baseTree.getBlockByNumber(number);
+    });
 
   const getCanonicalHash = (number: BlockNumberType) =>
-    readThroughOption(overlayTree.getCanonicalHash(number), () =>
-      baseTree.getCanonicalHash(number),
-    );
+    Effect.gen(function* () {
+      const overlayValue = yield* overlayTree.getCanonicalHash(number);
+      if (Option.isSome(overlayValue)) {
+        yield* rememberOverlayHash(Option.getOrThrow(overlayValue));
+        return overlayValue;
+      }
+      return yield* baseTree.getCanonicalHash(number);
+    });
 
   const hasBlock = (hash: BlockHashType) =>
-    readThroughBoolean(overlayTree.hasBlock(hash), () =>
-      baseTree.hasBlock(hash),
-    );
+    Effect.gen(function* () {
+      const inOverlay = yield* overlayTree.hasBlock(hash);
+      if (inOverlay) {
+        yield* rememberOverlayHash(hash);
+        return true;
+      }
+      return yield* baseTree.hasBlock(hash);
+    });
 
   const isOrphan = (hash: BlockHashType) =>
-    readThroughBoolean(overlayTree.isOrphan(hash), () =>
-      baseTree.isOrphan(hash),
-    );
+    Effect.gen(function* () {
+      const inOverlay = yield* overlayTree.hasBlock(hash);
+      if (inOverlay) {
+        yield* rememberOverlayHash(hash);
+        return yield* overlayTree.isOrphan(hash);
+      }
+      return yield* baseTree.isOrphan(hash);
+    });
 
   const putBlock = (block: BlockType) =>
     Effect.gen(function* () {
@@ -153,6 +178,7 @@ export const makeBlockTreeOverlayService = (
         yield* materializeAncestryFromBase(block.header.parentHash);
       }
       yield* overlayTree.putBlock(block);
+      yield* rememberOverlayHash(block.hash);
     });
 
   const setCanonicalHead = (hash: BlockHashType) =>
@@ -168,29 +194,82 @@ export const makeBlockTreeOverlayService = (
 
   const blockCount = () =>
     Effect.gen(function* () {
-      const [overlayCount, baseCount] = yield* Effect.all([
-        overlayTree.blockCount(),
-        baseTree.blockCount(),
-      ]);
-      return overlayCount + baseCount;
+      const baseCount = yield* baseTree.blockCount();
+      let overlayOnly = 0;
+
+      for (const hash of trackedOverlayHashes.values()) {
+        const existsInBase = yield* baseTree.hasBlock(hash);
+        if (!existsInBase) {
+          overlayOnly += 1;
+        }
+      }
+
+      return baseCount + overlayOnly;
     });
 
   const orphanCount = () =>
     Effect.gen(function* () {
-      const [overlayCount, baseCount] = yield* Effect.all([
-        overlayTree.orphanCount(),
-        baseTree.orphanCount(),
-      ]);
-      return overlayCount + baseCount;
+      const baseOrphanCount = yield* baseTree.orphanCount();
+      let shadowedBaseOrphans = 0;
+      let visibleOverlayOrphans = 0;
+
+      for (const hash of trackedOverlayHashes.values()) {
+        const existsInBase = yield* baseTree.hasBlock(hash);
+        if (existsInBase && (yield* baseTree.isOrphan(hash))) {
+          shadowedBaseOrphans += 1;
+        }
+
+        if (yield* overlayTree.isOrphan(hash)) {
+          visibleOverlayOrphans += 1;
+        }
+      }
+
+      const remainingBaseOrphans = Math.max(
+        0,
+        baseOrphanCount - shadowedBaseOrphans,
+      );
+      return remainingBaseOrphans + visibleOverlayOrphans;
+    });
+
+  const collectCanonicalHashes = (
+    tree: Pick<
+      ReadOnlyBlockTreeService,
+      "getCanonicalHash" | "getHeadBlockNumber"
+    >,
+  ) =>
+    Effect.gen(function* () {
+      const hashes = new Map<string, BlockHashType>();
+      const headNumber = yield* tree.getHeadBlockNumber();
+      if (Option.isNone(headNumber)) {
+        return hashes;
+      }
+
+      const head = blockNumberToBigInt(Option.getOrThrow(headNumber));
+      for (let number = 0n; number <= head; number += 1n) {
+        const maybeHash = yield* tree.getCanonicalHash(
+          blockNumberFromBigInt(number),
+        );
+        if (Option.isSome(maybeHash)) {
+          const hash = Option.getOrThrow(maybeHash);
+          hashes.set(Hex.fromBytes(hash), hash);
+        }
+      }
+
+      return hashes;
     });
 
   const canonicalChainLength = () =>
     Effect.gen(function* () {
-      const [overlayLength, baseLength] = yield* Effect.all([
-        overlayTree.canonicalChainLength(),
-        baseTree.canonicalChainLength(),
+      const [baseCanonicalHashes, overlayCanonicalHashes] = yield* Effect.all([
+        collectCanonicalHashes(baseTree),
+        collectCanonicalHashes(overlayTree),
       ]);
-      return Math.max(overlayLength, baseLength);
+
+      for (const [key, hash] of overlayCanonicalHashes.entries()) {
+        baseCanonicalHashes.set(key, hash);
+      }
+
+      return baseCanonicalHashes.size;
     });
 
   return {
