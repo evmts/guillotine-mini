@@ -594,44 +594,11 @@ const evaluatePreExecutionGasForParsedTx = (
     let blobGasFeeValue = 0n;
 
     if (Transaction.isEIP4844(parsedTx)) {
-      if (parsedTx.blobVersionedHashes.length === 0) {
-        return yield* Effect.fail(
-          new NoBlobDataError({ message: "no blob data in transaction" }),
-        );
-      }
-
-      for (const [index, blobHash] of parsedTx.blobVersionedHashes.entries()) {
-        if (!Blob.isValidVersion(blobHash as unknown as Blob.VersionedHash)) {
-          return yield* Effect.fail(
-            new InvalidBlobVersionedHashError({ index }),
-          );
-        }
-      }
-
-      const normalizedBlobGasPrice = yield* decodeGasPrice(
-        blobGasPrice,
-        "blob",
-      );
-
-      if (parsedTx.maxFeePerBlobGas < normalizedBlobGasPrice) {
-        return yield* Effect.fail(
-          new InsufficientMaxFeePerBlobGasError({
-            maxFeePerBlobGas: parsedTx.maxFeePerBlobGas,
-            blobGasPrice: normalizedBlobGasPrice,
-          }),
-        );
-      }
-
+      yield* validateBlobTransactionPreconditions(parsedTx, blobGasPrice);
       blobGasUsed =
         BigInt(parsedTx.blobVersionedHashes.length) * BLOB_GAS_PER_BLOB;
       blobGasFeeValue = blobGasUsed * parsedTx.maxFeePerBlobGas;
       maxGasFeeValue += blobGasFeeValue;
-
-      if (parsedTx.to == null) {
-        return yield* Effect.fail(
-          new TransactionTypeContractCreationError({ type: parsedTx.type }),
-        );
-      }
     }
 
     if (Transaction.isEIP7702(parsedTx) && parsedTx.to == null) {
@@ -678,15 +645,11 @@ const evaluatePreExecutionGasForParsedTx = (
     } satisfies EffectiveGasPrice & MaxGasFeeCheck;
   });
 
-const validateRawBlobTransactionPreconditions = (
-  tx: Transaction.Any,
+const validateBlobTransactionPreconditions = (
+  tx: Transaction.EIP4844,
   blobGasPrice: bigint,
 ) =>
   Effect.gen(function* () {
-    if (!Transaction.isEIP4844(tx)) {
-      return;
-    }
-
     if (tx.blobVersionedHashes.length === 0) {
       return yield* Effect.fail(
         new NoBlobDataError({ message: "no blob data in transaction" }),
@@ -714,6 +677,18 @@ const validateRawBlobTransactionPreconditions = (
         new TransactionTypeContractCreationError({ type: tx.type }),
       );
     }
+  });
+
+const validateRawBlobTransactionPreconditions = (
+  tx: Transaction.Any,
+  blobGasPrice: bigint,
+) =>
+  Effect.gen(function* () {
+    if (!Transaction.isEIP4844(tx)) {
+      return;
+    }
+
+    yield* validateBlobTransactionPreconditions(tx, blobGasPrice);
   });
 
 const calculateTransactionBlobGasUsed = (tx: Transaction.Any): bigint =>
