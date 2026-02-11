@@ -678,6 +678,44 @@ const evaluatePreExecutionGasForParsedTx = (
     } satisfies EffectiveGasPrice & MaxGasFeeCheck;
   });
 
+const validateRawBlobTransactionPreconditions = (
+  tx: Transaction.Any,
+  blobGasPrice: bigint,
+) =>
+  Effect.gen(function* () {
+    if (!Transaction.isEIP4844(tx)) {
+      return;
+    }
+
+    if (tx.blobVersionedHashes.length === 0) {
+      return yield* Effect.fail(
+        new NoBlobDataError({ message: "no blob data in transaction" }),
+      );
+    }
+
+    for (const [index, blobHash] of tx.blobVersionedHashes.entries()) {
+      if (!Blob.isValidVersion(blobHash as unknown as Blob.VersionedHash)) {
+        return yield* Effect.fail(new InvalidBlobVersionedHashError({ index }));
+      }
+    }
+
+    const normalizedBlobGasPrice = yield* decodeGasPrice(blobGasPrice, "blob");
+    if (tx.maxFeePerBlobGas < normalizedBlobGasPrice) {
+      return yield* Effect.fail(
+        new InsufficientMaxFeePerBlobGasError({
+          maxFeePerBlobGas: tx.maxFeePerBlobGas,
+          blobGasPrice: normalizedBlobGasPrice,
+        }),
+      );
+    }
+
+    if (tx.to == null) {
+      return yield* Effect.fail(
+        new TransactionTypeContractCreationError({ type: tx.type }),
+      );
+    }
+  });
+
 const calculateTransactionBlobGasUsed = (tx: Transaction.Any): bigint =>
   Transaction.isEIP4844(tx)
     ? BigInt(tx.blobVersionedHashes.length) * BLOB_GAS_PER_BLOB
@@ -711,6 +749,7 @@ const makeTransactionProcessor = Effect.gen(function* () {
     senderBalance: bigint,
   ) =>
     Effect.gen(function* () {
+      yield* validateRawBlobTransactionPreconditions(tx, blobGasPrice);
       const { parsedTx, baseFee } = yield* parseTransactionAndBaseFee(
         tx,
         baseFeePerGas,
@@ -753,6 +792,7 @@ const makeTransactionProcessor = Effect.gen(function* () {
         );
       }
 
+      yield* validateRawBlobTransactionPreconditions(tx, blobGasPrice);
       const { parsedTx, baseFee } = yield* parseTransactionAndBaseFee(
         tx,
         baseFeePerGas,
