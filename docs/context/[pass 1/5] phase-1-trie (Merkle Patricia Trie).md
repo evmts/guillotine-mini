@@ -118,7 +118,7 @@ Relevant APIs for trie phase:
 - Hash/hex utilities:
   - `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/Hash/Hash.zig`
   - `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/Hex/Hex.zig`
-  - key hash helper: `Hash.keccak256`
+  - key hash helper: `crypto.Keccak256.hash`
 - Aggregated primitive exports:
   - `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/root.zig`
   - exports `Address`, `Hash`, `Hex`, `Rlp`, etc., as canonical primitive entry points.
