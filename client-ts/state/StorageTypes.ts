@@ -28,4 +28,3 @@ export const StorageValueSchema =
     StorageValueType,
     Uint8Array | string | number | bigint
   >;
-
