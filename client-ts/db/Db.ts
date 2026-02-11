@@ -803,16 +803,12 @@ export const getAllValues = (ordered?: boolean) =>
   withDb((db) => db.getAllValues(ordered));
 
 /** Seek to the first entry with key >= `key`, optionally restricted by `prefix`. */
-export const seek = (
-  key: BytesType,
-  options?: IteratorOptions,
-) => withDb((db) => db.seek(key, options));
+export const seek = (key: BytesType, options?: IteratorOptions) =>
+  withDb((db) => db.seek(key, options));
 
 /** Move to the next entry with key > `key`, optionally restricted by `prefix`. */
-export const next = (
-  key: BytesType,
-  options?: IteratorOptions,
-) => withDb((db) => db.next(key, options));
+export const next = (key: BytesType, options?: IteratorOptions) =>
+  withDb((db) => db.next(key, options));
 
 /** Return all entries, optionally restricted by a `prefix`. */
 export const range = (options?: IteratorOptions) =>
