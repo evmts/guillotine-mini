@@ -12,11 +12,14 @@ import {
   getAll,
   getAllKeys,
   getAllValues,
+  next,
   getMany,
   has,
   merge,
+  range,
   put,
   remove,
+  seek,
   startWriteBatch,
   writeBatch,
 } from "./Db";
@@ -54,6 +57,9 @@ describe("DbRocksStub", () => {
       yield* expectUnsupported(getAll(), "getAll");
       yield* expectUnsupported(getAllKeys(), "getAllKeys");
       yield* expectUnsupported(getAllValues(), "getAllValues");
+      yield* expectUnsupported(seek(key), "seek");
+      yield* expectUnsupported(next(key), "next");
+      yield* expectUnsupported(range(), "range");
       yield* expectUnsupported(put(key, value), "put");
       yield* expectUnsupported(merge(key, value), "merge");
       yield* expectUnsupported(remove(key), "remove");

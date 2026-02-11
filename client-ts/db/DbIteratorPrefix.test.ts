@@ -8,10 +8,10 @@ import { toBytes } from "./testUtils";
 describe("Db iterator prefix semantics", () => {
   it.effect("seek respects prefix and >= lower bound", () =>
     Effect.gen(function* () {
-      const prefix = Hex.toBytes("0x1000");
-      const k1 = Hex.toBytes("0x100001");
-      const k2 = Hex.toBytes("0x1000ff");
-      const k3 = Hex.toBytes("0x10ff"); // outside prefix
+      const prefix = toBytes("0x1000");
+      const k1 = toBytes("0x100001");
+      const k2 = toBytes("0x1000ff");
+      const k3 = toBytes("0x10ff"); // outside prefix
 
       yield* put(k1 as any, toBytes("0xaa"));
       yield* put(k2 as any, toBytes("0xbb"));
@@ -19,69 +19,65 @@ describe("Db iterator prefix semantics", () => {
       yield* put(k3 as any, toBytes("0xcc"));
 
       // Start well below prefix: should return first entry within prefix (k1)
-      const s0 = yield* seek(toBytes("0x0000"), { prefix: prefix as any });
+      const s0 = yield* seek(toBytes("0x0000"), { prefix });
       const e0 = Option.getOrThrow(s0);
       assert.isTrue(Bytes.equals(e0.key, k1 as any));
 
       // Start exactly at the prefix key: should return the prefix key if present
       // Nethermind ordering: 0x100001 < 0x1000, so seek(0x1000) lands on 0x1000
-      const s1 = yield* seek(prefix as any, { prefix: prefix as any });
+      const s1 = yield* seek(prefix, { prefix });
       const e1 = Option.getOrThrow(s1);
       assert.isTrue(Bytes.equals(e1.key, prefix as any));
 
       // Start inside the prefix range but between entries
-      const s2 = yield* seek(Hex.toBytes("0x100002") as any, {
-        prefix: prefix as any,
-      });
+      const s2 = yield* seek(toBytes("0x100002"), { prefix });
       const e2 = Option.getOrThrow(s2);
       // With Nethermind ordering, k2 is the first >= 0x100002 within prefix
       assert.isTrue(Bytes.equals(e2.key, k2 as any));
 
       // Start above the highest entry in the prefix: expect none
-      const s3 = yield* seek(Hex.toBytes("0x100100") as any, {
-        prefix: prefix as any,
-      });
+      const s3 = yield* seek(toBytes("0x100100"), { prefix });
       assert.isTrue(Option.isNone(s3));
     }).pipe(Effect.provide(DbMemoryTest())),
   );
 
   it.effect("next respects prefix and strict > bound", () =>
     Effect.gen(function* () {
-      const prefix = Hex.toBytes("0x2000");
-      const k1 = Hex.toBytes("0x200001");
-      const k2 = Hex.toBytes("0x2000ff");
+      const prefix = toBytes("0x2000");
+      const k1 = toBytes("0x200001");
+      const k2 = toBytes("0x2000ff");
 
       yield* put(k1 as any, toBytes("0x11"));
       yield* put(prefix as any, toBytes("0x22"));
       yield* put(k2 as any, toBytes("0x33"));
 
       // Next from below prefix returns first inside prefix
-      const n0 = yield* next(toBytes("0x1fff"), { prefix: prefix as any });
+      const n0 = yield* next(toBytes("0x1fff"), { prefix });
       const e0 = Option.getOrThrow(n0);
       assert.isTrue(Bytes.equals(e0.key, k1 as any));
 
       // Strictly greater: next from k1 within prefix should be k2
-      const n1 = yield* next(k1 as any, { prefix: prefix as any });
+      const n1 = yield* next(k1, { prefix });
       const e1 = Option.getOrThrow(n1);
       assert.isTrue(Bytes.equals(e1.key, k2 as any));
 
       // Next from k2 should be the prefix key (ordering: k1 < k2 < prefix)
-      const n2 = yield* next(k2 as any, { prefix: prefix as any });
+      const n2 = yield* next(k2, { prefix });
       const e2 = Option.getOrThrow(n2);
       assert.isTrue(Bytes.equals(e2.key, prefix as any));
 
       // Next from the last key in prefix returns none
-      const n3 = yield* next(prefix as any, { prefix: prefix as any });
+      const n3 = yield* next(prefix, { prefix });
       assert.isTrue(Option.isNone(n3));
     }).pipe(Effect.provide(DbMemoryTest())),
   );
 
   it.effect("range with prefix returns ordered subset or empty", () =>
     Effect.gen(function* () {
-      const prefix = Hex.toBytes("0x3000");
-      const k1 = Hex.toBytes("0x300001");
-      const k2 = Hex.toBytes("0x3000ff");
-      const other = Hex.toBytes("0x30ff");
+      const prefix = toBytes("0x3000");
+      const k1 = toBytes("0x300001");
+      const k2 = toBytes("0x3000ff");
+      const other = toBytes("0x30ff");
 
       yield* put(k2 as any, toBytes("0xaa"));
       yield* put(other as any, toBytes("0xbb"));
@@ -89,14 +85,14 @@ describe("Db iterator prefix semantics", () => {
       yield* put(k1 as any, toBytes("0xdd"));
 
       // Ordered according to Nethermind byte ordering: k1 < k2 < prefix
-      const entries = yield* range({ prefix: prefix as any });
+      const entries = yield* range({ prefix });
       assert.strictEqual(entries.length, 3);
       assert.isTrue(Bytes.equals(entries[0]!.key, k1 as any));
       assert.isTrue(Bytes.equals(entries[1]!.key, k2 as any));
       assert.isTrue(Bytes.equals(entries[2]!.key, prefix as any));
 
       // Different prefix yields empty result
-      const none = yield* range({ prefix: Hex.toBytes("0x31") as any });
+      const none = yield* range({ prefix: toBytes("0x31") });
       assert.strictEqual(none.length, 0);
     }).pipe(Effect.provide(DbMemoryTest())),
   );
