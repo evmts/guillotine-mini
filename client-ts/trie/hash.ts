@@ -3,12 +3,13 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
-import { Hash, Rlp } from "voltaire-effect/primitives";
+import { Rlp } from "voltaire-effect/primitives";
 import type { EncodedNode, HashType, RlpType, TrieNode } from "./Node";
 import { BranchChildrenCount } from "./Node";
 import { NibbleEncodingError, nibbleListToCompact } from "./encoding";
-import { coerceEffect } from "./internal/effect";
 import { makeBytesHelpers } from "./internal/primitives";
+import { encodeRlp as encodeRlpGeneric } from "./internal/rlp";
+import { keccak256 } from "./internal/crypto";
 
 /** Error raised when trie hashing fails. */
 export class TrieHashError extends Data.TaggedError("TrieHashError")<{
@@ -60,12 +61,7 @@ const wrapRlpError = (cause: unknown) =>
   });
 
 const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
-  coerceEffect<Uint8Array, unknown>(Rlp.encode(data)).pipe(
-    Effect.mapError(wrapRlpError),
-  );
-
-const keccak256 = (data: Uint8Array) =>
-  coerceEffect<HashType, never>(Hash.keccak256(data));
+  encodeRlpGeneric(data).pipe(Effect.mapError(wrapRlpError));
 
 const nodeToItems = (
   node: TrieNode,

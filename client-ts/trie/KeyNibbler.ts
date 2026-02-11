@@ -2,10 +2,10 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { Bytes, Hash } from "voltaire-effect/primitives";
+import { Bytes } from "voltaire-effect/primitives";
 import type { BytesType, NibbleList } from "./Node";
 import { bytesToNibbleList } from "./encoding";
-import { coerceEffect } from "./internal/effect";
+import { keccak256 } from "./internal/crypto";
 import { makeBytesHelpers } from "./internal/primitives";
 
 /** Error raised when converting keys to nibble paths. */
@@ -25,8 +25,7 @@ const toBytes = (value: Uint8Array) =>
       new KeyNibblerError({ message: "Invalid key bytes", cause }),
   });
 
-const keccak256 = (data: Uint8Array) =>
-  coerceEffect<Hash.HashType, never>(Hash.keccak256(data));
+// share typed helper to keep consistency with other modules
 
 /** Key → nibble-path conversion service. */
 export interface KeyNibblerService {

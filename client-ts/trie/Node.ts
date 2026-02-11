@@ -20,7 +20,10 @@ export type EncodedNode =
     }
   | {
       readonly _tag: "raw";
+      /** RLP structure (kept for compatibility with existing callers). */
       readonly value: RlpType;
+      /** Optional pre-encoded bytes of `value` to avoid re-encoding. */
+      readonly encoded?: BytesType;
     }
   | {
       readonly _tag: "empty";

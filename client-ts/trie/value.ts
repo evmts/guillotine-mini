@@ -10,7 +10,7 @@ import {
   Uint,
 } from "voltaire-effect/primitives";
 import type { BytesType } from "./Node";
-import { coerceEffect } from "./internal/effect";
+import { encodeRlp as encodeRlpGeneric } from "./internal/rlp";
 import { makeBytesHelpers } from "./internal/primitives";
 
 /** Error raised when encoding trie values fails. */
@@ -96,9 +96,7 @@ const bigintToMinimalBytes = (
   });
 
 const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
-  coerceEffect<Uint8Array, unknown>(Rlp.encode(data)).pipe(
-    Effect.mapError(wrapRlpError),
-  );
+  encodeRlpGeneric(data).pipe(Effect.mapError(wrapRlpError));
 
 const toBytes = (
   value: Uint8Array,

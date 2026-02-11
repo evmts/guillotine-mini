@@ -3,7 +3,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
-import { Hash, Rlp } from "voltaire-effect/primitives";
+import { Rlp } from "voltaire-effect/primitives";
 import type {
   BytesType,
   EncodedNode,
@@ -13,8 +13,9 @@ import type {
 } from "./Node";
 import { TrieHash, type TrieHashError } from "./hash";
 import { TriePatricialize, type PatricializeError } from "./patricialize";
-import { coerceEffect } from "./internal/effect";
 import { makeHashHelpers } from "./internal/primitives";
+import { encodeRlp as encodeRlpGeneric } from "./internal/rlp";
+import { keccak256 } from "./internal/crypto";
 import type { KeyNibblerService } from "./KeyNibbler";
 import { KeyNibbler } from "./KeyNibbler";
 
@@ -75,12 +76,7 @@ const wrapKeyNibblerError = (cause: unknown) =>
   new TrieRootError({ message: "Failed to convert key to nibbles", cause });
 
 const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
-  coerceEffect<Uint8Array, unknown>(Rlp.encode(data)).pipe(
-    Effect.mapError(wrapRlpError),
-  );
-/** Keccak-256 helper for hashing encoded nodes. */
-const keccak256 = (data: Uint8Array) =>
-  coerceEffect<HashType, never>(Hash.keccak256(data));
+  encodeRlpGeneric(data).pipe(Effect.mapError(wrapRlpError));
 
 const encodedNodeToRoot = (
   encoded: EncodedNode,
