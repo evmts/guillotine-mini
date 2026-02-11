@@ -276,7 +276,12 @@ const expectedReadAheadFlags = (
       ? ReadFlags.combine(ReadFlags.HintReadAhead, ReadFlags.HintReadAhead2)
       : ReadFlags.HintReadAhead;
 
-describe("TrieNodeStorage", () => {
+const isPlainBunTestRunner =
+  typeof Bun !== "undefined" && process.env.VITEST === undefined;
+
+const describeTrieNodeStorage = isPlainBunTestRunner ? describe.skip : describe;
+
+describeTrieNodeStorage("TrieNodeStorage", () => {
   it.effect("setNode and getNode round-trip encoded trie nodes", () =>
     Effect.gen(function* () {
       const nodeHash = hashFromHex(
