@@ -203,7 +203,11 @@ export const JournalLive: Layer.Layer<Journal> = Layer.succeed(
 );
 
 /** Deterministic journal layer for tests. */
-export const JournalTest: Layer.Layer<Journal> = JournalLive;
+// Provide a fresh journal instance for each provision to avoid test cross-talk
+export const JournalTest: Layer.Layer<Journal> = Layer.scoped(
+  Journal,
+  Effect.sync(() => makeJournal<unknown, unknown>()),
+);
 
 const journalService = <K, V>() =>
   Effect.map(Journal, (journal) => journal as JournalService<K, V>);

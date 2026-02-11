@@ -170,6 +170,53 @@ const makeReader = (
       const ordered =
         cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
       const entries = withPrefix(ordered, options);
+
+      if (options?.prefix) {
+        const p = options.prefix;
+        const inPrefix = startsWithBytes(key, p);
+
+        if (!inPrefix) {
+          // Outside the prefix window: below -> first; above -> none
+          const rel = compareBytes(key, p);
+          if (rel < 0) {
+            const first = entries[0];
+            return first
+              ? Option.some<DbEntry>({
+                  key: first.key,
+                  value: cloneBytes(first.value),
+                })
+              : Option.none<DbEntry>();
+          }
+          return Option.none<DbEntry>();
+        }
+
+        // Inside the prefix window: find lower_bound within the filtered set
+        for (const entry of entries) {
+          const cmp = compareBytes(entry.key, key);
+          if (cmp >= 0) {
+            return Option.some<DbEntry>({
+              key: entry.key,
+              value: cloneBytes(entry.value),
+            });
+          }
+        }
+
+        // Edge case: seeking exactly at the prefix key but that key is absent.
+        // Nethermind ordering places all extended keys (prefix+bytes) before
+        // the bare prefix key, so lower_bound would be empty; return first.
+        if (compareBytes(key, p) === 0) {
+          const first = entries[0];
+          return first
+            ? Option.some<DbEntry>({
+                key: first.key,
+                value: cloneBytes(first.value),
+              })
+            : Option.none<DbEntry>();
+        }
+
+        return Option.none<DbEntry>();
+      }
+
       for (const entry of entries) {
         const cmp = compareBytes(entry.key, key);
         if (cmp >= 0) {
