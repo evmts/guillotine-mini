@@ -387,6 +387,72 @@ const resolveLookupKeys = (
     } as const satisfies TrieNodeLookupKeys;
   });
 
+const resolveNodeStorageKeyForWrite = (
+  resolveScheme: () => TrieNodeStorageKeyScheme,
+  addressHash: Hash.HashType | null,
+  path: TrieNodePath,
+  nodeHash: Hash.HashType,
+): Effect.Effect<Option.Option<BytesType>, TrieNodeStorageError> =>
+  Effect.gen(function* () {
+    const context = yield* validateNodeContext(addressHash, path, nodeHash);
+    if (isEmptyTrieRoot(context.nodeHash)) {
+      return Option.none();
+    }
+    const key = yield* resolveNodeStorageKey(resolveScheme(), context);
+    return Option.some(key);
+  });
+
+const setNodeByResolvedKey = (
+  resolveScheme: () => TrieNodeStorageKeyScheme,
+  writeNode: (
+    key: BytesType,
+    encodedNode: BytesType,
+    writeFlags?: DbWriteFlags,
+  ) => Effect.Effect<void, TrieNodeStorageError>,
+  addressHash: Hash.HashType | null,
+  path: TrieNodePath,
+  nodeHash: Hash.HashType,
+  encodedNode: BytesType,
+  writeFlags?: DbWriteFlags,
+): Effect.Effect<void, TrieNodeStorageError> =>
+  Effect.gen(function* () {
+    const validatedNodeData = yield* validateNodeData(encodedNode);
+    const key = yield* resolveNodeStorageKeyForWrite(
+      resolveScheme,
+      addressHash,
+      path,
+      nodeHash,
+    );
+
+    if (Option.isNone(key)) {
+      return;
+    }
+
+    yield* writeNode(key.value, validatedNodeData, writeFlags);
+  });
+
+const removeNodeByResolvedKey = (
+  resolveScheme: () => TrieNodeStorageKeyScheme,
+  removeNode: (key: BytesType) => Effect.Effect<void, TrieNodeStorageError>,
+  addressHash: Hash.HashType | null,
+  path: TrieNodePath,
+  nodeHash: Hash.HashType,
+): Effect.Effect<void, TrieNodeStorageError> =>
+  Effect.gen(function* () {
+    const key = yield* resolveNodeStorageKeyForWrite(
+      resolveScheme,
+      addressHash,
+      path,
+      nodeHash,
+    );
+
+    if (Option.isNone(key)) {
+      return;
+    }
+
+    yield* removeNode(key.value);
+  });
+
 const getOrderedLookupKeys = (
   scheme: TrieNodeStorageKeyScheme,
   keys: TrieNodeLookupKeys,
@@ -471,37 +537,32 @@ const makeWriteBatch = (
       encodedNode: BytesType,
       writeFlags?: DbWriteFlags,
     ) =>
-      Effect.gen(function* () {
-        const context = yield* validateNodeContext(addressHash, path, nodeHash);
-        const validatedNodeData = yield* validateNodeData(encodedNode);
-
-        if (isEmptyTrieRoot(context.nodeHash)) {
-          return;
-        }
-
-        const key = yield* resolveNodeStorageKey(resolveScheme(), context);
-
-        yield* pipe(
-          batch.put(key, validatedNodeData, writeFlags),
-          Effect.mapError(wrapDbWriteBatchError),
-        );
-      }),
+      setNodeByResolvedKey(
+        resolveScheme,
+        (key, validatedNodeData, nextWriteFlags) =>
+          pipe(
+            batch.put(key, validatedNodeData, nextWriteFlags),
+            Effect.mapError(wrapDbWriteBatchError),
+          ),
+        addressHash,
+        path,
+        nodeHash,
+        encodedNode,
+        writeFlags,
+      ),
     remove: (
       addressHash: Hash.HashType | null,
       path: TrieNodePath,
       nodeHash: Hash.HashType,
     ) =>
-      Effect.gen(function* () {
-        const context = yield* validateNodeContext(addressHash, path, nodeHash);
-
-        if (isEmptyTrieRoot(context.nodeHash)) {
-          return;
-        }
-
-        const key = yield* resolveNodeStorageKey(resolveScheme(), context);
-
-        yield* pipe(batch.remove(key), Effect.mapError(wrapDbWriteBatchError));
-      }),
+      removeNodeByResolvedKey(
+        resolveScheme,
+        (key) =>
+          pipe(batch.remove(key), Effect.mapError(wrapDbWriteBatchError)),
+        addressHash,
+        path,
+        nodeHash,
+      ),
     clear: () => pipe(batch.clear(), Effect.mapError(wrapDbWriteBatchError)),
   }) satisfies TrieNodeStorageWriteBatch;
 
@@ -557,21 +618,19 @@ const makeTrieNodeStorage = (db: DbService) => {
       encodedNode: BytesType,
       writeFlags?: DbWriteFlags,
     ) =>
-      Effect.gen(function* () {
-        const context = yield* validateNodeContext(addressHash, path, nodeHash);
-        const validatedNodeData = yield* validateNodeData(encodedNode);
-
-        if (isEmptyTrieRoot(context.nodeHash)) {
-          return;
-        }
-
-        const key = yield* resolveNodeStorageKey(resolveScheme(), context);
-
-        yield* pipe(
-          db.put(key, validatedNodeData, writeFlags),
-          Effect.mapError(wrapDbSetError),
-        );
-      }),
+      setNodeByResolvedKey(
+        resolveScheme,
+        (key, validatedNodeData, nextWriteFlags) =>
+          pipe(
+            db.put(key, validatedNodeData, nextWriteFlags),
+            Effect.mapError(wrapDbSetError),
+          ),
+        addressHash,
+        path,
+        nodeHash,
+        encodedNode,
+        writeFlags,
+      ),
     keyExists: (
       addressHash: Hash.HashType | null,
       path: TrieNodePath,
@@ -594,17 +653,13 @@ const makeTrieNodeStorage = (db: DbService) => {
       path: TrieNodePath,
       nodeHash: Hash.HashType,
     ) =>
-      Effect.gen(function* () {
-        const context = yield* validateNodeContext(addressHash, path, nodeHash);
-
-        if (isEmptyTrieRoot(context.nodeHash)) {
-          return;
-        }
-
-        const key = yield* resolveNodeStorageKey(resolveScheme(), context);
-
-        yield* pipe(db.remove(key), Effect.mapError(wrapDbRemoveError));
-      }),
+      removeNodeByResolvedKey(
+        resolveScheme,
+        (key) => pipe(db.remove(key), Effect.mapError(wrapDbRemoveError)),
+        addressHash,
+        path,
+        nodeHash,
+      ),
     startWriteBatch: () =>
       Effect.gen(function* () {
         const batch = yield* pipe(
