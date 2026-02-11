@@ -17,16 +17,6 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": [
-    "db/**/*.ts",
-    "trie/**/*.ts",
-    "state/**/*.ts",
-    "evm/**/*.ts",
-    "blockchain/**/*.ts",
-    "engine/**/*.ts",
-    "network/**/*.ts",
-    "sync/**/*.ts",
-    "runner/**/*.ts"
-  ],
+  "include": ["db/**/*.ts"],
   "exclude": ["node_modules"]
 }
