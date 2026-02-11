@@ -10,6 +10,7 @@ import {
 import {
   WorldStateTest,
   accountExistsAndIsEmpty,
+  hasAccount,
   MissingAccountError,
   UnknownSnapshotError,
   clear,
@@ -95,6 +96,18 @@ describe("WorldState", () => {
       Effect.gen(function* () {
         const existsAndIsEmpty = yield* accountExistsAndIsEmpty(Address.zero());
         assert.isFalse(existsAndIsEmpty);
+      }),
+    ),
+  );
+  it.effect("hasAccount reflects presence in world state", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(0xfe);
+        assert.isFalse(yield* hasAccount(addr));
+        yield* setAccount(addr, makeAccount({ nonce: 1n }));
+        assert.isTrue(yield* hasAccount(addr));
+        yield* destroyAccount(addr);
+        assert.isFalse(yield* hasAccount(addr));
       }),
     ),
   );

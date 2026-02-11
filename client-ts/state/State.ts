@@ -79,6 +79,8 @@ export interface WorldStateService {
   readonly getAccountOptional: (
     address: Address.AddressType,
   ) => Effect.Effect<AccountStateType | null>;
+  /** True if an account exists (regardless of emptiness). */
+  readonly hasAccount: (address: Address.AddressType) => Effect.Effect<boolean>;
   readonly getAccount: (
     address: Address.AddressType,
   ) => Effect.Effect<AccountStateType>;
@@ -278,6 +280,9 @@ const makeWorldState = Effect.gen(function* () {
     Effect.map(getAccountOptional(address), (account) =>
       account ? account : cloneAccount(EMPTY_ACCOUNT),
     );
+
+  const hasAccount = (address: Address.AddressType) =>
+    Effect.map(getAccountOptional(address), (account) => account !== null);
 
   const accountExistsAndIsEmpty = (address: Address.AddressType) =>
     Effect.map(
@@ -687,6 +692,7 @@ const makeWorldState = Effect.gen(function* () {
 
   return {
     getAccountOptional,
+    hasAccount,
     getAccount,
     accountExistsAndIsEmpty,
     getCode,
@@ -718,6 +724,10 @@ export const WorldStateTest: Layer.Layer<WorldState> = WorldStateLive.pipe(
 /** Read an optional account (None if not present). */
 export const getAccountOptional = (address: Address.AddressType) =>
   withWorldState((state) => state.getAccountOptional(address));
+
+/** Check if an account exists (present in world state). */
+export const hasAccount = (address: Address.AddressType) =>
+  withWorldState((state) => state.hasAccount(address));
 
 /** Read an account (EMPTY_ACCOUNT if absent). */
 export const getAccount = (address: Address.AddressType) =>
