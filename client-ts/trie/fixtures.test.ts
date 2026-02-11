@@ -11,6 +11,7 @@ import { TrieHashTest } from "./hash";
 import { compactToNibbleList, nibbleListToCompact } from "./encoding";
 import { makeBytesHelpers } from "./internal/primitives";
 import { TriePatricializeTest } from "./patricialize";
+import { KeyNibblerTest } from "./KeyNibbler";
 import { TrieRoot, TrieRootTest, trieRoot } from "./root";
 
 class FixtureError extends Data.TaggedError("FixtureError")<{
@@ -27,7 +28,10 @@ const BaseLayer = Layer.merge(
   TrieHashTest,
   TriePatricializeTest.pipe(Layer.provide(TrieHashTest)),
 );
-const TestLayer = TrieRootTest.pipe(Layer.provide(BaseLayer));
+const TestLayer = TrieRootTest.pipe(
+  Layer.provide(BaseLayer),
+  Layer.provide(KeyNibblerTest),
+);
 
 type HexPrefixFixture = Readonly<
   Record<

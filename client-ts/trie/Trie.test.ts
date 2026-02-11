@@ -10,6 +10,7 @@ import { coerceEffect } from "./internal/effect";
 import { makeBytesHelpers } from "./internal/primitives";
 import { TriePatricializeTest } from "./patricialize";
 import { EMPTY_TRIE_ROOT, TrieRootTest } from "./root";
+import { KeyNibblerTest } from "./KeyNibbler";
 import {
   TrieError,
   TrieMemoryLive,
@@ -33,7 +34,10 @@ const BaseLayer = Layer.merge(
   TrieHashTest,
   TriePatricializeTest.pipe(Layer.provide(TrieHashTest)),
 );
-const RootLayer = TrieRootTest.pipe(Layer.provide(BaseLayer));
+const RootLayer = TrieRootTest.pipe(
+  Layer.provide(BaseLayer),
+  Layer.provide(KeyNibblerTest),
+);
 const trieLayer = (secured = false) =>
   TrieMemoryTest({ secured, defaultValue: EmptyBytes }).pipe(
     Layer.provide(RootLayer),

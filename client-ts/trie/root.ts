@@ -11,11 +11,12 @@ import type {
   NibbleList,
   TrieNode,
 } from "./Node";
-import { bytesToNibbleList } from "./encoding";
 import { TrieHash, type TrieHashError } from "./hash";
 import { TriePatricialize, type PatricializeError } from "./patricialize";
 import { coerceEffect } from "./internal/effect";
-import { makeBytesHelpers, makeHashHelpers } from "./internal/primitives";
+import { makeHashHelpers } from "./internal/primitives";
+import type { KeyNibblerService } from "./KeyNibbler";
+import { KeyNibbler } from "./KeyNibbler";
 
 /** Error raised when computing trie roots. */
 export class TrieRootError extends Data.TaggedError("TrieRootError")<{
@@ -43,9 +44,6 @@ export interface TrieRootService {
   ) => Effect.Effect<HashType, TrieRootError>;
 }
 
-const { bytesFromUint8Array } = makeBytesHelpers(
-  (message) => new TrieRootError({ message }),
-);
 const { hashFromHex } = makeHashHelpers(
   (message) => new TrieRootError({ message }),
 );
@@ -73,25 +71,16 @@ const wrapRlpError = (cause: unknown) =>
     cause,
   });
 
-const wrapBytesError = (cause: unknown) =>
-  new TrieRootError({
-    message: "Invalid trie bytes input",
-    cause,
-  });
+const wrapKeyNibblerError = (cause: unknown) =>
+  new TrieRootError({ message: "Failed to convert key to nibbles", cause });
 
 const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
   coerceEffect<Uint8Array, unknown>(Rlp.encode(data)).pipe(
     Effect.mapError(wrapRlpError),
   );
-
+/** Keccak-256 helper for hashing encoded nodes. */
 const keccak256 = (data: Uint8Array) =>
   coerceEffect<HashType, never>(Hash.keccak256(data));
-
-const toBytes = (value: Uint8Array): Effect.Effect<BytesType, TrieRootError> =>
-  Effect.try({
-    try: () => bytesFromUint8Array(value),
-    catch: (cause) => wrapBytesError(cause),
-  });
 
 const encodedNodeToRoot = (
   encoded: EncodedNode,
@@ -112,14 +101,15 @@ const encodedNodeToRoot = (
 const buildNibbleMap = (
   entries: ReadonlyArray<TrieRootEntry>,
   secured: boolean,
+  toNibblesFn: KeyNibblerService["toNibbles"],
 ): Effect.Effect<Map<NibbleList, BytesType>, TrieRootError> =>
   Effect.gen(function* () {
     const map = new Map<NibbleList, BytesType>();
     for (const entry of entries) {
-      const keyBytes = secured
-        ? yield* pipe(keccak256(entry.key), Effect.flatMap(toBytes))
-        : entry.key;
-      const nibbleKey = yield* bytesToNibbleList(keyBytes);
+      const nibbleKey = yield* pipe(
+        toNibblesFn(entry.key, secured),
+        Effect.mapError(wrapKeyNibblerError),
+      );
       map.set(nibbleKey, entry.value);
     }
     return map;
@@ -133,12 +123,13 @@ const makeTrieRoot = (
   encodeInternalNode: (
     node: TrieNode | null | undefined,
   ) => Effect.Effect<EncodedNode, TrieHashError>,
+  toNibblesFn: KeyNibblerService["toNibbles"],
 ) =>
   ({
     root: (entries: ReadonlyArray<TrieRootEntry>, options?: TrieRootOptions) =>
       Effect.gen(function* () {
         const secured = options?.secured ?? false;
-        const nibbleMap = yield* buildNibbleMap(entries, secured);
+        const nibbleMap = yield* buildNibbleMap(entries, secured, toNibblesFn);
         const node = yield* pipe(
           patricialize(nibbleMap, 0),
           Effect.mapError(wrapPatricializeError),
@@ -162,7 +153,12 @@ const TrieRootLayer = Layer.effect(
   Effect.gen(function* () {
     const hasher = yield* TrieHash;
     const builder = yield* TriePatricialize;
-    return makeTrieRoot(builder.patricialize, hasher.encodeInternalNode);
+    const nibbler = yield* KeyNibbler;
+    return makeTrieRoot(
+      builder.patricialize,
+      hasher.encodeInternalNode,
+      nibbler.toNibbles,
+    );
   }),
 );
 
@@ -170,14 +166,14 @@ const TrieRootLayer = Layer.effect(
 export const TrieRootLive: Layer.Layer<
   TrieRoot,
   never,
-  TrieHash | TriePatricialize
+  TrieHash | TriePatricialize | KeyNibbler
 > = TrieRootLayer;
 
 /** Deterministic trie root layer for tests. */
 export const TrieRootTest: Layer.Layer<
   TrieRoot,
   never,
-  TrieHash | TriePatricialize
+  TrieHash | TriePatricialize | KeyNibbler
 > = TrieRootLayer;
 
 /** Compute the MPT root hash for a set of entries. */
