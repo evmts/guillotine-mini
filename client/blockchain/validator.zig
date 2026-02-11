@@ -427,13 +427,15 @@ test "merge_header_validator - prague requires excess blob gas" {
         parent.gas_used,
         parent.base_fee_per_gas.?,
     );
+    // Cancun+: blob_gas_used must also be present; keep it null to trigger error
 
     const ctx = HeaderValidationContext{
         .allocator = allocator,
         .hardfork = .PRAGUE,
         .parent_header = &parent,
     };
-    try std.testing.expectError(ValidationError.MissingExcessBlobGas, MergeValidator.validate(&header, ctx));
+    // blob_gas_used missing takes precedence over excess field presence
+    try std.testing.expectError(ValidationError.MissingBlobGasUsed, MergeValidator.validate(&header, ctx));
 }
 
 test "merge_header_validator - prague rejects incorrect excess blob gas" {
@@ -471,6 +473,8 @@ test "merge_header_validator - prague rejects incorrect excess blob gas" {
         parent.gas_used,
         parent.base_fee_per_gas.?,
     );
+    // Required on Cancun+
+    header.blob_gas_used = 0;
 
     const expected_excess_blob_gas = Blob.calculateExcessBlobGas(
         parent.excess_blob_gas.?,
@@ -521,6 +525,8 @@ test "merge_header_validator - prague accepts correct excess blob gas" {
         parent.gas_used,
         parent.base_fee_per_gas.?,
     );
+    // Required on Cancun+
+    header.blob_gas_used = 0;
     header.excess_blob_gas = Blob.calculateExcessBlobGas(
         parent.excess_blob_gas.?,
         parent.blob_gas_used.?,
@@ -532,6 +538,181 @@ test "merge_header_validator - prague accepts correct excess blob gas" {
         .parent_header = &parent,
     };
     try MergeValidator.validate(&header, ctx);
+}
+
+test "pre-Cancun forbids 4844 blob fields" {
+    const PreMergeValidator = struct {
+        pub fn validate(_: *const BlockHeader.BlockHeader, _: HeaderValidationContext) ValidationError!void {
+            return;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const MergeValidator = merge_header_validator(PreMergeValidator);
+
+    var parent = BlockHeader.init();
+    parent.number = 1;
+    parent.timestamp = 1;
+    parent.gas_limit = 10_000;
+    parent.gas_used = 0;
+    parent.base_fee_per_gas = 100;
+    parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+
+    var header = BlockHeader.init();
+    header.number = 2;
+    header.timestamp = 2;
+    header.gas_limit = parent.gas_limit;
+    header.gas_used = 0;
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    header.difficulty = 0;
+    header.parent_hash = try BlockHeader.hash(&parent, allocator);
+    header.base_fee_per_gas = try calculate_base_fee_per_gas(
+        header.gas_limit,
+        parent.gas_limit,
+        parent.gas_used,
+        parent.base_fee_per_gas.?,
+    );
+    // Illegally set 4844 fields pre-Cancun
+    header.blob_gas_used = 0;
+    header.excess_blob_gas = 0;
+
+    const ctx = HeaderValidationContext{
+        .allocator = allocator,
+        .hardfork = .SHANGHAI,
+        .parent_header = &parent,
+    };
+    try std.testing.expectError(ValidationError.UnexpectedBlobFieldsPreCancun, MergeValidator.validate(&header, ctx));
+}
+
+test "Cancun+ requires blob_gas_used presence" {
+    const PreMergeValidator = struct {
+        pub fn validate(_: *const BlockHeader.BlockHeader, _: HeaderValidationContext) ValidationError!void {
+            return;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const MergeValidator = merge_header_validator(PreMergeValidator);
+
+    var parent = BlockHeader.init();
+    parent.number = 1;
+    parent.timestamp = 1;
+    parent.gas_limit = 10_000;
+    parent.gas_used = 0;
+    parent.base_fee_per_gas = 100;
+    parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    parent.excess_blob_gas = 0;
+    parent.blob_gas_used = 0;
+
+    var header = BlockHeader.init();
+    header.number = 2;
+    header.timestamp = 2;
+    header.gas_limit = parent.gas_limit;
+    header.gas_used = 0;
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    header.difficulty = 0;
+    header.parent_hash = try BlockHeader.hash(&parent, allocator);
+    header.base_fee_per_gas = try calculate_base_fee_per_gas(
+        header.gas_limit,
+        parent.gas_limit,
+        parent.gas_used,
+        parent.base_fee_per_gas.?,
+    );
+    // Missing blob_gas_used; set only excess to trigger presence validation
+    header.excess_blob_gas = 0;
+
+    const ctx = HeaderValidationContext{
+        .allocator = allocator,
+        .hardfork = .CANCUN,
+        .parent_header = &parent,
+    };
+    try std.testing.expectError(ValidationError.MissingBlobGasUsed, MergeValidator.validate(&header, ctx));
+}
+
+test "post-merge: invalid parent hash rejected" {
+    const PreMergeValidator = struct {
+        pub fn validate(_: *const BlockHeader.BlockHeader, _: HeaderValidationContext) ValidationError!void {
+            return;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const MergeValidator = merge_header_validator(PreMergeValidator);
+
+    var parent = BlockHeader.init();
+    parent.number = 1;
+    parent.timestamp = 1;
+    parent.gas_limit = 10_000;
+    parent.gas_used = 0;
+    parent.base_fee_per_gas = 100;
+    parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+
+    var header = BlockHeader.init();
+    header.number = 2;
+    header.timestamp = 2;
+    header.gas_limit = parent.gas_limit;
+    header.gas_used = 0;
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    header.difficulty = 0;
+    header.nonce = [_]u8{0} ** BlockHeader.NONCE_SIZE;
+    // Wrong parent hash on purpose
+    header.parent_hash = Hash.ZERO;
+    header.base_fee_per_gas = try calculate_base_fee_per_gas(
+        header.gas_limit,
+        parent.gas_limit,
+        parent.gas_used,
+        parent.base_fee_per_gas.?,
+    );
+
+    const ctx = HeaderValidationContext{
+        .allocator = allocator,
+        .hardfork = .SHANGHAI,
+        .parent_header = &parent,
+    };
+    try std.testing.expectError(ValidationError.InvalidParentHash, MergeValidator.validate(&header, ctx));
+}
+
+test "post-merge: invalid base fee progression rejected" {
+    const PreMergeValidator = struct {
+        pub fn validate(_: *const BlockHeader.BlockHeader, _: HeaderValidationContext) ValidationError!void {
+            return;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const MergeValidator = merge_header_validator(PreMergeValidator);
+
+    var parent = BlockHeader.init();
+    parent.number = 1;
+    parent.timestamp = 1;
+    parent.gas_limit = 10_000;
+    parent.gas_used = 100; // arbitrary below target
+    parent.base_fee_per_gas = 100;
+    parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+
+    var header = BlockHeader.init();
+    header.number = 2;
+    header.timestamp = 2;
+    header.gas_limit = parent.gas_limit;
+    header.gas_used = 0;
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    header.difficulty = 0;
+    header.nonce = [_]u8{0} ** BlockHeader.NONCE_SIZE;
+    header.parent_hash = try BlockHeader.hash(&parent, allocator);
+    const expected = try calculate_base_fee_per_gas(
+        header.gas_limit,
+        parent.gas_limit,
+        parent.gas_used,
+        parent.base_fee_per_gas.?,
+    );
+    header.base_fee_per_gas = expected + 1; // force mismatch
+
+    const ctx = HeaderValidationContext{
+        .allocator = allocator,
+        .hardfork = .MERGE,
+        .parent_header = &parent,
+    };
+    try std.testing.expectError(ValidationError.InvalidBaseFee, MergeValidator.validate(&header, ctx));
 }
 
 test "merge validation boundaries cover gas limit and TTD edges" {
