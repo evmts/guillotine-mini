@@ -556,3 +556,56 @@ test "merge validation boundaries cover gas limit and TTD edges" {
     ctx.parent_total_difficulty = ttd;
     try std.testing.expect(is_post_merge(&header, ctx));
 }
+
+/// Ensures the gas limit change from parent to header is within
+/// the allowed per-block delta of parent.gas_limit / 1024 (inclusive).
+///
+/// This captures the Yellow Paper rule and EIP-1559 constraint on the
+/// maximum change of gas_limit between consecutive blocks. It does not
+/// enforce the absolute minimum gas limit (5000).
+pub fn validate_gas_limit_delta(
+    header: *const BlockHeader.BlockHeader,
+    parent: *const BlockHeader.BlockHeader,
+) ValidationError!void {
+    const max_adjustment_delta = parent.gas_limit / GAS_LIMIT_ADJUSTMENT_FACTOR;
+    if (header.gas_limit > parent.gas_limit + max_adjustment_delta)
+        return ValidationError.InvalidGasLimit;
+    if (header.gas_limit < parent.gas_limit - max_adjustment_delta)
+        return ValidationError.InvalidGasLimit;
+}
+
+test "validate_gas_limit_delta - accepts at inclusive bounds" {
+    var parent = BlockHeader.init();
+    parent.gas_limit = 1_000_000;
+
+    var header = BlockHeader.init();
+    const delta = parent.gas_limit / GAS_LIMIT_ADJUSTMENT_FACTOR;
+
+    header.gas_limit = parent.gas_limit + delta;
+    try validate_gas_limit_delta(&header, &parent);
+
+    header.gas_limit = parent.gas_limit - delta;
+    try validate_gas_limit_delta(&header, &parent);
+}
+
+test "validate_gas_limit_delta - rejects above max delta" {
+    var parent = BlockHeader.init();
+    parent.gas_limit = 1_000_000;
+
+    var header = BlockHeader.init();
+    const delta = parent.gas_limit / GAS_LIMIT_ADJUSTMENT_FACTOR;
+    header.gas_limit = parent.gas_limit + delta + 1;
+
+    try std.testing.expectError(ValidationError.InvalidGasLimit, validate_gas_limit_delta(&header, &parent));
+}
+
+test "validate_gas_limit_delta - rejects below max delta" {
+    var parent = BlockHeader.init();
+    parent.gas_limit = 1_000_000;
+
+    var header = BlockHeader.init();
+    const delta = parent.gas_limit / GAS_LIMIT_ADJUSTMENT_FACTOR;
+    header.gas_limit = parent.gas_limit - delta - 1;
+
+    try std.testing.expectError(ValidationError.InvalidGasLimit, validate_gas_limit_delta(&header, &parent));
+}
