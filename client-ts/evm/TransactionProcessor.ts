@@ -963,20 +963,20 @@ const makeTransactionProcessor = Effect.gen(function* () {
 
       const worldState = yield* WorldState;
       const senderAccount = yield* worldState.getAccount(sender);
+      const coinbaseAccount = yield* worldState.getAccount(coinbase);
       const senderBalanceAfterRefund = yield* decodeBalance(
         senderAccount.balance + gasRefundAmount,
         "sender post-refund",
       );
-      yield* worldState.setAccount(sender, {
-        ...senderAccount,
-        balance: senderBalanceAfterRefund,
-      });
-
-      const coinbaseAccount = yield* worldState.getAccount(coinbase);
       const coinbaseBalanceAfterFee = yield* decodeBalance(
         coinbaseAccount.balance + transactionFee,
         "coinbase post-fee",
       );
+
+      yield* worldState.setAccount(sender, {
+        ...senderAccount,
+        balance: senderBalanceAfterRefund,
+      });
       yield* worldState.setAccount(coinbase, {
         ...coinbaseAccount,
         balance: coinbaseBalanceAfterFee,
