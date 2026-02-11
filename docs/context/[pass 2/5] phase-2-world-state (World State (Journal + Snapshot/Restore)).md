@@ -1,68 +1,125 @@
-# Phase 2 World State (Journal + Snapshot/Restore) - Context
+# [pass 2/5] phase-2-world-state (World State (Journal + Snapshot/Restore))
 
-## Phase goals (from prd/GUILLOTINE_CLIENT_PLAN.md)
+## Goal and scope
+Source: `prd/GUILLOTINE_CLIENT_PLAN.md` (Phase 2)
 - Implement journaled world state with snapshot/restore for transaction processing.
-- Key components: client/state/account.zig, client/state/journal.zig, client/state/state.zig.
-- Reference architecture: nethermind/src/Nethermind/Nethermind.State/.
-- Use Voltaire state-manager primitives: /Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/.
+- Planned components: `client/state/account.zig`, `client/state/journal.zig`, `client/state/state.zig`.
+- Structural references: `nethermind/src/Nethermind/Nethermind.State/` and `voltaire/packages/voltaire-zig/src/state-manager/`.
 
-## Relevant specs (from prd/ETHEREUM_SPECS_REFERENCE.md)
-- execution-specs: execution-specs/src/ethereum/forks/*/state.py
-- Yellow Paper: yellowpaper/Paper.tex (Section 4, World State)
-- Tests: unit tests for journal/snapshot behavior, subset of ethereum-tests/GeneralStateTests/
+## Spec references to follow
+Source: `prd/ETHEREUM_SPECS_REFERENCE.md` (Phase 2)
+- Primary EL state spec: `execution-specs/src/ethereum/forks/*/state.py`.
+- Yellow Paper world state model: Section 4 (`yellowpaper/Paper.tex`).
+- Test intent: journal/snapshot unit coverage plus state-manipulation fixtures.
 
-## Spec notes (execution-specs)
-Path: execution-specs/src/ethereum/forks/osaka/state.py
-- State: main account trie + per-account storage tries; distinguishes non-existent account vs EMPTY_ACCOUNT.
-- TransientStorage: per-tx storage with its own snapshots.
-- begin_transaction/commit_transaction/rollback_transaction: snapshot stack via copy_trie for main + storage tries.
-- get_account vs get_account_optional: EMPTY_ACCOUNT vs None distinction.
-- set_account supports delete by setting None (implementation detail in spec).
+### execution-specs state behavior (implementation-critical)
+Primary files inspected:
+- `execution-specs/src/ethereum/forks/frontier/state.py`
+- `execution-specs/src/ethereum/forks/cancun/state.py`
+- Full fork set available at: `execution-specs/src/ethereum/forks/{frontier..prague,osaka}/state.py`
 
-## Spec notes (Yellow Paper)
-Path: yellowpaper/Paper.tex (Section 4, World State)
-- World state is a mapping Address -> AccountState stored in a modified Merkle Patricia Trie.
-- AccountState fields: nonce, balance, storageRoot, codeHash.
-- storageRoot is the root of a storage trie keyed by Keccak-256 of storage slots.
-- Empty account: codeHash == KEC("") and nonce == 0 and balance == 0.
-- Dead account: non-existent or empty.
+Key semantics to mirror:
+- `State` tracks `_main_trie`, `_storage_tries`, `_snapshots`.
+- Nested transaction boundaries:
+  - `begin_transaction(...)` pushes snapshot copies.
+  - `commit_transaction(...)` pops snapshots.
+  - `rollback_transaction(...)` restores from snapshot top.
+- `state_root`/`storage_root` require no active snapshots.
+- Account existence distinction is explicit:
+  - non-existent account (`None`) vs `EMPTY_ACCOUNT`.
+- `set_account(..., None)` deletes account node; `destroy_account` also removes storage.
+- Storage behavior:
+  - `get_storage` defaults to zero.
+  - `set_storage(..., 0)` deletes slot and prunes empty storage trie.
+- Cancun adds tx-scoped `TransientStorage` with its own snapshot stack.
+- Cancun adds `created_accounts` and `get_storage_original(...)` semantics for original slot value tracking.
 
-## Nethermind DB directory listing (nethermind/src/Nethermind/Nethermind.Db/)
-Key files in this directory:
-- IDb.cs, IReadOnlyDb.cs, IColumnsDb.cs, IFullDb.cs, IDbFactory.cs, IDbProvider.cs
-- DbProvider.cs, DbExtensions.cs, DbNames.cs, Metrics.cs
-- MemDb.cs, MemDbFactory.cs, MemColumnsDb.cs, ReadOnlyDb.cs, ReadOnlyColumnsDb.cs
-- RocksDbSettings.cs, RocksDbMergeEnumerator.cs, NullDb.cs
-- FullPruning/*, BlobTxsColumns.cs, ReceiptsColumns.cs
+### Relevant EIPs for world-state correctness
+Files:
+- `EIPs/EIPS/eip-158.md` (state trie clearing)
+- `EIPs/EIPS/eip-161.md` (state trie clearing refinements / touched-empty account handling)
+- `EIPs/EIPS/eip-2929.md` (state access costs; warm/cold implications)
+- `EIPs/EIPS/eip-2930.md` (access lists)
+- `EIPs/EIPS/eip-6780.md` (SELFDESTRUCT semantic changes)
 
-## Voltaire state-manager APIs (voltaire/packages/voltaire-zig/src/state-manager/)
-- root.zig re-exports:
-  - StateCache: AccountCache, StorageCache, ContractCache, AccountState, StorageKey
-  - ForkBackend: ForkBackend, CacheConfig, Transport, RpcClient
-  - JournaledState
-  - StateManager
+### devp2p references (not core for local journal logic, but relevant for later state/sync integration)
+Files:
+- `devp2p/rlpx.md`
+- `devp2p/caps/eth.md`
+- `devp2p/caps/snap.md`
 
-- StateCache.zig:
-  - AccountState { nonce, balance, code_hash, storage_root }
-  - AccountCache/StorageCache/ContractCache with checkpoint(), revert(), commit()
-  - StorageCache deletes zero values and removes empty per-address maps
+## Nethermind Db inventory (requested listing)
+Directory listed: `nethermind/src/Nethermind/Nethermind.Db/`
 
-- JournaledState.zig:
-  - getAccount/putAccount, getStorage/putStorage, getCode/putCode
-  - checkpoint/revert/commit across all caches
-  - optional fork_backend for read-through fetch
+Key files for architecture mapping:
+- `IDb.cs`: base key-value DB abstraction with batch support and read-only wrapper creation.
+- `IReadOnlyDb.cs`: read-only DB contract with `ClearTempChanges()`.
+- `IColumnsDb.cs`: column-family DB abstraction with `StartWriteBatch()` and `CreateSnapshot()`.
+- `DbProvider.cs`: DI-based DB resolution (`GetDb`, `GetColumnDb`).
+- `ReadOnlyDb.cs`: overlays writes in `MemDb` without mutating base DB.
+- `ReadOnlyColumnsDb.cs`: per-column read-only wrappers and temp-change clearing.
+- `InMemoryWriteBatch.cs` / `InMemoryColumnBatch.cs`: deferred in-memory batching patterns.
+- `MemColumnsDb.cs`: in-memory columns DB (`CreateSnapshot()` currently not supported).
 
-- StateManager.zig:
-  - High-level accessors: getBalance/getNonce/getCode/getStorage
-  - Mutators: setBalance/setNonce/setCode/setStorage
-  - Checkpoint operations + snapshot()/revertToSnapshot()
-  - snapshot is implemented via checkpoint depth mapping
+Other notable files from listing:
+- `DbNames.cs`, `DbExtensions.cs`, `DbProviderExtensions.cs`, `MetadataDbKeys.cs`
+- `BlobTxsColumns.cs`, `ReceiptsColumns.cs`
+- `MemDb.cs`, `ReadOnlyDbProvider.cs`, `NullDb.cs`, `RocksDbSettings.cs`
+- `FullPruning/*`
 
-## Existing Zig interfaces
-- src/host.zig: HostInterface for EVM external state access (get/set balance, code, storage, nonce). EVM inner_call bypasses this for nested calls.
+## Voltaire-zig source inventory and relevant APIs
+Directory listed: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
+Top-level modules:
+- `state-manager/`, `primitives/`, `evm/`, `blockchain/`, `crypto/`, `jsonrpc/`, `precompiles/`
 
-## Test fixture locations
-- ethereum-tests/fixtures_general_state_tests.tgz (GeneralStateTests archive)
-- ethereum-tests/fixtures_blockchain_tests.tgz
-- ethereum-tests/TrieTests/ (existing trie fixtures, may be relevant for storage tries)
-- execution-spec-tests/fixtures/state_tests/ (see phase-3 mapping, still relevant for state behavior)
+### state-manager APIs (directly relevant)
+Files:
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/root.zig`
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/StateManager.zig`
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/JournaledState.zig`
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/StateCache.zig`
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/ForkBackend.zig`
+
+API surface to mirror in Effect.ts:
+- `StateManager`: `getBalance/getNonce/getCode/getStorage`, `setBalance/setNonce/setCode/setStorage`, `checkpoint/revert/commit`, `snapshot/revertToSnapshot`.
+- `JournaledState`: dual-cache read cascade, writes to local cache, `checkpoint/revert/commit`.
+- `StateCache`: account/storage/code caches with journaling-style checkpoint stack operations.
+- `ForkBackend`: optional remote-state fetch path and cache management.
+
+### primitives exports to preserve in TS client
+Source: `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/root.zig`
+- Canonical primitives include `Address`, `Hash`, `Hex`, plus state/block/tx types.
+- Context implication: TS implementation should continue to use `voltaire-effect/primitives` types and avoid custom address/hash/hex wrappers.
+
+## Existing guillotine-mini host interface
+File: `src/host.zig`
+- Defines `HostInterface` vtable with external world-state operations:
+  - `getBalance/setBalance`
+  - `getCode/setCode`
+  - `getStorage/setStorage`
+  - `getNonce/setNonce`
+- Comments note nested calls are handled by `EVM.inner_call` directly, so host is focused on external state access.
+
+## Test fixture paths (requested inventory)
+Top-level directory listed: `ethereum-tests/`
+
+Available state-relevant paths in this checkout:
+- `ethereum-tests/BlockchainTests/ValidBlocks/bcStateTests/`
+- `ethereum-tests/BlockchainTests/InvalidBlocks/bcStateTests/`
+- `ethereum-tests/BlockchainTests/ValidBlocks/bcEIP1153-transientStorage/`
+- `ethereum-tests/TrieTests/`
+- `ethereum-tests/fixtures_general_state_tests.tgz` (archive present)
+
+Not present as extracted directory in this checkout:
+- `ethereum-tests/GeneralStateTests/` (missing as directory; appears bundled via tgz file)
+
+Execution-spec-tests status:
+- `execution-spec-tests/fixtures/` exists but is currently empty in this checkout.
+
+## Implementation guidance derived from gathered context
+- Prioritize a journal abstraction that supports nested checkpoints and deterministic rollback.
+- Keep account non-existence vs empty-account semantics explicit.
+- Include storage deletion-on-zero and empty-trie pruning behavior.
+- Keep snapshot/root computation rules strict (no root calc during active snapshots).
+- Plan for transient-storage compatibility (EIP-1153 era) even if implemented in later pass.
+- Mirror Nethermind-like service boundaries (state provider / storage provider / world state manager) in idiomatic Effect `Context.Tag` + `Layer` services.
