@@ -27,7 +27,9 @@ const toBytes = (u8: Uint8Array): BytesType => Bytes.concat(u8);
 const bytesFromHex = (hex: string): BytesType => Hex.toBytes(hex) as BytesType;
 
 const encodeRlp = (data: Parameters<typeof Rlp.encode>[0]) =>
-  coerceEffect<Uint8Array, unknown>(Rlp.encode(data));
+  coerceEffect<Uint8Array, unknown>(
+    Rlp.encode({ ...data, value: data.value.slice() as any } as any),
+  );
 
 const hashFromHex = (hex: string): Hash.HashType => {
   const value = Hex.toBytes(hex);
@@ -127,7 +129,7 @@ describe("TrieNodeLoader", () => {
         value: [
           { type: "bytes", value: compact },
           { type: "bytes", value: bytesFromHex("0xaaaa") },
-        ],
+        ] as any[],
       } as const;
       const encoded = yield* encodeRlp(rlpList);
       const nodeHash = yield* Hash.keccak256(encoded);
@@ -158,7 +160,7 @@ describe("TrieNodeLoader", () => {
         value: [
           { type: "bytes", value: compact },
           { type: "bytes", value: bytesFromHex("0xbb") },
-        ],
+        ] as any[],
       } as const;
       const encoded = yield* encodeRlp(rlpList);
       const nodeHash = yield* Hash.keccak256(encoded);

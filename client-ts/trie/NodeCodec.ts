@@ -2,7 +2,7 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { Bytes, Rlp } from "voltaire-effect/primitives";
+import { Rlp } from "voltaire-effect/primitives";
 import type {
   BytesType,
   EncodedNode,

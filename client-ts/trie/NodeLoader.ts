@@ -121,7 +121,13 @@ const TrieNodeLoaderLayer = Layer.succeed(TrieNodeLoader, {
             return null;
           }
 
-          return yield* decodeBytes(codec, loaded.value);
+          const bytes = loaded.value;
+          if (bytes.length === 1 && bytes[0] === 0x80) {
+            // DB may store an empty RLP string for EMPTY_TRIE_ROOT sentinel
+            return null;
+          }
+
+          return yield* decodeBytes(codec, bytes);
         }
       }
     }),
