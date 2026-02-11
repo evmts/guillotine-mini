@@ -1,166 +1,91 @@
-# [pass 1/5] phase-1-trie (Merkle Patricia Trie) Context
+# Context — [pass 1/5] phase-1-trie (Merkle Patricia Trie)
 
-## Phase Goal (`prd/GUILLOTINE_CLIENT_PLAN.md`)
-- Phase: `phase-1-trie`.
-- Goal: implement Modified Merkle Patricia Trie for state storage.
-- Planned components:
-  - `client/trie/node.zig`
-  - `client/trie/trie.zig`
-  - `client/trie/hash.zig`
-- Primary references:
+This document collects the minimum, high-signal references for implementing the Merkle Patricia Trie (MPT) in the Effect.ts execution client, mirroring Nethermind’s structure and using existing Guillotine/Voltaire assets for behavioral truth.
+
+## PRD Goals (from `prd/GUILLOTINE_CLIENT_PLAN.md`)
+- Phase: `Phase 1: Merkle Patricia Trie (phase-1-trie)`
+- Goal: Implement the Merkle Patricia Trie for state storage.
+- Reference pointers called out in PRD:
+  - Nethermind: `nethermind/src/Nethermind/Nethermind.Trie/`
+  - Test fixtures: `ethereum-tests/TrieTests/`
+  - Implementation hints: node types, RLP + keccak256 hashing, nibble/hex‑prefix encoding.
+
+## Spec & Reference Sources
+- Execution-specs (authoritative behavior and algorithms):
+  - `execution-specs/src/ethereum/forks/shanghai/trie.py`
+    - Defines `EMPTY_TRIE_ROOT` (`keccak256(RLP(b""))`), node types (Leaf, Extension, Branch), nibble/hex‑prefix encoding, `patricialize`, and `root()` for secure and non-secure tries.
+    - Implements `bytes_to_nibble_list`, `nibble_list_to_compact`, and secure key hashing semantics (hash preimage keys when `secured == True`).
+  - Other forks provide the same trie logic (use Shanghai or latest fork for modern reference):
+    - `execution-specs/src/ethereum/forks/frontier/trie.py` (baseline), and subsequent forks: berlin, london, shanghai, cancun, etc.
+  - Optimized state DB and helpers:
+    - `execution-specs/src/ethereum_optimized/state_db.py` (useful for how trie integrates with account/storage roots).
+- Yellow Paper: Appendix D (Trie) — conceptual authority for node encoding and hex‑prefix rules.
+- RLP and hashing:
+  - RLP via `ethereum_rlp` (referenced in execution-specs’ trie files).
+  - Keccak256 used for node hashing and secure key hashing.
+
+## Nethermind Structure (mirror module boundaries)
+- Trie package: `nethermind/src/Nethermind/Nethermind.Trie/`
+  - Key files to mirror conceptually:
+    - `PatriciaTree.cs`, `PatriciaTree.BulkSet.cs` — high-level trie operations (set/get/delete/bulk), root computation.
+    - `TrieNode.cs`, `TrieNode.Decoder.cs`, `TrieNode.Visitor.cs` — node representation, RLP encode/decode, visitation.
+    - `HexPrefix.cs`, `NibbleExtensions.cs`, `Nibbles.cs` — hex‑prefix encoding and nibble handling.
+    - `NodeStorage.cs`, `CachedTrieStore.cs`, `RawTrieStore.cs`, `PreCachedTrieStore.cs`, `TrieStoreWithReadFlags.cs` — storage backends/caching.
+    - `INodeStorage.cs`, `INodeStorageFactory.cs`, `TrieNodeFactory.cs` — abstractions for persistence/creation.
+    - `MissingTrieNodeException.cs`, `TrieException.cs` — error surface.
+    - `RangeQueryVisitor.cs`, `TreeDumper.cs`, `TrieStats*.cs` — diagnostics/inspection.
+- Database abstractions: `nethermind/src/Nethermind/Nethermind.Db/`
+  - Files relevant for how trie persists data:
+    - `IDb.cs`, `IColumnsDb.cs`, `IDbProvider.cs`, `DbProvider.cs`, `DbProviderExtensions.cs` — DB provider abstraction.
+    - `MemDb.cs`, `MemColumnsDb.cs`, `NullDb.cs` — in‑memory / null implementations.
+    - `RocksDbSettings.cs`, `RocksDbMergeEnumerator.cs` — example persistent backend configuration.
+    - `PruningConfig.cs`, `FullPruning/*`, `FullPruningCompletionBehavior.cs` — pruning strategies affecting trie persistence.
+
+## Voltaire / Guillotine (Zig) — behavioral truth & APIs to wrap
+- Root: `/Users/williamcory/voltaire/packages/voltaire-zig/src`
+- Relevant modules:
+  - `primitives/trie.zig`
+    - Node types: `LeafNode`, `ExtensionNode`, `BranchNode`, `Node` union.
+    - Nibble/hex‑prefix helpers: `keyToNibbles`, `nibblesToKey`, `encodePath`, `decodePath` with tests.
+    - Core operations: insert/get/delete, node storage by hash, `TrieMask`, cloning/deinit discipline.
+  - `crypto/keccak256_accel.zig`, `crypto/keccak_asm.zig`, `crypto/keccak256_c.zig` — keccak256 implementations/backends.
+  - `state-manager/` — state abstractions that will eventually sit atop the trie (for account/storage tries).
+  - `evm/` — not directly used for trie, but establishes how hashes/addresses/bytes are represented.
+  - `primitives/Hash`, `primitives/Hex`, `primitives/Address` — canonical primitives used throughout.
+- Host interface (this repo) for state access:
+  - `src/host.zig` — `HostInterface` with balance/code/storage/nonce getters/setters; guides how the trie-backed state service must expose reads/writes to the EVM.
+
+## Ethereum Test Fixtures (for MPT)
+- Root: `ethereum-tests/TrieTests/`
+  - `trietest.json`
+  - `trietest_secureTrie.json`
+  - `trieanyorder.json`
+  - `trieanyorder_secureTrie.json`
+  - `hex_encoded_securetrie_test.json`
+  - `trietestnextprev.json`
+
+## Implementation Notes (Effect.ts target)
+- Implement a trie service (Effect Context.Tag + Layer) mirroring Nethermind’s boundaries:
+  - Storage abstraction (node storage), nibble/hex‑prefix encoding, node codec (RLP + keccak256), and trie operations.
+- Use `voltaire-effect/primitives` for `Address`, `Hash`, `Hex`, etc. Do not introduce custom types.
+- Secure vs non-secure tries:
+  - Secure trie: hash keys before construction (as per execution-specs’ `_prepare_trie`).
+  - Empty trie root must equal `keccak256(RLP(b""))`.
+- Encode internal nodes per spec: leaf/extension compact encoding, branch 16 children + optional value; use inlined vs hashed node encoding depending on RLP-encoded length (< 32 bytes → embed; otherwise store hash).
+- Tests: Start by replaying `TrieTests` JSON vectors to validate encoding and root computation.
+
+## Quick Path Index
+- PRD: `prd/GUILLOTINE_CLIENT_PLAN.md` (phase goal + pointers)
+- Specs:
+  - `execution-specs/src/ethereum/forks/shanghai/trie.py`
+  - Other forks’ `trie.py` (frontier → cancun) for cross-checking
+  - `execution-specs/src/ethereum_optimized/state_db.py`
+- Nethermind:
   - `nethermind/src/Nethermind/Nethermind.Trie/`
-  - `execution-specs/src/ethereum/forks/*/trie.py`
-  - `ethereum-tests/TrieTests/`
-
-## Relevant Specs (`prd/ETHEREUM_SPECS_REFERENCE.md`)
-- Yellow Paper Appendix D (MPT + hex-prefix encoding).
-- `execution-specs/src/ethereum/forks/frontier/trie.py` (core algorithm reference).
-- Phase map mentions `execution-specs/src/ethereum/rlp.py`, but that file does not exist in this checkout. Current trie specs import `ethereum_rlp` (`from ethereum_rlp import Extended, rlp`).
-- Trie specs exist per fork:
-  - `execution-specs/src/ethereum/forks/frontier/trie.py`
-  - `execution-specs/src/ethereum/forks/cancun/trie.py`
-  - `execution-specs/src/ethereum/forks/prague/trie.py`
-  - plus other intermediate forks.
-
-## execution-specs Trie Behavior (implementation anchors)
-Source: `execution-specs/src/ethereum/forks/frontier/trie.py`
-
-- Empty root constant:
-  - `EMPTY_TRIE_ROOT = keccak256(rlp.encode(b""))`
-  - value: `56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421`
-- Internal node types:
-  - `LeafNode(rest_of_key, value)`
-  - `ExtensionNode(key_segment, subnode)`
-  - `BranchNode(subnodes[16], value)`
-- Encoding rules (`encode_internal_node`):
-  - `None -> b""`
-  - leaf/extension path uses compact hex-prefix (`nibble_list_to_compact`)
-  - branch encodes `16 children + value`
-  - if encoded RLP < 32 bytes: inline node into parent
-  - else: store `keccak256(rlp(node))`
-- Key/path transforms:
-  - `bytes_to_nibble_list` splits bytes into high/low nibble sequence.
-  - `nibble_list_to_compact` encodes leaf/extension flag + parity in first nibble.
-- Trie preprocessing (`_prepare_trie`):
-  - omit default values
-  - if `secured`, hash key once via `keccak256(preimage)` before nibble expansion
-  - account values require `get_storage_root` and `encode_account`
-- Root computation (`root`):
-  - build internal tree with `patricialize`
-  - encode root node
-  - if root node RLP < 32 bytes, hash the RLP to produce canonical root
-  - otherwise root node is already a 32-byte hash
-
-Fork notes:
-- `execution-specs/src/ethereum/forks/cancun/trie.py` and `execution-specs/src/ethereum/forks/prague/trie.py` preserve the same core MPT algorithm and layer fork-specific node payload unions (e.g., withdrawals, legacy tx types) via delegation to previous fork trie implementations.
-
-## Nethermind References
-
-### Requested listing: `nethermind/src/Nethermind/Nethermind.Db/`
-Key files to mirror for DB abstraction boundaries:
-
-- Interfaces/contracts:
-  - `IDb.cs`
-  - `IDbProvider.cs`
-  - `IDbFactory.cs`
-  - `IReadOnlyDb.cs`
-  - `IReadOnlyDbProvider.cs`
-  - `IColumnsDb.cs`
-  - `ITunableDb.cs`
-  - `IFullDb.cs`
-- Providers/config:
-  - `DbProvider.cs`
-  - `DbNames.cs`
-  - `DbExtensions.cs`
-  - `DbProviderExtensions.cs`
-  - `RocksDbSettings.cs`
-- Implementations/adapters:
-  - `MemDb.cs`
-  - `MemColumnsDb.cs`
-  - `ReadOnlyDb.cs`
-  - `ReadOnlyColumnsDb.cs`
-  - `NullDb.cs`
-  - `NullRocksDbFactory.cs`
-- Batching/in-memory write path:
-  - `InMemoryWriteBatch.cs`
-  - `InMemoryColumnBatch.cs`
-- Pruning/ops metadata:
-  - `PruningConfig.cs`
-  - `PruningMode.cs`
-  - `FullPruning/`
-  - `MetadataDbKeys.cs`
-
-### Trie architecture reference (for phase implementation)
-- `nethermind/src/Nethermind/Nethermind.Trie/PatriciaTree.cs`
-- `nethermind/src/Nethermind/Nethermind.Trie/TrieNode.cs`
-- `nethermind/src/Nethermind/Nethermind.Trie/HexPrefix.cs`
-- `nethermind/src/Nethermind/Nethermind.Trie/NodeStorage.cs`
-- `nethermind/src/Nethermind/Nethermind.Trie/Pruning/`
-
-Observed structure:
-- `PatriciaTree` handles mutation, traversal, and commit.
-- `TrieNode` models branch/leaf/extension + sealing/persistence flags.
-- `HexPrefix` provides compact nibble-path encoding/decoding helpers.
-- `NodeStorage` abstracts storage key scheme (hash-based vs half-path).
-
-## Voltaire Zig APIs
-Requested path exists:
-- `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
-
-Relevant APIs for trie phase:
-- Trie primitives:
+  - `nethermind/src/Nethermind/Nethermind.Db/`
+- Voltaire Zig:
   - `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/trie.zig`
-  - key exports: `TrieError`, `TrieMask`, `NodeType`, `Node`, `LeafNode`, `ExtensionNode`, `BranchNode`, `Trie`
-  - key functions: `keyToNibbles`, `nibblesToKey`, `encodePath`, `decodePath`
-- RLP:
-  - `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/Rlp/Rlp.zig`
-  - key functions: `encode`, `decode`, `encodeBytes`, `encodeLength`, `validate`, `isCanonical`
-- Hash/hex utilities:
-  - `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/Hash/Hash.zig`
-  - `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/Hex/Hex.zig`
-  - key hash helper: `crypto.Keccak256.hash`
-- Aggregated primitive exports:
-  - `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/root.zig`
-  - exports `Address`, `Hash`, `Hex`, `Rlp`, etc., as canonical primitive entry points.
+  - `/Users/williamcory/voltaire/packages/voltaire-zig/src/crypto/keccak256_*.zig`
+- Tests:
+  - `ethereum-tests/TrieTests/*.json`
 
-## Existing Host Interface (`src/host.zig`)
-- `HostInterface` is a minimal vtable wrapper over external state access.
-- Methods:
-  - `getBalance` / `setBalance`
-  - `getCode` / `setCode`
-  - `getStorage` / `setStorage`
-  - `getNonce` / `setNonce`
-- Notes:
-  - uses `primitives.Address.Address`
-  - storage slots/balances use `u256`
-  - no explicit error channel in interface methods
-
-## Test Fixture Paths
-
-### Trie fixtures (primary for phase-1)
-- `ethereum-tests/TrieTests/trietest.json`
-- `ethereum-tests/TrieTests/trietest_secureTrie.json`
-- `ethereum-tests/TrieTests/trieanyorder.json`
-- `ethereum-tests/TrieTests/trieanyorder_secureTrie.json`
-- `ethereum-tests/TrieTests/hex_encoded_securetrie_test.json`
-- `ethereum-tests/TrieTests/trietestnextprev.json`
-
-### Other available ethereum-tests directories (inventory)
-- `ethereum-tests/BlockchainTests/`
-- `ethereum-tests/RLPTests/`
-- `ethereum-tests/TransactionTests/`
-- `ethereum-tests/BasicTests/`
-- `ethereum-tests/GenesisTests/`
-- `ethereum-tests/EOFTests/`
-- `ethereum-tests/DifficultyTests/`
-
-## Notes on Reference Availability
-- `devp2p/` is present but empty in this workspace snapshot.
-- `execution-spec-tests/fixtures/` exists but currently has no files in this snapshot.
-
-## Summary
-- Phase-1 trie work should follow `execution-specs` trie algorithm (nibble transforms, compact encoding, inline-vs-hash node encoding, secure key hashing).
-- Nethermind module boundaries suggest separating trie structure, node encoding, and storage backend concerns.
-- Voltaire already exposes trie/RLP/hash utilities under `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/`, which can guide API shape and test vectors.
-- Existing `src/host.zig` confirms the minimal external state surface that later state integration must satisfy.
-- Canonical JSON trie fixtures are available under `ethereum-tests/TrieTests/`.
