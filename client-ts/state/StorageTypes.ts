@@ -1,5 +1,5 @@
-import * as Schema from effect/Schema;
-import { Storage, StorageValue } from voltaire-effect/primitives;
+import * as Schema from "effect/Schema";
+import { Storage, StorageValue } from "voltaire-effect/primitives";
 
 /**
  * Centralized storage type aliases to avoid duplication / drift.
