@@ -10,6 +10,7 @@ import {
   type DbGetEntry,
   type DbService,
   type DbSnapshot,
+  type IteratorOptions,
   type DbWriteOp,
   type BytesType,
   type ReadFlags,
@@ -281,7 +282,7 @@ const makeReadOnlyReader = (
       return yield* base.has(key);
     });
 
-  const seek = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
+  const seek = (key: BytesType, options?: IteratorOptions) =>
     Effect.gen(function* () {
       const found = yield* base.seek(key, options);
       if (Option.isNone(found)) return found;
@@ -295,7 +296,7 @@ const makeReadOnlyReader = (
       });
     });
 
-  const next = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
+  const next = (key: BytesType, options?: IteratorOptions) =>
     Effect.gen(function* () {
       const found = yield* base.next(key, options);
       if (Option.isNone(found)) return found;
@@ -309,7 +310,7 @@ const makeReadOnlyReader = (
       });
     });
 
-  const range = (options?: { readonly prefix?: BytesType }) =>
+  const range = (options?: IteratorOptions) =>
     Effect.gen(function* () {
       const baseEntries = yield* base.range(options);
       const entries: Array<DbEntry> = [];

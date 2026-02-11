@@ -9,6 +9,7 @@ import {
   type DbGetEntry,
   type DbService,
   type DbSnapshot,
+  type IteratorOptions,
   type DbWriteOp,
   type WriteBatch,
 } from "./DbAdapter";
@@ -153,7 +154,7 @@ const makeReader = (
       ? entries.filter((e) => startsWithBytes(e.key, options.prefix!))
       : entries;
 
-  const range = (options?: { readonly prefix?: BytesType }) =>
+  const range = (options?: IteratorOptions) =>
     Effect.sync(() => {
       const ordered =
         cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
@@ -164,7 +165,7 @@ const makeReader = (
       }));
     });
 
-  const seek = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
+  const seek = (key: BytesType, options?: IteratorOptions) =>
     Effect.sync(() => {
       const ordered =
         cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
@@ -181,7 +182,7 @@ const makeReader = (
       return Option.none<DbEntry>();
     });
 
-  const next = (key: BytesType, options?: { readonly prefix?: BytesType }) =>
+  const next = (key: BytesType, options?: IteratorOptions) =>
     Effect.sync(() => {
       const ordered =
         cache?.getOrdered?.() ?? orderEntries(collectEntries(store));
