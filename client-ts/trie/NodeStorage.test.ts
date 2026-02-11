@@ -465,6 +465,33 @@ describe("TrieNodeStorage", () => {
       }).pipe(Effect.provide(TestLayer)),
   );
 
+  it.effect(
+    "persistEncodedNode hashes and stores nodes with encoded size exactly 32 bytes",
+    () =>
+      Effect.gen(function* () {
+        const encodedNode = bytesFromHex(`0x${"ab".repeat(32)}`);
+        const expectedHash = yield* Hash.keccak256(encodedNode);
+
+        const reference = yield* persistEncodedNode(encodedNode);
+        assert.strictEqual(reference._tag, "hash");
+        if (reference._tag !== "hash") {
+          assert.fail("Expected hash reference for 32-byte encoded node");
+          return;
+        }
+
+        assert.strictEqual(
+          yield* Hash.equals(reference.value, expectedHash),
+          true,
+        );
+
+        const loaded = yield* getNode(reference.value);
+        assert.strictEqual(Option.isSome(loaded), true);
+        if (Option.isSome(loaded)) {
+          assert.strictEqual(Bytes.equals(loaded.value, encodedNode), true);
+        }
+      }).pipe(Effect.provide(TestLayer)),
+  );
+
   it.effect("persistEncodedNode rejects invalid encoded bytes input", () =>
     Effect.gen(function* () {
       const invalidNode = null as unknown as BytesType;
