@@ -774,14 +774,18 @@ const makeTransactionProcessor = Effect.gen(function* () {
         parsedTx.gasLimit * effectiveGasPrice,
         "effective gas fee",
       );
-      const normalizedBlobGasPrice = yield* decodeGasPrice(
-        blobGasPrice,
-        "blob",
-      );
-      const currentBlobGasFee = yield* decodeBalance(
-        blobGasUsed * normalizedBlobGasPrice,
-        "current blob gas fee",
-      );
+      const currentBlobGasFee = Transaction.isEIP4844(parsedTx)
+        ? yield* Effect.gen(function* () {
+            const normalizedBlobGasPrice = yield* decodeGasPrice(
+              blobGasPrice,
+              "blob",
+            );
+            return yield* decodeBalance(
+              blobGasUsed * normalizedBlobGasPrice,
+              "current blob gas fee",
+            );
+          })
+        : yield* decodeBalance(0n, "current blob gas fee");
       const totalGasPrecharge = yield* decodeBalance(
         effectiveGasFee + currentBlobGasFee,
         "total gas precharge",
