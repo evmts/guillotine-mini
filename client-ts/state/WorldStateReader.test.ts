@@ -7,16 +7,17 @@ import {
   WorldState,
   WorldStateTest,
   destroyAccount,
-  getAccountOptional as wsGetAccountOptional,
-  getCode as wsGetCode,
   getStorage as wsGetStorage,
   setAccount,
   setCode,
   setStorage,
 } from "./State";
 import {
-  WorldStateReader,
   WorldStateReaderFromWorldState,
+  getAccountOptional,
+  getCode,
+  getStorage,
+  hasAccount,
 } from "./WorldStateReader";
 
 type StorageSlotType = Parameters<typeof wsGetStorage>[1];
@@ -62,8 +63,7 @@ describe("WorldStateReader", () => {
   it.effect("returns null for missing accounts", () =>
     provideEnv(
       Effect.gen(function* () {
-        const reader = yield* WorldStateReader;
-        const account = yield* reader.getAccountOptional(Address.zero());
+        const account = yield* getAccountOptional(Address.zero());
         assert.isNull(account);
       }),
     ),
@@ -72,16 +72,15 @@ describe("WorldStateReader", () => {
   it.effect("hasAccount reflects presence in world state via adapter", () =>
     provideEnv(
       Effect.gen(function* () {
-        const reader = yield* WorldStateReader;
         const addr = makeAddress(0xee);
-        assert.isFalse(yield* reader.hasAccount(addr));
+        assert.isFalse(yield* hasAccount(addr));
         yield* setAccount(addr, {
           ...EMPTY_ACCOUNT,
           nonce: 1n,
         } satisfies AccountStateType);
-        assert.isTrue(yield* reader.hasAccount(addr));
+        assert.isTrue(yield* hasAccount(addr));
         yield* destroyAccount(addr);
-        assert.isFalse(yield* reader.hasAccount(addr));
+        assert.isFalse(yield* hasAccount(addr));
       }),
     ),
   );
@@ -89,13 +88,12 @@ describe("WorldStateReader", () => {
   it.effect("reads code through adapter (empty and set)", () =>
     provideEnv(
       Effect.gen(function* () {
-        const reader = yield* WorldStateReader;
         const addr = makeAddress(0xab);
-        const empty = yield* reader.getCode(addr);
+        const empty = yield* getCode(addr);
         assert.strictEqual(codeHex(empty), codeHex(EMPTY_CODE));
 
         yield* setCode(addr, SAMPLE_CODE);
-        const stored = yield* reader.getCode(addr);
+        const stored = yield* getCode(addr);
         assert.strictEqual(codeHex(stored), codeHex(SAMPLE_CODE));
       }),
     ),
@@ -104,12 +102,11 @@ describe("WorldStateReader", () => {
   it.effect("reads storage through adapter (zero and set)", () =>
     provideEnv(
       Effect.gen(function* () {
-        const reader = yield* WorldStateReader;
         const addr = makeAddress(0xcd);
         const slot = makeSlot(1);
         const value = makeStorageValue(7);
 
-        const zero = yield* reader.getStorage(addr, slot);
+        const zero = yield* getStorage(addr, slot);
         assert.strictEqual(
           storageValueHex(zero),
           storageValueHex(ZERO_STORAGE_VALUE),
@@ -117,7 +114,7 @@ describe("WorldStateReader", () => {
 
         yield* setAccount(addr, EMPTY_ACCOUNT);
         yield* setStorage(addr, slot, value);
-        const stored = yield* reader.getStorage(addr, slot);
+        const stored = yield* getStorage(addr, slot);
         assert.strictEqual(storageValueHex(stored), storageValueHex(value));
       }),
     ),

@@ -1,3 +1,4 @@
+/** Compare two byte arrays for exact equality. */
 export const bytes32Equals = (left: Uint8Array, right: Uint8Array): boolean => {
   if (left.length !== right.length) {
     return false;
@@ -10,4 +11,5 @@ export const bytes32Equals = (left: Uint8Array, right: Uint8Array): boolean => {
   return true;
 };
 
+/** Clone a byte array to prevent aliasing between callers. */
 export const cloneBytes32 = (value: Uint8Array): Uint8Array => value.slice();
