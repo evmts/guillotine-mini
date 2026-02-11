@@ -398,7 +398,7 @@ pub fn fits_size_limits(
         payload_len += rlp_len_of_uint(tx.max_priority_fee_per_gas);
         payload_len += rlp_len_of_uint(tx.max_fee_per_gas);
         payload_len += rlp_len_of_uint(tx.gas_limit);
-        // to (required by EIP-4844; MUST NOT be nil per EIP-4844)
+        // to: EIP-4844 disallows contract creation, so `to` is always present
         payload_len += rlp_len_of_bytes(20, null);
         // value
         payload_len += rlp_len_of_uint(tx.value);
