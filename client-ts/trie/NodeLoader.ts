@@ -107,9 +107,7 @@ const makeTrieNodeLoader = (
             return yield* decodeBytes(codec, encoded);
           }
           case "hash": {
-            if (
-              yield* coerceEffect<boolean, never>(isEmptyTrieRoot(ref.value))
-            ) {
+            if (isEmptyTrieRoot(ref.value)) {
               return null;
             }
 
