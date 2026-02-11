@@ -7,6 +7,16 @@
 ///   sites never reach into fields like `block_store` directly.
 /// - Enables future changes in Voltaire internals to be absorbed here without
 ///   cascading edits across the client.
+///
+/// FIXME(voltaire): This module currently reaches into chain.block_store internals
+/// as a stopgap until first-class local-only getters are exposed by Voltaire.
+/// Track this dependency and migrate to upstream accessors when available to
+/// remove the layering violation risk.
+///
+/// FIXME(voltaire): This module currently reaches into  as a
+/// stopgap until first-class local-only getters are exposed by Voltaire. Track
+/// this dependency and migrate to upstream accessors when available to remove
+/// the layering violation risk.
 const blockchain = @import("blockchain");
 const primitives = @import("primitives");
 
