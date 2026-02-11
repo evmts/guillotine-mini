@@ -26,6 +26,7 @@ import {
   isZeroStorageValue,
   zeroBytes32,
 } from "./internal/storage";
+import { lookupSnapshotEntry } from "./internal/snapshot";
 
 /** Hex-encoded key for account map storage. */
 type AccountKey = Parameters<typeof Hex.equals>[0];
@@ -626,20 +627,15 @@ const makeWorldState = Effect.gen(function* () {
     });
 
   const lookupSnapshot = (snapshot: WorldStateSnapshot) =>
-    Effect.gen(function* () {
-      for (let i = snapshotStack.length - 1; i >= 0; i -= 1) {
-        const entry = snapshotStack[i];
-        if (entry && entry.id === snapshot) {
-          return { index: i, entry };
-        }
-      }
-      return yield* Effect.fail(
+    lookupSnapshotEntry(
+      snapshotStack,
+      snapshot,
+      (missingSnapshot, depth) =>
         new UnknownSnapshotError({
-          snapshot,
-          depth: snapshotStack.length,
+          snapshot: missingSnapshot,
+          depth,
         }),
-      );
-    });
+    );
 
   const dropSnapshotsFrom = (index: number) => {
     snapshotStack.splice(index);

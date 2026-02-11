@@ -15,6 +15,7 @@ import {
   isZeroStorageValue,
   zeroBytes32,
 } from "./internal/storage";
+import { lookupSnapshotEntry } from "./internal/snapshot";
 
 type AddressKey = Parameters<typeof Hex.equals>[0];
 type StorageKey = Parameters<typeof Hex.equals>[0];
@@ -169,20 +170,15 @@ const makeTransientStorage = Effect.sync(() => {
     });
 
   const lookupSnapshot = (snapshot: TransientStorageSnapshot) =>
-    Effect.gen(function* () {
-      for (let i = snapshotStack.length - 1; i >= 0; i -= 1) {
-        const entry = snapshotStack[i];
-        if (entry && entry.id === snapshot) {
-          return { index: i, entry };
-        }
-      }
-      return yield* Effect.fail(
+    lookupSnapshotEntry(
+      snapshotStack,
+      snapshot,
+      (missingSnapshot, depth) =>
         new UnknownTransientSnapshotError({
-          snapshot,
-          depth: snapshotStack.length,
+          snapshot: missingSnapshot,
+          depth,
         }),
-      );
-    });
+    );
 
   const revertEntry = (entry: TransientStorageJournalEntry) => {
     if (isZeroStorageValue(entry.previous)) {
