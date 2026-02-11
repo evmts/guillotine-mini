@@ -48,12 +48,10 @@ import {
   setAccount,
   setCode,
   setStorage,
-  WorldStateTest,
 } from "../state/State";
 import {
   getTransientStorage,
   setTransientStorage,
-  TransientStorageTest,
 } from "../state/TransientStorage";
 import {
   NoActiveTransactionError,
@@ -68,8 +66,6 @@ const provideProcessor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 const TransactionProcessorExecutionTest = Layer.mergeAll(
   TransactionProcessorTest,
   TransactionBoundaryTest,
-  WorldStateTest,
-  TransientStorageTest,
   RefundCalculatorTest,
 );
 

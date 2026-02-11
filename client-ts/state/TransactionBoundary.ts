@@ -131,15 +131,16 @@ const TransactionBoundaryTestDependencies = Layer.mergeAll(
   WorldStateTest,
   TransientStorageTest,
 );
+const TransactionBoundaryTestLive = TransactionBoundaryLive.pipe(
+  Layer.provide(TransactionBoundaryTestDependencies),
+);
 
 /** Deterministic transaction boundary layer for tests. */
 export const TransactionBoundaryTest: Layer.Layer<
   TransactionBoundary | WorldState | TransientStorage
-> = Layer.merge(
+> = Layer.mergeAll(
   TransactionBoundaryTestDependencies,
-  TransactionBoundaryLive.pipe(
-    Layer.provide(TransactionBoundaryTestDependencies),
-  ),
+  TransactionBoundaryTestLive,
 );
 
 /** Begin a nested transaction boundary. */
