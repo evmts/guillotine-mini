@@ -516,6 +516,74 @@ describe("TrieNodeStorage", () => {
     }).pipe(Effect.provide(RocksLayer)),
   );
 
+  it.effect(
+    "startNodeWriteBatch supports set/remove/clear on the success path",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const addressHash = hashFromHex(
+            "0x1212121212121212121212121212121212121212121212121212121212121212",
+          );
+          const pathA: TrieNodePath = {
+            bytes: hashFromHex(
+              "0x3434343434343434343434343434343434343434343434343434343434343434",
+            ),
+            length: 5,
+          };
+          const pathB: TrieNodePath = {
+            bytes: hashFromHex(
+              "0x5656565656565656565656565656565656565656565656565656565656565656",
+            ),
+            length: 10,
+          };
+          const nodeHashA = hashFromHex(
+            "0x7878787878787878787878787878787878787878787878787878787878787878",
+          );
+          const nodeHashB = hashFromHex(
+            "0x9090909090909090909090909090909090909090909090909090909090909090",
+          );
+          const encodedA = bytesFromHex("0xc2200c");
+          const encodedB = bytesFromHex("0xc2200d");
+
+          yield* setNodeStorageScheme(TrieNodeStorageKeyScheme.HalfPath);
+
+          const batch = yield* startNodeWriteBatch();
+          yield* batch.set(addressHash, pathA, nodeHashA, encodedA);
+
+          const loadedAfterSet = yield* getNodeWithContext(
+            addressHash,
+            pathA,
+            nodeHashA,
+          );
+          assert.strictEqual(Option.isSome(loadedAfterSet), true);
+
+          yield* batch.remove(addressHash, pathA, nodeHashA);
+          const loadedAfterRemove = yield* getNodeWithContext(
+            addressHash,
+            pathA,
+            nodeHashA,
+          );
+          assert.strictEqual(Option.isNone(loadedAfterRemove), true);
+
+          yield* batch.set(addressHash, pathB, nodeHashB, encodedB);
+          yield* batch.clear();
+
+          const loadedAfterClear = yield* getNodeWithContext(
+            addressHash,
+            pathB,
+            nodeHashB,
+          );
+          assert.strictEqual(Option.isSome(loadedAfterClear), true);
+          if (Option.isSome(loadedAfterClear)) {
+            assert.strictEqual(
+              Bytes.equals(loadedAfterClear.value, encodedB),
+              true,
+            );
+          }
+        }).pipe(Effect.provide(TestLayer)),
+      ),
+  );
+
   it.effect("reads hash-keyed entries via half-path scheme fallback", () =>
     Effect.gen(function* () {
       const addressHash = hashFromHex(
