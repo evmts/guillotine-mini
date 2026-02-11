@@ -215,4 +215,23 @@ describe("BlockTreeOverlay", () => {
       }),
     ),
   );
+
+  it.effect(
+    "materializing base canonical blocks into overlay does not inflate counts",
+    () =>
+      withIsolatedTrees((baseTree, _overlayTree, overlay) =>
+        Effect.gen(function* () {
+          const { genesis, block1 } = makeChain();
+
+          yield* baseTree.putBlock(genesis);
+          yield* baseTree.putBlock(block1);
+          yield* baseTree.setCanonicalHead(block1.hash);
+          yield* overlay.setCanonicalHead(block1.hash);
+
+          assert.strictEqual(yield* baseTree.blockCount(), 2);
+          assert.strictEqual(yield* overlay.blockCount(), 2);
+          assert.strictEqual(yield* overlay.canonicalChainLength(), 2);
+        }),
+      ),
+  );
 });
