@@ -539,3 +539,249 @@ test "calculate_effective_gas_price — eip1559 max fee below base fee" {
 
     try std.testing.expectError(error.InsufficientMaxFeePerGas, calculate_effective_gas_price(tx, 10));
 }
+
+/// Pre-price a transaction: validate statically and compute effective gas price.
+///
+/// Returns both the intrinsic gas and the effective gas price according to the
+/// active hardfork and base fee. This combines validate_transaction (static
+/// checks + intrinsic gas) and calculate_effective_gas_price (London+ rules).
+///
+/// Errors are the union of validation and pricing failures. Fork-gating is
+/// enforced via validate_transaction.
+pub fn preprice_transaction(
+    tx: anytype,
+    hardfork: Hardfork,
+    base_fee_per_gas: u256,
+) error{
+    InsufficientGas,
+    NonceOverflow,
+    InitCodeTooLarge,
+    UnsupportedTransactionType,
+    PriorityFeeGreaterThanMaxFee,
+    InsufficientMaxFeePerGas,
+    GasPriceBelowBaseFee,
+}!struct { intrinsic: u64, effective_gas_price: u256 } {
+    const intrinsic = try validate_transaction(tx, hardfork);
+    const effective = try calculate_effective_gas_price(tx, base_fee_per_gas);
+    return .{ .intrinsic = intrinsic, .effective_gas_price = effective };
+}
+
+// -----------------------------------------------------------------------------
+// preprice_transaction Tests
+// -----------------------------------------------------------------------------
+
+test "preprice_transaction — legacy ok" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = 100,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x20} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const priced = try preprice_transaction(tx, .LONDON, 10);
+    try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), priced.intrinsic);
+    try std.testing.expectEqual(@as(u256, 100), priced.effective_gas_price);
+}
+
+test "preprice_transaction — eip2930 ok" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip2930Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .gas_price = 50,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x21} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const priced = try preprice_transaction(tx, .LONDON, 10);
+    try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), priced.intrinsic);
+    try std.testing.expectEqual(@as(u256, 50), priced.effective_gas_price);
+}
+
+test "preprice_transaction — eip1559 ok (cap priority)" {
+    const Address = primitives.Address;
+
+    const tx = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 20,
+        .max_fee_per_gas = 25,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x22} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const priced = try preprice_transaction(tx, .LONDON, 10);
+    // intrinsic base cost only
+    try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), priced.intrinsic);
+    // effective = base_fee(10) + min(20, 25-10=15) = 25
+    try std.testing.expectEqual(@as(u256, 25), priced.effective_gas_price);
+}
+
+test "preprice_transaction — eip4844 ok" {
+    const Address = primitives.Address;
+    const VersionedHash = primitives.Blob.VersionedHash;
+
+    const hashes = [_]VersionedHash{.{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 31 }};
+
+    const tx = tx_mod.Eip4844Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 100,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x23} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .max_fee_per_blob_gas = 1,
+        .blob_versioned_hashes = &hashes,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const priced = try preprice_transaction(tx, .CANCUN, 10);
+    try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), priced.intrinsic);
+    try std.testing.expectEqual(@as(u256, 11), priced.effective_gas_price); // 10 + min(1, 90)
+}
+
+test "preprice_transaction — eip7702 ok with authorization intrinsic" {
+    const Address = primitives.Address;
+    const Authorization = primitives.Authorization.Authorization;
+
+    const auths = [_]Authorization{.{
+        .chain_id = 1,
+        .address = Address{ .bytes = [_]u8{0x24} ++ [_]u8{0} ** 19 },
+        .nonce = 0,
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    }};
+
+    const expected_intrinsic = intrinsic_gas.TX_BASE_COST + intrinsic_gas.TX_AUTHORIZATION_COST_PER_ITEM;
+
+    const tx = tx_mod.Eip7702Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 2,
+        .max_fee_per_gas = 20,
+        .gas_limit = expected_intrinsic,
+        .to = Address{ .bytes = [_]u8{0x25} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .authorization_list = &auths,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+
+    const priced = try preprice_transaction(tx, .PRAGUE, 10);
+    try std.testing.expectEqual(@as(u64, expected_intrinsic), priced.intrinsic);
+    try std.testing.expectEqual(@as(u256, 12), priced.effective_gas_price); // 10 + min(2, 10)
+}
+
+test "preprice_transaction — fork gating enforced" {
+    const Address = primitives.Address;
+    const VersionedHash = primitives.Blob.VersionedHash;
+    const Authorization = primitives.Authorization.Authorization;
+
+    // 2930 before Berlin
+    const tx2930 = tx_mod.Eip2930Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .gas_price = 10,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x26} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    try std.testing.expectError(error.UnsupportedTransactionType, preprice_transaction(tx2930, .ISTANBUL, 0));
+
+    // 1559 before London
+    const tx1559 = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x27} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    try std.testing.expectError(error.UnsupportedTransactionType, preprice_transaction(tx1559, .BERLIN, 0));
+
+    // 4844 before Cancun
+    const hashes = [_]VersionedHash{.{ .bytes = [_]u8{0x01} ++ [_]u8{0} ** 31 }};
+    const tx4844 = tx_mod.Eip4844Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0x28} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .max_fee_per_blob_gas = 1,
+        .blob_versioned_hashes = &hashes,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    try std.testing.expectError(error.UnsupportedTransactionType, preprice_transaction(tx4844, .SHANGHAI, 0));
+
+    // 7702 before Prague
+    const auths = [_]Authorization{.{
+        .chain_id = 1,
+        .address = Address{ .bytes = [_]u8{0x29} ++ [_]u8{0} ** 19 },
+        .nonce = 0,
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    }};
+    const tx7702 = tx_mod.Eip7702Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
+        .gas_limit = intrinsic_gas.TX_BASE_COST + intrinsic_gas.TX_AUTHORIZATION_COST_PER_ITEM,
+        .to = Address{ .bytes = [_]u8{0x2A} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .authorization_list = &auths,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    try std.testing.expectError(error.UnsupportedTransactionType, preprice_transaction(tx7702, .CANCUN, 0));
+}
