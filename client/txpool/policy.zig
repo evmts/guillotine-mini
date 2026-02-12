@@ -24,10 +24,11 @@ pub fn calculate_base_fee_threshold(base_fee: BaseFeePerGas, threshold_percent: 
 
     // Try precise path first: (base_fee * percent) / 100
     var mul = fee_wei.overflowing_mul(percent);
-    var threshold = mul.result.div_rem(hundred).quotient;
     var overflow = mul.overflow;
-
-    if (overflow) {
+    var threshold: U256 = undefined;
+    if (!overflow) {
+        threshold = mul.result.div_rem(hundred).quotient;
+    } else {
         // Fallback: (base_fee / 100) * percent (less accurate but avoids early overflow)
         const one_percent = fee_wei.div_rem(hundred).quotient;
         mul = one_percent.overflowing_mul(percent);
