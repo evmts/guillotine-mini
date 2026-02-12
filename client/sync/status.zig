@@ -46,6 +46,8 @@ pub fn to_sync_status(sync_mode: u32, current_block: u64, highest_block: u64, ma
         return SyncStatusMod.syncing(0, current_block, highest_block);
     }
 
+    // TODO(phase-9-sync): startingBlock is currently hard-coded to 0 in all SyncStatus.syncing calls.
+    // Once chain progress wiring is available, plumb the actual starting block into to_sync_status.
     return SyncStatusMod.notSyncing();
 }
 
