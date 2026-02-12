@@ -39,9 +39,9 @@ const Slot = struct {
 pub const ReadOnlyDbProvider = struct {
     base: *const DbProvider,
     overlay_allocator: ?std.mem.Allocator,
-    // Initialize fixed slots array to zero using a type-directed initializer.
-    // Using std.mem.zeroes avoids inference issues with `.{} ** N` on some Zig versions.
-    slots: [std.meta.fields(DbName).len]Slot = std.mem.zeroes([std.meta.fields(DbName).len]Slot),
+    // Initialize fixed slots with default `Slot{ .present = false }` repeated N times.
+    // Avoids zeroing non-null pointers inside nested structs.
+    slots: [std.meta.fields(DbName).len]Slot = [_]Slot{Slot{ .present = false }} ** std.meta.fields(DbName).len,
 
     /// Create a strict read-only provider (no write overlay). No allocations.
     pub fn init_strict(base: *const DbProvider) ReadOnlyDbProvider {
