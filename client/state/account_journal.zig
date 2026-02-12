@@ -89,8 +89,9 @@ pub const AccountJournal = struct {
     }
 
     /// Expose a read-only view of the entries (testing aid).
+    /// Avoid calling private Journal.items(); access the backing slice directly.
     pub fn items(self: *const Self) []const EntryType {
-        return self.journal.items();
+        return self.journal.entries.items;
     }
 };
 
