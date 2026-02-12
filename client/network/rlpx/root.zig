@@ -15,7 +15,8 @@ pub const derive_secrets = secrets_mod.derive_secrets;
 
 /// RLPx MAC state initialization (ingress/egress Keccak256 contexts).
 pub const MacStates = mac_mod.MacStates;
-pub const initMacStates = mac_mod.initMacStates;
+/// Initialize default Keccak256-based MAC states per RLPx.
+pub const init_mac_states = mac_mod.init_mac_states;
 test {
     @import("std").testing.refAllDecls(@This());
 }

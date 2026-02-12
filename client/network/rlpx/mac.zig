@@ -13,8 +13,8 @@ pub fn MacStatesFor(comptime Hasher: type) type {
 pub const MacStates = MacStatesFor(crypto.Keccak256);
 pub const MacSeedError = error{ InvalidAuthPrefix, InvalidAckPrefix, InvalidAuthSize, InvalidAckSize };
 
-/// Generic initializer with DI for MAC/hash selection.
-pub fn initMacStatesFor(
+/// Initialize MAC states for an arbitrary `Hasher` (DI-friendly).
+pub fn init_mac_states_for(
     comptime Hasher: type,
     mac_secret: Bytes32,
     initiator_nonce: Bytes32,
@@ -57,8 +57,8 @@ pub fn initMacStatesFor(
     return .{ .ingress = ingress, .egress = egress };
 }
 
-/// Default initializer using Keccak256 per RLPx spec.
-pub fn initMacStates(
+/// Initialize default Keccak256-based MAC states per RLPx.
+pub fn init_mac_states(
     mac_secret: Bytes32,
     initiator_nonce: Bytes32,
     recipient_nonce: Bytes32,
@@ -66,10 +66,10 @@ pub fn initMacStates(
     ack: []const u8,
     is_initiator: bool,
 ) MacSeedError!MacStates {
-    return initMacStatesFor(crypto.Keccak256, mac_secret, initiator_nonce, recipient_nonce, auth, ack, is_initiator);
+    return init_mac_states_for(crypto.Keccak256, mac_secret, initiator_nonce, recipient_nonce, auth, ack, is_initiator);
 }
 
-test "initMacStates: initiator vs recipient seeding per spec" {
+test "init_mac_states: initiator vs recipient seeding per spec" {
     const zero: Bytes32 = primitives.Bytes32.ZERO;
 
     // Deterministic, easy-to-verify test vectors
@@ -104,7 +104,7 @@ test "initMacStates: initiator vs recipient seeding per spec" {
     ref_ingress_init.update(&ack);
     var ref_ingress_init_digest: [32]u8 = undefined;
     ref_ingress_init.final(&ref_ingress_init_digest);
-    const states_init = try initMacStates(mac, n_i, n_r, &auth, &ack, true);
+    const states_init = try init_mac_states(mac, n_i, n_r, &auth, &ack, true);
     // Finalize copies to avoid consuming returned states
     var egress_copy_i = states_init.egress;
     var ingress_copy_i = states_init.ingress;
@@ -127,7 +127,7 @@ test "initMacStates: initiator vs recipient seeding per spec" {
     var ref_ingress_rec_digest: [32]u8 = undefined;
     ref_ingress_rec.final(&ref_ingress_rec_digest);
 
-    const states_rec = try initMacStates(mac, n_i, n_r, &auth, &ack, false);
+    const states_rec = try init_mac_states(mac, n_i, n_r, &auth, &ack, false);
     var egress_copy_r = states_rec.egress;
     var ingress_copy_r = states_rec.ingress;
     var got_egress_r: [32]u8 = undefined;
@@ -138,7 +138,7 @@ test "initMacStates: initiator vs recipient seeding per spec" {
     try std.testing.expectEqualSlices(u8, &ref_ingress_rec_digest, &got_ingress_r);
 }
 
-test "initMacStatesFor(Keccak256) equals default" {
+test "init_mac_statesFor(Keccak256) equals default" {
     const zero: Bytes32 = primitives.Bytes32.ZERO;
     var mac: Bytes32 = zero;
     @memset(&mac, 0x33);
@@ -150,8 +150,8 @@ test "initMacStatesFor(Keccak256) equals default" {
     const ack_body = [_]u8{'Y'};
     const auth = [_]u8{ 0x00, auth_body.len } ++ auth_body;
     const ack = [_]u8{ 0x00, ack_body.len } ++ ack_body;
-    const a = try initMacStates(mac, n_i, n_r, &auth, &ack, true);
-    const b = try initMacStatesFor(crypto.Keccak256, mac, n_i, n_r, &auth, &ack, true);
+    const a = try init_mac_states(mac, n_i, n_r, &auth, &ack, true);
+    const b = try init_mac_states_for(crypto.Keccak256, mac, n_i, n_r, &auth, &ack, true);
     var a_e = a.egress;
     var a_i = a.ingress;
     var b_e = b.egress;
