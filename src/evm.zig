@@ -22,8 +22,8 @@ const access_list_manager_mod = @import("access_list_manager.zig");
 const AccessListManager = access_list_manager_mod.AccessListManager;
 const AccessListSnapshot = access_list_manager_mod.AccessListSnapshot;
 
-// Re-export StorageKey from primitives
-pub const StorageKey = primitives.StorageKey;
+// Re-export StorageKey from Voltaire primitives (canonical path)
+pub const StorageKey = primitives.State.StorageKey;
 pub const StorageSlotKey = StorageKey; // Backwards compatibility alias
 
 // Re-export from storage module
