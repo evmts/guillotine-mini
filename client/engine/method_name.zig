@@ -13,6 +13,15 @@ pub fn isValidAdvertisableEngineMethodName(name: []const u8) bool {
     return hasVersionSuffix(name);
 }
 
+/// Return true iff `name` belongs to the `engine_` namespace and carries a
+/// trailing `V<digits>` suffix. Unlike
+/// `isValidAdvertisableEngineMethodName`, this does not special-case
+/// `engine_exchangeCapabilities`. Use for validating consensus requests.
+pub fn isEngineVersionedMethodName(name: []const u8) bool {
+    if (!std.mem.startsWith(u8, name, "engine_")) return false;
+    return hasVersionSuffix(name);
+}
+
 /// Check for a trailing `V<digits>` suffix.
 fn hasVersionSuffix(name: []const u8) bool {
     if (name.len < 2) return false;
@@ -40,4 +49,12 @@ test "isValidAdvertisableEngineMethodName - rejects unversioned or wrong ns" {
 
 test "isValidAdvertisableEngineMethodName - rejects exchangeCapabilities" {
     try std.testing.expect(!isValidAdvertisableEngineMethodName("engine_exchangeCapabilities"));
+}
+
+test "isEngineVersionedMethodName - basic" {
+    try std.testing.expect(isEngineVersionedMethodName("engine_newPayloadV1"));
+    try std.testing.expect(isEngineVersionedMethodName("engine_getPayloadV6"));
+    try std.testing.expect(!isEngineVersionedMethodName("engine_newPayload"));
+    try std.testing.expect(!isEngineVersionedMethodName("eth_getBlockByNumberV1"));
+    try std.testing.expect(!isEngineVersionedMethodName("engine_exchangeCapabilities"));
 }
