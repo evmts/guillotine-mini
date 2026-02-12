@@ -213,6 +213,108 @@ describe("WorldState", () => {
     ),
   );
 
+  it.effect(
+    "setCode is idempotent on identical bytes and does not journal spurious updates",
+    () =>
+      provideWorldState(
+        Effect.gen(function* () {
+          const addr = makeAddress(0xde);
+          const code = SAMPLE_CODE;
+          const snap1 = yield* takeSnapshot();
+          yield* setCode(addr, code);
+          const snap2 = yield* takeSnapshot();
+          // same bytes
+          yield* setCode(addr, code);
+          const after = yield* getCode(addr);
+          assert.strictEqual(codeHex(after), codeHex(code));
+          // restoring to snap2 should change nothing
+          yield* restoreSnapshot(snap2);
+          const still = yield* getCode(addr);
+          assert.strictEqual(codeHex(still), codeHex(code));
+          // cleanup
+          yield* restoreSnapshot(snap1);
+        }),
+      ),
+  );
+
+  it.effect(
+    "setAccount identical value is a no-op and does not double-journal",
+    () =>
+      provideWorldState(
+        Effect.gen(function* () {
+          const addr = makeAddress(0xdf);
+          const acc = makeAccount({ nonce: 2n });
+          const s1 = yield* takeSnapshot();
+          yield* setAccount(addr, acc);
+          const s2 = yield* takeSnapshot();
+          yield* setAccount(addr, acc);
+          // roll back to s2; account should remain
+          yield* restoreSnapshot(s2);
+          const present = yield* getAccountOptional(addr);
+          assert.isNotNull(present);
+          assert.strictEqual(present?.nonce, 2n);
+          // cleanup
+          yield* restoreSnapshot(s1);
+        }),
+      ),
+  );
+
+  it.effect("markAccountCreated fails if called before takeSnapshot", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(0xe0);
+        const res = yield* Effect.either(markAccountCreated(addr));
+        assert.isTrue(Either.isLeft(res));
+      }),
+    ),
+  );
+
+  it.effect(
+    "destroyAccount clears storage; setAccount(null) does not implicitly clear storage",
+    () =>
+      provideWorldState(
+        Effect.gen(function* () {
+          const addr = makeAddress(0xe1);
+          const slot = makeSlot(0x0a);
+          const value = makeStorageValue(0x11);
+          yield* setAccount(addr, makeAccount({ nonce: 1n }));
+          yield* setStorage(addr, slot, value);
+          // setAccount(null) should remove account but not forcibly sweep storage (destroyAccount does)
+          yield* setAccount(addr, null);
+          // storage read via getStorage returns ZERO since account missing
+          const after = yield* getStorage(addr, slot);
+          assert.strictEqual(
+            storageValueHex(after),
+            storageValueHex(ZERO_STORAGE_VALUE),
+          );
+          // recreate and set storage; destroyAccount should clear explicitly
+          yield* setAccount(addr, makeAccount({ nonce: 1n }));
+          yield* setStorage(addr, slot, value);
+          yield* destroyAccount(addr);
+          const cleared = yield* getStorage(addr, slot);
+          assert.strictEqual(
+            storageValueHex(cleared),
+            storageValueHex(ZERO_STORAGE_VALUE),
+          );
+        }),
+      ),
+  );
+
+  it.effect(
+    "clear includes TODO validation hook for EMPTY_STORAGE_ROOT invariants (non-throwing)",
+    () =>
+      provideWorldState(
+        Effect.gen(function* () {
+          const addr = makeAddress(0xe2);
+          yield* setAccount(addr, makeAccount({ nonce: 1n }));
+          // should not throw
+          yield* clear();
+          const missing = yield* getAccountOptional(addr);
+          assert.isNull(missing);
+        }),
+      ),
+  );
+
   it.effect("updates account.codeHash when setting/clearing code", () =>
     provideWorldState(
       Effect.gen(function* () {

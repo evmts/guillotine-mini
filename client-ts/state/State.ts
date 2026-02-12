@@ -75,6 +75,11 @@ export class MissingAccountError extends Data.TaggedError(
   readonly address: Address.AddressType;
 }> {}
 
+/** Error raised when marking an account as created without an active snapshot. */
+export class NoActiveSnapshotError extends Data.TaggedError(
+  "NoActiveSnapshotError",
+)<{}> {}
+
 /** World state service interface (accounts + storage + snapshots). */
 export interface WorldStateService {
   readonly getAccountOptional: (
@@ -107,7 +112,7 @@ export interface WorldStateService {
   ) => Effect.Effect<void>;
   readonly markAccountCreated: (
     address: Address.AddressType,
-  ) => Effect.Effect<void>;
+  ) => Effect.Effect<void, NoActiveSnapshotError>;
   readonly wasAccountCreated: (
     address: Address.AddressType,
   ) => Effect.Effect<boolean>;
@@ -271,11 +276,13 @@ const makeWorldState = Effect.gen(function* () {
     });
 
   const markAccountCreated = (address: Address.AddressType) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       if (snapshotStack.length === 0) {
-        return;
+        return yield* Effect.fail(new NoActiveSnapshotError({}));
       }
-      createdAccounts.add(addressKey(address));
+      return yield* Effect.sync(() => {
+        createdAccounts.add(addressKey(address));
+      });
     });
 
   const wasAccountCreated = (address: Address.AddressType) =>
@@ -285,6 +292,11 @@ const makeWorldState = Effect.gen(function* () {
     Effect.sync(() => {
       const key = addressKey(address);
       const slotKey = storageSlotKey(slot);
+      // If the account does not exist, storage reads must return zero by spec.
+      if (!accounts.has(key)) {
+        recordOriginalStorageValue(key, slotKey, ZERO_STORAGE_VALUE);
+        return cloneStorageValue(ZERO_STORAGE_VALUE);
+      }
       const slots = storage.get(key);
       if (!slots) {
         recordOriginalStorageValue(key, slotKey, ZERO_STORAGE_VALUE);
@@ -437,6 +449,22 @@ const makeWorldState = Effect.gen(function* () {
         if (slots && slots.size === 0) {
           storage.delete(key);
         }
+        // Maintain storageRoot emptiness invariant: if storage becomes empty, set EMPTY_STORAGE_ROOT
+        const prior = accounts.get(key);
+        if (prior && (!storage.has(key) || storage.get(key)!.size === 0)) {
+          const nextAccount: AccountStateType = {
+            ...prior,
+            storageRoot: cloneBytes32(prior.storageRoot),
+          };
+          if (!bytes32Equals(prior.storageRoot, EMPTY_ACCOUNT.storageRoot)) {
+            nextAccount.storageRoot = cloneBytes32(
+              EMPTY_ACCOUNT.storageRoot,
+            ) as AccountStateType["storageRoot"];
+            if (!accountsEqual(prior, nextAccount)) {
+              yield* setAccount(address, nextAccount);
+            }
+          }
+        }
         return;
       }
 
@@ -452,6 +480,23 @@ const makeWorldState = Effect.gen(function* () {
         nextSlots.set(slotKey, next);
         if (!slots) {
           storage.set(key, nextSlots);
+        }
+        // Mark storageRoot as non-empty (placeholder) when first slot is created
+        const prior = accounts.get(key);
+        if (prior) {
+          const sentinel = new Uint8Array(32);
+          sentinel[0] = 0x01; // placeholder until trie integration
+          if (!bytes32Equals(prior.storageRoot, sentinel)) {
+            const nextAccount: AccountStateType = {
+              ...prior,
+              storageRoot: cloneBytes32(
+                sentinel,
+              ) as AccountStateType["storageRoot"],
+            };
+            if (!accountsEqual(prior, nextAccount)) {
+              yield* setAccount(address, nextAccount);
+            }
+          }
         }
         return;
       }
@@ -469,6 +514,23 @@ const makeWorldState = Effect.gen(function* () {
       nextSlots.set(slotKey, next);
       if (!slots) {
         storage.set(key, nextSlots);
+      }
+      // Mark storageRoot as non-empty (placeholder) on update as well
+      const prior = accounts.get(key);
+      if (prior) {
+        const sentinel = new Uint8Array(32);
+        sentinel[0] = 0x01;
+        if (!bytes32Equals(prior.storageRoot, sentinel)) {
+          const nextAccount: AccountStateType = {
+            ...prior,
+            storageRoot: cloneBytes32(
+              sentinel,
+            ) as AccountStateType["storageRoot"],
+          };
+          if (!accountsEqual(prior, nextAccount)) {
+            yield* setAccount(address, nextAccount);
+          }
+        }
       }
     });
 
@@ -672,6 +734,8 @@ const makeWorldState = Effect.gen(function* () {
       originalStorageJournal.length = 0;
       snapshotStack.length = 0;
       yield* journal.clear();
+      // TODO(storageRoot): When integrating the storage trie, assert here that
+      // all remaining accounts (if any) have storageRoot = EMPTY_STORAGE_ROOT.
     });
 
   return {
