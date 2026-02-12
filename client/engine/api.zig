@@ -235,6 +235,22 @@ fn validate_client_version_v1(client: ClientVersionV1, comptime invalid_err: Eng
     const code_val = obj.get("code") orelse return invalid_err;
     if (code_val != .string) return invalid_err;
     if (code_val.string.len != 2) return invalid_err;
+    // Enforce two ASCII letters for ClientCode per identification.md examples.
+    // Accept either case to accommodate future additions.
+    {
+        const s = code_val.string;
+        inline for (0..2) |i| {
+            const c = s[i];
+            if (!(std.ascii.isAlphabetic(c))) return invalid_err;
+        }
+    }
+
+    // name: required string
+    const name_val = obj.get("name") orelse return invalid_err;
+    if (name_val != .string) return invalid_err;
+    // version: required string
+    const version_val = obj.get("version") orelse return invalid_err;
+    if (version_val != .string) return invalid_err;
 
     const commit_val = obj.get("commit") orelse return invalid_err;
     if (commit_val != .string) return invalid_err;
