@@ -4,28 +4,32 @@ const primitives = @import("primitives");
 const crypto = @import("crypto");
 const Bytes32 = primitives.Bytes32.Bytes32;
 
-/// Pair of Keccak256 states for authenticated framing.
-pub const MacStates = struct {
-    ingress: crypto.Keccak256,
-    egress: crypto.Keccak256,
-};
+/// Generic pair of MAC/hash states for authenticated framing.
+pub fn MacStatesFor(comptime Hasher: type) type {
+    return struct { ingress: Hasher, egress: Hasher };
+}
+
+/// Default MAC states use Keccak256 as per RLPx.
+pub const MacStates = MacStatesFor(crypto.Keccak256);
 pub const MacSeedError = error{ InvalidAuthPrefix, InvalidAckPrefix, InvalidAuthSize, InvalidAckSize };
 
-pub fn initMacStates(
+/// Generic initializer with DI for MAC/hash selection.
+pub fn initMacStatesFor(
+    comptime Hasher: type,
     mac_secret: Bytes32,
     initiator_nonce: Bytes32,
     recipient_nonce: Bytes32,
     auth: []const u8,
     ack: []const u8,
     is_initiator: bool,
-) MacSeedError!MacStates {
+) MacSeedError!MacStatesFor(Hasher) {
     if (auth.len < 2) return error.InvalidAuthPrefix;
     if (ack.len < 2) return error.InvalidAckPrefix;
     const auth_size: u16 = (@as(u16, auth[0]) << 8) | auth[1];
     const ack_size: u16 = (@as(u16, ack[0]) << 8) | ack[1];
     if (auth.len != 2 + auth_size) return error.InvalidAuthSize;
     if (ack.len != 2 + ack_size) return error.InvalidAckSize;
-    var ingress = crypto.Keccak256.init(.{});
+    var ingress = Hasher.init(.{});
     // Precompute XOR(mac-secret, initiator-nonce) and XOR(mac-secret, recipient-nonce)
     var mac_xor_initiator: Bytes32 = undefined;
     var mac_xor_recipient: Bytes32 = undefined;
@@ -33,7 +37,7 @@ pub fn initMacStates(
         mac_xor_initiator[i] = mac_secret[i] ^ initiator_nonce[i];
         mac_xor_recipient[i] = mac_secret[i] ^ recipient_nonce[i];
     }
-    var egress = crypto.Keccak256.init(.{});
+    var egress = Hasher.init(.{});
     if (is_initiator) {
         // egress: (mac ^ recipient_nonce) || auth
         egress.update(&mac_xor_recipient);
@@ -51,6 +55,18 @@ pub fn initMacStates(
     }
 
     return .{ .ingress = ingress, .egress = egress };
+}
+
+/// Default initializer using Keccak256 per RLPx spec.
+pub fn initMacStates(
+    mac_secret: Bytes32,
+    initiator_nonce: Bytes32,
+    recipient_nonce: Bytes32,
+    auth: []const u8,
+    ack: []const u8,
+    is_initiator: bool,
+) MacSeedError!MacStates {
+    return initMacStatesFor(crypto.Keccak256, mac_secret, initiator_nonce, recipient_nonce, auth, ack, is_initiator);
 }
 
 test "initMacStates: initiator vs recipient seeding per spec" {
@@ -102,16 +118,16 @@ test "initMacStates: initiator vs recipient seeding per spec" {
     // Expected digests for recipient role (swap which goes to ingress/egress)
     var ref_egress_rec = crypto.Keccak256.init(.{});
     ref_egress_rec.update(&x_i);
-    ref_egress_rec.update(ack);
+    ref_egress_rec.update(&ack);
     var ref_egress_rec_digest: [32]u8 = undefined;
     ref_egress_rec.final(&ref_egress_rec_digest);
     var ref_ingress_rec = crypto.Keccak256.init(.{});
     ref_ingress_rec.update(&x_r);
-    ref_ingress_rec.update(auth);
+    ref_ingress_rec.update(&auth);
     var ref_ingress_rec_digest: [32]u8 = undefined;
     ref_ingress_rec.final(&ref_ingress_rec_digest);
 
-    const states_rec = initMacStates(mac, n_i, n_r, auth, ack, false);
+    const states_rec = try initMacStates(mac, n_i, n_r, &auth, &ack, false);
     var egress_copy_r = states_rec.egress;
     var ingress_copy_r = states_rec.ingress;
     var got_egress_r: [32]u8 = undefined;
@@ -122,27 +138,32 @@ test "initMacStates: initiator vs recipient seeding per spec" {
     try std.testing.expectEqualSlices(u8, &ref_ingress_rec_digest, &got_ingress_r);
 }
 
-test "initMacStates: zero-length auth/ack handled" {
+test "initMacStatesFor(Keccak256) equals default" {
     const zero: Bytes32 = [_]u8{0} ** 32;
-    const states = initMacStates(zero, zero, zero, &[_]u8{}, &[_]u8{}, true);
-    // Finalizing should succeed and match keccak256(mac^nonce) for each direction
-    var x_i: Bytes32 = zero; // mac ^ initiator == zero
-    var x_r: Bytes32 = zero; // mac ^ recipient == zero
-    var e = states.egress;
-    var i = states.ingress;
-    var e_d: [32]u8 = undefined;
-    var i_d: [32]u8 = undefined;
-    e.final(&e_d);
-    i.final(&i_d);
-    var expect_e = crypto.Keccak256.init(.{});
-    expect_e.update(&x_r);
-    var expect_e_d: [32]u8 = undefined;
-    expect_e.final(&expect_e_d);
-
-    var expect_i = crypto.Keccak256.init(.{});
-    expect_i.update(&x_i);
-    var expect_i_d: [32]u8 = undefined;
-    expect_i.final(&expect_i_d);
-    try std.testing.expectEqualSlices(u8, &expect_e_d, &e_d);
-    try std.testing.expectEqualSlices(u8, &expect_i_d, &i_d);
+    var mac: Bytes32 = zero;
+    @memset(&mac, 0x33);
+    var n_i: Bytes32 = zero;
+    @memset(&n_i, 0x44);
+    var n_r: Bytes32 = zero;
+    @memset(&n_r, 0x55);
+    const auth_body = [_]u8{'X'};
+    const ack_body = [_]u8{'Y'};
+    const auth = [_]u8{ 0x00, auth_body.len } ++ auth_body;
+    const ack = [_]u8{ 0x00, ack_body.len } ++ ack_body;
+    const a = try initMacStates(mac, n_i, n_r, &auth, &ack, true);
+    const b = try initMacStatesFor(crypto.Keccak256, mac, n_i, n_r, &auth, &ack, true);
+    var a_e = a.egress;
+    var a_i = a.ingress;
+    var b_e = b.egress;
+    var b_i = b.ingress;
+    var a_ed: [32]u8 = undefined;
+    var a_id: [32]u8 = undefined;
+    var b_ed: [32]u8 = undefined;
+    var b_id: [32]u8 = undefined;
+    a_e.final(&a_ed);
+    a_i.final(&a_id);
+    b_e.final(&b_ed);
+    b_i.final(&b_id);
+    try std.testing.expectEqualSlices(u8, &a_ed, &b_ed);
+    try std.testing.expectEqualSlices(u8, &a_id, &b_id);
 }
