@@ -5,6 +5,10 @@
 /// - Fee sorting hot path: `compare_fee_market_priority` (standalone + sort)
 /// - Allocation behavior: ensure memory is returned (GPA) and report bytes/op
 ///
+/// Notes:
+/// - Voltaire primitives do not expose EIP-2930 transactions in this build; the
+///   admission bench covers Legacy, EIP-1559, EIP-4844, and EIP-7702 only.
+///
 /// Run:
 ///   zig build bench-txpool                         # Debug timings (sanity)
 ///   zig build bench-txpool -Doptimize=ReleaseFast  # Release timings (use these)
@@ -85,26 +89,7 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
         ops += n_per_type;
     }
 
-    // EIP-2930 (typed access list)
-    {
-        const tx = Tx.Eip2930Transaction{
-            .chain_id = 1,
-            .nonce = 0,
-            .gas_price = 1,
-            .gas_limit = 21_000,
-            .to = mkAddr(0x2A),
-            .value = 0,
-            .data = &[_]u8{},
-            .access_list = &[_]Tx.AccessListItem{},
-            .y_parity = 0,
-            .r = [_]u8{0} ** 32,
-            .s = [_]u8{0} ** 32,
-        };
-        for (0..n_per_type) |_| {
-            txpool.fits_size_limits(tx, cfg) catch unreachable;
-        }
-        ops += n_per_type;
-    }
+    // EIP-2930 is intentionally omitted (not present in primitives here).
 
     // EIP-4844 (blob tx; size excludes blobs)
     {
@@ -275,7 +260,7 @@ fn bench_admission_memory(n_per_type: usize) struct { elapsed_ns: u64, bytes_per
     const res = bench_admission(gpa.allocator(), n_per_type);
     const after_bytes: usize = gpa.total_requested_bytes;
 
-    const total_ops: usize = n_per_type * 5; // 5 tx types
+    const total_ops: usize = n_per_type * 4; // 4 tx types in this bench
     const per_op = if (total_ops > 0) (after_bytes - before_bytes) / total_ops else 0;
     return .{ .elapsed_ns = res.elapsed_ns, .bytes_per_op = per_op };
 }
