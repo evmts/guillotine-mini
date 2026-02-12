@@ -280,6 +280,152 @@ pub fn ancestor_block_local(
     return get_block_local(chain, current_hash);
 }
 
+/// Finds the lowest common ancestor hash of two blocks using local store only.
+///
+/// Semantics:
+/// - Returns `null` if either `a` or `b` is missing locally.
+/// - Walks strictly via parent links in the local store; never consults the
+///   fork cache and performs no allocations.
+/// - If `a == b` and exists locally, returns `a`.
+/// - If the chains converge, returns the first matching hash when walking
+///   upward; otherwise returns `null` (e.g., when an ancestor is missing
+///   locally).
+pub fn common_ancestor_hash_local(
+    chain: *Chain,
+    a: Hash.Hash,
+    b: Hash.Hash,
+) ?Hash.Hash {
+    var na_block = get_block_local(chain, a) orelse return null;
+    var nb_block = get_block_local(chain, b) orelse return null;
+
+    // Fast path: identical hash and present locally.
+    if (Hash.equals(&a, &b)) return a;
+
+    var ha = na_block.header.number;
+    var hb = nb_block.header.number;
+
+    var ah = a;
+    var bh = b;
+
+    // Level heights by walking down the taller side first.
+    while (ha > hb) : (ha -= 1) {
+        const blk = get_block_local(chain, ah) orelse return null;
+        if (blk.header.number == 0) break; // genesis has no parent
+        ah = blk.header.parent_hash;
+    }
+    while (hb > ha) : (hb -= 1) {
+        const blk = get_block_local(chain, bh) orelse return null;
+        if (blk.header.number == 0) break; // genesis has no parent
+        bh = blk.header.parent_hash;
+    }
+
+    // Walk in lockstep until hashes match or ancestry is missing locally.
+    while (true) {
+        if (Hash.equals(&ah, &bh)) return ah;
+        const ab = get_block_local(chain, ah) orelse return null;
+        const bb = get_block_local(chain, bh) orelse return null;
+        if (ab.header.number == 0 or bb.header.number == 0) return null; // diverged to different geneses or missing
+        ah = ab.header.parent_hash;
+        bh = bb.header.parent_hash;
+    }
+}
+
+test "Chain - common_ancestor_hash_local returns null when either missing" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    try std.testing.expect(common_ancestor_hash_local(&chain, Hash.ZERO, Hash.ZERO) == null);
+}
+
+test "Chain - common_ancestor_hash_local returns self when equal" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+    try chain.setCanonicalHead(genesis.hash);
+
+    const lca = common_ancestor_hash_local(&chain, genesis.hash, genesis.hash) orelse return error.Unreachable;
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &lca);
+}
+
+test "Chain - common_ancestor_hash_local finds ancestor on same chain" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+    try chain.setCanonicalHead(genesis.hash);
+
+    var h1 = primitives.BlockHeader.init();
+    h1.number = 1;
+    h1.parent_hash = genesis.hash;
+    const b1 = try Block.from(&h1, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(b1);
+
+    var h2 = primitives.BlockHeader.init();
+    h2.number = 2;
+    h2.parent_hash = b1.hash;
+    const b2 = try Block.from(&h2, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(b2);
+
+    const lca = common_ancestor_hash_local(&chain, b1.hash, b2.hash) orelse return error.Unreachable;
+    try std.testing.expectEqualSlices(u8, &b1.hash, &lca);
+}
+
+test "Chain - common_ancestor_hash_local finds ancestor across fork" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+    try chain.setCanonicalHead(genesis.hash);
+
+    // First child A1
+    var h1a = primitives.BlockHeader.init();
+    h1a.number = 1;
+    h1a.parent_hash = genesis.hash;
+    h1a.timestamp = 1;
+    const b1a = try Block.from(&h1a, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(b1a);
+
+    // Competing child B1
+    var h1b = primitives.BlockHeader.init();
+    h1b.number = 1;
+    h1b.parent_hash = genesis.hash;
+    h1b.timestamp = 2;
+    const b1b = try Block.from(&h1b, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(b1b);
+
+    const lca = common_ancestor_hash_local(&chain, b1a.hash, b1b.hash) orelse return error.Unreachable;
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &lca);
+}
+
+test "Chain - common_ancestor_hash_local returns null when ancestry missing locally" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    // Orphan blocks (distinct parents not present locally)
+    var h_a = primitives.BlockHeader.init();
+    h_a.number = 5;
+    h_a.parent_hash = Hash.Hash{0x11} ** 32;
+    const a = try Block.from(&h_a, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(a);
+
+    var h_b = primitives.BlockHeader.init();
+    h_b.number = 7;
+    h_b.parent_hash = Hash.Hash{0x22} ** 32;
+    const b = try Block.from(&h_b, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(b);
+
+    try std.testing.expect(common_ancestor_hash_local(&chain, a.hash, b.hash) == null);
+}
+
 /// Generic, comptime-injected head hash reader for any chain-like type.
 pub fn head_hash_of(chain: anytype) !?Hash.Hash {
     // Reuse the snapshot logic in `head_block_of` to avoid duplication.
