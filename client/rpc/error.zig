@@ -42,18 +42,6 @@ pub const JsonRpcErrorCode = enum(i32) {
     invalid_input_too_many_blocks = -38026,
     pruned_history_unavailable = 4444,
 
-    // Aliases / Legacy mappings (Nethermind compatibility)
-    resource_not_found_legacy = -32000,
-    default = -32000,
-    reverted_simulate = -32000,
-    vm_error = -32015,
-    intrinsic_gas = -38013,
-    insufficient_funds = -38014,
-    block_number_invalid = -38020,
-    block_timestamp_invalid = -38021,
-    client_limit_exceeded_error = -38026,
-    client_limit_exceeded = -38026,
-
     pub fn defaultMessage(self: JsonRpcErrorCode) []const u8 {
         return switch (self) {
             .parse_error => "Parse error",
@@ -62,11 +50,11 @@ pub const JsonRpcErrorCode = enum(i32) {
             .invalid_params => "Invalid params",
             .internal_error => "Internal error",
             .invalid_input => "Invalid input",
-            .resource_not_found, .resource_not_found_legacy, .default => "Resource not found",
+            .resource_not_found => "Resource not found",
             .resource_unavailable => "Resource unavailable",
             .transaction_rejected, .transaction_rejected_nethermind => "Transaction rejected",
             .method_not_supported => "Method not supported",
-            .limit_exceeded, .client_limit_exceeded, .client_limit_exceeded_error => "Limit exceeded",
+            .limit_exceeded => "Limit exceeded",
             .jsonrpc_version_not_supported => "JSON-RPC version not supported",
             .execution_reverted => "Execution reverted",
             .timeout, .module_timeout => "Timeout",
@@ -74,6 +62,20 @@ pub const JsonRpcErrorCode = enum(i32) {
             else => "Internal error",
         };
     }
+};
+
+// Aliases / Legacy mappings (Nethermind compatibility)
+pub const Legacy = struct {
+    pub const resource_not_found_legacy: JsonRpcErrorCode = .invalid_input;
+    pub const default: JsonRpcErrorCode = .invalid_input;
+    pub const reverted_simulate: JsonRpcErrorCode = .invalid_input;
+    pub const vm_error: JsonRpcErrorCode = .execution_error;
+    pub const intrinsic_gas: JsonRpcErrorCode = .insufficient_intrinsic_gas;
+    pub const insufficient_funds: JsonRpcErrorCode = .invalid_transaction;
+    pub const block_number_invalid: JsonRpcErrorCode = .invalid_input_blocks_out_of_order;
+    pub const block_timestamp_invalid: JsonRpcErrorCode = .block_timestamp_not_increased;
+    pub const client_limit_exceeded_error: JsonRpcErrorCode = .invalid_input_too_many_blocks;
+    pub const client_limit_exceeded: JsonRpcErrorCode = .invalid_input_too_many_blocks;
 };
 
 // ============================================================================
@@ -131,16 +133,16 @@ test "jsonrpc error codes include nethermind extensions" {
     try std.testing.expectEqual(@as(i32, -38026), @intFromEnum(JsonRpcErrorCode.invalid_input_too_many_blocks));
     try std.testing.expectEqual(@as(i32, 4444), @intFromEnum(JsonRpcErrorCode.pruned_history_unavailable));
 
-    try std.testing.expectEqual(@as(i32, -32000), @intFromEnum(JsonRpcErrorCode.resource_not_found_legacy));
-    try std.testing.expectEqual(@as(i32, -32000), @intFromEnum(JsonRpcErrorCode.default));
-    try std.testing.expectEqual(@as(i32, -32000), @intFromEnum(JsonRpcErrorCode.reverted_simulate));
-    try std.testing.expectEqual(@as(i32, -32015), @intFromEnum(JsonRpcErrorCode.vm_error));
-    try std.testing.expectEqual(@as(i32, -38013), @intFromEnum(JsonRpcErrorCode.intrinsic_gas));
-    try std.testing.expectEqual(@as(i32, -38014), @intFromEnum(JsonRpcErrorCode.insufficient_funds));
-    try std.testing.expectEqual(@as(i32, -38020), @intFromEnum(JsonRpcErrorCode.block_number_invalid));
-    try std.testing.expectEqual(@as(i32, -38021), @intFromEnum(JsonRpcErrorCode.block_timestamp_invalid));
-    try std.testing.expectEqual(@as(i32, -38026), @intFromEnum(JsonRpcErrorCode.client_limit_exceeded_error));
-    try std.testing.expectEqual(@as(i32, -38026), @intFromEnum(JsonRpcErrorCode.client_limit_exceeded));
+    try std.testing.expectEqual(@as(i32, -32000), @intFromEnum(Legacy.resource_not_found_legacy));
+    try std.testing.expectEqual(@as(i32, -32000), @intFromEnum(Legacy.default));
+    try std.testing.expectEqual(@as(i32, -32000), @intFromEnum(Legacy.reverted_simulate));
+    try std.testing.expectEqual(@as(i32, -32015), @intFromEnum(Legacy.vm_error));
+    try std.testing.expectEqual(@as(i32, -38013), @intFromEnum(Legacy.intrinsic_gas));
+    try std.testing.expectEqual(@as(i32, -38014), @intFromEnum(Legacy.insufficient_funds));
+    try std.testing.expectEqual(@as(i32, -38020), @intFromEnum(Legacy.block_number_invalid));
+    try std.testing.expectEqual(@as(i32, -38021), @intFromEnum(Legacy.block_timestamp_invalid));
+    try std.testing.expectEqual(@as(i32, -38026), @intFromEnum(Legacy.client_limit_exceeded_error));
+    try std.testing.expectEqual(@as(i32, -38026), @intFromEnum(Legacy.client_limit_exceeded));
 }
 
 test "jsonrpc error default messages include nethermind extensions" {

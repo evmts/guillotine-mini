@@ -1,0 +1,68 @@
++ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./src/server.c
++ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./build/assembly.S
++ ar rc libblst.a assembly.o server.o
++ ranlib libblst.a
+bench-evm
++- run exe bench_evm
+   +- compile exe bench_evm ReleaseFast native 8 errors
+client/evm/bench.zig:338:9: error: use of undeclared identifier 'adapter'
+        adapter.deinit();
+        ^~~~~~~
+client/evm/bench.zig:81:16: error: no field or member function named 'deinit' in 'host_adapter.HostAdapter'
+        adapter.deinit();
+        ~~~~~~~^~~~~~~
+client/evm/host_adapter.zig:45:25: note: struct declared here
+pub const HostAdapter = struct {
+                        ^~~~~~
+referenced by:
+    main: client/evm/bench.zig:385:86
+    callMain [inlined]: /Users/williamcory/.zvm/0.15.2/lib/std/start.zig:627:37
+    callMainWithArgs [inlined]: /Users/williamcory/.zvm/0.15.2/lib/std/start.zig:587:20
+    main: /Users/williamcory/.zvm/0.15.2/lib/std/start.zig:602:28
+    1 reference(s) hidden; use '-freference-trace=5' to see all references
+client/evm/bench.zig:104:16: error: no field or member function named 'deinit' in 'host_adapter.HostAdapter'
+        adapter.deinit();
+        ~~~~~~~^~~~~~~
+client/evm/host_adapter.zig:45:25: note: struct declared here
+pub const HostAdapter = struct {
+                        ^~~~~~
+client/evm/bench.zig:126:16: error: no field or member function named 'deinit' in 'host_adapter.HostAdapter'
+        adapter.deinit();
+        ~~~~~~~^~~~~~~
+client/evm/host_adapter.zig:45:25: note: struct declared here
+pub const HostAdapter = struct {
+                        ^~~~~~
+client/evm/bench.zig:150:16: error: no field or member function named 'deinit' in 'host_adapter.HostAdapter'
+        adapter.deinit();
+        ~~~~~~~^~~~~~~
+client/evm/host_adapter.zig:45:25: note: struct declared here
+pub const HostAdapter = struct {
+                        ^~~~~~
+client/evm/bench.zig:196:16: error: no field or member function named 'deinit' in 'host_adapter.HostAdapter'
+        adapter.deinit();
+        ~~~~~~~^~~~~~~
+client/evm/host_adapter.zig:45:25: note: struct declared here
+pub const HostAdapter = struct {
+                        ^~~~~~
+client/evm/bench.zig:238:16: error: no field or member function named 'deinit' in 'host_adapter.HostAdapter'
+        adapter.deinit();
+        ~~~~~~~^~~~~~~
+client/evm/host_adapter.zig:45:25: note: struct declared here
+pub const HostAdapter = struct {
+                        ^~~~~~
+client/evm/bench.zig:315:16: error: no field or member function named 'deinit' in 'host_adapter.HostAdapter'
+        adapter.deinit();
+        ~~~~~~~^~~~~~~
+client/evm/host_adapter.zig:45:25: note: struct declared here
+pub const HostAdapter = struct {
+                        ^~~~~~
+error: the following command failed with 8 compilation errors:
+/Users/williamcory/.zvm/0.15.2/zig build-exe -OReleaseFast --dep bench_utils --dep primitives --dep evm --dep state-manager -Mroot=/Users/williamcory/guillotine-mini/client/evm/bench.zig -OReleaseFast -Mbench_utils=/Users/williamcory/guillotine-mini/client/bench_utils.zig .zig-cache/o/20fbd5be8c13882cc739285a83ccb02a/libc-kzg-4844.a .zig-cache/o/28902e9336bba7b337a253847eb7120c/libblst.a /Users/williamcory/voltaire/target/release/libcrypto_wrappers.a -OReleaseFast -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I /Users/williamcory/guillotine-mini/../voltaire/packages/voltaire-zig/lib --dep crypto --dep z_ens_normalize -Mprimitives=/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/root.zig -OReleaseFast --dep primitives --dep precompiles --dep crypto -Mevm=/Users/williamcory/guillotine-mini/src/root.zig -OReleaseFast --dep primitives --dep crypto -Mstate-manager=/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/root.zig .zig-cache/o/20fbd5be8c13882cc739285a83ccb02a/libc-kzg-4844.a .zig-cache/o/28902e9336bba7b337a253847eb7120c/libblst.a /Users/williamcory/voltaire/target/release/libcrypto_wrappers.a -OReleaseFast -I /Users/williamcory/guillotine-mini/../voltaire/packages/voltaire-zig/lib -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I /Users/williamcory/guillotine-mini/../voltaire/packages/voltaire-zig/lib --dep c_kzg --dep primitives -Mcrypto=/Users/williamcory/voltaire/packages/voltaire-zig/src/crypto/root.zig -OReleaseFast -Mz_ens_normalize=/Users/williamcory/.cache/zig/p/z_ens_normalize-0.0.0-Iv6nMI2_AgCrLtEnZZnoeP87kZtP-36iIWzj3cD3v-vd/src/root.zig .zig-cache/o/20fbd5be8c13882cc739285a83ccb02a/libc-kzg-4844.a .zig-cache/o/28902e9336bba7b337a253847eb7120c/libblst.a /Users/williamcory/voltaire/target/release/libcrypto_wrappers.a -OReleaseFast -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I /Users/williamcory/guillotine-mini/../voltaire/packages/voltaire-zig/lib --dep primitives --dep crypto -Mprecompiles=/Users/williamcory/voltaire/packages/voltaire-zig/src/evm/precompiles/root.zig .zig-cache/o/20fbd5be8c13882cc739285a83ccb02a/libc-kzg-4844.a .zig-cache/o/28902e9336bba7b337a253847eb7120c/libblst.a -OReleaseFast -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I /Users/williamcory/guillotine-mini/../voltaire/packages/voltaire-zig/lib/c-kzg-4844/src -I /Users/williamcory/guillotine-mini/../voltaire/packages/voltaire-zig/lib/c-kzg-4844/blst/bindings -Mc_kzg=/Users/williamcory/voltaire/packages/voltaire-zig/lib/c-kzg-4844/bindings/zig/root.zig .zig-cache/o/28902e9336bba7b337a253847eb7120c/libblst.a -lc --cache-dir .zig-cache --global-cache-dir /Users/williamcory/.cache/zig --name bench_evm --zig-lib-dir /Users/williamcory/.zvm/0.15.2/lib/ --listen=-
+
+Build Summary: 5/8 steps succeeded; 1 failed
+bench-evm transitive failure
++- run exe bench_evm transitive failure
+   +- compile exe bench_evm ReleaseFast native 8 errors
+
+error: the following build command failed with exit code 1:
+.zig-cache/o/5727250b48c5ecba158e832c90be2c16/build /Users/williamcory/.zvm/0.15.2/zig /Users/williamcory/.zvm/0.15.2/lib /Users/williamcory/guillotine-mini .zig-cache /Users/williamcory/.cache/zig --seed 0x65898583 -Z4d0a6dd0c83d88f2 bench-evm -Doptimize=ReleaseFast

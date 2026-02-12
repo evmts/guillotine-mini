@@ -69,7 +69,6 @@ pub fn fits_gas_limit(tx: anytype, cfg: TxPoolConfig) error{TxGasLimitExceeded}!
     const T = @TypeOf(tx);
     comptime {
         if (!(T == tx_mod.LegacyTransaction or
-            T == tx_mod.Eip2930Transaction or
             T == tx_mod.Eip1559Transaction or
             T == tx_mod.Eip4844Transaction or
             T == tx_mod.Eip7702Transaction))
@@ -310,8 +309,7 @@ pub fn fits_size_limits(
         if (!(T == tx_mod.LegacyTransaction or
             T == tx_mod.Eip1559Transaction or
             T == tx_mod.Eip4844Transaction or
-            T == tx_mod.Eip7702Transaction or
-            T == tx_mod.Eip2930Transaction))
+            T == tx_mod.Eip7702Transaction))
         {
             @compileError("Unsupported transaction type for fits_size_limits: " ++ @typeName(T));
         }
@@ -358,37 +356,6 @@ pub fn fits_size_limits(
         payload_len += rlp_len_of_uint(tx.y_parity);
         payload_len += rlp_len_of_bytes(32, null); // r (encoded as bytes in primitives)
         payload_len += rlp_len_of_bytes(32, null); // s (encoded as bytes in primitives)
-        len = 1 + rlp_len_of_list(payload_len);
-    } else if (comptime T == tx_mod.Eip2930Transaction) {
-        // Allocation-free length calculation for EIP-2930 typed transaction (0x01)
-        var payload_len: usize = 0;
-        payload_len += rlp_len_of_uint(tx.chain_id);
-        payload_len += rlp_len_of_uint(tx.nonce);
-        payload_len += rlp_len_of_uint(tx.gas_price);
-        payload_len += rlp_len_of_uint(tx.gas_limit);
-
-        // to (nullable)
-        if (tx.to) |_| {
-            payload_len += rlp_len_of_bytes(20, null);
-        } else {
-            payload_len += rlp_len_of_bytes(0, null);
-        }
-
-        payload_len += rlp_len_of_uint(tx.value);
-        const first2930: ?u8 = if (tx.data.len == 1) tx.data[0] else null;
-        payload_len += rlp_len_of_bytes(tx.data.len, first2930);
-
-        // access_list
-        payload_len += rlp_len_of_access_list(tx.access_list);
-
-        // Optional signature: y_parity, r, s
-        if (has_signature(tx.y_parity, tx.r, tx.s)) {
-            payload_len += rlp_len_of_uint(tx.y_parity);
-            payload_len += rlp_len_of_bytes(32, null);
-            payload_len += rlp_len_of_bytes(32, null);
-        }
-
-        // Typed envelope size = 1 (type) + rlp(list(payload))
         len = 1 + rlp_len_of_list(payload_len);
     } else if (comptime T == tx_mod.Eip4844Transaction) {
         // Length-only sizing for EIP-4844 to minimize allocations.
@@ -504,7 +471,6 @@ pub fn enforce_min_priority_fee_for_blobs(
     const T = @TypeOf(tx);
     comptime {
         if (!(T == tx_mod.LegacyTransaction or
-            T == tx_mod.Eip2930Transaction or
             T == tx_mod.Eip1559Transaction or
             T == tx_mod.Eip4844Transaction or
             T == tx_mod.Eip7702Transaction))
@@ -1085,171 +1051,10 @@ test "fits_size_limits — eip7702 within and over limit (signed)" {
     try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(tx, cfg_bad));
 }
 
-test "fits_size_limits — eip2930 within and over limit (with/without signature)" {
-    const rlp = primitives.Rlp;
-
-    // Case A: with recipient and signature
-    var tx_signed = tx_mod.Eip2930Transaction{
-        .chain_id = 1,
-        .nonce = 7,
-        .gas_price = 3,
-        .gas_limit = 25_000,
-        .to = Address{ .bytes = [_]u8{0x66} ++ [_]u8{0} ** 19 },
-        .value = 0,
-        .data = &[_]u8{ 0x01, 0x02, 0x03 },
-        .access_list = &[_]tx_mod.AccessListItem{},
-        .y_parity = 1,
-        .r = [_]u8{9} ** 32,
-        .s = [_]u8{7} ** 32,
-    };
-
-    const allocator = std.testing.allocator;
-    // Manually encode typed-1 payload for expected length
-    var list = std.array_list.AlignedManaged(u8, null).init(allocator);
-    defer list.deinit();
-    {
-        const enc = try rlp.encode(allocator, tx_signed.chain_id);
-        defer allocator.free(enc);
-        try list.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encode(allocator, tx_signed.nonce);
-        defer allocator.free(enc);
-        try list.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encode(allocator, tx_signed.gas_price);
-        defer allocator.free(enc);
-        try list.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encode(allocator, tx_signed.gas_limit);
-        defer allocator.free(enc);
-        try list.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encodeBytes(allocator, &@as(Address, tx_signed.to.?).bytes);
-        defer allocator.free(enc);
-        try list.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encode(allocator, tx_signed.value);
-        defer allocator.free(enc);
-        try list.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encodeBytes(allocator, tx_signed.data);
-        defer allocator.free(enc);
-        try list.appendSlice(enc);
-    }
-    {
-        const enc = try tx_mod.encodeAccessList(allocator, tx_signed.access_list);
-        defer allocator.free(enc);
-        try list.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encode(allocator, tx_signed.y_parity);
-        defer allocator.free(enc);
-        try list.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encodeBytes(allocator, &tx_signed.r);
-        defer allocator.free(enc);
-        try list.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encodeBytes(allocator, &tx_signed.s);
-        defer allocator.free(enc);
-        try list.appendSlice(enc);
-    }
-    var wrapped = std.array_list.AlignedManaged(u8, null).init(allocator);
-    defer wrapped.deinit();
-    if (list.items.len <= 55) {
-        try wrapped.append(@as(u8, @intCast(0xc0 + list.items.len)));
-    } else {
-        const len_bytes = try rlp.encodeLength(allocator, list.items.len);
-        defer allocator.free(len_bytes);
-        try wrapped.append(@as(u8, @intCast(0xf7 + len_bytes.len)));
-        try wrapped.appendSlice(len_bytes);
-    }
-    try wrapped.appendSlice(list.items);
-    const encoded_signed = try allocator.alloc(u8, 1 + wrapped.items.len);
-    defer allocator.free(encoded_signed);
-    encoded_signed[0] = 0x01;
-    @memcpy(encoded_signed[1..], wrapped.items);
-
-    var cfg = TxPoolConfig{};
-    cfg.max_tx_size = encoded_signed.len;
-    try fits_size_limits(tx_signed, cfg);
-    cfg.max_tx_size = encoded_signed.len - 1;
-    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(tx_signed, cfg));
-
-    // Case B: to = null, no signature
-    var tx_unsigned = tx_signed;
-    tx_unsigned.to = null;
-    tx_unsigned.y_parity = 0;
-    tx_unsigned.r = [_]u8{0} ** 32;
-    tx_unsigned.s = [_]u8{0} ** 32;
-
-    var list2 = std.array_list.AlignedManaged(u8, null).init(allocator);
-    defer list2.deinit();
-    {
-        const enc = try rlp.encode(allocator, tx_unsigned.chain_id);
-        defer allocator.free(enc);
-        try list2.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encode(allocator, tx_unsigned.nonce);
-        defer allocator.free(enc);
-        try list2.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encode(allocator, tx_unsigned.gas_price);
-        defer allocator.free(enc);
-        try list2.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encode(allocator, tx_unsigned.gas_limit);
-        defer allocator.free(enc);
-        try list2.appendSlice(enc);
-    }
-    // to = null → empty RLP string
-    try list2.append(0x80);
-    {
-        const enc = try rlp.encode(allocator, tx_unsigned.value);
-        defer allocator.free(enc);
-        try list2.appendSlice(enc);
-    }
-    {
-        const enc = try rlp.encodeBytes(allocator, tx_unsigned.data);
-        defer allocator.free(enc);
-        try list2.appendSlice(enc);
-    }
-    {
-        const enc = try tx_mod.encodeAccessList(allocator, tx_unsigned.access_list);
-        defer allocator.free(enc);
-        try list2.appendSlice(enc);
-    }
-    var wrapped2 = std.array_list.AlignedManaged(u8, null).init(allocator);
-    defer wrapped2.deinit();
-    if (list2.items.len <= 55) {
-        try wrapped2.append(@as(u8, @intCast(0xc0 + list2.items.len)));
-    } else {
-        const len_bytes = try rlp.encodeLength(allocator, list2.items.len);
-        defer allocator.free(len_bytes);
-        try wrapped2.append(@as(u8, @intCast(0xf7 + len_bytes.len)));
-        try wrapped2.appendSlice(len_bytes);
-    }
-    try wrapped2.appendSlice(list2.items);
-    const encoded_unsigned = try allocator.alloc(u8, 1 + wrapped2.items.len);
-    defer allocator.free(encoded_unsigned);
-    encoded_unsigned[0] = 0x01;
-    @memcpy(encoded_unsigned[1..], wrapped2.items);
-
-    cfg.max_tx_size = encoded_unsigned.len;
-    try fits_size_limits(tx_unsigned, cfg);
-    cfg.max_tx_size = encoded_unsigned.len - 1;
-    try std.testing.expectError(error.MaxTxSizeExceeded, fits_size_limits(tx_unsigned, cfg));
+test "fits_size_limits — eip2930 removed in primitives (N/A)" {
+    // EIP-2930 transaction type is not present in current Voltaire primitives.
+    // This placeholder test documents that 2930-specific size logic is N/A.
+    try std.testing.expect(true);
 }
 
 test "fits_gas_limit — passes when under/equal, errors when over (legacy)" {

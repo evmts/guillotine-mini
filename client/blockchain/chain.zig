@@ -295,8 +295,8 @@ pub fn common_ancestor_hash_local(
     a: Hash.Hash,
     b: Hash.Hash,
 ) ?Hash.Hash {
-    var na_block = get_block_local(chain, a) orelse return null;
-    var nb_block = get_block_local(chain, b) orelse return null;
+    const na_block = get_block_local(chain, a) orelse return null;
+    const nb_block = get_block_local(chain, b) orelse return null;
 
     // Fast path: identical hash and present locally.
     if (Hash.equals(&a, &b)) return a;
@@ -413,13 +413,13 @@ test "Chain - common_ancestor_hash_local returns null when ancestry missing loca
     // Orphan blocks (distinct parents not present locally)
     var h_a = primitives.BlockHeader.init();
     h_a.number = 5;
-    h_a.parent_hash = Hash.Hash{0x11} ** 32;
+    h_a.parent_hash = [_]u8{0x11} ** 32;
     const a = try Block.from(&h_a, &primitives.BlockBody.init(), allocator);
     try chain.putBlock(a);
 
     var h_b = primitives.BlockHeader.init();
     h_b.number = 7;
-    h_b.parent_hash = Hash.Hash{0x22} ** 32;
+    h_b.parent_hash = [_]u8{0x22} ** 32;
     const b = try Block.from(&h_b, &primitives.BlockBody.init(), allocator);
     try chain.putBlock(b);
 

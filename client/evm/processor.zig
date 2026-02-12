@@ -288,7 +288,8 @@ test "validate_transaction — 1559 access list intrinsic gas" {
         .s = [_]u8{0} ** 32,
     };
 
-    const intrinsic = try validate_transaction(tx, .BERLIN);
+    // EIP-1559 activates at London; Berlin must reject 1559 type.
+    const intrinsic = try validate_transaction(tx, .LONDON);
     try std.testing.expectEqual(@as(u64, expected_gas), intrinsic);
 }
 

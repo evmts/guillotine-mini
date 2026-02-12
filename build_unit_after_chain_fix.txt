@@ -1,0 +1,1 @@
++ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./src/server.c
