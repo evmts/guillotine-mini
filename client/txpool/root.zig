@@ -12,7 +12,7 @@ pub const TxPool = pool.TxPool;
 pub const TxPoolConfig = pool.TxPoolConfig;
 /// Fee market comparator (EIP-1559-aware).
 pub const compare_fee_market_priority = sorter.compare_fee_market_priority;
-/// Broadcast policy helper: base-fee threshold calculator.
+/// Broadcast policy helper: base-fee threshold calculator (parity with Nethermind's TxBroadcaster.CalculateBaseFeeThreshold).
 pub const calculate_base_fee_threshold = policy.calculate_base_fee_threshold;
 /// Broadcast policy helper: persistent broadcast quota per block.
 pub const calculate_persistent_broadcast_quota = policy.calculate_persistent_broadcast_quota;
