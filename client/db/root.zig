@@ -42,6 +42,7 @@ const memory = @import("memory.zig");
 const null_db = @import("null.zig");
 const rocksdb = @import("rocksdb.zig");
 const read_only = @import("read_only.zig");
+const provider = @import("provider.zig");
 
 // -- Public API: flat re-exports of all user-facing types -----------------
 
@@ -79,6 +80,10 @@ pub const RocksDatabase = rocksdb.RocksDatabase;
 pub const DbSettings = rocksdb.DbSettings;
 /// Read-only wrapper with optional in-memory overlay.
 pub const ReadOnlyDb = read_only.ReadOnlyDb;
+/// Database provider (DbName → Database registry).
+pub const DbProvider = provider.DbProvider;
+/// Errors for DbProvider lookups.
+pub const ProviderError = provider.ProviderError;
 
 test {
     // Ensure all sub-modules compile and their tests run.
