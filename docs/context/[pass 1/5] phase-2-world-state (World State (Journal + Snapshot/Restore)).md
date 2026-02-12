@@ -78,6 +78,9 @@ World-state sources:
 - `fixtures_general_state_tests.tgz` (archive with GeneralStateTests).
 - Blockchain state subtests: `BlockchainTests/*/bcStateTests/`.
 
+Cross-repo fixtures:
+- `execution-spec-tests/fixtures/blockchain_tests` → symlink to `ethereum-tests/BlockchainTests` (used by spec-driven tests).
+
 ## What This Enables Next
 - Define an Effect service `WorldState` (Context.Tag) exposing the host-aligned API plus `snapshot()/revert(snapshotId)` and transient storage journal.
 - Back with a small `Journal` component implementing nested begin/commit/rollback.
