@@ -635,50 +635,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     self.storage.clear_transient();
 
                     // Delete selfdestructed accounts at end of transaction (EIP-6780)
-                    var selfdestruct_it = self.selfdestructed_accounts.iterator();
-                    while (selfdestruct_it.next()) |entry| {
-                        const addr = entry.key_ptr.*;
-                        if (self.host) |h| {
-                            // Clear all account state: balance (should already be 0), code, nonce, and storage
-                            h.setBalance(addr, 0);
-                            h.setCode(addr, &[_]u8{});
-                            h.setNonce(addr, 0);
-
-                            // Clear permanent storage for self-destructed account
-                            var storage_it = self.storage.storage.iterator();
-                            while (storage_it.next()) |storage_entry| {
-                                const key = storage_entry.key_ptr.*;
-                                if (std.mem.eql(u8, &key.address, &addr.bytes)) {
-                                    h.setStorage(addr, key.slot, 0);
-                                }
-                            }
-                        } else {
-                            // Clear all account state in EVM storage
-                            // These put operations should never fail in normal circumstances since we're
-                            // using an arena allocator for transaction-scoped data. If OOM occurs during
-                            // cleanup, it indicates a critical system issue that should be handled explicitly.
-                            self.balances.put(addr, 0) catch |err| {
-                                std.debug.print("CRITICAL: Failed to clear balance for selfdestructed account {any}: {any}\n", .{ addr, err });
-                                // Continue cleanup of other accounts even if this one fails
-                            };
-                            self.code.put(addr, &[_]u8{}) catch |err| {
-                                std.debug.print("CRITICAL: Failed to clear code for selfdestructed account {any}: {any}\n", .{ addr, err });
-                            };
-                            self.nonces.put(addr, 0) catch |err| {
-                                std.debug.print("CRITICAL: Failed to clear nonce for selfdestructed account {any}: {any}\n", .{ addr, err });
-                            };
-
-                            // Clear storage
-                            var storage_it = self.storage.storage.iterator();
-                            while (storage_it.next()) |storage_entry| {
-                                const key = storage_entry.key_ptr.*;
-                                if (std.mem.eql(u8, &key.address, &addr.bytes)) {
-                                    _ = self.storage.storage.remove(key);
-                                }
-                            }
-                        }
-                    }
-                    self.selfdestructed_accounts.clearRetainingCapacity();
+                    self.cleanupSelfdestructedAccountsEndOfTx();
 
                     return CallResult{
                         .success = true,
@@ -781,52 +738,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             // Delete selfdestructed accounts at end of transaction (EIP-6780)
             // This must happen AFTER transient storage is cleared since transient storage
             // should be accessible during the transaction even after SELFDESTRUCT
-            var selfdestruct_it = self.selfdestructed_accounts.iterator();
-            while (selfdestruct_it.next()) |entry| {
-                const addr = entry.key_ptr.*;
-                if (self.host) |h| {
-                    // Clear all account state: balance (should already be 0), code, nonce, and storage
-                    h.setBalance(addr, 0);
-                    h.setCode(addr, &[_]u8{});
-                    h.setNonce(addr, 0);
-
-                    // Clear permanent storage for self-destructed account
-                    // Per Python reference: destroy_account calls destroy_storage
-                    // We need to iterate and clear all storage slots for this address
-                    var storage_it = self.storage.storage.iterator();
-                    while (storage_it.next()) |storage_entry| {
-                        const key = storage_entry.key_ptr.*;
-                        if (std.mem.eql(u8, &key.address, &addr.bytes)) {
-                            h.setStorage(addr, key.slot, 0);
-                        }
-                    }
-                } else {
-                    // Clear all account state in EVM storage
-                    // Note: In non-host mode, we use arena allocation so memory will be reclaimed
-                    // when the arena is freed. We simply remove storage entries rather than trying to update them.
-                    // Clear permanent storage for self-destructed account
-                    // Per Python reference: destroy_account calls destroy_storage
-                    var storage_it = self.storage.storage.iterator();
-                    while (storage_it.next()) |storage_entry| {
-                        const key = storage_entry.key_ptr.*;
-                        if (std.mem.eql(u8, &key.address, &addr.bytes)) {
-                            _ = self.storage.storage.fetchRemove(key);
-                        }
-                    }
-                    // Also clear from original_storage
-                    var original_storage_it = self.storage.original_storage.iterator();
-                    while (original_storage_it.next()) |storage_entry| {
-                        const key = storage_entry.key_ptr.*;
-                        if (std.mem.eql(u8, &key.address, &addr.bytes)) {
-                            _ = self.storage.original_storage.fetchRemove(key);
-                        }
-                    }
-                    // Clear account state by removing from maps
-                    _ = self.balances.fetchRemove(addr);
-                    _ = self.code.fetchRemove(addr);
-                    _ = self.nonces.fetchRemove(addr);
-                }
-            }
+            self.cleanupSelfdestructedAccountsEndOfTx();
 
             // Clear transaction-scoped sets at end of transaction
             // These must be cleared to avoid incorrectly treating accounts as created/selfdestructed
@@ -947,6 +859,51 @@ pub fn Evm(comptime config: EvmConfig) type {
             log.debug("dumpStateChanges: No injector, returning empty", .{});
             self.pending_state_changes_len = 0;
             return &.{};
+        }
+
+        /// Delete accounts marked via SELFDESTRUCT at end of transaction (EIP-6780).
+        /// Handles both host-backed and in-memory modes. Must be called only after
+        /// transient storage is cleared and logs are finalized.
+        fn cleanupSelfdestructedAccountsEndOfTx(self: *Self) void {
+            var it = self.selfdestructed_accounts.iterator();
+            while (it.next()) |entry| {
+                const addr = entry.key_ptr.*;
+                if (self.host) |h| {
+                    // Clear all account state: balance (should already be 0), code, nonce, and storage
+                    h.setBalance(addr, 0);
+                    h.setCode(addr, &[_]u8{});
+                    h.setNonce(addr, 0);
+
+                    // Clear permanent storage for self-destructed account
+                    var storage_it = self.storage.storage.iterator();
+                    while (storage_it.next()) |storage_entry| {
+                        const key = storage_entry.key_ptr.*;
+                        if (std.mem.eql(u8, &key.address, &addr.bytes)) {
+                            h.setStorage(addr, key.slot, 0);
+                        }
+                    }
+                } else {
+                    // In-memory mode: remove from local maps and clear storage/original_storage entries
+                    var storage_it = self.storage.storage.iterator();
+                    while (storage_it.next()) |storage_entry| {
+                        const key = storage_entry.key_ptr.*;
+                        if (std.mem.eql(u8, &key.address, &addr.bytes)) {
+                            _ = self.storage.storage.fetchRemove(key);
+                        }
+                    }
+                    var original_storage_it = self.storage.original_storage.iterator();
+                    while (original_storage_it.next()) |storage_entry| {
+                        const key = storage_entry.key_ptr.*;
+                        if (std.mem.eql(u8, &key.address, &addr.bytes)) {
+                            _ = self.storage.original_storage.fetchRemove(key);
+                        }
+                    }
+                    _ = self.balances.fetchRemove(addr);
+                    _ = self.code.fetchRemove(addr);
+                    _ = self.nonces.fetchRemove(addr);
+                }
+            }
+            self.selfdestructed_accounts.clearRetainingCapacity();
         }
 
         fn restore_call_revert_state(
