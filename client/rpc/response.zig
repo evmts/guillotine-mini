@@ -39,6 +39,38 @@ pub const Response = struct {
         try writer.writeAll("}}");
     }
 
+    /// Write a JSON QUANTITY (EIP-1474) from a u64 as a JSON string.
+    /// Lowercase hex, 0x-prefixed, no leading zeros (zero => "0x0").
+    pub fn writeQuantityU64(writer: anytype, value: u64) !void {
+        try writer.writeByte('"');
+        try writer.writeAll("0x");
+        if (value == 0) {
+            try writer.writeByte('0');
+            try writer.writeByte('"');
+            return;
+        }
+
+        var buf: [16]u8 = undefined; // max hex digits for u64
+        var i: usize = buf.len;
+        var v = value;
+        const hex = "0123456789abcdef";
+        while (v != 0) : (v >>= 4) {
+            i -= 1;
+            buf[i] = hex[@intCast(v & 0xF)];
+        }
+        try writer.writeAll(buf[i..]);
+        try writer.writeByte('"');
+    }
+
+    /// Convenience: full success envelope with QUANTITY(u64) result.
+    pub fn writeSuccessQuantityU64(writer: anytype, id: envelope.Id, value: u64) !void {
+        try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
+        try writeId(writer, id);
+        try writer.writeAll(",\"result\":");
+        try writeQuantityU64(writer, value);
+        try writer.writeAll("}");
+    }
+
     // ---------------------------------------------------------------------
     // Internals
     // ---------------------------------------------------------------------
@@ -139,6 +171,31 @@ test "Response.writeError: with data (number id)" {
     try Response.writeError(buf.writer(std.testing.allocator), .{ .number = "7" }, code, code.defaultMessage(), "{\"foo\":1}");
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32601,\"message\":\"Method not found\",\"data\":{\"foo\":1}}}",
+        buf.items,
+    );
+}
+
+test "Response.writeQuantityU64: encodes per EIP-1474" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    try Response.writeQuantityU64(buf.writer(std.testing.allocator), 0);
+    try std.testing.expectEqualStrings("\"0x0\"", buf.items);
+
+    buf.clearRetainingCapacity();
+    try Response.writeQuantityU64(buf.writer(std.testing.allocator), 1);
+    try std.testing.expectEqualStrings("\"0x1\"", buf.items);
+
+    buf.clearRetainingCapacity();
+    try Response.writeQuantityU64(buf.writer(std.testing.allocator), std.math.maxInt(u64));
+    try std.testing.expectEqualStrings("\"0xffffffffffffffff\"", buf.items);
+}
+
+test "Response.writeSuccessQuantityU64: full envelope" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    try Response.writeSuccessQuantityU64(buf.writer(std.testing.allocator), .{ .number = "7" }, 26);
+    try std.testing.expectEqualStrings(
+        "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":\"0x1a\"}",
         buf.items,
     );
 }
