@@ -58,7 +58,7 @@ pub fn EthApi(comptime Provider: type) type {
 
 test "EthApi.handleChainId: number id -> QUANTITY result" {
     const Provider = struct {
-        pub fn getChainId(_: *const Provider) u64 {
+        pub fn getChainId(_: *const @This()) u64 {
             return 1;
         }
     };
@@ -85,7 +85,7 @@ test "EthApi.handleChainId: number id -> QUANTITY result" {
 
 test "EthApi.handleChainId: string id preserved; QUANTITY encoding" {
     const Provider = struct {
-        pub fn getChainId(_: *const Provider) u64 {
+        pub fn getChainId(_: *const @This()) u64 {
             return 26;
         }
     };
@@ -112,7 +112,7 @@ test "EthApi.handleChainId: string id preserved; QUANTITY encoding" {
 
 test "EthApi.handleChainId: invalid envelope -> EIP-1474 error with id:null" {
     const Provider = struct {
-        pub fn getChainId(_: *const Provider) u64 {
+        pub fn getChainId(_: *const @This()) u64 {
             return 1;
         }
     };
