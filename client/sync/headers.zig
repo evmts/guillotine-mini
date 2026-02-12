@@ -48,9 +48,10 @@ pub const HeadersRequest = struct {
     }
 
     /// Skeleton-style request using explicit `stride` (step = stride = skip+1).
+    /// Returns error.InvalidStride if `stride` is zero.
     /// Caller provides `stride >= 1`; internally we store `skip = stride - 1`.
-    pub fn skeletonFrom(start: BlockNumber.BlockNumber, stride: usize, count: usize, reverse: bool) HeadersRequest {
-        std.debug.assert(stride >= 1);
+    pub fn skeletonFrom(start: BlockNumber.BlockNumber, stride: usize, count: usize, reverse: bool) error{InvalidStride}!HeadersRequest {
+        if (stride == 0) return error.InvalidStride;
         return HeadersRequest.fromNumber(start, count, stride - 1, reverse);
     }
 };
@@ -95,10 +96,14 @@ test "HeadersRequest.ascendingFrom and descendingFrom set skip=0 and direction" 
 }
 
 test "HeadersRequest.skeletonFrom stores skip=stride-1" {
-    const sk = HeadersRequest.skeletonFrom(1000, 193, 512, true);
+    const sk = try HeadersRequest.skeletonFrom(1000, 193, 512, true);
     try std.testing.expect(sk.reverse);
     try std.testing.expectEqual(@as(usize, 512), sk.limit);
     try std.testing.expectEqual(@as(usize, 192), sk.skip); // stride - 1
     try std.testing.expect(sk.origin == .number);
     try std.testing.expectEqual(@as(u64, 1000), sk.origin.number);
+}
+
+test "HeadersRequest.skeletonFrom rejects stride=0" {
+    try std.testing.expectError(error.InvalidStride, HeadersRequest.skeletonFrom(100, 0, 10, false));
 }
