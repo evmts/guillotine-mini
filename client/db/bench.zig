@@ -229,7 +229,7 @@ fn bench_delete(n: usize) !u64 {
     var timer = try std.time.Timer.start();
     for (0..n) |i| {
         generate_key(&key_buf, i);
-        db.delete(&key_buf);
+        try db.delete(&key_buf);
     }
     return timer.read();
 }
