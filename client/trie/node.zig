@@ -5,8 +5,9 @@
 
 const primitives = @import("primitives");
 
-/// 32-byte hash type used for node references and root hashes.
-pub const Hash32 = primitives.Hash.Hash;
+// NOTE: Previous versions exported `Hash32 = primitives.Hash.Hash` from here.
+// To avoid alias indirection and keep a single canonical hash type surface,
+// use `@import("primitives").Hash.Hash` directly at call sites.
 
 // Intentionally do not re-export the full Trie or node types here to avoid
 // compiling upstream internals in this phase. Root-hash functions live in
