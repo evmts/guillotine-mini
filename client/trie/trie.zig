@@ -19,6 +19,17 @@ pub inline fn secureKey(raw_key: []const u8) Hash32 {
     return Crypto.Hash.keccak256(raw_key);
 }
 
+/// Insert a value into a secure trie using a raw (unhashed) key.
+///
+/// - Matches execution-specs `secured=True` semantics: keys are first
+///   hashed with Keccak-256 (preimage resistant) before insertion.
+/// - Uses Voltaire primitives exclusively; no custom hash/key types.
+/// - Delegates to `Trie.put()` with the 32-byte hashed key.
+pub inline fn putSecure(trie: *Trie, key: []const u8, value: []const u8) !void {
+    const hashed = secureKey(key);
+    return trie.put(&hashed, value);
+}
+
 test {
     @import("std").testing.refAllDecls(@This());
 }
@@ -31,4 +42,38 @@ test "secureKey - keccak256(empty) matches spec digest" {
     const got = secureKey(&[_]u8{});
     const expected = try Hex.hexToBytesFixed(32, "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
     try testing.expectEqualSlices(u8, &expected, &got);
+}
+
+test "putSecure - basic put/get via hashed lookup" {
+    const std = @import("std");
+    const testing = std.testing;
+
+    var t = Trie.init(testing.allocator);
+    defer t.deinit();
+
+    const key = "dog";
+    const val = "puppy";
+    try putSecure(&t, key, val);
+
+    const hashed = secureKey(key);
+    const got = try t.get(&hashed);
+    try testing.expect(got != null);
+    try testing.expectEqualStrings(val, got.?);
+}
+
+test "putSecure - overwrite updates stored value" {
+    const std = @import("std");
+    const testing = std.testing;
+
+    var t = Trie.init(testing.allocator);
+    defer t.deinit();
+
+    const key = "cat";
+    try putSecure(&t, key, "meow");
+    try putSecure(&t, key, "purr");
+
+    const hashed = secureKey(key);
+    const got = try t.get(&hashed);
+    try testing.expect(got != null);
+    try testing.expectEqualStrings("purr", got.?);
 }
