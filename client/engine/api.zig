@@ -15,9 +15,7 @@ pub const ExchangeCapabilitiesParams = @FieldType(ExchangeCapabilitiesMethod, "p
 pub const ExchangeCapabilitiesResult = @FieldType(ExchangeCapabilitiesMethod, "result");
 
 /// ClientVersionV1 per execution-apis/src/engine/identification.md.
-/// Voltaire re-exports  as a module; alias the struct type.
-const Quantity = jsonrpc.types.Quantity.Quantity;
-pub const ClientVersionV1 = Quantity;
+pub const ClientVersionV1 = jsonrpc.types.Quantity;
 
 /// Parameters for `engine_getClientVersionV1` requests.
 pub const ClientVersionV1Params = struct {
@@ -461,9 +459,10 @@ test "engine api dispatches capabilities exchange" {
     // initialize default client_version_result using dummy client JSON
     {
         const alloc = std.testing.allocator;
-        const client = try make_dummy_client_version(alloc);
+        const client_const = try make_dummy_client_version(alloc);
+        var client = client_const; // allow deinit of inner ObjectMap
         defer if (client.value == .object) client.value.object.deinit();
-        dummy.client_version_result = .{ .value = &[_]ClientVersionV1{client} };
+        dummy.client_version_result = .{ .value = &[_]ClientVersionV1{client_const} };
     }
     const api = make_api(&dummy);
 
@@ -561,7 +560,7 @@ test "engine api rejects non-array consensus capabilities payload" {
     defer deinit_methods_payload(&result_payload);
 
     const params = ExchangeCapabilitiesParams{
-        .consensus_client_methods = Quantity{ .value = .{ .string = "engine_newPayloadV1" } },
+        .consensus_client_methods = jsonrpc.types.Quantity{ .value = .{ .string = "engine_newPayloadV1" } },
     };
 
     var dummy = DummyEngine{ .result = .{ .value = result_payload.value } };
@@ -580,7 +579,7 @@ test "engine api rejects non-string consensus capabilities entries" {
     try invalid_array.append(.{ .string = "engine_newPayloadV1" });
 
     const params = ExchangeCapabilitiesParams{
-        .consensus_client_methods = Quantity{ .value = .{ .array = invalid_array } },
+        .consensus_client_methods = jsonrpc.types.Quantity{ .value = .{ .array = invalid_array } },
     };
 
     var result_payload = try make_methods_payload(ResultType, allocator, &[_][]const u8{
@@ -691,10 +690,11 @@ test "engine api dispatches client version exchange" {
     const consensus_client = ClientVersionV1{ .value = .{ .object = obj } };
     const params = ClientVersionV1Params{ .consensus_client = consensus_client };
 
-    const dummy_resp = try make_dummy_client_version(alloc);
+    const dummy_resp_const = try make_dummy_client_version(alloc);
+    var dummy_resp = dummy_resp_const;
     defer if (dummy_resp.value == .object) dummy_resp.value.object.deinit();
-    const result_value = ClientVersionV1Result{ .value = &[_]ClientVersionV1{dummy_resp} };
-    const exchange_result = ExchangeCapabilitiesResult{ .value = Quantity{ .value = .{ .null = {} } } };
+    const result_value = ClientVersionV1Result{ .value = &[_]ClientVersionV1{dummy_resp_const} };
+    const exchange_result = ExchangeCapabilitiesResult{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } };
 
     var dummy = DummyEngine{ .result = exchange_result, .client_version_result = result_value };
     const api = make_api(&dummy);
@@ -728,7 +728,7 @@ test "engine api dispatches exchangeTransitionConfigurationV1" {
     defer obj.deinit();
 
     const params = ExchangeTransitionConfigurationV1Params{
-        .consensus_client_configuration = Quantity{ .value = .{ .object = obj } },
+        .consensus_client_configuration = jsonrpc.types.Quantity{ .value = .{ .object = obj } },
     };
     var ret_obj = try make_transition_config_object(
         allocator,
@@ -738,10 +738,10 @@ test "engine api dispatches exchangeTransitionConfigurationV1" {
     );
     defer ret_obj.deinit();
     const result_value = ExchangeTransitionConfigurationV1Result{
-        .value = Quantity{ .value = .{ .object = ret_obj } },
+        .value = jsonrpc.types.Quantity{ .value = .{ .object = ret_obj } },
     };
 
-    const exchange_result = ExchangeCapabilitiesResult{ .value = Quantity{ .value = .{ .null = {} } } };
+    const exchange_result = ExchangeCapabilitiesResult{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } };
     var dummy = DummyEngine{ .result = exchange_result, .transition_result = result_value };
     const api = make_api(&dummy);
 
@@ -759,10 +759,10 @@ test "engine api rejects invalid transition config params" {
     defer obj.deinit();
 
     const params = ExchangeTransitionConfigurationV1Params{
-        .consensus_client_configuration = Quantity{ .value = .{ .object = obj } },
+        .consensus_client_configuration = jsonrpc.types.Quantity{ .value = .{ .object = obj } },
     };
 
-    const exchange_result = ExchangeCapabilitiesResult{ .value = Quantity{ .value = .{ .null = {} } } };
+    const exchange_result = ExchangeCapabilitiesResult{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } };
     var dummy = DummyEngine{ .result = exchange_result };
     const api = make_api(&dummy);
 
@@ -780,7 +780,7 @@ test "engine api rejects invalid transition config response" {
     );
     defer good_obj.deinit();
     const params = ExchangeTransitionConfigurationV1Params{
-        .consensus_client_configuration = Quantity{ .value = .{ .object = good_obj } },
+        .consensus_client_configuration = jsonrpc.types.Quantity{ .value = .{ .object = good_obj } },
     };
 
     // Invalid response: terminalBlockNumber not a string hex
@@ -790,10 +790,10 @@ test "engine api rejects invalid transition config response" {
     try bad_obj.put("terminalBlockNumber", .{ .float = 3.14 });
     defer bad_obj.deinit();
     const bad_result = ExchangeTransitionConfigurationV1Result{
-        .value = Quantity{ .value = .{ .object = bad_obj } },
+        .value = jsonrpc.types.Quantity{ .value = .{ .object = bad_obj } },
     };
 
-    const exchange_result = ExchangeCapabilitiesResult{ .value = Quantity{ .value = .{ .null = {} } } };
+    const exchange_result = ExchangeCapabilitiesResult{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } };
     var dummy = DummyEngine{ .result = exchange_result, .transition_result = bad_result };
     const api = make_api(&dummy);
 
@@ -830,8 +830,8 @@ test "engine api generic dispatcher routes exchangeCapabilities" {
 test "engine api generic dispatcher rejects unknown method" {
     const GetPayloadV1 = @FieldType(jsonrpc.engine.EngineMethod, "engine_getPayloadV1");
     const GetPayloadV1Params = @FieldType(GetPayloadV1, "params");
-    const params = GetPayloadV1Params{ .payload_id = Quantity{ .value = .{ .string = "0x01" } } };
-    const exchange_result = ExchangeCapabilitiesResult{ .value = Quantity{ .value = .{ .null = {} } } };
+    const params = GetPayloadV1Params{ .payload_id = jsonrpc.types.Quantity{ .value = .{ .string = "0x01" } } };
+    const exchange_result = ExchangeCapabilitiesResult{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } };
 
     var dummy = DummyEngine{ .result = exchange_result };
     const api = make_api(&dummy);
@@ -850,7 +850,7 @@ test "engine api rejects invalid client version params" {
     const consensus_client = ClientVersionV1{ .value = .{ .object = obj } };
     const bad_params = ClientVersionV1Params{ .consensus_client = consensus_client };
     const exchange_result = ExchangeCapabilitiesResult{
-        .value = Quantity{ .value = .{ .null = {} } },
+        .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } },
     };
 
     var dummy = DummyEngine{ .result = exchange_result };
@@ -871,7 +871,7 @@ test "engine api rejects client version params with invalid commit length" {
     const consensus_client = ClientVersionV1{ .value = .{ .object = obj } };
     const bad_params = ClientVersionV1Params{ .consensus_client = consensus_client };
     const exchange_result = ExchangeCapabilitiesResult{
-        .value = Quantity{ .value = .{ .null = {} } },
+        .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } },
     };
 
     var dummy = DummyEngine{ .result = exchange_result };
@@ -883,9 +883,10 @@ test "engine api rejects client version params with invalid commit length" {
 
 test "engine api rejects client version response with invalid commit format" {
     const alloc = std.testing.allocator;
-    const dummy_client_version = try make_dummy_client_version(alloc);
+    const dummy_client_version_const = try make_dummy_client_version(alloc);
+    var dummy_client_version = dummy_client_version_const;
     defer if (dummy_client_version.value == .object) dummy_client_version.value.object.deinit();
-    const params = ClientVersionV1Params{ .consensus_client = dummy_client_version };
+    const params = ClientVersionV1Params{ .consensus_client = dummy_client_version_const };
     var bad = std.json.ObjectMap.init(alloc);
     defer bad.deinit();
     try bad.put("code", .{ .string = "LS" });
@@ -895,7 +896,7 @@ test "engine api rejects client version response with invalid commit format" {
     const bad_cv = ClientVersionV1{ .value = .{ .object = bad } };
     const invalid_result = ClientVersionV1Result{ .value = &[_]ClientVersionV1{bad_cv} };
     const exchange_result = ExchangeCapabilitiesResult{
-        .value = Quantity{ .value = .{ .null = {} } },
+        .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } },
     };
 
     var dummy = DummyEngine{
@@ -910,12 +911,13 @@ test "engine api rejects client version response with invalid commit format" {
 
 test "engine api rejects invalid client version response" {
     const alloc = std.testing.allocator;
-    const dummy_client_version = try make_dummy_client_version(alloc);
+    const dummy_client_version_const = try make_dummy_client_version(alloc);
+    var dummy_client_version = dummy_client_version_const;
     defer if (dummy_client_version.value == .object) dummy_client_version.value.object.deinit();
-    const params = ClientVersionV1Params{ .consensus_client = dummy_client_version };
+    const params = ClientVersionV1Params{ .consensus_client = dummy_client_version_const };
     const invalid_result = ClientVersionV1Result{ .value = &[_]ClientVersionV1{} };
     const exchange_result = ExchangeCapabilitiesResult{
-        .value = Quantity{ .value = .{ .null = {} } },
+        .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } },
     };
 
     var dummy = DummyEngine{
