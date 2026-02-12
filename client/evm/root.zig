@@ -60,6 +60,10 @@ pub const init_code_cost = intrinsic_gas.init_code_cost;
 /// Validate a transaction and return its intrinsic gas.
 pub const validate_transaction = processor.validate_transaction;
 
+/// Calculate the effective gas price for a transaction (London+ EIP-1559 rules).
+/// Re-exported for a stable public API surface under `client_evm`.
+pub const calculate_effective_gas_price = processor.calculate_effective_gas_price;
+
 // -- Gas constants re-exports ----------------------------------------------
 
 /// Base cost of any transaction.
