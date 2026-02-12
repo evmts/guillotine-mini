@@ -52,6 +52,7 @@ pub fn EthApi(comptime Provider: type) type {
             const id_res = envelope.extractRequestId(request_bytes);
             switch (id_res) {
                 .id => |id| {
+                    if (id == .null) return;
                     const chain_id: u64 = self.provider.getChainId();
                     try Response.writeSuccessQuantityU64(writer, id, chain_id);
                 },
