@@ -139,11 +139,15 @@ export fn evm_set_execution_context(
 /// Set blockchain context
 export fn evm_set_blockchain_context(
     handle: ?*EvmHandle,
-    chain_id: u64,
+    chain_id_bytes: [*]const u8, // 32 bytes (u256)
     block_number: u64,
     block_timestamp: u64,
-    block_coinbase_bytes: [*]const u8,
+    block_difficulty_bytes: [*]const u8, // 32 bytes (u256)
+    block_prevrandao_bytes: [*]const u8, // 32 bytes (u256)
+    block_coinbase_bytes: [*]const u8, // 20 bytes
     block_gas_limit: u64,
+    block_base_fee_bytes: [*]const u8, // 32 bytes (u256)
+    blob_base_fee_bytes: [*]const u8, // 32 bytes (u256)
 ) void {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
@@ -151,16 +155,32 @@ export fn evm_set_blockchain_context(
         var block_coinbase: Address = undefined;
         @memcpy(&block_coinbase.bytes, block_coinbase_bytes[0..20]);
 
+        // Convert bytes to u256 (big-endian)
+        var chain_id: u256 = 0;
+        var block_difficulty: u256 = 0;
+        var block_prevrandao: u256 = 0;
+        var block_base_fee: u256 = 0;
+        var blob_base_fee: u256 = 0;
+
+        var i: usize = 0;
+        while (i < 32) : (i += 1) {
+            chain_id = (chain_id << 8) | chain_id_bytes[i];
+            block_difficulty = (block_difficulty << 8) | block_difficulty_bytes[i];
+            block_prevrandao = (block_prevrandao << 8) | block_prevrandao_bytes[i];
+            block_base_fee = (block_base_fee << 8) | block_base_fee_bytes[i];
+            blob_base_fee = (blob_base_fee << 8) | blob_base_fee_bytes[i];
+        }
+
         ctx.evm.block_context = .{
             .chain_id = chain_id,
             .block_number = block_number,
             .block_timestamp = block_timestamp,
-            .block_difficulty = 0,
-            .block_prevrandao = 0,
+            .block_difficulty = block_difficulty,
+            .block_prevrandao = block_prevrandao,
             .block_coinbase = block_coinbase,
             .block_gas_limit = block_gas_limit,
-            .block_base_fee = 0,
-            .blob_base_fee = 0,
+            .block_base_fee = block_base_fee,
+            .blob_base_fee = blob_base_fee,
         };
     }
 }
@@ -272,7 +292,7 @@ export fn evm_set_storage(
             value = (value << 8) | value_bytes[i];
         }
 
-        const key = StorageSlotKey{ .address = address, .slot = slot };
+        const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
         ctx.evm.storage.put(key, value) catch return false;
         return true;
     }
@@ -299,7 +319,7 @@ export fn evm_get_storage(
             slot = (slot << 8) | slot_bytes[i];
         }
 
-        const key = StorageSlotKey{ .address = address, .slot = slot };
+        const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
         const value = ctx.evm.storage.get(key) orelse 0;
 
         // Convert u256 to bytes (big-endian)
