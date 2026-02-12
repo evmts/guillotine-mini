@@ -5,7 +5,6 @@
 /// - Otherwise, if any fast/snap phases are still active, report syncing
 /// - Else, report not syncing
 const std = @import("std");
-const primitives = @import("primitives");
 const SyncStatusMod = @import("primitives").SyncStatus;
 const SyncStatus = SyncStatusMod.SyncStatus;
 const mode = @import("mode.zig");
@@ -110,4 +109,11 @@ test "default_to_sync_status: near head + waiting => not syncing" {
 test "default_to_sync_status: near head but fast phases => syncing" {
     const s = default_to_sync_status(mode.SyncMode.fast_bodies, 1000, 1005);
     try std.testing.expect(s.isSyncing());
+}
+
+test "to_sync_status: unknown highest (0) reports syncing even at head" {
+    const s0 = to_sync_status(mode.SyncMode.waiting_for_block, 0, 0, 8);
+    try std.testing.expect(s0.isSyncing());
+    const s1 = to_sync_status(mode.SyncMode.waiting_for_block, 1000, 0, 8);
+    try std.testing.expect(s1.isSyncing());
 }
