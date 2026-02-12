@@ -1,90 +1,90 @@
 # [pass 1/5] phase-0-db (DB Abstraction Layer) — Context
 
-This document aggregates references and paths to guide the implementation of the DB Abstraction Layer for the Effect.ts Ethereum execution client. It mirrors Nethermind’s architecture while remaining idiomatic to Effect.ts and aligned with guillotine-mini and Voltaire modules.
+This document gathers the essential references to implement Phase 0 (DB Abstraction Layer) of the Guillotine client. It collates goals, spec touchpoints, architectural references (Nethermind), Voltaire primitives to use, current Zig host interface notes, and test fixture directories.
 
-## Phase Goals (from `prd/GUILLOTINE_CLIENT_PLAN.md`)
+## Goals (from prd/GUILLOTINE_CLIENT_PLAN.md)
+- Phase: `phase-0-db`
 - Goal: Create a database abstraction layer for persistent storage.
-- Key components (Zig-era plan, to be re-expressed in Effect.ts):
-  - `client/db/adapter.zig` — generic DB interface
-  - `client/db/rocksdb.zig` — RocksDB backend
-  - `client/db/memory.zig` — in-memory backend for tests
-- References:
-  - Nethermind: `nethermind/src/Nethermind/Nethermind.Db/`
-  - Voltaire (check for existing primitives): `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
-- Tests: N/A for external fixtures in this phase — focus on unit tests of the abstraction.
+- Key components to introduce:
+  - `client/db/adapter.zig` — generic DB interface (traits/vtable at comptime)
+  - `client/db/rocksdb.zig` — RocksDB backend (production)
+  - `client/db/memory.zig` — in-memory backend (testing)
+- References: `nethermind/src/Nethermind/Nethermind.Db/`
+- Tests: Unit tests only for this phase (no ethereum-tests dependency yet)
 
-## Relevant Specs (from `prd/ETHEREUM_SPECS_REFERENCE.md`)
-- Specs: N/A for Phase 0 (internal abstraction). No direct Yellow Paper or execution-specs linkage.
-- Architecture reference only: Nethermind Db module.
+## Relevant Specs (from prd/ETHEREUM_SPECS_REFERENCE.md)
+- Specs: N/A — internal abstraction (no normative EL spec for DB internals)
+- Architectural Reference: Nethermind DB package
 
-## Nethermind Reference — key files in `nethermind/src/Nethermind/Nethermind.Db/`
-Focus on interfaces and providers to mirror boundaries:
-- Interfaces: `IDb.cs`, `IColumnsDb.cs`, `IFullDb.cs`, `IReadOnlyDb.cs`, `ITunableDb.cs`, `IMergeOperator.cs`
-- Provider pattern: `IDbProvider.cs`, `IReadOnlyDbProvider.cs`, `DbProvider.cs`, `DbProviderExtensions.cs`
-- Implementations/backends:
-  - In-memory: `MemDb.cs`, `MemColumnsDb.cs`, `MemDbFactory.cs`, `InMemoryWriteBatch.cs`, `InMemoryColumnBatch.cs`
-  - Null/No-op: `NullDb.cs`, `NullRocksDbFactory.cs`
-  - RocksDB-related: `RocksDbSettings.cs`, `CompressingDb.cs`, `RocksDbMergeEnumerator.cs`
-- Naming and metadata: `DbNames.cs`, `MetadataDbKeys.cs`
-- Pruning and maintenance: `PruningConfig.cs`, `PruningMode.cs`, `FullPruning/`, `FullPruningCompletionBehavior.cs`, `FullPruningTrigger.cs`
-- Observability: `Metrics.cs`, `Blooms/`, `ReceiptsColumns.cs`, `BlobTxsColumns.cs`
+## Nethermind reference (nethermind/src/Nethermind/Nethermind.Db/)
+Focus on interface boundaries and providers; defer blooms/pruning for later iterations.
+- Core interfaces/types:
+  - `IDb.cs`, `IReadOnlyDb.cs`, `IColumnsDb.cs`, `IFullDb.cs`, `ITunableDb.cs`
+  - `IDbProvider.cs`, `IReadOnlyDbProvider.cs`, `DbProvider.cs`, `DbProviderExtensions.cs`
+  - `IDbFactory.cs`, `MemDbFactory.cs`, `NullRocksDbFactory.cs`
+- Implementations/utilities:
+  - `MemDb.cs`, `MemColumnsDb.cs`, `InMemoryWriteBatch.cs`, `InMemoryColumnBatch.cs`, `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs`, `ReadOnlyDbProvider.cs`
+  - `CompressingDb.cs`, `RocksDbMergeEnumerator.cs`, `RocksDbSettings.cs`
+  - `DbNames.cs`, `MetadataDbKeys.cs`, `ReceiptsColumns.cs`, `Metrics.cs`, `PruningConfig.cs`, `PruningMode.cs`
+- Subpackages (defer):
+  - `Blooms/` (bloom storage infra)
+  - `FullPruning/` (`FullPruningDb.cs`, `FullPruningInnerDbFactory.cs`, etc.)
 
-Guidance for Effect.ts:
-- Define a minimal, composable service interface (Context.Tag) for a KV store and a columns/namespace abstraction.
-- Provide layers for `MemoryDb` and a placeholder `RocksDb` (wiring to real storage arrives later).
-- Expose read-only and read-write variants via separate services or tags to mirror `IReadOnlyDb` vs `IFullDb`.
+Implications for Zig:
+- Provide a small, composable `Db` interface with column families and batched writes.
+- Provide `DbProvider` abstraction to resolve named column groups.
+- Backends: in-memory and RocksDB. Keep merge-operator hooks as extension points.
 
-## Voltaire Zig — modules to reference (storage semantics)
-Path: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
-- `blockchain/BlockStore.zig` — Local block storage and canonical chain tracking
-- `blockchain/Blockchain.zig` — Orchestrator referencing local storage concepts
-- `blockchain/root.zig` — Module surface for blockchain storage
-- `state-manager/` — State access patterns; journaling/caching semantics
-- No explicit DB drivers found; treat these as storage semantics references, not direct backends.
+## Voltaire primitives to use (NEVER create custom types)
+- Identifiers/keys/values:
+  - `primitives.Address.Address` — account addressing
+  - `primitives.Hash.Hash` — content/keys (e.g., block hashes, code hash)
+  - `primitives.Bytes.Bytes` — raw value buffers where appropriate
+  - `primitives.Rlp.Rlp` — canonical encoding for persisted structures
+  - `primitives.Uint.Uint` / builtin `u256` — numeric fields; prefer Voltaire wrappers when branded semantics help
+  - `primitives.State.StorageKey`, `primitives.StateRoot` — state-related keys/roots
+  - Constants: `primitives.EMPTY_TRIE_ROOT`, `primitives.EMPTY_CODE_HASH`
+- Utilities:
+  - `primitives.Hex` for hex I/O
+  - `primitives.crypto` for `keccak256` (key derivations where needed)
 
-Recommended TS-facing API inspirations:
-- "column" partitioning with typed codecs per logical dataset (headers, bodies, receipts, state trie nodes, etc.)
-- Batching writes and atomic commit hooks (Effect.scoped with `Effect.acquireRelease` for write batches)
+Notes:
+- Keys/column names should be compile-time constants; avoid heap allocs on hot paths.
+- All serialization goes through Voltaire RLP/Hex; no ad-hoc encoders.
 
-## guillotine-mini EVM host — `src/host.zig`
-- Minimal HostInterface with balance, code, storage, nonce getters/setters via VTable.
-- Not used for nested calls; EVM handles inner calls directly.
-- While Phase 0 is DB-only, these call shapes inform future state access patterns that the DB should eventually support efficiently.
+## Existing Zig EVM host surface (src/host.zig)
+- File: `src/host.zig`
+- Pattern: vtable-based host with `ptr: *anyopaque` + explicit `VTable` — matches comptime DI style used in EVM.
+- Methods exposed (external state only; nested calls are internal to EVM):
+  - `getBalance(Address) -> u256`, `setBalance(Address, u256)`
+  - `getCode(Address) -> []const u8`, `setCode(Address, []const u8)`
+  - `getStorage(Address, slot: u256) -> u256`, `setStorage(Address, slot: u256, value: u256)`
+  - `getNonce(Address) -> u64`, `setNonce(Address, u64)`
+- Implication: DB layer must be capable of backing a future `WorldState` that implements this interface without re-typing primitives.
 
-Signatures (selected):
-- `getBalance(Address) -> u256`, `setBalance(Address, u256)`
-- `getCode(Address) -> []const u8`, `setCode(Address, []const u8)`
-- `getStorage(Address, u256) -> u256`, `setStorage(Address, u256, u256)`
-- `getNonce(Address) -> u64`, `setNonce(Address, u64)`
+## ethereum-tests directories (for later phases)
+Top-level of interest:
+- `ethereum-tests/TrieTests/` — Phase 1
+- `ethereum-tests/RLPTests/` (incl. `RandomRLPTests/`) — helpful for encoding correctness
+- `ethereum-tests/BlockchainTests/{ValidBlocks,InvalidBlocks}` — Phase 4
+- `ethereum-tests/TransactionTests/tt*` — Phase 3/5
 
-## ethereum-tests — fixtures inventory (not used in Phase 0)
-Path: `ethereum-tests/`
-- Present: `TrieTests/`, `BlockchainTests/`, `TransactionTests/`, `DifficultyTests/`, `EOFTests/`, etc.
-- Archives: `fixtures_blockchain_tests.tgz`, `fixtures_general_state_tests.tgz`
-- Absent: `GeneralStateTests/` directory (use archives or execution-spec-tests when needed in later phases)
+Full list snapshot captured via `find` for quick lookup:
+- Root: `ethereum-tests/`
+- Selected subdirs: `ABITests/`, `BasicTests/`, `BlockchainTests/`, `DifficultyTests/`, `EOFTests/`, `GenesisTests/`, `JSONSchema/`, `KeyStoreTests/`, `LegacyTests/`, `PoWTests/`, `RLPTests/`, `TransactionTests/`, `TrieTests/`, `docs/`, `src/`
 
-## Effect.ts Implementation Notes (Phase 0)
-- Service boundaries:
-  - `Db` (read-write KV with column/namespace support)
-  - `ReadOnlyDb` (subset of `Db`)
-  - `DbProvider` (factory + lifecycle via Layer)
-- Effect idioms:
-  - Use `Context.Tag` for service tokens; `Layer.succeed/effect/scoped` for DI
-  - Define domain errors with `Data.TaggedError` (e.g., `DbOpenError`, `DbNotFound`, `DbCorruption`)
-  - Prefer `Effect.gen` over long pipe chains
-  - Manage resources with `Effect.acquireRelease` (open/close DB, managed write batches)
-- Primitives:
-  - ALWAYS use `voltaire-effect/primitives` (Address, Hash, Hex, etc.) at interfaces that touch Ethereum data
-  - Codec boundaries should convert to binary keys/values internally; avoid ad-hoc types
-- Testing:
-  - Every public function must have `@effect/vitest` tests with `it.effect()`
-  - For Phase 0, unit tests only (no external fixtures)
+## Implementation guidance (phase-0-db)
+- Mirror Nethermind structure: `Db`, `ColumnsDb`, `DbProvider`, `ReadOnlyDb`, `MemDb`, `RocksDb`.
+- Keep interfaces minimal; expose batches and snapshots as separate tiny units.
+- Zero silent error handling: every fallible op returns `!Error` and is handled.
+- Performance: avoid allocations in hot paths; reuse buffers; small structs.
+- Tests: Public functions must have `test` blocks; mock the DB via in-memory backend.
+- Security: no logging of secrets; validate lengths/types on every boundary.
 
-## Concrete Paths Snapshot
+## Paths referenced in this context
 - Plan: `prd/GUILLOTINE_CLIENT_PLAN.md`
-- Specs index: `prd/ETHEREUM_SPECS_REFERENCE.md` (Phase 0: N/A)
+- Specs map: `prd/ETHEREUM_SPECS_REFERENCE.md`
 - Nethermind DB: `nethermind/src/Nethermind/Nethermind.Db/`
-- Voltaire Zig root: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
-- Host interface: `src/host.zig`
-- ethereum-tests root: `ethereum-tests/`
+- Voltaire primitives root: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
+- guillotine-mini host: `src/host.zig`
 
