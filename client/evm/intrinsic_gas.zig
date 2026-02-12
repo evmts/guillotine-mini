@@ -69,7 +69,6 @@ pub const MAX_INIT_CODE_SIZE: u64 = GasConstants.MaxInitcodeSize;
 pub fn assert_supported_tx_type(comptime Tx: type, comptime context: []const u8) void {
     comptime {
         if (Tx != tx_mod.LegacyTransaction and
-            Tx != tx_mod.Eip2930Transaction and
             Tx != tx_mod.Eip1559Transaction and
             Tx != tx_mod.Eip4844Transaction and
             Tx != tx_mod.Eip7702Transaction)
@@ -92,22 +91,13 @@ pub fn assert_supported_tx_type(comptime Tx: type, comptime context: []const u8)
 /// `execution-specs/src/ethereum/forks/cancun/transactions.py`.
 pub fn calculate_intrinsic_gas(tx: anytype, hardfork: Hardfork) u64 {
     const Tx = @TypeOf(tx);
-    comptime {
-        if (Tx != tx_mod.LegacyTransaction and
-            Tx != tx_mod.Eip2930Transaction and
-            Tx != tx_mod.Eip1559Transaction and
-            Tx != tx_mod.Eip4844Transaction and
-            Tx != tx_mod.Eip7702Transaction)
-        {
-            @compileError("Unsupported transaction type for calculate_intrinsic_gas");
-        }
-    }
+    comptime assert_supported_tx_type(Tx, "calculate_intrinsic_gas");
 
     const is_create = if (comptime Tx == tx_mod.Eip4844Transaction) false else tx.to == null;
 
     var access_list_address_count: u64 = 0;
     var access_list_storage_key_count: u64 = 0;
-    if (comptime (Tx == tx_mod.Eip2930Transaction or Tx == tx_mod.Eip1559Transaction or Tx == tx_mod.Eip4844Transaction or Tx == tx_mod.Eip7702Transaction)) {
+    if (comptime (Tx == tx_mod.Eip1559Transaction or Tx == tx_mod.Eip4844Transaction or Tx == tx_mod.Eip7702Transaction)) {
         access_list_address_count = @intCast(tx.access_list.len);
         for (tx.access_list) |entry| {
             access_list_storage_key_count += @intCast(entry.storage_keys.len);
@@ -230,11 +220,12 @@ fn legacy_tx(data: []const u8, to: ?Address) tx_mod.LegacyTransaction {
     };
 }
 
-fn eip2930_tx(data: []const u8, to: ?Address, access_list_items: []const AccessListItem) tx_mod.Eip2930Transaction {
+fn eip1559_al_tx(data: []const u8, to: ?Address, access_list_items: []const AccessListItem) tx_mod.Eip1559Transaction {
     return .{
         .chain_id = 1,
         .nonce = 0,
-        .gas_price = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
         .gas_limit = 0,
         .to = to,
         .value = 0,
@@ -301,7 +292,7 @@ test "intrinsic gas — contract creation with non-word-aligned init code" {
     try std.testing.expectEqual(@as(u64, 53_532), gas);
 }
 
-test "intrinsic gas — with access list" {
+test "intrinsic gas — with access list (1559)" {
     const key1 = [_]u8{0x01} ** 32;
     const key2 = [_]u8{0x02} ** 32;
     const key3 = [_]u8{0x03} ** 32;
@@ -311,13 +302,13 @@ test "intrinsic gas — with access list" {
         .{ .address = make_address(0x10), .storage_keys = &keys12 },
         .{ .address = make_address(0x11), .storage_keys = &keys3 },
     };
-    const tx = eip2930_tx(&.{}, make_address(0x12), &list);
-    const gas = calculate_intrinsic_gas(tx, .BERLIN);
+    const tx = eip1559_al_tx(&.{}, make_address(0x12), &list);
+    const gas = calculate_intrinsic_gas(tx, .LONDON);
     // 21000 + 2*2400 + 3*1900 = 21000 + 4800 + 5700 = 31500
     try std.testing.expectEqual(@as(u64, 31_500), gas);
 }
 
-test "intrinsic gas — full transaction (create + data + access list, Cancun)" {
+test "intrinsic gas — full tx (create + data + access list, Cancun)" {
     const init_code = [_]u8{0x60} ** 32; // 32 bytes = 1 word
     const key1 = [_]u8{0xAA} ** 32;
     const key2 = [_]u8{0xBB} ** 32;
@@ -325,7 +316,7 @@ test "intrinsic gas — full transaction (create + data + access list, Cancun)" 
     const list = [_]AccessListItem{
         .{ .address = make_address(0x13), .storage_keys = &keys },
     };
-    const tx = eip2930_tx(&init_code, null, &list);
+    const tx = eip1559_al_tx(&init_code, null, &list);
     const gas = calculate_intrinsic_gas(tx, .CANCUN);
     // 21000 + 32*16 + 32000 + 1*2 + 1*2400 + 2*1900
     // = 21000 + 512 + 32000 + 2 + 2400 + 3800 = 59714

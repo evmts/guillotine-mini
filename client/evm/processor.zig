@@ -24,6 +24,25 @@ inline fn to_bytes_be(x: u256) [32]u8 {
     return out;
 }
 
+/// Convert base/max/tip to EffectiveGasPrice.U256 and compute the 1559-style
+/// effective gas price. Shared by both pricing functions to avoid duplication.
+inline fn calc_1559_effective(base_fee_per_gas: u256, max_fee_per_gas: u256, max_priority_fee_per_gas: u256) EffectiveGasPrice {
+    var base_bytes = to_bytes_be(base_fee_per_gas);
+    var max_bytes = to_bytes_be(max_fee_per_gas);
+    var tip_bytes = to_bytes_be(max_priority_fee_per_gas);
+    const U = EffectiveGasPrice.U256;
+    const base_u = U.from_be_bytes(base_bytes[0..]);
+    const max_u = U.from_be_bytes(max_bytes[0..]);
+    const tip_u = U.from_be_bytes(tip_bytes[0..]);
+
+    const allowed_opt = max_u.checked_sub(base_u);
+    const allowed = allowed_opt orelse U.ZERO;
+    const eff_tip = if (tip_u.lt(allowed)) tip_u else allowed;
+    var final = base_u.wrapping_add(eff_tip);
+    if (final.gt(max_u)) final = max_u;
+    return EffectiveGasPrice.fromU256(final);
+}
+
 // Reuse the single source of truth defined in intrinsic_gas.zig
 const assert_supported_tx_type = intrinsic_gas.assert_supported_tx_type;
 
@@ -41,7 +60,6 @@ pub fn validate_transaction(
     comptime assert_supported_tx_type(Tx, "validate_transaction");
 
     const required_fork: ?Hardfork = comptime blk: {
-        if (Tx == tx_mod.Eip2930Transaction) break :blk .BERLIN;
         if (Tx == tx_mod.Eip1559Transaction) break :blk .LONDON;
         if (Tx == tx_mod.Eip4844Transaction) break :blk .CANCUN;
         if (Tx == tx_mod.Eip7702Transaction) break :blk .PRAGUE;
@@ -79,18 +97,15 @@ pub fn calculate_effective_gas_price(
     const Tx = @TypeOf(tx);
     comptime assert_supported_tx_type(Tx, "calculate_effective_gas_price");
 
-    if (comptime (Tx == tx_mod.LegacyTransaction or Tx == tx_mod.Eip2930Transaction)) {
+    if (comptime (Tx == tx_mod.LegacyTransaction)) {
         if (tx.gas_price < base_fee_per_gas) return error.GasPriceBelowBaseFee;
-        return EffectiveGasPrice.fromBytes(to_bytes_be(tx.gas_price));
+        return EffectiveGasPrice.fromU256(EffectiveGasPrice.U256.from_be_bytes(to_bytes_be(tx.gas_price)[0..]));
     }
 
     if (tx.max_fee_per_gas < tx.max_priority_fee_per_gas) return error.PriorityFeeGreaterThanMaxFee;
     if (tx.max_fee_per_gas < base_fee_per_gas) return error.InsufficientMaxFeePerGas;
 
-    const base_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(base_fee_per_gas));
-    const max_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(tx.max_fee_per_gas));
-    const tip_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(tx.max_priority_fee_per_gas));
-    return EffectiveGasPrice.calculate(base_u, max_u, tip_u).effective;
+    return calc_1559_effective(base_fee_per_gas, tx.max_fee_per_gas, tx.max_priority_fee_per_gas);
 }
 
 /// Hardfork-aware variant: applies pre-/post-London rules explicitly.
@@ -106,25 +121,22 @@ pub fn calculate_effective_gas_price_hardfork(
     comptime assert_supported_tx_type(Tx, "calculate_effective_gas_price_hardfork");
 
     if (hardfork.isBefore(.LONDON)) {
-        if (comptime (Tx == tx_mod.LegacyTransaction or Tx == tx_mod.Eip2930Transaction)) {
-            return EffectiveGasPrice.fromBytes(to_bytes_be(tx.gas_price));
+        if (comptime (Tx == tx_mod.LegacyTransaction)) {
+            return EffectiveGasPrice.fromU256(EffectiveGasPrice.U256.from_be_bytes(to_bytes_be(tx.gas_price)[0..]));
         }
         return error.UnsupportedTransactionType;
     }
 
     // London+
-    if (comptime (Tx == tx_mod.LegacyTransaction or Tx == tx_mod.Eip2930Transaction)) {
+    if (comptime (Tx == tx_mod.LegacyTransaction)) {
         if (tx.gas_price < base_fee_per_gas) return error.GasPriceBelowBaseFee;
-        return EffectiveGasPrice.fromBytes(to_bytes_be(tx.gas_price));
+        return EffectiveGasPrice.fromU256(EffectiveGasPrice.U256.from_be_bytes(to_bytes_be(tx.gas_price)[0..]));
     }
 
     if (tx.max_fee_per_gas < tx.max_priority_fee_per_gas) return error.PriorityFeeGreaterThanMaxFee;
     if (tx.max_fee_per_gas < base_fee_per_gas) return error.InsufficientMaxFeePerGas;
 
-    const base_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(base_fee_per_gas));
-    const max_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(tx.max_fee_per_gas));
-    const tip_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(tx.max_priority_fee_per_gas));
-    return EffectiveGasPrice.calculate(base_u, max_u, tip_u).effective;
+    return calc_1559_effective(base_fee_per_gas, tx.max_fee_per_gas, tx.max_priority_fee_per_gas);
 }
 
 // =============================================================================
@@ -244,7 +256,9 @@ test "validate_transaction — eip1559 access list intrinsic gas" {
     try std.testing.expectEqual(@as(u64, expected_gas), intrinsic);
 }
 
-test "validate_transaction — eip2930 access list intrinsic gas" {
+// EIP-2930 removed from primitives — access lists covered by 1559/4844/7702.
+// Keep an equivalent 1559 case.
+test "validate_transaction — 1559 access list intrinsic gas" {
     const Address = primitives.Address;
 
     const key1 = [_]u8{0x0A} ** 32;
@@ -259,10 +273,11 @@ test "validate_transaction — eip2930 access list intrinsic gas" {
         intrinsic_gas.TX_ACCESS_LIST_ADDRESS_COST +
         (2 * intrinsic_gas.TX_ACCESS_LIST_STORAGE_KEY_COST);
 
-    const tx = tx_mod.Eip2930Transaction{
+    const tx = tx_mod.Eip1559Transaction{
         .chain_id = 1,
         .nonce = 0,
-        .gas_price = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
         .gas_limit = expected_gas,
         .to = Address{ .bytes = [_]u8{0x5B} ++ [_]u8{0} ** 19 },
         .value = 0,
@@ -277,7 +292,7 @@ test "validate_transaction — eip2930 access list intrinsic gas" {
     try std.testing.expectEqual(@as(u64, expected_gas), intrinsic);
 }
 
-test "validate_transaction — eip1559 rejected before London" {
+test "validate_transaction — eip1559 rejected before London (duplicate removed)" {
     const Address = primitives.Address;
 
     const tx = tx_mod.Eip1559Transaction{
@@ -298,13 +313,15 @@ test "validate_transaction — eip1559 rejected before London" {
     try std.testing.expectError(error.UnsupportedTransactionType, validate_transaction(tx, .BERLIN));
 }
 
-test "validate_transaction — eip2930 rejected before Berlin" {
+// 2930 variant removed; 1559 is gated at London
+test "validate_transaction — eip1559 rejected before London" {
     const Address = primitives.Address;
 
-    const tx = tx_mod.Eip2930Transaction{
+    const tx = tx_mod.Eip1559Transaction{
         .chain_id = 1,
         .nonce = 0,
-        .gas_price = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
         .gas_limit = intrinsic_gas.TX_BASE_COST,
         .to = Address{ .bytes = [_]u8{0x6A} ++ [_]u8{0} ** 19 },
         .value = 0,
@@ -315,7 +332,7 @@ test "validate_transaction — eip2930 rejected before Berlin" {
         .s = [_]u8{0} ** 32,
     };
 
-    try std.testing.expectError(error.UnsupportedTransactionType, validate_transaction(tx, .ISTANBUL));
+    try std.testing.expectError(error.UnsupportedTransactionType, validate_transaction(tx, .BERLIN));
 }
 
 test "validate_transaction — eip4844 rejected before Cancun" {
@@ -656,13 +673,14 @@ test "preprice_transaction — legacy ok" {
     try std.testing.expectEqual(@as(u64, 100), try priced.effective_gas_price.toU64());
 }
 
-test "preprice_transaction — eip2930 ok" {
+test "preprice_transaction — eip1559 (with gas_price) treated per fork" {
     const Address = primitives.Address;
 
-    const tx = tx_mod.Eip2930Transaction{
+    const tx = tx_mod.Eip1559Transaction{
         .chain_id = 1,
         .nonce = 0,
-        .gas_price = 50,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 50,
         .gas_limit = intrinsic_gas.TX_BASE_COST,
         .to = Address{ .bytes = [_]u8{0x21} ++ [_]u8{0} ** 19 },
         .value = 0,
@@ -675,7 +693,7 @@ test "preprice_transaction — eip2930 ok" {
 
     const priced = try preprice_transaction(tx, .LONDON, 10);
     try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), priced.intrinsic);
-    try std.testing.expectEqual(@as(u64, 50), try priced.effective_gas_price.toU64());
+    try std.testing.expectEqual(@as(u64, 10), try priced.effective_gas_price.toU64());
 }
 
 test "preprice_transaction — eip1559 ok (cap priority)" {
@@ -773,20 +791,7 @@ test "preprice_transaction — fork gating enforced" {
     const Authorization = primitives.Authorization.Authorization;
 
     // 2930 before Berlin
-    const tx2930 = tx_mod.Eip2930Transaction{
-        .chain_id = 1,
-        .nonce = 0,
-        .gas_price = 10,
-        .gas_limit = intrinsic_gas.TX_BASE_COST,
-        .to = Address{ .bytes = [_]u8{0x26} ++ [_]u8{0} ** 19 },
-        .value = 0,
-        .data = &[_]u8{},
-        .access_list = &[_]tx_mod.AccessListItem{},
-        .y_parity = 0,
-        .r = [_]u8{0} ** 32,
-        .s = [_]u8{0} ** 32,
-    };
-    try std.testing.expectError(error.UnsupportedTransactionType, preprice_transaction(tx2930, .ISTANBUL, 0));
+    // 2930 removed — test 1559 gating instead handled elsewhere
 
     // 1559 before London
     const tx1559 = tx_mod.Eip1559Transaction{
