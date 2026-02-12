@@ -1,9 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
-import { Address, Hex, RuntimeCode } from "voltaire-effect/primitives";
+import { Address, Hash, Hex, RuntimeCode } from "voltaire-effect/primitives";
 import {
   EMPTY_ACCOUNT,
+  EMPTY_CODE_HASH,
   isTotallyEmpty,
   type AccountStateType,
 } from "./Account";
@@ -208,6 +209,66 @@ describe("WorldState", () => {
         yield* setCode(addr, EMPTY_CODE);
         const cleared = yield* getCode(addr);
         assert.strictEqual(codeHex(cleared), codeHex(EMPTY_CODE));
+      }),
+    ),
+  );
+
+  it.effect("updates account.codeHash when setting/clearing code", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(0xcc);
+        // Initially code hash is EMPTY
+        const initial = yield* getAccount(addr);
+        assert.strictEqual(
+          Hex.fromBytes(initial.codeHash),
+          Hex.fromBytes(EMPTY_CODE_HASH),
+        );
+
+        // Set non-empty code -> codeHash = keccak256(code)
+        yield* setCode(addr, SAMPLE_CODE);
+        const expected = yield* Hash.keccak256(SAMPLE_CODE);
+        const afterSet = yield* getAccount(addr);
+        assert.strictEqual(
+          Hex.fromBytes(afterSet.codeHash),
+          Hex.fromBytes(expected),
+        );
+
+        // Clear code -> codeHash = EMPTY_CODE_HASH
+        yield* setCode(addr, EMPTY_CODE);
+        const afterClear = yield* getAccount(addr);
+        assert.strictEqual(
+          Hex.fromBytes(afterClear.codeHash),
+          Hex.fromBytes(EMPTY_CODE_HASH),
+        );
+      }),
+    ),
+  );
+
+  it.effect("restores code and account.codeHash on snapshot rollback", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const addr = makeAddress(0xcd);
+        yield* setCode(addr, SAMPLE_CODE);
+        const expected = yield* Hash.keccak256(SAMPLE_CODE);
+        const snapshot = yield* takeSnapshot();
+
+        // Mutate to empty
+        yield* setCode(addr, EMPTY_CODE);
+        const mutated = yield* getAccount(addr);
+        assert.strictEqual(
+          Hex.fromBytes(mutated.codeHash),
+          Hex.fromBytes(EMPTY_CODE_HASH),
+        );
+
+        // Restore -> both code and codeHash revert
+        yield* restoreSnapshot(snapshot);
+        const restoredCode = yield* getCode(addr);
+        const restoredAccount = yield* getAccount(addr);
+        assert.strictEqual(codeHex(restoredCode), codeHex(SAMPLE_CODE));
+        assert.strictEqual(
+          Hex.fromBytes(restoredAccount.codeHash),
+          Hex.fromBytes(expected),
+        );
       }),
     ),
   );

@@ -4,10 +4,7 @@ import * as Layer from "effect/Layer";
 import { Address, RuntimeCode } from "voltaire-effect/primitives";
 import type { AccountStateType } from "./Account";
 import { WorldState, WorldStateTest } from "./State";
-import type {
-  StorageSlotType,
-  StorageValueType,
-} from "./StorageTypes";
+import type { StorageSlotType, StorageValueType } from "./StorageTypes";
 
 // Storage types are centralized in `StorageTypes.ts` to prevent drift.
 

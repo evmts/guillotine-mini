@@ -2,9 +2,14 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { Address, Hex, RuntimeCode } from "voltaire-effect/primitives";
+import { Address, Hash, Hex, RuntimeCode } from "voltaire-effect/primitives";
 import type { StorageSlotType, StorageValueType } from "./StorageTypes";
-import { EMPTY_ACCOUNT, isEmpty, type AccountStateType } from "./Account";
+import {
+  EMPTY_ACCOUNT,
+  EMPTY_CODE_HASH,
+  isEmpty,
+  type AccountStateType,
+} from "./Account";
 import {
   ChangeTag,
   type JournalEntry,
@@ -343,43 +348,56 @@ const makeWorldState = Effect.gen(function* () {
       const key = addressKey(address);
       const previous = codes.get(key) ?? null;
 
+      // Compute desired code hash for the account (EMPTY for zero-length code)
+      const computed = yield* code.length === 0
+        ? Effect.succeed(EMPTY_CODE_HASH)
+        : Hash.keccak256(code);
+      const codeHash = cloneBytes32(computed) as AccountStateType["codeHash"];
+
+      // Update code bytes with journaling semantics
       if (code.length === 0) {
-        if (previous === null) {
-          return;
+        if (previous !== null) {
+          yield* journal.append({
+            key: codeJournalKey(key),
+            value: cloneRuntimeCode(previous),
+            tag: ChangeTag.Delete,
+          });
+          codes.delete(key);
         }
-        yield* journal.append({
-          key: codeJournalKey(key),
-          value: cloneRuntimeCode(previous),
-          tag: ChangeTag.Delete,
-        });
-        codes.delete(key);
-        return;
+      } else {
+        const next = cloneRuntimeCode(code);
+        if (previous === null) {
+          yield* journal.append({
+            key: codeJournalKey(key),
+            value: null,
+            tag: ChangeTag.Create,
+          });
+          codes.set(key, next);
+        } else if (!bytesEqual(previous, next)) {
+          yield* journal.append({
+            key: codeJournalKey(key),
+            value: cloneRuntimeCode(previous),
+            tag: ChangeTag.Update,
+          });
+          codes.set(key, next);
+        }
       }
 
-      const next = cloneRuntimeCode(code);
-
-      if (previous === null) {
-        yield* journal.append({
-          key: codeJournalKey(key),
-          value: null,
-          tag: ChangeTag.Create,
-        });
-        codes.set(key, next);
-        return;
+      // Keep AccountState.codeHash coherent with the stored code bytes.
+      // Avoid materializing an empty account when setting empty code on a missing account.
+      const priorAccount = accounts.get(key) ?? null;
+      const shouldMaterialize =
+        priorAccount !== null || !bytes32Equals(codeHash, EMPTY_CODE_HASH);
+      if (shouldMaterialize) {
+        const base = priorAccount ?? EMPTY_ACCOUNT;
+        const nextAccount: AccountStateType = {
+          ...base,
+          codeHash: cloneBytes32(codeHash) as AccountStateType["codeHash"],
+        };
+        // Delegate to setAccount for proper journaling and equality checks
+        yield* setAccount(address, nextAccount);
       }
-
-      if (bytesEqual(previous, next)) {
-        return;
-      }
-
-      yield* journal.append({
-        key: codeJournalKey(key),
-        value: cloneRuntimeCode(previous),
-        tag: ChangeTag.Update,
-      });
-      codes.set(key, next);
     });
-
   const clearStorageForKey = (key: AccountKey) =>
     Effect.gen(function* () {
       const slots = storage.get(key);
