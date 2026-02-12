@@ -26,6 +26,12 @@ pub fn resolve_namespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcM
         }
     }
     if (std.mem.startsWith(u8, method_name, "engine_")) {
+        // Voltaire's EngineMethod union (upstream) currently omits
+        // engine_getClientVersionV1. Explicitly treat it as an engine
+        // namespace method so requests are routed to the Engine API.
+        if (std.mem.eql(u8, method_name, "engine_getClientVersionV1")) {
+            return .engine;
+        }
         if (jsonrpc.engine.EngineMethod.fromMethodName(method_name)) |tag| {
             _ = tag;
             return .engine;
@@ -49,7 +55,9 @@ pub fn resolve_namespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcM
         _ = tag; // tag not used beyond confirming success
         return .engine;
     } else |err| switch (err) {
-        error.UnknownMethod => {}, // continue probing other namespaces
+        error.UnknownMethod => {
+            if (std.mem.eql(u8, method_name, "engine_getClientVersionV1")) return .engine;
+        }, // continue probing other namespaces
         else => return null, // defensive: unexpected error -> no match
     }
 
@@ -82,6 +90,12 @@ test "resolveNamespace returns .eth for eth_*" {
 
 test "resolveNamespace returns .engine for engine_*" {
     const tag = resolve_namespace("engine_getPayloadV3");
+    try std.testing.expect(tag != null);
+    try std.testing.expectEqual(std.meta.Tag(jsonrpc.JsonRpcMethod).engine, tag.?);
+}
+
+test "resolveNamespace treats engine_getClientVersionV1 as engine" {
+    const tag = resolve_namespace("engine_getClientVersionV1");
     try std.testing.expect(tag != null);
     try std.testing.expectEqual(std.meta.Tag(jsonrpc.JsonRpcMethod).engine, tag.?);
 }
