@@ -70,7 +70,7 @@ pub fn initMacStates(
 }
 
 test "initMacStates: initiator vs recipient seeding per spec" {
-    const zero: Bytes32 = [_]u8{0} ** 32;
+    const zero: Bytes32 = primitives.Bytes32.ZERO;
 
     // Deterministic, easy-to-verify test vectors
     var mac: Bytes32 = zero;
@@ -139,7 +139,7 @@ test "initMacStates: initiator vs recipient seeding per spec" {
 }
 
 test "initMacStatesFor(Keccak256) equals default" {
-    const zero: Bytes32 = [_]u8{0} ** 32;
+    const zero: Bytes32 = primitives.Bytes32.ZERO;
     var mac: Bytes32 = zero;
     @memset(&mac, 0x33);
     var n_i: Bytes32 = zero;

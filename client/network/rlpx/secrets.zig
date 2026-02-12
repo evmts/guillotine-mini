@@ -73,7 +73,7 @@ pub fn deriveSecrets(
 }
 
 test "deriveSecrets: zero vectors match spec composition" {
-    const zero32: Bytes32 = [_]u8{0} ** 32;
+    const zero32: Bytes32 = primitives.Bytes32.ZERO;
 
     // Manual spec composition
     var nonce_cat: [64]u8 = undefined;
@@ -103,7 +103,7 @@ test "deriveSecrets: zero vectors match spec composition" {
 }
 
 test "deriveSecrets: input variation changes outputs" {
-    const z: Bytes32 = [_]u8{0} ** 32;
+    const z: Bytes32 = primitives.Bytes32.ZERO;
     var ones: Bytes32 = z;
     @memset(&ones, 0x01);
     var twos: Bytes32 = z;
