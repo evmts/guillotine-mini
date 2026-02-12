@@ -9,6 +9,7 @@ pub const MacStates = struct {
     ingress: crypto.Keccak256,
     egress: crypto.Keccak256,
 };
+pub const MacSeedError = error{ InvalidAuthPrefix, InvalidAckPrefix, InvalidAuthSize, InvalidAckSize };
 
 pub fn initMacStates(
     mac_secret: Bytes32,
@@ -16,8 +17,14 @@ pub fn initMacStates(
     recipient_nonce: Bytes32,
     auth: []const u8,
     ack: []const u8,
-    role: HandshakeRole,
-) MacStates {
+    is_initiator: bool,
+) MacSeedError!MacStates {
+    if (auth.len < 2) return error.InvalidAuthPrefix;
+    if (ack.len < 2) return error.InvalidAckPrefix;
+    const auth_size: u16 = (@as(u16, auth[0]) << 8) | auth[1];
+    const ack_size: u16 = (@as(u16, ack[0]) << 8) | ack[1];
+    if (auth.len != 2 + auth_size) return error.InvalidAuthSize;
+    if (ack.len != 2 + ack_size) return error.InvalidAckSize;
     var ingress = crypto.Keccak256.init(.{});
     // Precompute XOR(mac-secret, initiator-nonce) and XOR(mac-secret, recipient-nonce)
     var mac_xor_initiator: Bytes32 = undefined;
@@ -28,19 +35,19 @@ pub fn initMacStates(
     }
     var egress = crypto.Keccak256.init(.{});
     if (is_initiator) {
-            // egress: (mac ^ recipient_nonce) || auth
-            egress.update(&mac_xor_recipient);
-            egress.update(auth);
-            // ingress: (mac ^ initiator_nonce) || ack
-            ingress.update(&mac_xor_initiator);
-            ingress.update(ack);
+        // egress: (mac ^ recipient_nonce) || auth
+        egress.update(&mac_xor_recipient);
+        egress.update(auth);
+        // ingress: (mac ^ initiator_nonce) || ack
+        ingress.update(&mac_xor_initiator);
+        ingress.update(ack);
     } else {
-            // egress: (mac ^ initiator_nonce) || ack
-            egress.update(&mac_xor_initiator);
-            egress.update(ack);
-            // ingress: (mac ^ recipient_nonce) || auth
-            ingress.update(&mac_xor_recipient);
-            ingress.update(auth);
+        // egress: (mac ^ initiator_nonce) || ack
+        egress.update(&mac_xor_initiator);
+        egress.update(ack);
+        // ingress: (mac ^ recipient_nonce) || auth
+        ingress.update(&mac_xor_recipient);
+        ingress.update(auth);
     }
 
     return .{ .ingress = ingress, .egress = egress };
@@ -56,8 +63,10 @@ test "initMacStates: initiator vs recipient seeding per spec" {
     @memset(&n_i, 0x11);
     var n_r: Bytes32 = zero;
     @memset(&n_r, 0x22);
-    const auth = "AUTH-WIRE-BYTES"; // includes size prefix in real usage
-    const ack = "ACK-WIRE-BYTES"; // includes size prefix in real usage
+    const auth_body = [_]u8{'A'};
+    const ack_body = [_]u8{'B'};
+    const auth = [_]u8{ 0x00, auth_body.len } ++ auth_body;
+    const ack = [_]u8{ 0x00, ack_body.len } ++ ack_body;
 
     // Expected digests for initiator role
     var x_i: Bytes32 = undefined; // mac ^ initiator
@@ -70,16 +79,16 @@ test "initMacStates: initiator vs recipient seeding per spec" {
     // Compute reference digests using fresh Keccak contexts
     var ref_egress_init = crypto.Keccak256.init(.{});
     ref_egress_init.update(&x_r);
-    ref_egress_init.update(auth);
+    ref_egress_init.update(&auth);
     var ref_egress_init_digest: [32]u8 = undefined;
     ref_egress_init.final(&ref_egress_init_digest);
 
     var ref_ingress_init = crypto.Keccak256.init(.{});
     ref_ingress_init.update(&x_i);
-    ref_ingress_init.update(ack);
+    ref_ingress_init.update(&ack);
     var ref_ingress_init_digest: [32]u8 = undefined;
     ref_ingress_init.final(&ref_ingress_init_digest);
-    const states_init = initMacStates(mac, n_i, n_r, auth, ack, true);
+    const states_init = try initMacStates(mac, n_i, n_r, &auth, &ack, true);
     // Finalize copies to avoid consuming returned states
     var egress_copy_i = states_init.egress;
     var ingress_copy_i = states_init.ingress;
