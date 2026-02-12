@@ -14,6 +14,8 @@ pub const TxPoolConfig = pool.TxPoolConfig;
 pub const compare_fee_market_priority = sorter.compare_fee_market_priority;
 /// Broadcast policy helper: base-fee threshold calculator.
 pub const calculate_base_fee_threshold = policy.calculate_base_fee_threshold;
+/// Broadcast policy helper: persistent broadcast quota per block.
+pub const calculate_persistent_broadcast_quota = policy.calculate_persistent_broadcast_quota;
 
 /// Admission helper: re-export to avoid wrapper signature drift.
 pub const fits_size_limits = limits.fits_size_limits;

@@ -37,6 +37,23 @@ pub fn calculate_base_fee_threshold(base_fee: BaseFeePerGas, threshold_percent: 
     return if (overflow) U256.MAX else threshold;
 }
 
+/// Compute how many persistent transactions to broadcast per block.
+///
+/// Mirrors Nethermind's TxBroadcaster persistent quota logic:
+/// `min(PeerNotificationThreshold * persistent_count / 100 + 1, persistent_count)`.
+///
+/// Notes:
+/// - Returns 0 when either `pool_size` or `threshold_percent` is 0.
+/// - Uses widened 64-bit arithmetic to avoid intermediate overflow.
+/// - Constant +1 matches Nethermind (not a true ceil); clamp enforces the max.
+pub fn calculate_persistent_broadcast_quota(pool_size: u32, threshold_percent: u32) u32 {
+    if (pool_size == 0 or threshold_percent == 0) return 0;
+
+    const product: u64 = @as(u64, threshold_percent) * @as(u64, pool_size);
+    const quota64: u64 = product / 100 + 1;
+    return if (quota64 > pool_size) pool_size else @intCast(u32, quota64);
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -85,4 +102,31 @@ test "calculate_base_fee_threshold — overflow fallback and saturation" {
             try std.testing.expect(res.eq(final_expected));
         }
     }
+}
+
+test "calculate_persistent_broadcast_quota — zeros and basic cases" {
+    try std.testing.expectEqual(@as(u32, 0), calculate_persistent_broadcast_quota(0, 0));
+    try std.testing.expectEqual(@as(u32, 0), calculate_persistent_broadcast_quota(10, 0));
+    try std.testing.expectEqual(@as(u32, 0), calculate_persistent_broadcast_quota(0, 5));
+
+    // At least one when threshold > 0
+    try std.testing.expectEqual(@as(u32, 1), calculate_persistent_broadcast_quota(1, 1));
+    try std.testing.expectEqual(@as(u32, 1), calculate_persistent_broadcast_quota(1, 99));
+}
+
+test "calculate_persistent_broadcast_quota — matches Nethermind rounding and clamp" {
+    // Formula: min(threshold*count/100 + 1, count)
+    try std.testing.expectEqual(@as(u32, 6), calculate_persistent_broadcast_quota(100, 5));
+    try std.testing.expectEqual(@as(u32, 50), calculate_persistent_broadcast_quota(50, 99));
+    try std.testing.expectEqual(@as(u32, 50), calculate_persistent_broadcast_quota(50, 100));
+
+    // Not a true ceil: 1% of 200 -> floor(2)+1 = 3
+    try std.testing.expectEqual(@as(u32, 3), calculate_persistent_broadcast_quota(200, 1));
+
+    // Clamp at pool size for very large thresholds
+    try std.testing.expectEqual(@as(u32, 20), calculate_persistent_broadcast_quota(20, 500));
+    try std.testing.expectEqual(@as(u32, 2048), calculate_persistent_broadcast_quota(2048, 4_294_967_295));
+
+    // Typical default: 5% of 2048 => 102 + 1 = 103
+    try std.testing.expectEqual(@as(u32, 103), calculate_persistent_broadcast_quota(2048, 5));
 }
