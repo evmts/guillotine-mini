@@ -1,0 +1,40 @@
++ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./src/server.c
++ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./build/assembly.S
++ ar rc libblst.a assembly.o server.o
++ ranlib libblst.a
+test-trie
++- run test
+   +- compile test Debug native 3 errors
+client/trie/hash.zig:17:33: error: root source file struct 'root' has no member named 'TrieError'
+const TrieError = TriePrimitives.TrieError;
+                  ~~~~~~~~~~~~~~^~~~~~~~~~
+/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/root.zig:1:1: note: struct declared here
+//! Ethereum Primitives - Fundamental types and utilities for Ethereum development
+^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+referenced by:
+    secure_trie_root_with__anon_791: client/trie/hash.zig:124:16
+    secure_trie_root: client/trie/hash.zig:62:33
+    4 reference(s) hidden; use '-freference-trace=6' to see all references
+client/trie/node.zig:15:32: error: root source file struct 'root' has no member named 'TrieMask'
+pub const TrieMask = primitives.TrieMask;
+                     ~~~~~~~~~~^~~~~~~~~
+/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/root.zig:1:1: note: struct declared here
+//! Ethereum Primitives - Fundamental types and utilities for Ethereum development
+^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/trie.zig:1083:41: error: expected type 'u4', found 'u8'
+            branch.set_child(new_nibbles[common_len], new_leaf_hash);
+                             ~~~~~~~~~~~^~~~~~~~~~~~
+/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/trie.zig:1083:41: note: unsigned 4-bit int cannot represent all possible unsigned 8-bit values
+/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/trie.zig:603:48: note: parameter type declared here
+    pub fn set_child(self: *BranchNode, index: u4, hash: [32]u8) void {
+                                               ^~
+error: the following command failed with 3 compilation errors:
+/Users/williamcory/.zvm/0.15.2/zig test -ODebug --dep primitives --dep crypto -Mroot=/Users/williamcory/guillotine-mini/client/trie/root.zig .zig-cache/o/bb74f6123bb67e452b6af015f4c98ed2/libc-kzg-4844.a .zig-cache/o/4b4b9c039063ff95c613d3c16ed22aa8/libblst.a /Users/williamcory/voltaire/target/release/libcrypto_wrappers.a -ODebug -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I /Users/williamcory/guillotine-mini/../voltaire/packages/voltaire-zig/lib --dep crypto --dep z_ens_normalize -Mprimitives=/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/root.zig .zig-cache/o/bb74f6123bb67e452b6af015f4c98ed2/libc-kzg-4844.a .zig-cache/o/4b4b9c039063ff95c613d3c16ed22aa8/libblst.a /Users/williamcory/voltaire/target/release/libcrypto_wrappers.a -ODebug -I /Users/williamcory/guillotine-mini/../voltaire/packages/voltaire-zig/lib -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I /Users/williamcory/guillotine-mini/../voltaire/packages/voltaire-zig/lib --dep c_kzg --dep primitives -Mcrypto=/Users/williamcory/voltaire/packages/voltaire-zig/src/crypto/root.zig -ODebug -Mz_ens_normalize=/Users/williamcory/.cache/zig/p/z_ens_normalize-0.0.0-Iv6nMI2_AgCrLtEnZZnoeP87kZtP-36iIWzj3cD3v-vd/src/root.zig .zig-cache/o/bb74f6123bb67e452b6af015f4c98ed2/libc-kzg-4844.a .zig-cache/o/4b4b9c039063ff95c613d3c16ed22aa8/libblst.a -ODebug -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I .zig-cache/o/a6fb089e932f705ef1065695b36c6e90 -I /Users/williamcory/guillotine-mini/../voltaire/packages/voltaire-zig/lib/c-kzg-4844/src -I /Users/williamcory/guillotine-mini/../voltaire/packages/voltaire-zig/lib/c-kzg-4844/blst/bindings -Mc_kzg=/Users/williamcory/voltaire/packages/voltaire-zig/lib/c-kzg-4844/bindings/zig/root.zig .zig-cache/o/4b4b9c039063ff95c613d3c16ed22aa8/libblst.a -lc --cache-dir .zig-cache --global-cache-dir /Users/williamcory/.cache/zig --name test --zig-lib-dir /Users/williamcory/.zvm/0.15.2/lib/ --listen=-
+
+Build Summary: 5/8 steps succeeded; 1 failed
+test-trie transitive failure
++- run test transitive failure
+   +- compile test Debug native 3 errors
+
+error: the following build command failed with exit code 1:
+.zig-cache/o/5727250b48c5ecba158e832c90be2c16/build /Users/williamcory/.zvm/0.15.2/zig /Users/williamcory/.zvm/0.15.2/lib /Users/williamcory/guillotine-mini .zig-cache /Users/williamcory/.cache/zig --seed 0xc8bff583 -Z7ffda520f9f446ca test-trie

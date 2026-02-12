@@ -1,0 +1,32 @@
++ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./src/server.c
++ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./build/assembly.S
++ ar rc libblst.a assembly.o server.o
++ ranlib libblst.a
+
+Build Summary: 8/8 steps succeeded; 101/101 tests passed
+test-db success
++- run test 101 passed 10ms MaxRSS:2M
+   +- compile test Debug native cached 55ms MaxRSS:31M
+      +- WriteFile cached
+      +- compile lib c-kzg-4844 Debug native cached 43ms MaxRSS:30M
+      |  +- WriteFile cached
+      |  +- compile lib blst Debug native cached 48ms MaxRSS:30M
+      |  |  +- run ./build.sh success 659ms MaxRSS:92M
+      |  +- compile lib blst Debug native (+1 more reused dependencies)
+      +- WriteFile (reused)
+      +- compile lib blst Debug native (+1 more reused dependencies)
+      +- compile lib c-kzg-4844 Debug native (+3 more reused dependencies)
+      +- compile lib blst Debug native (+1 more reused dependencies)
+      +- WriteFile (reused)
+      +- compile lib c-kzg-4844 Debug native (+3 more reused dependencies)
+      +- WriteFile (reused)
+      +- compile lib blst Debug native (+1 more reused dependencies)
+      +- compile lib c-kzg-4844 Debug native (+3 more reused dependencies)
+      +- compile lib blst Debug native (+1 more reused dependencies)
+      +- WriteFile (reused)
+      +- compile lib c-kzg-4844 Debug native (+3 more reused dependencies)
+      +- WriteFile (reused)
+      +- compile lib blst Debug native (+1 more reused dependencies)
+      +- compile lib c-kzg-4844 Debug native (+3 more reused dependencies)
+      +- compile lib blst Debug native (+1 more reused dependencies)
+
