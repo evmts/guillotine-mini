@@ -2,6 +2,7 @@
 const full = @import("full.zig");
 const manager = @import("mode.zig");
 const headers = @import("headers.zig");
+const status = @import("status.zig");
 
 // -- Public API --------------------------------------------------------------
 
@@ -21,6 +22,10 @@ pub const SyncMode = manager.SyncMode;
 pub const HeadersRequest = headers.HeadersRequest;
 /// GetBlockHeaders origin discriminator.
 pub const HeadersOrigin = headers.Origin;
+
+/// Sync status helpers (Nethermind-aligned semantics -> Voltaire SyncStatus).
+pub const is_synced_by_distance = status.is_synced_by_distance;
+pub const to_sync_status = status.to_sync_status;
 
 test {
     @import("std").testing.refAllDecls(@This());
