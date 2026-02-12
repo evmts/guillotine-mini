@@ -127,7 +127,7 @@ fn print_result(r: BenchResult) !void {
 
 /// Benchmark 1: Sequential put (simulating trie node writes during block processing)
 fn bench_sequential_put(n: usize) !u64 {
-    var db = MemoryDatabase.init(std.heap.page_allocator);
+    var db = MemoryDatabase.init(std.heap.page_allocator, .state);
     defer db.deinit();
 
     var key_buf: [KEY_SIZE]u8 = undefined;
@@ -144,7 +144,7 @@ fn bench_sequential_put(n: usize) !u64 {
 
 /// Benchmark 2: Sequential get (simulating state reads)
 fn bench_sequential_get(n: usize) !u64 {
-    var db = MemoryDatabase.init(std.heap.page_allocator);
+    var db = MemoryDatabase.init(std.heap.page_allocator, .state);
     defer db.deinit();
 
     // Pre-populate
@@ -166,7 +166,7 @@ fn bench_sequential_get(n: usize) !u64 {
 
 /// Benchmark 3: Random get from pre-populated DB (cache-unfriendly access)
 fn bench_random_get(n: usize) !u64 {
-    var db = MemoryDatabase.init(std.heap.page_allocator);
+    var db = MemoryDatabase.init(std.heap.page_allocator, .state);
     defer db.deinit();
 
     // Pre-populate
@@ -192,7 +192,7 @@ fn bench_random_get(n: usize) !u64 {
 
 /// Benchmark 4: Contains check (used for warm/cold access tracking)
 fn bench_contains(n: usize) !u64 {
-    var db = MemoryDatabase.init(std.heap.page_allocator);
+    var db = MemoryDatabase.init(std.heap.page_allocator, .state);
     defer db.deinit();
 
     // Pre-populate half the keys
@@ -214,7 +214,7 @@ fn bench_contains(n: usize) !u64 {
 
 /// Benchmark 5: Delete operations
 fn bench_delete(n: usize) !u64 {
-    var db = MemoryDatabase.init(std.heap.page_allocator);
+    var db = MemoryDatabase.init(std.heap.page_allocator, .state);
     defer db.deinit();
 
     // Pre-populate
@@ -236,7 +236,7 @@ fn bench_delete(n: usize) !u64 {
 
 /// Benchmark 6: Mixed read/write (80% read, 20% write — simulating block processing)
 fn bench_mixed_workload(n: usize) !u64 {
-    var db = MemoryDatabase.init(std.heap.page_allocator);
+    var db = MemoryDatabase.init(std.heap.page_allocator, .state);
     defer db.deinit();
 
     // Pre-populate with n/2 entries
@@ -269,7 +269,7 @@ fn bench_mixed_workload(n: usize) !u64 {
 
 /// Benchmark 7: WriteBatch put+commit (simulating bulk state updates)
 fn bench_write_batch(n: usize) !u64 {
-    var db = MemoryDatabase.init(std.heap.page_allocator);
+    var db = MemoryDatabase.init(std.heap.page_allocator, .state);
     defer db.deinit();
 
     const iface = db.database();
@@ -297,7 +297,7 @@ fn bench_write_batch(n: usize) !u64 {
 
 /// Benchmark 8: Vtable dispatch overhead (indirect vs direct calls)
 fn bench_vtable_overhead(n: usize) !u64 {
-    var db = MemoryDatabase.init(std.heap.page_allocator);
+    var db = MemoryDatabase.init(std.heap.page_allocator, .state);
     defer db.deinit();
 
     // Pre-populate
@@ -321,7 +321,7 @@ fn bench_vtable_overhead(n: usize) !u64 {
 
 /// Benchmark 8b: Direct calls (baseline for vtable comparison)
 fn bench_direct_calls(n: usize) !u64 {
-    var db = MemoryDatabase.init(std.heap.page_allocator);
+    var db = MemoryDatabase.init(std.heap.page_allocator, .state);
     defer db.deinit();
 
     // Pre-populate
@@ -343,7 +343,7 @@ fn bench_direct_calls(n: usize) !u64 {
 
 /// Benchmark 9: Overwrite existing keys (simulating storage slot updates)
 fn bench_overwrite(n: usize) !u64 {
-    var db = MemoryDatabase.init(std.heap.page_allocator);
+    var db = MemoryDatabase.init(std.heap.page_allocator, .state);
     defer db.deinit();
 
     // Pre-populate with n entries
@@ -369,7 +369,7 @@ fn bench_overwrite(n: usize) !u64 {
 /// Simulates processing a block with ~200 transactions, each touching ~10 storage slots.
 /// This measures the realistic workload pattern for the DB layer.
 fn bench_block_processing(n: usize) !u64 {
-    var db = MemoryDatabase.init(std.heap.page_allocator);
+    var db = MemoryDatabase.init(std.heap.page_allocator, .state);
     defer db.deinit();
 
     // Pre-populate with "world state" — n accounts with some storage
