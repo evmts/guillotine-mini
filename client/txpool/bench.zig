@@ -30,11 +30,11 @@ const N_ADMISSION_SMALL: usize = 5_000; // Per-type sample size
 const N_ADMISSION_MED: usize = 20_000; // Per-type sample size
 const N_SORT: usize = 50_000; // Fee tuples for sort bench
 
-fn mkAddr(byte: u8) Address {
+fn mk_addr(byte: u8) Address {
     return .{ .bytes = [_]u8{byte} ++ [_]u8{0} ** 19 };
 }
 
-fn mkVHash(byte: u8) VersionedHash {
+fn mk_vhash(byte: u8) VersionedHash {
     return .{ .bytes = [_]u8{byte} ++ [_]u8{0} ** 31 };
 }
 
@@ -54,7 +54,7 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
             .nonce = 0,
             .gas_price = 1,
             .gas_limit = 21_000,
-            .to = mkAddr(0x11),
+            .to = mk_addr(0x11),
             .value = 0,
             .data = &[_]u8{},
             .v = 37,
@@ -75,7 +75,7 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
             .max_priority_fee_per_gas = 1,
             .max_fee_per_gas = 2,
             .gas_limit = 21_000,
-            .to = mkAddr(0x22),
+            .to = mk_addr(0x22),
             .value = 0,
             .data = &[_]u8{},
             .access_list = &[_]Tx.AccessListItem{},
@@ -93,14 +93,14 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
 
     // EIP-4844 (blob tx; size excludes blobs)
     {
-        const hashes = [_]VersionedHash{mkVHash(0xAA)};
+        const hashes = [_]VersionedHash{mk_vhash(0xAA)};
         const tx = Tx.Eip4844Transaction{
             .chain_id = 1,
             .nonce = 0,
             .max_priority_fee_per_gas = 1,
             .max_fee_per_gas = 2,
             .gas_limit = 21_000,
-            .to = mkAddr(0x33), // non-null
+            .to = mk_addr(0x33), // non-null
             .value = 0,
             .data = &[_]u8{},
             .access_list = &[_]Tx.AccessListItem{},
@@ -125,7 +125,7 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
             .max_priority_fee_per_gas = 1,
             .max_fee_per_gas = 2,
             .gas_limit = 21_000,
-            .to = mkAddr(0x44),
+            .to = mk_addr(0x44),
             .value = 0,
             .data = &[_]u8{},
             .access_list = &[_]Tx.AccessListItem{},

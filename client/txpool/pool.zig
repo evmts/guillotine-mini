@@ -5,6 +5,8 @@ const Address = primitives.Address;
 
 /// Transaction pool configuration defaults, modeled after Nethermind's
 /// `ITxPoolConfig` / `TxPoolConfig`.
+///
+/// Keep this type small and plain-old-data; callers embed or pass by value.
 pub const TxPoolConfig = struct {
     /// Blob transaction storage policy.
     pub const BlobsSupportMode = enum(u8) {
