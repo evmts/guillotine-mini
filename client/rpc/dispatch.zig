@@ -13,7 +13,7 @@ const errors = @import("error.zig");
 /// - `.eth` for Ethereum API
 /// - `.debug` for Debug API
 /// - `null` if the method is unknown to all namespaces
-pub fn resolveNamespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcMethod) {
+pub fn resolve_namespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcMethod) {
     // Fast prefix short-circuit: only probe the relevant namespace
     if (std.mem.startsWith(u8, method_name, "eth_")) {
         if (jsonrpc.eth.EthMethod.fromMethodName(method_name)) |tag| {
@@ -74,19 +74,19 @@ pub fn resolveNamespace(method_name: []const u8) ?std.meta.Tag(jsonrpc.JsonRpcMe
 }
 
 test "resolveNamespace returns .eth for eth_*" {
-    const tag = resolveNamespace("eth_blockNumber");
+    const tag = resolve_namespace("eth_blockNumber");
     try std.testing.expect(tag != null);
     try std.testing.expectEqual(std.meta.Tag(jsonrpc.JsonRpcMethod).eth, tag.?);
 }
 
 test "resolveNamespace returns .engine for engine_*" {
-    const tag = resolveNamespace("engine_getPayloadV3");
+    const tag = resolve_namespace("engine_getPayloadV3");
     try std.testing.expect(tag != null);
     try std.testing.expectEqual(std.meta.Tag(jsonrpc.JsonRpcMethod).engine, tag.?);
 }
 
 test "resolveNamespace returns null for unknown" {
-    try std.testing.expect(resolveNamespace("unknown_method") == null);
+    try std.testing.expect(resolve_namespace("unknown_method") == null);
 }
 
 /// Minimal JSON-RPC request parser that extracts the `method` string and
@@ -101,7 +101,7 @@ pub const ParseNamespaceResult = union(enum) {
 /// resolved namespace tag. If the method is unknown, returns
 /// `.error(.method_not_found)`. If the field is missing or malformed,
 /// returns `.error(.invalid_request)` per EIP-1474.
-pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
+pub fn parse_request_namespace(request: []const u8) ParseNamespaceResult {
     // Top-level JSON type validation and batch guard
     var i_top: usize = 0;
     // Skip UTF-8 BOM if present
@@ -205,7 +205,7 @@ pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
     const start = i + 1;
 
     const method_name = request[start..end];
-    if (resolveNamespace(method_name)) |tag| {
+    if (resolve_namespace(method_name)) |tag| {
         return .{ .namespace = tag };
     } else {
         return .{ .err = .method_not_found };
@@ -217,7 +217,7 @@ pub fn parseRequestNamespace(request: []const u8) ParseNamespaceResult {
 // ============================================================================
 
 test "resolveNamespace returns .debug for debug_*" {
-    const tag = resolveNamespace("debug_getRawBlock");
+    const tag = resolve_namespace("debug_getRawBlock");
     try std.testing.expect(tag != null);
     try std.testing.expectEqual(std.meta.Tag(jsonrpc.JsonRpcMethod).debug, tag.?);
 }
@@ -233,7 +233,7 @@ test "parseRequestNamespace returns invalid_request for batch array input" {
         "  }\n" ++
         "]";
 
-    const res = parseRequestNamespace(req);
+    const res = parse_request_namespace(req);
     switch (res) {
         .namespace => |_| return error.UnexpectedSuccess,
         .err => |code| try std.testing.expectEqual(errors.JsonRpcErrorCode.invalid_request, code),
@@ -249,7 +249,7 @@ test "parseRequestNamespace returns namespace tag for known eth method" {
         "  \"params\": []\n" ++
         "}";
 
-    const res = parseRequestNamespace(req);
+    const res = parse_request_namespace(req);
     switch (res) {
         .namespace => |tag| {
             try std.testing.expectEqual(std.meta.Tag(jsonrpc.JsonRpcMethod).eth, tag);
@@ -267,7 +267,7 @@ test "parseRequestNamespace returns method_not_found for unknown method" {
         "  \"params\": []\n" ++
         "}";
 
-    const res = parseRequestNamespace(req);
+    const res = parse_request_namespace(req);
     switch (res) {
         .namespace => |_| return error.UnexpectedSuccess,
         .err => |code| try std.testing.expectEqual(errors.JsonRpcErrorCode.method_not_found, code),
@@ -282,7 +282,7 @@ test "parseRequestNamespace returns invalid_request when method missing" {
         "  \"params\": []\n" ++
         "}";
 
-    const res = parseRequestNamespace(req);
+    const res = parse_request_namespace(req);
     switch (res) {
         .namespace => |_| return error.UnexpectedSuccess,
         .err => |code| try std.testing.expectEqual(errors.JsonRpcErrorCode.invalid_request, code),

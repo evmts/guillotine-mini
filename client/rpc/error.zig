@@ -42,7 +42,8 @@ pub const JsonRpcErrorCode = enum(i32) {
     invalid_input_too_many_blocks = -38026,
     pruned_history_unavailable = 4444,
 
-    pub fn defaultMessage(self: JsonRpcErrorCode) []const u8 {
+    /// Returns the default, human-readable message for a given error code.
+    pub fn default_message(self: JsonRpcErrorCode) []const u8 {
         return switch (self) {
             .parse_error => "Parse error",
             .invalid_request => "Invalid request",
@@ -98,18 +99,18 @@ test "jsonrpc error codes match eip-1474" {
 }
 
 test "jsonrpc error default messages follow eip-1474" {
-    try std.testing.expectEqualStrings("Parse error", JsonRpcErrorCode.parse_error.defaultMessage());
-    try std.testing.expectEqualStrings("Invalid request", JsonRpcErrorCode.invalid_request.defaultMessage());
-    try std.testing.expectEqualStrings("Method not found", JsonRpcErrorCode.method_not_found.defaultMessage());
-    try std.testing.expectEqualStrings("Invalid params", JsonRpcErrorCode.invalid_params.defaultMessage());
-    try std.testing.expectEqualStrings("Internal error", JsonRpcErrorCode.internal_error.defaultMessage());
-    try std.testing.expectEqualStrings("Invalid input", JsonRpcErrorCode.invalid_input.defaultMessage());
-    try std.testing.expectEqualStrings("Resource not found", JsonRpcErrorCode.resource_not_found.defaultMessage());
-    try std.testing.expectEqualStrings("Resource unavailable", JsonRpcErrorCode.resource_unavailable.defaultMessage());
-    try std.testing.expectEqualStrings("Transaction rejected", JsonRpcErrorCode.transaction_rejected.defaultMessage());
-    try std.testing.expectEqualStrings("Method not supported", JsonRpcErrorCode.method_not_supported.defaultMessage());
-    try std.testing.expectEqualStrings("Limit exceeded", JsonRpcErrorCode.limit_exceeded.defaultMessage());
-    try std.testing.expectEqualStrings("JSON-RPC version not supported", JsonRpcErrorCode.jsonrpc_version_not_supported.defaultMessage());
+    try std.testing.expectEqualStrings("Parse error", JsonRpcErrorCode.parse_error.default_message());
+    try std.testing.expectEqualStrings("Invalid request", JsonRpcErrorCode.invalid_request.default_message());
+    try std.testing.expectEqualStrings("Method not found", JsonRpcErrorCode.method_not_found.default_message());
+    try std.testing.expectEqualStrings("Invalid params", JsonRpcErrorCode.invalid_params.default_message());
+    try std.testing.expectEqualStrings("Internal error", JsonRpcErrorCode.internal_error.default_message());
+    try std.testing.expectEqualStrings("Invalid input", JsonRpcErrorCode.invalid_input.default_message());
+    try std.testing.expectEqualStrings("Resource not found", JsonRpcErrorCode.resource_not_found.default_message());
+    try std.testing.expectEqualStrings("Resource unavailable", JsonRpcErrorCode.resource_unavailable.default_message());
+    try std.testing.expectEqualStrings("Transaction rejected", JsonRpcErrorCode.transaction_rejected.default_message());
+    try std.testing.expectEqualStrings("Method not supported", JsonRpcErrorCode.method_not_supported.default_message());
+    try std.testing.expectEqualStrings("Limit exceeded", JsonRpcErrorCode.limit_exceeded.default_message());
+    try std.testing.expectEqualStrings("JSON-RPC version not supported", JsonRpcErrorCode.jsonrpc_version_not_supported.default_message());
 }
 
 test "jsonrpc error codes include nethermind extensions" {
@@ -146,7 +147,7 @@ test "jsonrpc error codes include nethermind extensions" {
 }
 
 test "jsonrpc error default messages include nethermind extensions" {
-    try std.testing.expectEqualStrings("Execution reverted", JsonRpcErrorCode.execution_reverted.defaultMessage());
-    try std.testing.expectEqualStrings("Timeout", JsonRpcErrorCode.timeout.defaultMessage());
-    try std.testing.expectEqualStrings("Account locked", JsonRpcErrorCode.account_locked.defaultMessage());
+    try std.testing.expectEqualStrings("Execution reverted", JsonRpcErrorCode.execution_reverted.default_message());
+    try std.testing.expectEqualStrings("Timeout", JsonRpcErrorCode.timeout.default_message());
+    try std.testing.expectEqualStrings("Account locked", JsonRpcErrorCode.account_locked.default_message());
 }

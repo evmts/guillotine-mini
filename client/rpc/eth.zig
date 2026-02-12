@@ -49,16 +49,16 @@ pub fn EthApi(comptime Provider: type) type {
             const ChainIdShape = @FieldType(EthMethod, "eth_chainId"); // { params, result }
             _ = ChainIdShape; // referenced to ensure compile-time coupling
 
-            const id_res = envelope.extractRequestId(request_bytes);
+            const id_res = envelope.extract_request_id(request_bytes);
             switch (id_res) {
                 .id => |id| {
                     if (id == .null) return;
                     const chain_id: u64 = self.provider.getChainId();
-                    try Response.writeSuccessQuantityU64(writer, id, chain_id);
+                    try Response.write_success_quantity_u64(writer, id, chain_id);
                 },
                 .err => |code| {
                     // Per EIP-1474, when id cannot be determined, respond with id:null
-                    try Response.writeError(writer, .null, code, code.defaultMessage(), null);
+                    try Response.write_error(writer, .null, code, code.default_message(), null);
                 },
             }
         }
@@ -143,6 +143,6 @@ test "EthApi.handleChainId: invalid envelope -> EIP-1474 error with id:null" {
     const code = errors.JsonRpcErrorCode.invalid_request;
     var expect_buf: [256]u8 = undefined;
     var fba = std.io.fixedBufferStream(&expect_buf);
-    try Response.writeError(fba.writer(), .null, code, code.defaultMessage(), null);
+    try Response.write_error(fba.writer(), .null, code, code.default_message(), null);
     try std.testing.expectEqualStrings(fba.getWritten(), buf.items);
 }

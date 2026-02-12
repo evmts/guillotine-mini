@@ -29,7 +29,8 @@ pub const ExtractIdResult = union(enum) {
 /// - Batch (top-level array) is not handled here → `.err = .invalid_request`.
 /// - Missing `id` yields `.id = .null` (error responses must carry `null`).
 /// - `id` must be string, number (integer), or null → otherwise `.err = .invalid_request`.
-pub fn extractRequestId(input: []const u8) ExtractIdResult {
+/// Extract the JSON-RPC request id as a zero-copy token.
+pub fn extract_request_id(input: []const u8) ExtractIdResult {
     // Skip UTF-8 BOM
     var i: usize = 0;
     if (input.len >= 3 and input[0] == 0xEF and input[1] == 0xBB and input[2] == 0xBF) i = 3;
@@ -174,7 +175,7 @@ test "extractRequestId: numeric id" {
         "  \"method\": \"eth_blockNumber\",\n" ++
         "  \"params\": []\n" ++
         "}";
-    const r = extractRequestId(req);
+    const r = extract_request_id(req);
     switch (r) {
         .id => |id| switch (id) {
             .number => |tok| try std.testing.expectEqualStrings("42", tok),
@@ -192,7 +193,7 @@ test "extractRequestId: string id" {
         "  \"method\": \"eth_blockNumber\",\n" ++
         "  \"params\": []\n" ++
         "}";
-    const r = extractRequestId(req);
+    const r = extract_request_id(req);
     switch (r) {
         .id => |id| switch (id) {
             .string => |s| try std.testing.expectEqualStrings("abc-123", s),
@@ -210,7 +211,7 @@ test "extractRequestId: null id" {
         "  \"method\": \"eth_blockNumber\",\n" ++
         "  \"params\": []\n" ++
         "}";
-    const r = extractRequestId(req);
+    const r = extract_request_id(req);
     switch (r) {
         .id => |id| try std.testing.expect(id == .null),
         .err => |_| return error.UnexpectedError,
@@ -224,7 +225,7 @@ test "extractRequestId: missing id -> null" {
         "  \"method\": \"eth_blockNumber\",\n" ++
         "  \"params\": []\n" ++
         "}";
-    const r = extractRequestId(req);
+    const r = extract_request_id(req);
     switch (r) {
         .id => |id| try std.testing.expect(id == .null),
         .err => |_| return error.UnexpectedError,
@@ -233,7 +234,7 @@ test "extractRequestId: missing id -> null" {
 
 test "extractRequestId: batch input invalid_request" {
     const req = "[ { \"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"eth_blockNumber\", \"params\": [] } ]";
-    const r = extractRequestId(req);
+    const r = extract_request_id(req);
     switch (r) {
         .id => |_| return error.UnexpectedSuccess,
         .err => |code| try std.testing.expectEqual(errors.JsonRpcErrorCode.invalid_request, code),
@@ -248,7 +249,7 @@ test "extractRequestId: invalid id type (object) -> invalid_request" {
         "  \"method\": \"eth_blockNumber\",\n" ++
         "  \"params\": []\n" ++
         "}";
-    const r = extractRequestId(req);
+    const r = extract_request_id(req);
     switch (r) {
         .id => |_| return error.UnexpectedSuccess,
         .err => |code| try std.testing.expectEqual(errors.JsonRpcErrorCode.invalid_request, code),
