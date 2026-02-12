@@ -74,9 +74,9 @@ test "EthApi.handleChainId: number id -> QUANTITY result" {
         "  \"params\": []\n" ++
         "}";
 
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    try api.handleChainId(buf.writer(std.testing.allocator), req);
+    var buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try api.handleChainId(buf.writer(), req);
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":\"0x1\"}",
         buf.items,
@@ -101,9 +101,9 @@ test "EthApi.handleChainId: string id preserved; QUANTITY encoding" {
         "  \"params\": []\n" ++
         "}";
 
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    try api.handleChainId(buf.writer(std.testing.allocator), req);
+    var buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try api.handleChainId(buf.writer(), req);
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":\"abc-123\",\"result\":\"0x1a\"}",
         buf.items,
@@ -123,9 +123,9 @@ test "EthApi.handleChainId: invalid envelope -> EIP-1474 error with id:null" {
     // Batch array at top level is not handled here
     const bad = "[ { \"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"eth_chainId\", \"params\": [] } ]";
 
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    try api.handleChainId(buf.writer(std.testing.allocator), bad);
+    var buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try api.handleChainId(buf.writer(), bad);
 
     const code = errors.JsonRpcErrorCode.invalid_request;
     var expect_buf: [256]u8 = undefined;

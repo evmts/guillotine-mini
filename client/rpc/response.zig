@@ -124,9 +124,9 @@ pub const Response = struct {
 // ============================================================================
 
 test "Response.writeSuccessRaw: id string" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    try Response.writeSuccessRaw(buf.writer(std.testing.allocator), .{ .string = "abc-123" }, "1");
+    var buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try Response.writeSuccessRaw(buf.writer(), .{ .string = "abc-123" }, "1");
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":\"abc-123\",\"result\":1}",
         buf.items,
@@ -134,9 +134,9 @@ test "Response.writeSuccessRaw: id string" {
 }
 
 test "Response.writeSuccessRaw: id number" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    try Response.writeSuccessRaw(buf.writer(std.testing.allocator), .{ .number = "42" }, "\"0x1\"");
+    var buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try Response.writeSuccessRaw(buf.writer(), .{ .number = "42" }, "\"0x1\"");
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":42,\"result\":\"0x1\"}",
         buf.items,
@@ -144,9 +144,9 @@ test "Response.writeSuccessRaw: id number" {
 }
 
 test "Response.writeSuccessRaw: id null" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    try Response.writeSuccessRaw(buf.writer(std.testing.allocator), .null, "null");
+    var buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try Response.writeSuccessRaw(buf.writer(), .null, "null");
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":null}",
         buf.items,
@@ -154,10 +154,10 @@ test "Response.writeSuccessRaw: id null" {
 }
 
 test "Response.writeError: basic (string id)" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buf.deinit();
     const code = errors.JsonRpcErrorCode.invalid_request;
-    try Response.writeError(buf.writer(std.testing.allocator), .{ .string = "x" }, code, code.defaultMessage(), null);
+    try Response.writeError(buf.writer(), .{ .string = "x" }, code, code.defaultMessage(), null);
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":\"x\",\"error\":{\"code\":-32600,\"message\":\"Invalid request\"}}",
         buf.items,
@@ -165,10 +165,10 @@ test "Response.writeError: basic (string id)" {
 }
 
 test "Response.writeError: with data (number id)" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buf.deinit();
     const code = errors.JsonRpcErrorCode.method_not_found;
-    try Response.writeError(buf.writer(std.testing.allocator), .{ .number = "7" }, code, code.defaultMessage(), "{\"foo\":1}");
+    try Response.writeError(buf.writer(), .{ .number = "7" }, code, code.defaultMessage(), "{\"foo\":1}");
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32601,\"message\":\"Method not found\",\"data\":{\"foo\":1}}}",
         buf.items,
@@ -176,24 +176,24 @@ test "Response.writeError: with data (number id)" {
 }
 
 test "Response.writeQuantityU64: encodes per EIP-1474" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    try Response.writeQuantityU64(buf.writer(std.testing.allocator), 0);
+    var buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try Response.writeQuantityU64(buf.writer(), 0);
     try std.testing.expectEqualStrings("\"0x0\"", buf.items);
 
     buf.clearRetainingCapacity();
-    try Response.writeQuantityU64(buf.writer(std.testing.allocator), 1);
+    try Response.writeQuantityU64(buf.writer(), 1);
     try std.testing.expectEqualStrings("\"0x1\"", buf.items);
 
     buf.clearRetainingCapacity();
-    try Response.writeQuantityU64(buf.writer(std.testing.allocator), std.math.maxInt(u64));
+    try Response.writeQuantityU64(buf.writer(), std.math.maxInt(u64));
     try std.testing.expectEqualStrings("\"0xffffffffffffffff\"", buf.items);
 }
 
 test "Response.writeSuccessQuantityU64: full envelope" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    try Response.writeSuccessQuantityU64(buf.writer(std.testing.allocator), .{ .number = "7" }, 26);
+    var buf = std.array_list.Managed(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try Response.writeSuccessQuantityU64(buf.writer(), .{ .number = "7" }, 26);
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":\"0x1a\"}",
         buf.items,
