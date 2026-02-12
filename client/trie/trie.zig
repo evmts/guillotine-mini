@@ -5,18 +5,16 @@
 //! useful for Ethereum MPT usage in the client.
 
 const primitives = @import("primitives");
-const Crypto = @import("crypto");
-const Hash32 = @import("node.zig").Hash32;
 
 /// Merkle Patricia Trie implementation (Voltaire primitive).
 pub const Trie = primitives.Trie;
 
 /// Hash a raw key for use in a secure trie (keccak256(key)).
 ///
-/// - Uses Voltaire crypto Keccak-256 implementation.
-/// - Returns Voltaire `Hash32` (primitives.Hash.Hash) — no custom types.
-pub inline fn secureKey(raw_key: []const u8) Hash32 {
-    return Crypto.Hash.keccak256(raw_key);
+/// - Uses Voltaire primitives hashing (`primitives.Hash.keccak256`).
+/// - Returns `primitives.Hash.Hash` (32-byte Keccak-256 digest).
+pub fn secureKey(raw_key: []const u8) primitives.Hash.Hash {
+    return primitives.Hash.keccak256(raw_key);
 }
 
 /// Insert a value into a secure trie using a raw (unhashed) key.
@@ -25,7 +23,7 @@ pub inline fn secureKey(raw_key: []const u8) Hash32 {
 ///   hashed with Keccak-256 (preimage resistant) before insertion.
 /// - Uses Voltaire primitives exclusively; no custom hash/key types.
 /// - Delegates to `Trie.put()` with the 32-byte hashed key.
-pub inline fn putSecure(trie: *Trie, key: []const u8, value: []const u8) !void {
+pub fn putSecure(trie: *Trie, key: []const u8, value: []const u8) !void {
     const hashed = secureKey(key);
     return trie.put(&hashed, value);
 }
