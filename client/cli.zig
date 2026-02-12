@@ -22,6 +22,7 @@ const usage =
     \\  --trace               enable full tracing
     \\  --trace-tracer <name> set tracer name (e.g., callTracer)
     \\  --trace-timeout <dur> set tracer timeout (e.g., 5s)
+    \\  --version            show version information
     \\  -h, --help            show this help
     \\
 ;
@@ -36,6 +37,10 @@ pub fn parse_args(
     var idx: usize = 1;
     while (idx < args.len) : (idx += 1) {
         const arg = args[idx];
+        if (std.mem.eql(u8, arg, "--version")) {
+            try write_version(writer);
+            return error.VersionRequested;
+        }
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             writer.writeAll(usage) catch |err| {
                 const any_err: anyerror = err;
@@ -108,6 +113,14 @@ pub fn parse_args(
     }
 }
 
+/// Write version information to the provided writer.
+/// Public to enable unit testing and reuse by the runner entry point.
+pub fn write_version(writer: anytype) !void {
+    // Keep output stable and minimal; avoid dynamic git plumbing here.
+    // Nethermind prints version and commit; we start with a static name.
+    try writer.writeAll("guillotine-mini 0.0.0 (runner)\n");
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -159,6 +172,22 @@ test "cli prints usage on help flag" {
     const output = stream.getWritten();
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "Usage:"));
     try std.testing.expect(!trace_enabled);
+}
+
+test "cli prints version and exits on --version" {
+    var config = RunnerConfig{};
+    var trace_enabled = false;
+    var buffer: [128]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+    const args = &[_][]const u8{ "guillotine-mini", "--version" };
+
+    try std.testing.expectError(
+        error.VersionRequested,
+        parse_args(args, &config, &trace_enabled, stream.writer()),
+    );
+
+    const output = stream.getWritten();
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "guillotine-mini"));
 }
 
 test "cli rejects missing or invalid values" {

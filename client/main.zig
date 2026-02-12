@@ -41,6 +41,7 @@ fn run(
     var trace_enabled = false;
     cli.parse_args(args, &config, &trace_enabled, writer) catch |err| switch (err) {
         error.HelpRequested => return,
+        error.VersionRequested => return,
         else => return err,
     };
 
