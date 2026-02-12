@@ -7,7 +7,7 @@
 //!
 //! - `hash` — Root hash computation via `patricialize()` algorithm
 //! - `node` — Trie node types (Leaf, Extension, Branch, Node union)
-//! - `trie` — Trie API re-export (Voltaire primitive)
+//! - `trie` — High-level helpers (secureKey, putSecure) [not imported in phase-1]
 //!
 //! ## Architecture
 //!
@@ -33,10 +33,11 @@
 
 /// Hashing and patricialize implementation details.
 pub const hash = @import("hash.zig");
-/// Voltaire trie node types re-export module.
+/// Minimal primitives surface (hash types, etc.).
 pub const node = @import("node.zig");
-/// Voltaire trie implementation re-export module.
-pub const trie = @import("trie.zig");
+// NOTE: Avoid importing `trie.zig` in phase-1 to prevent pulling in upstream
+// Voltaire trie internals that are not required for root hash computation.
+// pub const trie = @import("trie.zig");
 
 // Re-export primary API
 /// Compute the Merkle Patricia Trie root hash for key-value pairs.
@@ -47,20 +48,6 @@ pub const secure_trie_root = hash.secure_trie_root;
 pub const EMPTY_TRIE_ROOT = hash.EMPTY_TRIE_ROOT;
 /// 32-byte hash type used for root hashes.
 pub const Hash32 = node.Hash32;
-/// Branch child mask helper.
-pub const TrieMask = node.TrieMask;
-/// Trie node type discriminator.
-pub const NodeType = node.NodeType;
-/// Trie node union.
-pub const Node = node.Node;
-/// Trie leaf node.
-pub const LeafNode = node.LeafNode;
-/// Trie extension node.
-pub const ExtensionNode = node.ExtensionNode;
-/// Trie branch node.
-pub const BranchNode = node.BranchNode;
-/// Trie implementation (Voltaire primitive).
-pub const Trie = trie.Trie;
 
 test {
     // Ensure all sub-modules compile and their tests run.
@@ -68,13 +55,9 @@ test {
     _ = @import("fixtures.zig");
 }
 
-test "client_trie public API smoke" {
+test "client_trie API smoke: empty root" {
     const std = @import("std");
     const testing = std.testing;
-
-    var trie_instance = Trie.init(testing.allocator);
-    defer trie_instance.deinit();
-    try testing.expect(trie_instance.root_hash() == null);
 
     const empty_keys: [0][]const u8 = .{};
     const empty_values: [0][]const u8 = .{};
