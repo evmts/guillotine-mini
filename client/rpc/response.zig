@@ -4,8 +4,8 @@
 //! allocating, using the zero-copy `Envelope.Id` extracted from requests.
 //! The functions write directly to an `anytype` writer.
 const std = @import("std");
-const primitives = @import("primitives");
 const envelope = @import("envelope.zig");
+const errors = @import("error.zig");
 
 /// Response helpers namespace.
 pub const Response = struct {
@@ -22,10 +22,10 @@ pub const Response = struct {
 
     /// Serialize an error response following JSON-RPC 2.0 and EIP-1474.
     ///
-    /// - `code` must be a `primitives.JsonRpcErrorCode`.
+    /// - `code` must be a `JsonRpcErrorCode`.
     /// - `message` is a human-readable string; it is JSON-escaped here.
     /// - `data_raw`, when provided, must be a valid JSON fragment.
-    pub fn writeError(writer: anytype, id: envelope.Id, code: primitives.JsonRpcErrorCode, message: []const u8, data_raw: ?[]const u8) !void {
+    pub fn writeError(writer: anytype, id: envelope.Id, code: errors.JsonRpcErrorCode, message: []const u8, data_raw: ?[]const u8) !void {
         try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
         try writeId(writer, id);
         try writer.writeAll(",\"error\":{\"code\":");
@@ -124,7 +124,7 @@ test "Response.writeSuccessRaw: id null" {
 test "Response.writeError: basic (string id)" {
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);
-    const code = primitives.JsonRpcErrorCode.invalid_request;
+    const code = errors.JsonRpcErrorCode.invalid_request;
     try Response.writeError(buf.writer(std.testing.allocator), .{ .string = "x" }, code, code.defaultMessage(), null);
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":\"x\",\"error\":{\"code\":-32600,\"message\":\"Invalid request\"}}",
@@ -135,7 +135,7 @@ test "Response.writeError: basic (string id)" {
 test "Response.writeError: with data (number id)" {
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);
-    const code = primitives.JsonRpcErrorCode.method_not_found;
+    const code = errors.JsonRpcErrorCode.method_not_found;
     try Response.writeError(buf.writer(std.testing.allocator), .{ .number = "7" }, code, code.defaultMessage(), "{\"foo\":1}");
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32601,\"message\":\"Method not found\",\"data\":{\"foo\":1}}}",

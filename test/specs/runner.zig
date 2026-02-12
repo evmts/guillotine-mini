@@ -729,7 +729,7 @@ fn processRlpTransaction(
         primitives.GasConstants.TxGas; // 21000 for regular transactions
     // EIP-2028 (Istanbul): Reduced non-zero calldata cost from 68 to 16 gas
     const non_zero_gas = if (evm_instance.hardfork.isBefore(.ISTANBUL))
-        primitives.GasConstants.TxDataNonZeroGasPreIstanbul // 68 for pre-Istanbul
+        68 // Pre-Istanbul intrinsic gas for non-zero tx data bytes
     else
         primitives.GasConstants.TxDataNonZeroGas; // 16 for Istanbul+
     for (tx_data) |byte| {
@@ -1674,7 +1674,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Also track counts for EIP-7623 floor calculation (Prague+)
             // EIP-2028 (Istanbul): Reduced non-zero calldata cost from 68 to 16 gas
             const non_zero_gas_cost = if (evm_instance.hardfork.isBefore(.ISTANBUL))
-                primitives.GasConstants.TxDataNonZeroGasPreIstanbul // 68 for pre-Istanbul
+                68 // Pre-Istanbul intrinsic gas for non-zero tx data bytes
             else
                 primitives.GasConstants.TxDataNonZeroGas; // 16 for Istanbul+
             var zero_bytes: u64 = 0;

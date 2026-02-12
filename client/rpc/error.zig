@@ -1,8 +1,80 @@
 const std = @import("std");
-const primitives = @import("primitives");
 
-/// JSON-RPC error codes per EIP-1474 (Voltaire primitive).
-pub const JsonRpcErrorCode = primitives.JsonRpcErrorCode;
+/// JSON-RPC error codes per EIP-1474 with Nethermind extensions.
+///
+/// Notes:
+/// - Underlying type is `i32` to match EIP-1474 and Nethermind codes.
+/// - This is a local definition until Voltaire exposes this enum; callers
+///   should import it via `client/rpc/root.zig` re-export.
+pub const JsonRpcErrorCode = enum(i32) {
+    // EIP-1474 Standard Errors
+    parse_error = -32700,
+    invalid_request = -32600,
+    method_not_found = -32601,
+    invalid_params = -32602,
+    internal_error = -32603,
+    invalid_input = -32000,
+    resource_not_found = -32001,
+    resource_unavailable = -32002,
+    transaction_rejected = -32003,
+    method_not_supported = -32004,
+    limit_exceeded = -32005,
+    jsonrpc_version_not_supported = -32006,
+
+    // Nethermind Extensions (used in downstream tooling/tests)
+    execution_reverted = 3,
+    tx_sync_timeout = 4,
+    transaction_rejected_nethermind = -32010,
+    execution_error = -32015,
+    timeout = -32016,
+    module_timeout = -32017,
+    account_locked = -32020,
+    unknown_block = -39001,
+    nonce_too_low = -38010,
+    nonce_too_high = -38011,
+    insufficient_intrinsic_gas = -38013,
+    invalid_transaction = -38014,
+    block_gas_limit_reached = -38015,
+    invalid_input_blocks_out_of_order = -38020,
+    block_timestamp_not_increased = -38021,
+    sender_is_not_eoa = -38024,
+    max_init_code_size_exceeded = -38025,
+    invalid_input_too_many_blocks = -38026,
+    pruned_history_unavailable = 4444,
+
+    // Aliases / Legacy mappings (Nethermind compatibility)
+    resource_not_found_legacy = -32000,
+    default = -32000,
+    reverted_simulate = -32000,
+    vm_error = -32015,
+    intrinsic_gas = -38013,
+    insufficient_funds = -38014,
+    block_number_invalid = -38020,
+    block_timestamp_invalid = -38021,
+    client_limit_exceeded_error = -38026,
+    client_limit_exceeded = -38026,
+
+    pub fn defaultMessage(self: JsonRpcErrorCode) []const u8 {
+        return switch (self) {
+            .parse_error => "Parse error",
+            .invalid_request => "Invalid request",
+            .method_not_found => "Method not found",
+            .invalid_params => "Invalid params",
+            .internal_error => "Internal error",
+            .invalid_input => "Invalid input",
+            .resource_not_found, .resource_not_found_legacy, .default => "Resource not found",
+            .resource_unavailable => "Resource unavailable",
+            .transaction_rejected, .transaction_rejected_nethermind => "Transaction rejected",
+            .method_not_supported => "Method not supported",
+            .limit_exceeded, .client_limit_exceeded, .client_limit_exceeded_error => "Limit exceeded",
+            .jsonrpc_version_not_supported => "JSON-RPC version not supported",
+            .execution_reverted => "Execution reverted",
+            .timeout, .module_timeout => "Timeout",
+            .account_locked => "Account locked",
+            else => "Internal error",
+        };
+    }
+};
 
 // ============================================================================
 // Tests

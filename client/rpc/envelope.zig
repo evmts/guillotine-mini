@@ -5,7 +5,7 @@
 //! but implemented as a fast top-level scanner to avoid materializing
 //! full `std.json.Value` trees.
 const std = @import("std");
-const primitives = @import("primitives");
+const errors = @import("error.zig");
 
 /// Zero-copy representation of a JSON-RPC request id.
 /// - `.string` returns the raw, unescaped string contents (between quotes).
@@ -20,7 +20,7 @@ pub const Id = union(enum) {
 /// Result of ID extraction: either an `Id` or an EIP-1474 error code.
 pub const ExtractIdResult = union(enum) {
     id: Id,
-    err: primitives.JsonRpcErrorCode,
+    err: errors.JsonRpcErrorCode,
 };
 
 /// Extract the top-level `id` field from a JSON-RPC request without allocations.
@@ -236,7 +236,7 @@ test "extractRequestId: batch input invalid_request" {
     const r = extractRequestId(req);
     switch (r) {
         .id => |_| return error.UnexpectedSuccess,
-        .err => |code| try std.testing.expectEqual(primitives.JsonRpcErrorCode.invalid_request, code),
+        .err => |code| try std.testing.expectEqual(errors.JsonRpcErrorCode.invalid_request, code),
     }
 }
 
@@ -251,6 +251,6 @@ test "extractRequestId: invalid id type (object) -> invalid_request" {
     const r = extractRequestId(req);
     switch (r) {
         .id => |_| return error.UnexpectedSuccess,
-        .err => |code| try std.testing.expectEqual(primitives.JsonRpcErrorCode.invalid_request, code),
+        .err => |code| try std.testing.expectEqual(errors.JsonRpcErrorCode.invalid_request, code),
     }
 }

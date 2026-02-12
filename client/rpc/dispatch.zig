@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
-const primitives = @import("primitives");
+const errors = @import("error.zig");
 
 /// Returns the root namespace tag of a JSON-RPC method name.
 /// - `.engine` for Engine API
@@ -94,7 +94,7 @@ test "resolveNamespace returns null for unknown" {
 /// unknown methods without allocating or fully parsing the JSON.
 pub const ParseNamespaceResult = union(enum) {
     namespace: std.meta.Tag(jsonrpc.JsonRpcMethod),
-    err: primitives.JsonRpcErrorCode,
+    err: errors.JsonRpcErrorCode,
 };
 
 /// Extracts the `method` field from a JSON-RPC request and returns its
@@ -236,7 +236,7 @@ test "parseRequestNamespace returns invalid_request for batch array input" {
     const res = parseRequestNamespace(req);
     switch (res) {
         .namespace => |_| return error.UnexpectedSuccess,
-        .err => |code| try std.testing.expectEqual(primitives.JsonRpcErrorCode.invalid_request, code),
+        .err => |code| try std.testing.expectEqual(errors.JsonRpcErrorCode.invalid_request, code),
     }
 }
 
@@ -270,7 +270,7 @@ test "parseRequestNamespace returns method_not_found for unknown method" {
     const res = parseRequestNamespace(req);
     switch (res) {
         .namespace => |_| return error.UnexpectedSuccess,
-        .err => |code| try std.testing.expectEqual(primitives.JsonRpcErrorCode.method_not_found, code),
+        .err => |code| try std.testing.expectEqual(errors.JsonRpcErrorCode.method_not_found, code),
     }
 }
 
@@ -285,6 +285,6 @@ test "parseRequestNamespace returns invalid_request when method missing" {
     const res = parseRequestNamespace(req);
     switch (res) {
         .namespace => |_| return error.UnexpectedSuccess,
-        .err => |code| try std.testing.expectEqual(primitives.JsonRpcErrorCode.invalid_request, code),
+        .err => |code| try std.testing.expectEqual(errors.JsonRpcErrorCode.invalid_request, code),
     }
 }
