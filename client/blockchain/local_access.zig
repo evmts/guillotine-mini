@@ -36,7 +36,9 @@ pub inline fn get_block_local(chain: *Chain, hash: primitives.Hash.Hash) ?Block.
 /// Returns a canonical block by number from the local store only.
 pub inline fn get_block_by_number_local(chain: *Chain, number: u64) ?Block.Block {
     const h = chain.getCanonicalHash(number) orelse return null;
-    return (chain.getBlockByHash(h) catch null);
+    // Resolve canonical hash locally, then perform a strict local lookup.
+    // Never fall back to fork-cache fetches and never suppress errors.
+    return get_block_local(chain, h);
 }
 
 test {
