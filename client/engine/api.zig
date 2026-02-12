@@ -5,6 +5,7 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
 const primitives = @import("primitives");
+const method_name = @import("method_name.zig");
 
 const ExchangeCapabilitiesMethod = @FieldType(jsonrpc.engine.EngineMethod, "engine_exchangeCapabilities");
 const ExchangeTransitionConfigurationV1Method =
@@ -32,8 +33,7 @@ pub const ExchangeTransitionConfigurationV1Params = @FieldType(ExchangeTransitio
 /// Result payload for `engine_exchangeTransitionConfigurationV1` responses.
 pub const ExchangeTransitionConfigurationV1Result = @FieldType(ExchangeTransitionConfigurationV1Method, "result");
 
-const exchange_capabilities_method = "engine_exchangeCapabilities";
-const engine_method_prefix = "engine_";
+// Method-name validation logic is centralized in client/engine/method_name.zig
 
 /// Vtable-based Engine API interface.
 ///
@@ -190,8 +190,8 @@ fn validate_capabilities(list: anytype, comptime invalid_err: EngineApi.Error) E
     }
 
     if (comptime is_slice_of_byte_slices(ListType)) {
-        for (list) |method| {
-            try validate_method_name(method, invalid_err);
+        for (list) |name| {
+            if (!method_name.isValidAdvertisableEngineMethodName(name)) return invalid_err;
         }
         return;
     }
@@ -208,19 +208,13 @@ fn validate_json_capabilities(value: std.json.Value, comptime invalid_err: Engin
         .array => |array| {
             for (array.items) |item| {
                 switch (item) {
-                    .string => |method| try validate_method_name(method, invalid_err),
+                    .string => |name| if (!method_name.isValidAdvertisableEngineMethodName(name)) return invalid_err else {},
                     else => return invalid_err,
                 }
             }
         },
         else => return invalid_err,
     }
-}
-
-fn validate_method_name(method: []const u8, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
-    if (!std.mem.startsWith(u8, method, engine_method_prefix)) return invalid_err;
-    if (std.mem.eql(u8, method, exchange_capabilities_method)) return invalid_err;
-    if (!is_versioned_method(method)) return invalid_err;
 }
 
 fn validate_client_version_v1_params(params: ClientVersionV1Params, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
@@ -296,18 +290,6 @@ fn validate_transition_configuration_json(value: std.json.Value, comptime invali
         },
         else => return invalid_err,
     }
-}
-
-fn is_versioned_method(method: []const u8) bool {
-    if (method.len < 2) return false;
-
-    var idx: usize = method.len;
-    while (idx > 0 and std.ascii.isDigit(method[idx - 1])) {
-        idx -= 1;
-    }
-
-    if (idx == method.len or idx == 0) return false;
-    return method[idx - 1] == 'V';
 }
 
 fn is_slice_of_byte_slices(comptime T: type) bool {
