@@ -43,6 +43,7 @@ const null_db = @import("null.zig");
 const rocksdb = @import("rocksdb.zig");
 const read_only = @import("read_only.zig");
 const provider = @import("provider.zig");
+const ro_provider = @import("read_only_provider.zig");
 
 // -- Public API: flat re-exports of all user-facing types -----------------
 
@@ -84,6 +85,9 @@ pub const ReadOnlyDb = read_only.ReadOnlyDb;
 pub const DbProvider = provider.DbProvider;
 /// Errors for DbProvider lookups.
 pub const ProviderError = provider.ProviderError;
+/// Read-only provider wrapper with optional per-DB overlay.
+pub const ReadOnlyDbProvider = ro_provider.ReadOnlyDbProvider;
+pub const ReadOnlyProviderError = ro_provider.ReadOnlyProviderError;
 
 test {
     // Ensure all sub-modules compile and their tests run.
