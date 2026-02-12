@@ -56,8 +56,8 @@ pub fn calculate_persistent_broadcast_quota(pool_size: u32, threshold_percent: u
 
     const product: u64 = @as(u64, threshold_percent) * @as(u64, pool_size);
     const quota64: u64 = product / 100 + 1;
-    // Zig 0.15: @intCast takes one argument; use @as for the target type.
-    return if (quota64 > pool_size) pool_size else @as(u32, @intCast(quota64));
+    // Mixed-width compare: cast pool_size to u64 for clarity and safety.
+    return if (quota64 > @as(u64, pool_size)) pool_size else @as(u32, @intCast(quota64));
 }
 
 // =============================================================================
