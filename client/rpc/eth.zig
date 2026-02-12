@@ -43,7 +43,8 @@ pub fn EthApi(comptime Provider: type) type {
         /// - Extracts the request `id` allocation-free.
         /// - On success, returns QUANTITY(u64) per EIP-1474.
         /// - On malformed/unsupported envelope, returns an EIP-1474 error with id=null.
-        pub fn handleChainId(self: *const Self, writer: anytype, request_bytes: []const u8) !void {
+        /// Handle `eth_chainId` request.
+        pub fn handle_chain_id(self: *const Self, writer: anytype, request_bytes: []const u8) !void {
             // Keep shapes aligned with Voltaire types for eth_chainId
             const EthMethod = jsonrpc.eth.EthMethod;
             const ChainIdShape = @FieldType(EthMethod, "eth_chainId"); // { params, result }
@@ -89,7 +90,7 @@ test "EthApi.handleChainId: number id -> QUANTITY result" {
 
     var buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer buf.deinit();
-    try api.handleChainId(buf.writer(), req);
+    try api.handle_chain_id(buf.writer(), req);
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":\"0x1\"}",
         buf.items,
@@ -116,7 +117,7 @@ test "EthApi.handleChainId: string id preserved; QUANTITY encoding" {
 
     var buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer buf.deinit();
-    try api.handleChainId(buf.writer(), req);
+    try api.handle_chain_id(buf.writer(), req);
     try std.testing.expectEqualStrings(
         "{\"jsonrpc\":\"2.0\",\"id\":\"abc-123\",\"result\":\"0x1a\"}",
         buf.items,
@@ -138,7 +139,7 @@ test "EthApi.handleChainId: invalid envelope -> EIP-1474 error with id:null" {
 
     var buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer buf.deinit();
-    try api.handleChainId(buf.writer(), bad);
+    try api.handle_chain_id(buf.writer(), bad);
 
     const code = errors.JsonRpcErrorCode.invalid_request;
     var expect_buf: [256]u8 = undefined;
