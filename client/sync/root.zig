@@ -32,3 +32,14 @@ pub const DEFAULT_MAX_DISTANCE_FOR_SYNCED = status.DEFAULT_MAX_DISTANCE_FOR_SYNC
 test {
     @import("std").testing.refAllDecls(@This());
 }
+
+test "root: default_to_sync_status behavior smoke" {
+    const std = @import("std");
+    const r = @This();
+    const s1 = r.default_to_sync_status(r.SyncMode.waiting_for_block, 1000, 1005);
+    try std.testing.expect(!s1.isSyncing());
+    const s2 = r.default_to_sync_status(r.SyncMode.fast_bodies, 1000, 1005);
+    try std.testing.expect(s2.isSyncing());
+    const s3 = r.default_to_sync_status(r.SyncMode.waiting_for_block, 1000, 0);
+    try std.testing.expect(s3.isSyncing());
+}
