@@ -13,6 +13,12 @@ import {
   Receipt,
   Transaction,
 } from "voltaire-effect/primitives";
+import type { TransactionEnvironment } from "./TransactionEnvironmentBuilder";
+import {
+  EvmExecutor,
+  EvmExecutionError,
+  type EvmCallParams,
+} from "./EvmExecutor";
 import { WorldState } from "../state/State";
 import {
   beginTransaction,
@@ -402,6 +408,14 @@ export interface TransactionProcessorService {
     FinalizedTransactionExecution,
     PostExecutionSettlementError,
     WorldState
+  >;
+  readonly executeEvmCall: (
+    env: TransactionEnvironment,
+    params: EvmCallParams,
+  ) => Effect.Effect<
+    EvmTransactionExecutionOutput,
+    EvmExecutionError | TransactionBoundaryError,
+    EvmExecutor | TransactionBoundary
   >;
   readonly runInTransactionBoundary: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
@@ -1060,6 +1074,19 @@ const makeTransactionProcessor = Effect.gen(function* () {
       return yield* runWithinBoundary(effect);
     });
 
+  const executeEvmCall = (
+    env: TransactionEnvironment,
+    params: EvmCallParams,
+  ): Effect.Effect<
+    EvmTransactionExecutionOutput,
+    EvmExecutionError | TransactionBoundaryError,
+    EvmExecutor | TransactionBoundary
+  > =>
+    Effect.gen(function* () {
+      const evm = yield* EvmExecutor;
+      return yield* runInCallFrameBoundary(evm.executeCall(env, params));
+    });
+
   return {
     calculateEffectiveGasPrice,
     checkMaxGasFeeAndBalance,
@@ -1068,6 +1095,7 @@ const makeTransactionProcessor = Effect.gen(function* () {
     processTransaction,
     settlePostExecutionBalances,
     finalizeTransactionExecution,
+    executeEvmCall,
     runInTransactionBoundary,
     runInCallFrameBoundary,
   } satisfies TransactionProcessorService;
@@ -1207,6 +1235,12 @@ export const finalizeTransactionExecution = (
       evmOutput,
     ),
   );
+
+/** Delegate EVM message execution within a call-frame boundary. */
+export const executeEvmCall = (
+  env: TransactionEnvironment,
+  params: EvmCallParams,
+) => withTransactionProcessor((service) => service.executeEvmCall(env, params));
 
 /** Execute a transaction-scoped effect with begin/commit/rollback semantics. */
 export const runInTransactionBoundary = <A, E, R>(
