@@ -101,6 +101,40 @@ pub fn calculate_effective_gas_price(
     return EffectiveGasPrice.calculate(base_u, max_u, tip_u).effective;
 }
 
+/// Hardfork-aware variant: applies pre-/post-London rules explicitly.
+/// - Pre-London: legacy/2930 → effective = gas_price (no base fee gating)
+///               1559/4844/7702 → UnsupportedTransactionType
+/// - London and later: same rules as .
+pub fn calculate_effective_gas_price_hardfork(
+    tx: anytype,
+    hardfork: Hardfork,
+    base_fee_per_gas: u256,
+) error{ PriorityFeeGreaterThanMaxFee, InsufficientMaxFeePerGas, GasPriceBelowBaseFee, UnsupportedTransactionType }!EffectiveGasPrice {
+    const Tx = @TypeOf(tx);
+    comptime assert_supported_tx_type(Tx, "calculate_effective_gas_price_hardfork");
+
+    if (hardfork.isBefore(.LONDON)) {
+        if (comptime (Tx == tx_mod.LegacyTransaction or Tx == tx_mod.Eip2930Transaction)) {
+            return EffectiveGasPrice.fromBytes(to_bytes_be(tx.gas_price));
+        }
+        return error.UnsupportedTransactionType;
+    }
+
+    // London+
+    if (comptime (Tx == tx_mod.LegacyTransaction or Tx == tx_mod.Eip2930Transaction)) {
+        if (tx.gas_price < base_fee_per_gas) return error.GasPriceBelowBaseFee;
+        return EffectiveGasPrice.fromBytes(to_bytes_be(tx.gas_price));
+    }
+
+    if (tx.max_fee_per_gas < tx.max_priority_fee_per_gas) return error.PriorityFeeGreaterThanMaxFee;
+    if (tx.max_fee_per_gas < base_fee_per_gas) return error.InsufficientMaxFeePerGas;
+
+    const base_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(base_fee_per_gas));
+    const max_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(tx.max_fee_per_gas));
+    const tip_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(tx.max_priority_fee_per_gas));
+    return EffectiveGasPrice.calculate(base_u, max_u, tip_u).effective;
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -544,6 +578,42 @@ test "calculate_effective_gas_price — eip1559 max fee below base fee" {
     try std.testing.expectError(error.InsufficientMaxFeePerGas, calculate_effective_gas_price(tx, 10));
 }
 
+test "calculate_effective_gas_price_hardfork — legacy pre-London ignores base fee" {
+    const Address = primitives.Address;
+    const tx = tx_mod.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = 5,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0xFE} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    const eff = try calculate_effective_gas_price_hardfork(tx, .BERLIN, 10);
+    try std.testing.expectEqual(@as(u64, 5), try eff.toU64());
+}
+
+test "calculate_effective_gas_price_hardfork — eip1559 rejected before London" {
+    const Address = primitives.Address;
+    const tx = tx_mod.Eip1559Transaction{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 1,
+        .max_fee_per_gas = 10,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = Address{ .bytes = [_]u8{0xEF} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    try std.testing.expectError(error.UnsupportedTransactionType, calculate_effective_gas_price_hardfork(tx, .BERLIN, 0));
+}
+
 /// Pre-price a transaction: validate statically and compute effective gas price.
 ///
 /// Returns both the intrinsic gas and the effective gas price according to the
@@ -566,7 +636,7 @@ pub fn preprice_transaction(
     GasPriceBelowBaseFee,
 }!struct { intrinsic: u64, effective_gas_price: EffectiveGasPrice } {
     const intrinsic = try validate_transaction(tx, hardfork);
-    const effective = try calculate_effective_gas_price(tx, base_fee_per_gas);
+    const effective = try calculate_effective_gas_price_hardfork(tx, hardfork, base_fee_per_gas);
     return .{ .intrinsic = intrinsic, .effective_gas_price = effective };
 }
 
