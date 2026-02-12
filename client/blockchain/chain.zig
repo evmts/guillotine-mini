@@ -252,6 +252,34 @@ pub fn ancestor_hash_local(
     return if (get_block_local(chain, current) != null) current else null;
 }
 
+/// Returns the ancestor block at  from  using local store only.
+///
+/// Semantics:
+/// -  returns the full  block iff it exists locally.
+/// - Walks parent links strictly via local storage; returns null if any
+///   intermediate block is missing or when genesis has no parent.
+/// - Never consults fork caches; performs no allocations.
+pub fn ancestor_block_local(
+    chain: *Chain,
+    start: Hash.Hash,
+    distance: u64,
+) ?Block.Block {
+    if (distance == 0) {
+        return get_block_local(chain, start);
+    }
+
+    var current_hash = start;
+    var i: u64 = 0;
+    while (i < distance) : (i += 1) {
+        const blk = get_block_local(chain, current_hash) orelse return null;
+        if (blk.header.number == 0) return null; // genesis has no parent
+        current_hash = blk.header.parent_hash;
+    }
+
+    // Return the final ancestor block if present locally.
+    return get_block_local(chain, current_hash);
+}
+
 /// Generic, comptime-injected head hash reader for any chain-like type.
 pub fn head_hash_of(chain: anytype) !?Hash.Hash {
     // Reuse the snapshot logic in `head_block_of` to avoid duplication.
@@ -1064,4 +1092,69 @@ test "Chain - ancestor_hash_local returns null when orphan parent missing" {
     try chain.putBlock(orphan);
 
     try std.testing.expect(ancestor_hash_local(&chain, orphan.hash, 1) == null);
+}
+
+test "Chain - ancestor_block_local returns null when start missing" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    try std.testing.expect(ancestor_block_local(&chain, Hash.ZERO, 0) == null);
+    try std.testing.expect(ancestor_block_local(&chain, Hash.ZERO, 1) == null);
+}
+
+test "Chain - ancestor_block_local returns start block for distance 0 when exists" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+
+    const b = ancestor_block_local(&chain, genesis.hash, 0) orelse return error.Unreachable;
+    try std.testing.expectEqual(@as(u64, 0), b.header.number);
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &b.hash);
+}
+
+test "Chain - ancestor_block_local returns parent block for distance 1" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+
+    var h1 = primitives.BlockHeader.init();
+    h1.number = 1;
+    h1.parent_hash = genesis.hash;
+    const b1 = try Block.from(&h1, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(b1);
+
+    const anc = ancestor_block_local(&chain, b1.hash, 1) orelse return error.Unreachable;
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &anc.hash);
+}
+
+test "Chain - ancestor_block_local returns null for distance 1 from genesis" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+
+    try std.testing.expect(ancestor_block_local(&chain, genesis.hash, 1) == null);
+}
+
+test "Chain - ancestor_block_local returns null when orphan parent missing" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    var hdr = primitives.BlockHeader.init();
+    hdr.number = 3;
+    hdr.parent_hash = Hash.Hash{ 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB };
+    const orphan = try Block.from(&hdr, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(orphan);
+
+    try std.testing.expect(ancestor_block_local(&chain, orphan.hash, 1) == null);
 }
