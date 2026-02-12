@@ -10,7 +10,8 @@ pub const SnappyParameters = snappy_parameters.SnappyParameters;
 pub const Frame = frame;
 /// RLPx secrets derivation (shared/aes/mac) per spec.
 pub const Secrets = secrets_mod.Secrets;
-pub const deriveSecrets = secrets_mod.deriveSecrets;
+/// Derive handshake secrets; snake_case per Zig conventions.
+pub const derive_secrets = secrets_mod.derive_secrets;
 
 /// RLPx MAC state initialization (ingress/egress Keccak256 contexts).
 pub const MacStates = mac_mod.MacStates;

@@ -40,7 +40,7 @@ pub const Secrets = struct {
 ///
 /// Returns:
 /// - `Secrets` with `shared`, `aes`, and `mac` fields populated per spec
-pub fn deriveSecrets(
+pub fn derive_secrets(
     ephemeral_key: Bytes32,
     initiator_nonce: Bytes32,
     recipient_nonce: Bytes32,
@@ -96,7 +96,7 @@ test "deriveSecrets: zero vectors match spec composition" {
     @memcpy(eph_cat_aes[32..64], &aes);
     const mac = crypto.Hash.keccak256(&eph_cat_aes);
 
-    const got = deriveSecrets(zero32, zero32, zero32);
+    const got = derive_secrets(zero32, zero32, zero32);
     try std.testing.expectEqualSlices(u8, &shared, &got.shared);
     try std.testing.expectEqualSlices(u8, &aes, &got.aes);
     try std.testing.expectEqualSlices(u8, &mac, &got.mac);
@@ -109,17 +109,17 @@ test "deriveSecrets: input variation changes outputs" {
     var twos: Bytes32 = z;
     @memset(&twos, 0x02);
 
-    const base = deriveSecrets(z, z, z);
-    const ch_e = deriveSecrets(ones, z, z);
-    const ch_i = deriveSecrets(z, ones, z);
-    const ch_r = deriveSecrets(z, z, ones);
+    const base = derive_secrets(z, z, z);
+    const ch_e = derive_secrets(ones, z, z);
+    const ch_i = derive_secrets(z, ones, z);
+    const ch_r = derive_secrets(z, z, ones);
 
     try std.testing.expect(!std.mem.eql(u8, &base.shared, &ch_e.shared));
     try std.testing.expect(!std.mem.eql(u8, &base.aes, &ch_i.aes));
     try std.testing.expect(!std.mem.eql(u8, &base.mac, &ch_r.mac));
 
     // Symmetry on swapping nonces is not expected; order is recipient || initiator
-    const swap = deriveSecrets(z, twos, ones);
-    const noswap = deriveSecrets(z, ones, twos);
+    const swap = derive_secrets(z, twos, ones);
+    const noswap = derive_secrets(z, ones, twos);
     try std.testing.expect(!std.mem.eql(u8, &swap.shared, &noswap.shared));
 }
