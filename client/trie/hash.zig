@@ -340,6 +340,7 @@ fn encode_internal_from_items(
 
     const list_data = RlpMod.Data{ .List = list_items };
     const encoded = try encode_data(RlpMod, allocator, list_data);
+    defer allocator.free(encoded);
 
     if (encoded.len < 32) {
         return list_data;
