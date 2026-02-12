@@ -2,7 +2,6 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 import { Address, Hex, RuntimeCode } from "voltaire-effect/primitives";
 import type { StorageSlotType, StorageValueType } from "./StorageTypes";
 import { EMPTY_ACCOUNT, isEmpty, type AccountStateType } from "./Account";
@@ -27,12 +26,6 @@ import { lookupSnapshotEntry } from "./internal/snapshot";
 type AccountKey = Parameters<typeof Hex.equals>[0];
 /** Hex-encoded key for storage slot map storage. */
 type StorageKey = Parameters<typeof Hex.equals>[0];
-/** Canonical storage slot type. */
-type StorageSlotType = Schema.Schema.Type<typeof Storage.StorageSlotSchema>;
-/** Canonical storage value type. */
-type StorageValueType = Schema.Schema.Type<
-  typeof StorageValue.StorageValueSchema
->;
 /** Canonical runtime code type. */
 type CodeValueType = RuntimeCode.RuntimeCodeType;
 /** Journal key format for world state changes. */

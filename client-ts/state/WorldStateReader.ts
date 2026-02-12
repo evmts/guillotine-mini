@@ -1,22 +1,15 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
-import {
-  Address,
-  RuntimeCode,
-  Storage,
-  StorageValue,
-} from "voltaire-effect/primitives";
+import { Address, RuntimeCode } from "voltaire-effect/primitives";
 import type { AccountStateType } from "./Account";
 import { WorldState, WorldStateTest } from "./State";
+import type {
+  StorageSlotType,
+  StorageValueType,
+} from "./StorageTypes";
 
-/** Canonical storage slot type. */
-type StorageSlotType = Schema.Schema.Type<typeof Storage.StorageSlotSchema>;
-/** Canonical storage value type. */
-type StorageValueType = Schema.Schema.Type<
-  typeof StorageValue.StorageValueSchema
->;
+// Storage types are centralized in `StorageTypes.ts` to prevent drift.
 
 /**
  * Read-only view of the world state, mirroring Nethermind's IStateReader boundary.
