@@ -214,6 +214,25 @@ describe("WorldState", () => {
   );
 
   it.effect(
+    "setting empty code on a missing account is a no-op (does not materialize account)",
+    () =>
+      provideWorldState(
+        Effect.gen(function* () {
+          const addr = makeAddress(0xe3);
+          const empty = EMPTY_CODE;
+          // no prior account
+          assert.isNull(yield* getAccountOptional(addr));
+          // set empty code → should not create account or journal
+          yield* setCode(addr, empty);
+          const stillMissing = yield* getAccountOptional(addr);
+          assert.isNull(stillMissing);
+          const bytes = yield* getCode(addr);
+          assert.strictEqual(codeHex(bytes), codeHex(empty));
+        }),
+      ),
+  );
+
+  it.effect(
     "setCode is idempotent on identical bytes and does not journal spurious updates",
     () =>
       provideWorldState(
