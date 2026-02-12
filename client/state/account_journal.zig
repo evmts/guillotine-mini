@@ -59,6 +59,14 @@ pub const AccountJournal = struct {
         return self.journal.append(.{ .key = address, .value = null, .tag = .delete });
     }
 
+    /// Record an empty-account touch (EIP-158 semantics).
+    ///
+    /// Touches are metadata-only signals used by higher layers during
+    /// empty-account cleanup. They do not carry a value payload.
+    pub fn touch(self: *Self, address: Address) JournalError!usize {
+        return self.journal.append(.{ .key = address, .value = null, .tag = .touch });
+    }
+
     // ---------------------------------------------------------------------
     // Snapshot / Restore / Commit
     // ---------------------------------------------------------------------
@@ -168,4 +176,18 @@ test "AccountJournal: commit after snapshot clears tail" {
     try std.testing.expectEqual(@as(usize, 1), aj.len());
     const post = aj.items();
     try std.testing.expectEqual(ChangeTag.create, post[0].tag);
+}
+
+test "AccountJournal: touch tagging (value=null)" {
+    var aj = AccountJournal.init(std.testing.allocator);
+    defer aj.deinit();
+
+    const a1 = addr(0xC1);
+    _ = try aj.touch(a1);
+
+    try std.testing.expectEqual(@as(usize, 1), aj.len());
+    const it = aj.items();
+    try std.testing.expectEqual(ChangeTag.touch, it[0].tag);
+    try std.testing.expect(it[0].value == null);
+    try std.testing.expect(std.mem.eql(u8, &it[0].key.bytes, &a1.bytes));
 }
