@@ -12,7 +12,7 @@
 const std = @import("std");
 const primitives = @import("primitives");
 const Hash = primitives.Hash;
-const BlockNumber = @import("primitives").BlockNumber;
+const BlockNumber = primitives.BlockNumber;
 
 /// Origin discriminator: number or hash (per devp2p eth spec).
 pub const Origin = union(enum) {
