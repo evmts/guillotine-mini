@@ -48,7 +48,7 @@ pub fn extractRequestId(input: []const u8) ExtractIdResult {
     var expecting_key = false;
     var key_idx: ?usize = null;
     var s: usize = i;
-    while (s < input.len) : (s += 1) {
+    scan: while (s < input.len) : (s += 1) {
         const c = input[s];
         if (in_string) {
             if (escaped) {
@@ -68,7 +68,7 @@ pub fn extractRequestId(input: []const u8) ExtractIdResult {
                     const rem = input[s..];
                     if (rem.len >= key.len and std.mem.eql(u8, rem[0..key.len], key)) {
                         key_idx = s;
-                        break;
+                        break :scan; // short-circuit once the top-level key is found
                     }
                 }
                 in_string = true;
