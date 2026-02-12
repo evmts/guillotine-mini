@@ -7,6 +7,10 @@ const U256 = primitives.Denomination.U256;
 
 /// Calculate the base-fee threshold used for immediate local tx broadcast.
 ///
+/// Returned value is a `MaxFeePerGas`.
+/// Callers must broadcast only when `tx.max_fee_per_gas >= calculate_base_fee_threshold(...)`.
+/// Explicit: compare `tx.max_fee_per_gas` against this threshold.
+///
 /// Mirrors Nethermind's TxBroadcaster.CalculateBaseFeeThreshold semantics:
 /// - Compute floor(base_fee * threshold_percent / 100)
 /// - If base_fee * threshold_percent overflows, fall back to
