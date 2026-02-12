@@ -65,6 +65,20 @@ pub const INIT_CODE_WORD_COST: u64 = GasConstants.InitcodeWordGas;
 /// Maximum allowed init code size in bytes (EIP-3860, Shanghai+).
 pub const MAX_INIT_CODE_SIZE: u64 = GasConstants.MaxInitcodeSize;
 
+/// Compile-time assertion for supported transaction types used across modules.
+pub fn assert_supported_tx_type(comptime Tx: type, comptime context: []const u8) void {
+    comptime {
+        if (Tx != tx_mod.LegacyTransaction and
+            Tx != tx_mod.Eip2930Transaction and
+            Tx != tx_mod.Eip1559Transaction and
+            Tx != tx_mod.Eip4844Transaction and
+            Tx != tx_mod.Eip7702Transaction)
+        {
+            @compileError("Unsupported transaction type for " ++ context);
+        }
+    }
+}
+
 // ============================================================================
 // Intrinsic Gas Calculation
 // ============================================================================
@@ -93,11 +107,7 @@ pub fn calculate_intrinsic_gas(tx: anytype, hardfork: Hardfork) u64 {
 
     var access_list_address_count: u64 = 0;
     var access_list_storage_key_count: u64 = 0;
-    if (comptime Tx == tx_mod.Eip2930Transaction or
-        Tx == tx_mod.Eip1559Transaction or
-        Tx == tx_mod.Eip4844Transaction or
-        Tx == tx_mod.Eip7702Transaction)
-    {
+    if (comptime (Tx == tx_mod.Eip2930Transaction or Tx == tx_mod.Eip1559Transaction or Tx == tx_mod.Eip4844Transaction or Tx == tx_mod.Eip7702Transaction)) {
         access_list_address_count = @intCast(tx.access_list.len);
         for (tx.access_list) |entry| {
             access_list_storage_key_count += @intCast(entry.storage_keys.len);

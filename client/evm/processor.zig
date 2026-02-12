@@ -24,16 +24,8 @@ inline fn to_bytes_be(x: u256) [32]u8 {
     return out;
 }
 
-fn assert_supported_tx_type(comptime Tx: type, comptime context: []const u8) void {
-    if (Tx != tx_mod.LegacyTransaction and
-        Tx != tx_mod.Eip2930Transaction and
-        Tx != tx_mod.Eip1559Transaction and
-        Tx != tx_mod.Eip4844Transaction and
-        Tx != tx_mod.Eip7702Transaction)
-    {
-        @compileError("Unsupported transaction type for " ++ context);
-    }
-}
+// Reuse the single source of truth defined in intrinsic_gas.zig
+const assert_supported_tx_type = intrinsic_gas.assert_supported_tx_type;
 
 /// Validate a transaction per execution-specs and return its intrinsic gas.
 ///
