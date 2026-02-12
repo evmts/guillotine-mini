@@ -2,13 +2,7 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type * as Schema from "effect/Schema";
-import {
-  Address,
-  Hex,
-  Storage,
-  StorageValue,
-} from "voltaire-effect/primitives";
+import { Address, Hex } from "voltaire-effect/primitives";
 import { bytes32Equals } from "./internal/bytes";
 import {
   cloneStorageValue,
@@ -16,13 +10,10 @@ import {
   zeroBytes32,
 } from "./internal/storage";
 import { lookupSnapshotEntry } from "./internal/snapshot";
+import type { StorageSlotType, StorageValueType } from "./StorageTypes";
 
 type AddressKey = Parameters<typeof Hex.equals>[0];
 type StorageKey = Parameters<typeof Hex.equals>[0];
-type StorageSlotType = Schema.Schema.Type<typeof Storage.StorageSlotSchema>;
-type StorageValueType = Schema.Schema.Type<
-  typeof StorageValue.StorageValueSchema
->;
 
 type TransientStorageJournalEntry = {
   readonly addressKey: AddressKey;
