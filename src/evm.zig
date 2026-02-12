@@ -635,7 +635,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     self.storage.clear_transient();
 
                     // Delete selfdestructed accounts at end of transaction (EIP-6780)
-                    self.cleanupSelfdestructedAccountsEndOfTx();
+                    self.cleanup_selfdestructed_accounts_end_of_tx();
 
                     return CallResult{
                         .success = true,
@@ -738,7 +738,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             // Delete selfdestructed accounts at end of transaction (EIP-6780)
             // This must happen AFTER transient storage is cleared since transient storage
             // should be accessible during the transaction even after SELFDESTRUCT
-            self.cleanupSelfdestructedAccountsEndOfTx();
+            self.cleanup_selfdestructed_accounts_end_of_tx();
 
             // Clear transaction-scoped sets at end of transaction
             // These must be cleared to avoid incorrectly treating accounts as created/selfdestructed
@@ -864,7 +864,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Delete accounts marked via SELFDESTRUCT at end of transaction (EIP-6780).
         /// Handles both host-backed and in-memory modes. Must be called only after
         /// transient storage is cleared and logs are finalized.
-        fn cleanupSelfdestructedAccountsEndOfTx(self: *Self) void {
+        fn cleanup_selfdestructed_accounts_end_of_tx(self: *Self) void {
             var it = self.selfdestructed_accounts.iterator();
             while (it.next()) |entry| {
                 const addr = entry.key_ptr.*;
