@@ -24,12 +24,19 @@ const Block = primitives.Block;
 /// local-only semantics. If Voltaire exposes first-class local getters in the
 /// future, switch the implementation here to those accessors.
 pub inline fn get_block_local(chain: *Chain, hash: primitives.Hash.Hash) ?Block.Block {
+    // Prefer an upstream getter if available; fallback to internals
+    if (@hasDecl(Chain, "getBlockLocal")) {
+        const Fn = fn (*Chain, primitives.Hash.Hash) ?Block.Block;
+        const f: Fn = @field(Chain, "getBlockLocal");
+        return f(chain, hash);
+    }
     return chain.block_store.getBlock(hash);
 }
 
 /// Returns a canonical block by number from the local store only.
 pub inline fn get_block_by_number_local(chain: *Chain, number: u64) ?Block.Block {
-    return chain.block_store.getBlockByNumber(number);
+    const h = chain.getCanonicalHash(number) orelse return null;
+    return (chain.getBlockByHash(h) catch null);
 }
 
 test {
