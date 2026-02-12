@@ -826,6 +826,39 @@ test "engine api generic dispatcher routes exchangeCapabilities" {
 // Note: generic dispatcher does not route non-Voltaire-declared methods like
 // engine_getClientVersionV1. That method is invoked directly via the vtable.
 
+test "engine api generic dispatcher routes exchangeTransitionConfigurationV1" {
+    const allocator = std.testing.allocator;
+    var obj = try make_transition_config_object(
+        allocator,
+        "0x0",
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "0x1",
+    );
+    defer obj.deinit();
+
+    const params = ExchangeTransitionConfigurationV1Params{
+        .consensus_client_configuration = jsonrpc.types.Quantity{ .value = .{ .object = obj } },
+    };
+
+    var ret_obj = try make_transition_config_object(
+        allocator,
+        "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc00",
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "0x0",
+    );
+    defer ret_obj.deinit();
+    const result_value = ExchangeTransitionConfigurationV1Result{
+        .value = jsonrpc.types.Quantity{ .value = .{ .object = ret_obj } },
+    };
+
+    const exchange_result = ExchangeCapabilitiesResult{ .value = jsonrpc.types.Quantity{ .value = .{ .null = {} } } };
+    var dummy = DummyEngine{ .result = exchange_result, .transition_result = result_value };
+    const api = make_api(&dummy);
+
+    const out = try api.dispatch(ExchangeTransitionConfigurationV1Method, params);
+    try std.testing.expectEqualDeep(result_value, out);
+}
+
 test "engine api generic dispatcher rejects unknown method" {
     const GetPayloadV1 = @FieldType(jsonrpc.engine.EngineMethod, "engine_getPayloadV1");
     const GetPayloadV1Params = @FieldType(GetPayloadV1, "params");
