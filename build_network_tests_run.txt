@@ -2,7 +2,3 @@
 + cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./build/assembly.S
 + ar rc libblst.a assembly.o server.o
 + ranlib libblst.a
-+ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./src/server.c
-+ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./build/assembly.S
-+ ar rc libblst.a assembly.o server.o
-+ ranlib libblst.a
