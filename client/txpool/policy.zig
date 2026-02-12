@@ -16,7 +16,7 @@ const U256 = primitives.Denomination.U256;
 /// - If base_fee * threshold_percent overflows, fall back to
 ///   floor((base_fee / 100) * threshold_percent)
 /// - If even the fallback overflows (only possible when threshold_percent > 100),
-///   return U256.MAX to indicate "unattainable threshold".
+///   return MaxFeePerGas(U256.MAX) to indicate "unattainable threshold".
 ///
 /// All arithmetic is performed on Voltaire U256 primitives with explicit
 /// overflow handling. No allocations.
