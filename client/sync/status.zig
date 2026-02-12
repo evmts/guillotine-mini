@@ -117,3 +117,15 @@ test "to_sync_status: unknown highest (0) reports syncing even at head" {
     const s1 = to_sync_status(mode.SyncMode.waiting_for_block, 1000, 0, 8);
     try std.testing.expect(s1.isSyncing());
 }
+test "to_sync_status: near head with only headers/state does NOT gate syncing" {
+    const near: u64 = 1000;
+    const highest: u64 = 1005;
+    const s_headers = to_sync_status(mode.SyncMode.fast_headers, near, highest, 8);
+    try std.testing.expect(!s_headers.isSyncing());
+    const s_state = to_sync_status(mode.SyncMode.state_nodes, near, highest, 8);
+    try std.testing.expect(!s_state.isSyncing());
+}
+test "to_sync_status: current > highest is treated as synced (not syncing)" {
+    const s = to_sync_status(mode.SyncMode.waiting_for_block, 1010, 1005, 8);
+    try std.testing.expect(!s.isSyncing());
+}
