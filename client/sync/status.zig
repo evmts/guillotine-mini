@@ -28,6 +28,11 @@ pub fn is_synced_by_distance(current_block: u64, highest_block: u64, max_distanc
 /// - Else if any body/receipt/header/state phases are incomplete per SyncMode, returns syncing
 /// - Else returns not_syncing
 pub fn to_sync_status(sync_mode: u32, current_block: u64, highest_block: u64, max_distance_for_synced: u64) SyncStatus {
+    // Unknown best-known head (e.g. no peer estimates yet) must be treated as syncing.
+    // Mirrors Nethermind BlockTreeExtensions.IsSyncing semantics for highest == 0.
+    if (highest_block == 0) {
+        return SyncStatusMod.syncing(0, current_block, highest_block);
+    }
     // Primary criterion: distance to best suggested head.
     if (!is_synced_by_distance(current_block, highest_block, max_distance_for_synced)) {
         return SyncStatusMod.syncing(0, current_block, highest_block);
