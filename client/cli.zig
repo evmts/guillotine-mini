@@ -219,3 +219,16 @@ test "cli rejects missing or invalid values" {
         );
     }
 }
+
+test "write_version outputs stable line" {
+    var buffer: [64]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+
+    try write_version(stream.writer());
+
+    const output = stream.getWritten();
+    try std.testing.expectEqualStrings(
+        "guillotine-mini 0.0.0 (runner)\n",
+        output,
+    );
+}
