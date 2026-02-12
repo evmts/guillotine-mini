@@ -14,7 +14,12 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const TriePrimitives = @import("primitives");
-const TrieError = TriePrimitives.TrieError;
+// Local error set mirroring Voltaire's TrieError; use until exported upstream
+pub const TrieError = error{
+    InvalidNode,
+    InvalidKey,
+    EmptyInput,
+};
 
 const DefaultRlp = TriePrimitives.Rlp;
 const DefaultHash = @import("crypto").Hash;
@@ -90,7 +95,7 @@ fn trie_root_with(
     // Convert keys to nibble form
     var nibble_keys = try arena_alloc.alloc([]u8, keys.len);
     for (keys, 0..) |key, i| {
-        nibble_keys[i] = try TriePrimitives.keyToNibbles(arena_alloc, key);
+        nibble_keys[i] = try keyToNibbles(arena_alloc, key);
     }
 
     const root_node = try patricialize(RlpMod, HashMod, arena_alloc, nibble_keys, values, 0);
@@ -256,7 +261,7 @@ fn encode_internal_path_node(
     is_leaf: bool,
     second: RlpMod.Data,
 ) !RlpMod.Data {
-    const compact_path = try TriePrimitives.encodePath(allocator, path, is_leaf);
+    const compact_path = try encodeHexPath(allocator, path, is_leaf);
     const items = [_]RlpMod.Data{
         .{ .String = compact_path },
         second,
@@ -358,6 +363,43 @@ fn encode_data(
     const written = try encode_into(RlpMod, data, out);
     std.debug.assert(written == total_len);
     return out;
+}
+
+/// Convert a key (bytes) to nibbles (hex digits)
+fn keyToNibbles(allocator: Allocator, key: []const u8) ![]u8 {
+    const nibbles = try allocator.alloc(u8, key.len * 2);
+    errdefer allocator.free(nibbles);
+    for (key, 0..) |byte, i| {
+        nibbles[i * 2] = byte >> 4;
+        nibbles[i * 2 + 1] = byte & 0x0F;
+    }
+    return nibbles;
+}
+
+/// Encode a nibble path for leaf or extension nodes (hex prefix encoding)
+fn encodeHexPath(allocator: Allocator, nibbles: []const u8, is_leaf: bool) ![]u8 {
+    if (nibbles.len == 0) {
+        const result = try allocator.alloc(u8, 1);
+        result[0] = if (is_leaf) 0x20 else 0x00;
+        return result;
+    }
+    const is_odd = nibbles.len % 2 == 1;
+    const enc_len = if (is_odd) (nibbles.len + 1) / 2 else (nibbles.len / 2) + 1;
+    const encoded = try allocator.alloc(u8, enc_len);
+    errdefer allocator.free(encoded);
+    if (is_odd) {
+        const prefix: u8 = if (is_leaf) 0x30 else 0x10;
+        encoded[0] = prefix | nibbles[0];
+        for (1..enc_len) |i| {
+            encoded[i] = (nibbles[i * 2 - 1] << 4) | nibbles[i * 2];
+        }
+    } else {
+        encoded[0] = if (is_leaf) 0x20 else 0x00;
+        for (1..enc_len) |i| {
+            encoded[i] = (nibbles[(i - 1) * 2] << 4) | nibbles[(i - 1) * 2 + 1];
+        }
+    }
+    return encoded;
 }
 
 fn checked_add(
