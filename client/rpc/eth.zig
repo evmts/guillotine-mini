@@ -17,8 +17,20 @@ pub fn EthApi(comptime Provider: type) type {
     // Compile-time contract for Provider
     comptime {
         if (!@hasDecl(Provider, "getChainId")) {
-            @compileError("EthApi Provider must define getChainId() u64");
+            @compileError("EthApi Provider must define getChainId(self: *const Provider) u64");
         }
+        const Fn = @TypeOf(Provider.getChainId);
+        const ti = @typeInfo(Fn);
+        if (ti != .@"fn") @compileError("getChainId must be a function");
+        if (ti.@"fn".params.len != 1 or ti.@"fn".params[0].type == null) {
+            @compileError("getChainId must take exactly one parameter: *const Provider");
+        }
+        const P0 = ti.@"fn".params[0].type.?;
+        if (@typeInfo(P0) != .pointer or @typeInfo(P0).pointer.is_const != true or @typeInfo(P0).pointer.child != Provider) {
+            @compileError("getChainId param must be of type *const Provider");
+        }
+        const Ret = ti.@"fn".return_type orelse @compileError("getChainId must return u64");
+        if (Ret != u64) @compileError("getChainId must return u64");
     }
 
     return struct {
