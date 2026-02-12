@@ -192,7 +192,8 @@ const main = Effect.gen(function* () {
   });
 });
 
-const WorldStateBenchLayer = WorldStateLive.pipe(Layer.provide(JournalLive()));
+// Provide the journal layer instance (JournalLive is already a Layer, not a factory)
+const WorldStateBenchLayer = WorldStateLive.pipe(Layer.provide(JournalLive));
 
 pipe(
   main,
