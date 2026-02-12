@@ -97,7 +97,7 @@ fn trie_root_with(
     // Convert keys to nibble form
     var nibble_keys = try arena_alloc.alloc([]u8, keys.len);
     for (keys, 0..) |key, i| {
-        nibble_keys[i] = try keyToNibbles(arena_alloc, key);
+        nibble_keys[i] = try key_to_nibbles(arena_alloc, key);
     }
 
     const root_node = try patricialize(RlpMod, HashMod, arena_alloc, nibble_keys, values, 0);
@@ -263,7 +263,7 @@ fn encode_internal_path_node(
     is_leaf: bool,
     second: RlpMod.Data,
 ) !RlpMod.Data {
-    const compact_path = try encodeHexPath(allocator, path, is_leaf);
+    const compact_path = try encode_hex_path(allocator, path, is_leaf);
     const items = [_]RlpMod.Data{
         .{ .String = compact_path },
         second,
@@ -349,6 +349,8 @@ fn encode_internal_from_items(
     const hashed = HashMod.keccak256(encoded);
     const hash_bytes = try allocator.alloc(u8, hashed.len);
     @memcpy(hash_bytes, hashed[0..]);
+    // list_items is no longer needed when node is hashed; free to reduce arena bloat.
+    allocator.free(list_items);
 
     return .{ .String = hash_bytes };
 }
@@ -369,7 +371,8 @@ fn encode_data(
 }
 
 /// Convert a key (bytes) to nibbles (hex digits)
-fn keyToNibbles(allocator: Allocator, key: []const u8) ![]u8 {
+/// Convert a key (bytes) into its hex-nibble representation.
+fn key_to_nibbles(allocator: Allocator, key: []const u8) ![]u8 {
     const nibbles = try allocator.alloc(u8, key.len * 2);
     errdefer allocator.free(nibbles);
     for (key, 0..) |byte, i| {
@@ -380,7 +383,8 @@ fn keyToNibbles(allocator: Allocator, key: []const u8) ![]u8 {
 }
 
 /// Encode a nibble path for leaf or extension nodes (hex prefix encoding)
-fn encodeHexPath(allocator: Allocator, nibbles: []const u8, is_leaf: bool) ![]u8 {
+/// Encode a nibble slice using Ethereum's hex-prefix (HP) encoding.
+fn encode_hex_path(allocator: Allocator, nibbles: []const u8, is_leaf: bool) ![]u8 {
     if (nibbles.len == 0) {
         const result = try allocator.alloc(u8, 1);
         result[0] = if (is_leaf) 0x20 else 0x00;
