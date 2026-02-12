@@ -10,6 +10,10 @@ const SyncStatusMod = @import("primitives").SyncStatus;
 const SyncStatus = SyncStatusMod.SyncStatus;
 const mode = @import("mode.zig");
 
+/// Default block distance threshold considered "synced" to head.
+/// Chosen to mirror Nethermind-style small tolerance while avoiding flapping.
+pub const DEFAULT_MAX_DISTANCE_FOR_SYNCED: u64 = 8;
+
 /// Return true when the current head is considered "synced" to the network head
 /// within the provided distance threshold. Equivalent to Nethermind's
 /// BlockTree.IsSyncing(maxDistanceForSynced: X) inverted.
@@ -46,6 +50,13 @@ pub fn to_sync_status(sync_mode: u32, current_block: u64, highest_block: u64, ma
     return SyncStatusMod.notSyncing();
 }
 
+/// Convenience wrapper that applies the default distance threshold.
+/// This is the preferred entry point for external callers unless they
+/// explicitly want a custom tolerance.
+pub fn default_to_sync_status(sync_mode: u32, current_block: u64, highest_block: u64) SyncStatus {
+    return to_sync_status(sync_mode, current_block, highest_block, DEFAULT_MAX_DISTANCE_FOR_SYNCED);
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -78,4 +89,25 @@ test "to_sync_status: near head but fast phases active reports syncing" {
 test "to_sync_status: fully synced and no phases active reports not_syncing" {
     const s = to_sync_status(mode.SyncMode.waiting_for_block, 2000, 2000, 8);
     try std.testing.expect(!s.isSyncing());
+}
+
+test "default_to_sync_status: equals explicit threshold" {
+    const s1 = default_to_sync_status(mode.SyncMode.waiting_for_block, 100, 108);
+    const s2 = to_sync_status(mode.SyncMode.waiting_for_block, 100, 108, DEFAULT_MAX_DISTANCE_FOR_SYNCED);
+    try std.testing.expectEqual(s1.isSyncing(), s2.isSyncing());
+}
+
+test "default_to_sync_status: far from head => syncing" {
+    const s = default_to_sync_status(mode.SyncMode.waiting_for_block, 100, 109);
+    try std.testing.expect(s.isSyncing());
+}
+
+test "default_to_sync_status: near head + waiting => not syncing" {
+    const s = default_to_sync_status(mode.SyncMode.waiting_for_block, 1000, 1005);
+    try std.testing.expect(!s.isSyncing());
+}
+
+test "default_to_sync_status: near head but fast phases => syncing" {
+    const s = default_to_sync_status(mode.SyncMode.fast_bodies, 1000, 1005);
+    try std.testing.expect(s.isSyncing());
 }

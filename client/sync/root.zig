@@ -26,6 +26,8 @@ pub const HeadersOrigin = headers.Origin;
 /// Sync status helpers (Nethermind-aligned semantics -> Voltaire SyncStatus).
 pub const is_synced_by_distance = status.is_synced_by_distance;
 pub const to_sync_status = status.to_sync_status;
+pub const default_to_sync_status = status.default_to_sync_status;
+pub const DEFAULT_MAX_DISTANCE_FOR_SYNCED = status.DEFAULT_MAX_DISTANCE_FOR_SYNCED;
 
 test {
     @import("std").testing.refAllDecls(@This());
