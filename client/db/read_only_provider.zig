@@ -227,3 +227,15 @@ test "ReadOnlyDbProvider(overlay): second db lazily initializes its own overlay"
     defer h_val.release();
     try std.testing.expectEqualStrings("2", h_val.bytes);
 }
+
+test "ReadOnlyDbProvider: has_write_overlay reflects overlay mode" {
+    var prov = DbProvider.init();
+
+    var strict = ReadOnlyDbProvider.init_strict(&prov);
+    defer strict.deinit();
+    try std.testing.expect(!strict.has_write_overlay());
+
+    var with_overlay = ReadOnlyDbProvider.init_with_write_store(&prov, std.testing.allocator);
+    defer with_overlay.deinit();
+    try std.testing.expect(with_overlay.has_write_overlay());
+}
