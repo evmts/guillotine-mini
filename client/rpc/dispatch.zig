@@ -7,6 +7,7 @@
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
 const errors = @import("error.zig");
+const scan = @import("scan.zig");
 
 /// Returns the root namespace tag of a JSON-RPC method name.
 /// - `.engine` for Engine API
@@ -122,61 +123,10 @@ pub fn parse_request_namespace(request: []const u8) ParseNamespaceResult {
     }
 
     const key = "\"method\"";
-    // Depth-aware, key-context search for top-level key named "method".
-    var depth: u32 = 0;
-    var in_string = false;
-    var escaped = false;
-    var expecting_key = false; // only true inside the top-level object when next token is a key
-    var idx_opt: ?usize = null;
-    var i_scan: usize = i_top; // start from first non-ws char
-    while (i_scan < request.len) : (i_scan += 1) {
-        const c = request[i_scan];
-        if (in_string) {
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-            if (c == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (c == '"') in_string = false; // end string
-            continue;
-        }
-        switch (c) {
-            '"' => {
-                // Only treat as a potential key when at top-level object and expecting a key
-                if (depth == 1 and expecting_key) {
-                    const rem = request[i_scan..];
-                    if (rem.len >= key.len and std.mem.eql(u8, rem[0..key.len], key)) {
-                        idx_opt = i_scan;
-                        break;
-                    }
-                }
-                in_string = true;
-            },
-            '{' => {
-                depth += 1;
-                if (depth == 1) expecting_key = true; // entering top-level object
-            },
-            '}' => {
-                if (depth == 0) break else depth -= 1;
-                if (depth == 1) expecting_key = false; // leaving inner object
-            },
-            '[' => depth += 1,
-            ']' => if (depth == 0) break else depth -= 1,
-            58 => {
-                if (depth == 1) expecting_key = false;
-            },
-            44 => {
-                if (depth == 1) expecting_key = true;
-            },
-            else => {},
-        }
-    }
+    const idx_opt = scan.find_top_level_key(request[i_top..], key);
     if (idx_opt == null) return .{ .err = .invalid_request };
 
-    var i: usize = idx_opt.? + key.len;
+    var i: usize = i_top + idx_opt.? + key.len;
     // Skip whitespace to the ':'
     while (i < request.len and std.ascii.isWhitespace(request[i])) : (i += 1) {}
     if (i >= request.len or request[i] != ':') return .{ .err = .invalid_request };

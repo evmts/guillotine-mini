@@ -6,6 +6,7 @@
 //! full `std.json.Value` trees.
 const std = @import("std");
 const errors = @import("error.zig");
+const scan = @import("scan.zig");
 
 /// Zero-copy representation of a JSON-RPC request id.
 /// - `.string` returns the raw, unescaped string contents (between quotes).
@@ -43,65 +44,11 @@ pub fn extract_request_id(input: []const u8) ExtractIdResult {
     if (first != '{') return .{ .err = .invalid_request };
 
     const key = "\"id\"";
-    var depth: u32 = 0;
-    var in_string = false;
-    var escaped = false;
-    var expecting_key = false;
-    var key_idx: ?usize = null;
-    var s: usize = i;
-    scan: while (s < input.len) : (s += 1) {
-        const c = input[s];
-        if (in_string) {
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-            if (c == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (c == '"') in_string = false;
-            continue;
-        }
-        switch (c) {
-            '"' => {
-                if (depth == 1 and expecting_key) {
-                    const rem = input[s..];
-                    if (rem.len >= key.len and std.mem.eql(u8, rem[0..key.len], key)) {
-                        key_idx = s;
-                        break :scan; // short-circuit once the top-level key is found
-                    }
-                }
-                in_string = true;
-            },
-            '{' => {
-                depth += 1;
-                if (depth == 1) expecting_key = true;
-            },
-            '}' => {
-                if (depth == 0) break;
-                depth -= 1;
-                if (depth == 1) expecting_key = false;
-            },
-            '[' => depth += 1,
-            ']' => {
-                if (depth == 0) break;
-                depth -= 1;
-            },
-            ':' => {
-                if (depth == 1) expecting_key = false;
-            },
-            ',' => {
-                if (depth == 1) expecting_key = true;
-            },
-            else => {},
-        }
-    }
-
+    const key_idx = scan.find_top_level_key(input[i..], key);
     if (key_idx == null) return .{ .id = .null }; // id not present → treat as null
 
     // Move to ':' after the key
-    var j: usize = key_idx.? + key.len;
+    var j: usize = i + key_idx.? + key.len;
     while (j < input.len and std.ascii.isWhitespace(input[j])) : (j += 1) {}
     if (j >= input.len or input[j] != ':') return .{ .err = .invalid_request };
     j += 1; // past ':'
