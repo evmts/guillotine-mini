@@ -1,85 +1,91 @@
-# Context — [pass 1/5] phase-4-blockchain (Block Chain Management)
+# [pass 1/5] Phase 4 — Block Chain Management (Focused Context)
 
-This file collects the minimal, high-signal references needed to implement Phase 4 (Block Chain Management) in Guillotine. It ties PRD goals to spec sources, Nethermind structure, and Voltaire primitives that we MUST use. EVM reimplementation is forbidden; we integrate with the existing `src/` EVM and Voltaire types exclusively.
+This context consolidates the exact references and APIs needed to implement Phase 4 (Block Chain Management) using Voltaire primitives and the existing guillotine-mini EVM. It is intentionally narrow and implementation‑oriented.
 
-## Phase Goal (from PRD)
+## Goals (from PRD)
 - Manage the block chain structure and validation.
-- Key Zig components to implement next:
-  - `client/blockchain/chain.zig` — chain management (canonical head selection, forks, reorgs)
-  - `client/blockchain/validator.zig` — block/header validation pipeline
-- References: `nethermind/src/Nethermind/Nethermind.Blockchain/`, Voltaire: `voltaire-zig/src/blockchain/`
+- Key components to implement in this phase:
+  - `client/blockchain/chain.zig` — chain management
+  - `client/blockchain/validator.zig` — block validation
+- Architectural references:
+  - Nethermind: `nethermind/src/Nethermind/Nethermind.Blockchain/`
+  - Voltaire: `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/`
+- Test fixtures:
+  - `ethereum-tests/BlockchainTests/`
+
+Source: prd/GUILLOTINE_CLIENT_PLAN.md (Phase 4 section)
+
+## Spec References
+Primary sources to drive correctness (do not diverge):
+- execution-specs (block validation across forks):
+  - `execution-specs/src/ethereum/forks/*/fork.py` (header + ommers validation, basefee where applicable)
+    - Examples located under: `frontier`, `homestead`, `byzantium`, `constantinople`, `istanbul`, `muir_glacier`, `gray_glacier`, `london`, `arrow_glacier`, etc.
+- Yellow Paper: Section 11 (Block Finalization) — canonical chain and block validity conditions.
+- EIPs affecting block header semantics for PoS era:
+  - `EIPs/EIPS/eip-3675.md` (The Merge — removes PoW fields, constant ommers, total difficulty handling frozen, consensus via CL)
+  - `EIPs/EIPS/eip-4399.md` (PREVRANDAO — replaces DIFFICULTY semantics, header field update)
+
+Ancillary sources (for helpers / serialization):
+- `execution-specs/src/ethereum/rlp.py` (reference RLP behavior)
+- `execution-specs/src/ethereum_spec_tools/evm_tools/loaders/fixture_loader.py` (how blockchain fixtures compute header/hash)
+
+## Nethermind — Db Layer (for storage patterns)
+List of key files to mirror interfaces/concerns (read-only architectural reference):
+- `nethermind/src/Nethermind/Nethermind.Db/IDb.cs` — base DB interface
+- `nethermind/src/Nethermind/Nethermind.Db/IDbProvider.cs` — provider composition
+- `nethermind/src/Nethermind/Nethermind.Db/DbProvider.cs` — provider implementation
+- `nethermind/src/Nethermind/Nethermind.Db/MemDb.cs` — in-memory DB
+- `nethermind/src/Nethermind/Nethermind.Db/ReadOnlyDb.cs` — read-only facade
+- `nethermind/src/Nethermind/Nethermind.Db/RocksDbSettings.cs` — RocksDB configuration
+- `nethermind/src/Nethermind/Nethermind.Db/PruningConfig.cs` — pruning concerns
+
+These inform how we slice read/write surfaces and column abstractions. We will implement idiomatically in Zig using existing Phase 0 DB adapter.
+
+## Voltaire APIs to Use (no custom types)
+Prefer these modules/types for chain management:
+- `primitives.Block.Block` — full block type
+- `primitives.BlockHeader.BlockHeader` — header fields
+- `primitives.BlockHash.BlockHash` and `primitives.Hash.Hash` — hashing
+- `primitives.Rlp` — RLP encode/decode
+- `primitives.StateRoot.StateRoot`, `primitives.BloomFilter.BloomFilter`
+- `blockchain.Blockchain` — unified local/remote view
+- `blockchain.BlockStore` — local storage/canonical tracking
+- `blockchain.ForkBlockCache` — optional remote read cache
+
+Filesystem locations:
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/`
+- `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/`
+
+## Host Interface (guillotine-mini)
+File: `src/host.zig`
+- Minimal host for EVM state access (balance, code, storage, nonce) via vtable.
+- EVM nested calls are handled internally; host is for external state reads/writes.
+- For Phase 4, host informs how we’ll surface canonical state to the EVM during block execution in later phases (integration points only — do not reimplement EVM).
+
+## Test Fixtures (execution driven)
+- `ethereum-tests/BlockchainTests/` — canonical JSON fixtures for block validation and chain canonicalization.
+- `execution-spec-tests/fixtures/blockchain_tests/` — spec-derived blockchain fixtures (when enabling Python-driven tests).
+
+## Implementation Notes
+- Always use Voltaire primitives; never introduce ad-hoc `struct`s for header/hash/bodies.
+- Validation logic must follow `execution-specs` per-fork rules (e.g., ommer rules, base fee post-London, DIFFICULTY/PREVRANDAO semantics post-Merge).
+- Structure mirrors Nethermind: `client/blockchain/{chain.zig,validator.zig}` with clear read/write separation and fork-choice friendly surfaces.
+- Use comptime DI patterns consistent with the EVM code (vtable-like injection for storage/provider surfaces).
+- Error handling: return typed errors; no silent catches.
+- Performance: minimize allocations; prefer arenas for per-block scoped work; avoid unnecessary copies in RLP.
+- Tests: every public function accompanied by `test "..." {}` unit tests and scenario coverage from BlockchainTests.
+
+## Pointers to Open the Exact Files
+- PRD goals: `prd/GUILLOTINE_CLIENT_PLAN.md` (Phase 4 section)
+- Specs:
+  - `execution-specs/src/ethereum/forks/*/fork.py`
+  - `EIPs/EIPS/eip-3675.md`
+  - `EIPs/EIPS/eip-4399.md`
+- Nethermind Db (structure reference): `nethermind/src/Nethermind/Nethermind.Db/`
+- Voltaire Zig APIs:
+  - `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/Blockchain.zig`
+  - `/Users/williamcory/voltaire/packages/voltaire-zig/src/blockchain/BlockStore.zig`
+  - `/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/BlockHeader`
+- Host: `src/host.zig`
 - Tests: `ethereum-tests/BlockchainTests/`
-
-Source: `prd/GUILLOTINE_CLIENT_PLAN.md` (Phase 4: Block Chain Management)
-
-## Spec Files (authoritative)
-Primary: per-fork validation logic lives in `execution-specs/src/ethereum/forks/*/fork.py`.
-- Examples we will map against during validation:
-  - `execution-specs/src/ethereum/forks/frontier/fork.py`
-  - `execution-specs/src/ethereum/forks/homestead/fork.py`
-  - `execution-specs/src/ethereum/forks/london/fork.py`
-  - `execution-specs/src/ethereum/forks/paris/fork.py` (The Merge)
-  - `execution-specs/src/ethereum/forks/shanghai/fork.py`
-  - `execution-specs/src/ethereum/forks/cancun/fork.py`
-  - `execution-specs/src/ethereum/forks/prague/fork.py` (upcoming)
-
-Supporting (block processing/fields across forks):
-- `execution-specs/src/ethereum/forks/*/blocks.py` — block assembly and per-fork block invariants
-
-Yellow Paper: Section 11 (Block finalization) — for conceptual guidance only; Python specs are the source of truth.
-
-Source: `prd/ETHEREUM_SPECS_REFERENCE.md`
-
-## Nethermind Reference (structural only)
-We mirror architecture, not types/behavior. Key areas for Phase 4:
-- `nethermind/src/Nethermind/Nethermind.Blockchain/`
-  - `BlockTree.cs`, `ReadOnlyBlockTree.cs`, `BlockTree.Initializer.cs` — chain/fork tree management
-  - `Headers/` — header handling utilities
-  - `Services/`, `Spec/`, `Utils/` — block import pipeline and helpers
-  - `AddBlockResult.cs`, `BlockchainException.cs` — result and error surfaces
-
-Additionally, database abstractions (used by BlockTree-like components):
-- `nethermind/src/Nethermind/Nethermind.Db/` (key files noted)
-  - `IDb.cs`, `IReadOnlyDb.cs`, `IColumnsDb.cs` — interfaces
-  - `MemDb.cs`, `MemColumnsDb.cs`, `InMemory*Batch.cs` — in-memory implementations
-  - `DbProvider.cs`, `IDbProvider.cs`, `ReadOnlyDbProvider.cs` — provider pattern
-  - `RocksDb*` types, `Pruning*` — RocksDB integration and pruning
-
-We will implement analogous functionality idiomatically in Zig with comptime DI, but persist data using our Phase 0 DB adapter and Voltaire primitives.
-
-## Voltaire APIs to use (no custom duplicates)
-Primitives (types/encodings):
-- `voltaire-zig/src/primitives/Block.zig`
-- `voltaire-zig/src/primitives/BlockHeader.zig`
-- `voltaire-zig/src/primitives/BlockBody.zig`
-- `voltaire-zig/src/primitives/BlockHash.zig`
-- `voltaire-zig/src/primitives/Chain.zig`, `ChainHead.zig`
-- `voltaire-zig/src/primitives/Receipt.zig`, `StateRoot.zig`, `Rlp.zig`
-- `voltaire-zig/src/primitives/Hardfork.zig`
-
-Blockchain helpers:
-- `voltaire-zig/src/blockchain/Blockchain.zig`
-- `voltaire-zig/src/blockchain/BlockStore.zig`
-- `voltaire-zig/src/blockchain/ForkBlockCache.zig`
-
-State manager (for header/state-root checks as needed via host integration):
-- `voltaire-zig/src/state-manager/StateManager.zig`, `JournaledState.zig`
-
-We MUST construct/consume only these Voltaire types. No parallel `struct` definitions for headers, blocks, hashes, receipts, etc.
-
-## Existing Zig Host Interface (integration note)
-`src/host.zig` exposes a minimal `HostInterface` with a vtable for `get/setBalance`, `get/setCode`, `get/setStorage`, `get/setNonce` using `primitives.Address` and `u256`.
-- Nested calls are handled internally by EVM; the host is for external state access only.
-- Our block import/validation will use Voltaire primitives and world-state integrations without bypassing this contract.
-
-## Test Fixtures (to wire up during Phase 4)
-- `ethereum-tests/BlockchainTests/` — canonical EL blockchain tests
-- Additional (from PRD mapping; not required for this pass): `execution-spec-tests/fixtures/blockchain_tests/`
-
-## Implementation Notes (for next pass planning)
-- Start from header validation functions in `execution-specs/.../fork.py` and map invariants to Voltaire `BlockHeader` fields.
-- Use comptime DI to abstract storage (Phase 0 adapter) and fork rules (select via `primitives.Hardfork`).
-- Keep functions small and testable; every public function MUST have a unit test.
-- Never silence errors; surface precise error unions and messages.
-- Hot-path allocations are forbidden; reuse buffers and leverage `Rlp` primitives for encoding/decoding.
 
