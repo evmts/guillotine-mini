@@ -2,9 +2,13 @@ const std = @import("std");
 const primitives = @import("primitives");
 
 const BaseFeePerGas = primitives.BaseFeePerGas;
+const MaxFeePerGas = primitives.MaxFeePerGas;
 const U256 = primitives.Denomination.U256;
 
 /// Calculate the base-fee threshold used for immediate local tx broadcast.
+///
+/// Returned value is a `MaxFeePerGas`; callers should broadcast immediately
+/// only when `tx.max_fee_per_gas >= calculate_base_fee_threshold(...)`.
 ///
 /// Mirrors Nethermind's TxBroadcaster.CalculateBaseFeeThreshold semantics:
 /// - Compute floor(base_fee * threshold_percent / 100)
@@ -15,7 +19,7 @@ const U256 = primitives.Denomination.U256;
 ///
 /// All arithmetic is performed on Voltaire U256 primitives with explicit
 /// overflow handling. No allocations.
-pub fn calculate_base_fee_threshold(base_fee: BaseFeePerGas, threshold_percent: u32) U256 {
+pub fn calculate_base_fee_threshold(base_fee: BaseFeePerGas, threshold_percent: u32) MaxFeePerGas {
     const hundred = U256.from_u64(100);
     const percent = U256.from_u64(threshold_percent);
 
@@ -23,10 +27,11 @@ pub fn calculate_base_fee_threshold(base_fee: BaseFeePerGas, threshold_percent: 
 
     // Try precise path first: (base_fee * percent) / 100
     var mul = fee_wei.overflowing_mul(percent);
-    var threshold = mul.result.div_rem(hundred).quotient;
     var overflow = mul.overflow;
-
-    if (overflow) {
+    var threshold: U256 = undefined;
+    if (!overflow) {
+        threshold = mul.result.div_rem(hundred).quotient;
+    } else {
         // Fallback: (base_fee / 100) * percent (less accurate but avoids early overflow)
         const one_percent = fee_wei.div_rem(hundred).quotient;
         mul = one_percent.overflowing_mul(percent);
@@ -34,7 +39,10 @@ pub fn calculate_base_fee_threshold(base_fee: BaseFeePerGas, threshold_percent: 
         overflow = mul.overflow;
     }
 
-    return if (overflow) U256.MAX else threshold;
+    return if (overflow)
+        MaxFeePerGas.fromU256(U256.MAX)
+    else
+        MaxFeePerGas.fromU256(threshold);
 }
 
 /// Compute how many persistent transactions to broadcast per block.
@@ -52,7 +60,7 @@ pub fn calculate_persistent_broadcast_quota(pool_size: u32, threshold_percent: u
     const product: u64 = @as(u64, threshold_percent) * @as(u64, pool_size);
     const quota64: u64 = product / 100 + 1;
     // Zig 0.15: @intCast takes one argument; use @as for the target type.
-    return if (quota64 > pool_size) pool_size else @as(u32, @intCast(quota64));
+    return if (quota64 > @as(u64, pool_size)) pool_size else @as(u32, @intCast(quota64));
 }
 
 // =============================================================================
@@ -61,15 +69,15 @@ pub fn calculate_persistent_broadcast_quota(pool_size: u32, threshold_percent: u
 
 test "calculate_base_fee_threshold — exact small values (70%)" {
     const fee = BaseFeePerGas.from(0);
-    try std.testing.expect(calculate_base_fee_threshold(fee, 70).eq(U256.from_u64(0)));
+    try std.testing.expect(calculate_base_fee_threshold(fee, 70).toWei().eq(U256.from_u64(0)));
 
-    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(2), 70).eq(U256.from_u64(1)));
-    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(3), 70).eq(U256.from_u64(2)));
-    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(7), 70).eq(U256.from_u64(4)));
-    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(8), 70).eq(U256.from_u64(5)));
-    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(100), 70).eq(U256.from_u64(70)));
-    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(9999), 70).eq(U256.from_u64(6999)));
-    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(10_000), 70).eq(U256.from_u64(7000)));
+    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(2), 70).toWei().eq(U256.from_u64(1)));
+    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(3), 70).toWei().eq(U256.from_u64(2)));
+    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(7), 70).toWei().eq(U256.from_u64(4)));
+    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(8), 70).toWei().eq(U256.from_u64(5)));
+    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(100), 70).toWei().eq(U256.from_u64(70)));
+    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(9999), 70).toWei().eq(U256.from_u64(6999)));
+    try std.testing.expect(calculate_base_fee_threshold(BaseFeePerGas.from(10_000), 70).toWei().eq(U256.from_u64(7000)));
 }
 
 test "calculate_base_fee_threshold — overflow fallback and saturation" {
@@ -86,7 +94,7 @@ test "calculate_base_fee_threshold — overflow fallback and saturation" {
         const base = BaseFeePerGas.fromU256(base_div);
 
         inline for (.{ 0, 70, 100, 101, 500 }) |threshold_percent| {
-            const res = calculate_base_fee_threshold(base, threshold_percent);
+            const res = calculate_base_fee_threshold(base, threshold_percent).toWei();
 
             // Build expected according to Nethermind reference logic
             var overflow1 = base_div.overflowing_mul(U256.from_u64(threshold_percent));
