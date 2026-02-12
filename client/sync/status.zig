@@ -38,11 +38,9 @@ pub fn to_sync_status(sync_mode: u32, current_block: u64, highest_block: u64, ma
     }
 
     // Secondary criteria: gate only on fast-blocks bodies/receipts near head.
-    // Nethermind eth_syncing does not gate on headers/state phases here.
-    if (mode.have_not_synced_bodies_yet(sync_mode)) {
-        return SyncStatusMod.syncing(0, current_block, highest_block);
-    }
-    if (mode.have_not_synced_receipts_yet(sync_mode)) {
+    const gate_fast_bodies = (sync_mode & mode.SyncMode.fast_bodies) != 0;
+    const gate_fast_receipts = (sync_mode & mode.SyncMode.fast_receipts) != 0;
+    if (gate_fast_bodies or gate_fast_receipts) {
         return SyncStatusMod.syncing(0, current_block, highest_block);
     }
 
