@@ -239,3 +239,16 @@ test "ReadOnlyDbProvider: has_write_overlay reflects overlay mode" {
     defer with_overlay.deinit();
     try std.testing.expect(with_overlay.has_write_overlay());
 }
+
+test "ReadOnlyDbProvider: contains proxies to underlying provider" {
+    var prov = DbProvider.init();
+    var state_db = memory.MemoryDatabase.init(std.testing.allocator, .state);
+    defer state_db.deinit();
+    prov.register(.state, state_db.database());
+
+    var rop = ReadOnlyDbProvider.init_strict(&prov);
+    defer rop.deinit();
+
+    try std.testing.expect(rop.contains(.state));
+    try std.testing.expect(!rop.contains(.headers));
+}
