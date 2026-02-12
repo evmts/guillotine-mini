@@ -22,10 +22,10 @@ pub const TrieError = error{
 };
 
 const DefaultRlp = TriePrimitives.Rlp;
-const DefaultHash = @import("crypto").Hash;
+const DefaultHash = TriePrimitives.Hash;
 
-/// 32-byte hash type, imported from node.zig to avoid duplication.
-pub const Hash32 = @import("node.zig").Hash32;
+/// 32-byte hash type from Voltaire primitives.
+pub const Hash32 = TriePrimitives.Hash.Hash;
 
 /// EMPTY_TRIE_ROOT = keccak256(RLP(b"")) = keccak256(0x80)
 /// = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421
