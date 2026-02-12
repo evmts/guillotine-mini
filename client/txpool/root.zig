@@ -14,7 +14,7 @@ pub const TxPoolConfig = pool.TxPoolConfig;
 pub const compare_fee_market_priority = sorter.compare_fee_market_priority;
 /// Broadcast policy helper: base-fee threshold calculator (parity with Nethermind's TxBroadcaster.CalculateBaseFeeThreshold).
 pub const calculate_base_fee_threshold = policy.calculate_base_fee_threshold;
-/// Broadcast policy helper: persistent broadcast quota per block.
+/// Broadcast policy helper: persistent broadcast quota per block (parity with Nethermind's TxBroadcaster persistent quota logic).
 pub const calculate_persistent_broadcast_quota = policy.calculate_persistent_broadcast_quota;
 
 /// Admission helper: re-export to avoid wrapper signature drift.
