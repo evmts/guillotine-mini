@@ -38,17 +38,12 @@ pub fn to_sync_status(sync_mode: u32, current_block: u64, highest_block: u64, ma
         return SyncStatusMod.syncing(0, current_block, highest_block);
     }
 
-    // Secondary criteria: explicit phase masks (Nethermind-compatible helpers).
+    // Secondary criteria: gate only on fast-blocks bodies/receipts near head.
+    // Nethermind eth_syncing does not gate on headers/state phases here.
     if (mode.have_not_synced_bodies_yet(sync_mode)) {
         return SyncStatusMod.syncing(0, current_block, highest_block);
     }
     if (mode.have_not_synced_receipts_yet(sync_mode)) {
-        return SyncStatusMod.syncing(0, current_block, highest_block);
-    }
-    if (mode.have_not_synced_headers_yet(sync_mode)) {
-        return SyncStatusMod.syncing(0, current_block, highest_block);
-    }
-    if (mode.have_not_synced_state_yet(sync_mode)) {
         return SyncStatusMod.syncing(0, current_block, highest_block);
     }
 
