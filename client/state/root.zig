@@ -42,6 +42,7 @@
 /// ```
 const journal = @import("journal.zig");
 const account = @import("account.zig");
+const account_journal = @import("account_journal.zig");
 const state = @import("state.zig");
 
 // -- Public API: flat re-exports -------------------------------------------
@@ -64,6 +65,8 @@ pub const JournalError = journal.JournalError;
 pub const Snapshot = state.Snapshot;
 
 // Account types and helpers
+/// AccountJournal facade over `Journal(Address, AccountState)`.
+pub const AccountJournal = account_journal.AccountJournal;
 /// Voltaire account state type — the canonical Ethereum account representation.
 pub const AccountState = account.AccountState;
 
