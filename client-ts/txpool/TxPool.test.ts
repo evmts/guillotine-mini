@@ -2,6 +2,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { assert, describe, it } from "@effect/vitest";
 import * as Either from "effect/Either";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { Address, Hash, Hex, Transaction } from "voltaire-effect/primitives";
 import {
@@ -11,15 +12,18 @@ import {
   InvalidTxPoolConfigError,
   TxPoolBlobSupportDisabledError,
   TxPoolConfigDefaults,
+  type TxPoolConfigInput,
+  TxPoolConfigSchema,
   TxPoolFullError,
   TxPoolGasLimitExceededError,
+  type TxPoolHeadInfoConfig,
+  TxPoolHeadInfoDefaults,
   TxPoolLive,
   TxPoolMaxBlobTxSizeExceededError,
   TxPoolMaxTxSizeExceededError,
   TxPoolPriorityFeeTooLowError,
   TxPoolReplacementNotAllowedError,
   TxPoolSenderLimitExceededError,
-  TxPoolTest,
   acceptTxWhenNotSynced,
   addTransaction,
   getPendingBlobCount,
@@ -30,6 +34,7 @@ import {
   supportsBlobs,
   validateTransaction,
 } from "./TxPool";
+import { TxPoolAdmissionValidatorLive } from "./TxPoolAdmissionValidator";
 
 const Eip1559Schema = Transaction.EIP1559Schema as unknown as Schema.Schema<
   Transaction.EIP1559,
@@ -140,26 +145,39 @@ const makeSignedEip4844Tx = (
     ),
   );
 
+const makeTxPoolLayer = (
+  config: TxPoolConfigInput = TxPoolConfigDefaults,
+  headInfoConfig: TxPoolHeadInfoConfig = TxPoolHeadInfoDefaults,
+) =>
+  TxPoolLive(config, headInfoConfig).pipe(
+    Layer.provide(
+      TxPoolAdmissionValidatorLive(
+        Schema.decodeSync(TxPoolConfigSchema)(config),
+        headInfoConfig,
+      ),
+    ),
+  );
+
 describe("TxPool", () => {
   it.effect("returns pending transaction count", () =>
     Effect.gen(function* () {
       const count = yield* getPendingCount();
       assert.strictEqual(count, 0);
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect("returns pending blob transaction count", () =>
     Effect.gen(function* () {
       const count = yield* getPendingBlobCount();
       assert.strictEqual(count, 0);
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect("uses TxPoolTest defaults", () =>
     Effect.gen(function* () {
       const count = yield* getPendingCount();
       assert.strictEqual(count, 0);
-    }).pipe(Effect.provide(TxPoolTest())),
+    }).pipe(Effect.provide(makeTxPoolLayer())),
   );
 
   it.effect("adds pending transactions and indexes by sender", () =>
@@ -177,7 +195,7 @@ describe("TxPool", () => {
       const sender = Transaction.getSender(tx);
       const bySender = yield* getPendingTransactionsBySender(sender);
       assert.strictEqual(bySender.length, 1);
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect("returns AlreadyKnown for duplicate transaction hash", () =>
@@ -192,7 +210,7 @@ describe("TxPool", () => {
 
       const count = yield* getPendingCount();
       assert.strictEqual(count, 1);
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect(
@@ -219,7 +237,7 @@ describe("TxPool", () => {
           Hash.toHex(Transaction.hash(pending[0]!)),
           Hash.toHex(Transaction.hash(existing)),
         );
-      }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+      }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect(
@@ -245,7 +263,7 @@ describe("TxPool", () => {
           Hash.toHex(Transaction.hash(bySender[0]!)),
           Hash.toHex(Transaction.hash(replacement)),
         );
-      }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+      }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect(
@@ -265,7 +283,7 @@ describe("TxPool", () => {
         assert.strictEqual(count, 1);
       }).pipe(
         Effect.provide(
-          TxPoolLive({
+          makeTxPoolLayer({
             ...TxPoolConfigDefaults,
             size: 1,
             maxPendingTxsPerSender: 1,
@@ -282,7 +300,7 @@ describe("TxPool", () => {
 
       const blobCount = yield* getPendingBlobCount();
       assert.strictEqual(blobCount, 1);
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect("applies blob replacement fee rules for maxFeePerBlobGas", () =>
@@ -298,7 +316,7 @@ describe("TxPool", () => {
       if (Either.isLeft(second)) {
         assert.isTrue(second.left instanceof TxPoolReplacementNotAllowedError);
       }
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect("rejects blob replacement with fewer blobs", () =>
@@ -321,7 +339,7 @@ describe("TxPool", () => {
       if (Either.isLeft(second)) {
         assert.isTrue(second.left instanceof TxPoolReplacementNotAllowedError);
       }
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect("validates transactions and recovers sender", () =>
@@ -331,7 +349,7 @@ describe("TxPool", () => {
       assert.isFalse(validated.isBlob);
       const expectedSender = Transaction.getSender(tx);
       assert.isTrue(Address.equals(validated.sender, expectedSender));
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect("removes transactions by hash", () =>
@@ -345,7 +363,7 @@ describe("TxPool", () => {
 
       const count = yield* getPendingCount();
       assert.strictEqual(count, 0);
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect("returns false when removing a missing transaction", () =>
@@ -353,7 +371,7 @@ describe("TxPool", () => {
       const missingHash = Transaction.hash(makeSignedEip1559Tx(999n));
       const removed = yield* removeTransaction(missingHash);
       assert.isFalse(removed);
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect("enforces pool size limits", () =>
@@ -370,7 +388,7 @@ describe("TxPool", () => {
       }
     }).pipe(
       Effect.provide(
-        TxPoolLive({
+        makeTxPoolLayer({
           ...TxPoolConfigDefaults,
           size: 1,
         }),
@@ -392,7 +410,7 @@ describe("TxPool", () => {
       }
     }).pipe(
       Effect.provide(
-        TxPoolLive({
+        makeTxPoolLayer({
           ...TxPoolConfigDefaults,
           maxPendingTxsPerSender: 1,
         }),
@@ -416,7 +434,7 @@ describe("TxPool", () => {
       }
     }).pipe(
       Effect.provide(
-        TxPoolLive({
+        makeTxPoolLayer({
           ...TxPoolConfigDefaults,
           maxPendingBlobTxsPerSender: 1,
         }),
@@ -436,7 +454,7 @@ describe("TxPool", () => {
         }
       }).pipe(
         Effect.provide(
-          TxPoolLive(
+          makeTxPoolLayer(
             {
               ...TxPoolConfigDefaults,
               gasLimit: 200_000,
@@ -462,7 +480,7 @@ describe("TxPool", () => {
         }
       }).pipe(
         Effect.provide(
-          TxPoolLive(
+          makeTxPoolLayer(
             {
               ...TxPoolConfigDefaults,
               gasLimit: 110_000,
@@ -486,7 +504,7 @@ describe("TxPool", () => {
       }
     }).pipe(
       Effect.provide(
-        TxPoolLive({
+        makeTxPoolLayer({
           ...TxPoolConfigDefaults,
           blobsSupport: BlobsSupportMode.Disabled,
         }),
@@ -504,7 +522,7 @@ describe("TxPool", () => {
       }
     }).pipe(
       Effect.provide(
-        TxPoolLive({
+        makeTxPoolLayer({
           ...TxPoolConfigDefaults,
           minBlobTxPriorityFee: 5n,
         }),
@@ -522,7 +540,7 @@ describe("TxPool", () => {
       }
     }).pipe(
       Effect.provide(
-        TxPoolLive({
+        makeTxPoolLayer({
           ...TxPoolConfigDefaults,
           maxTxSize: 1,
         }),
@@ -540,7 +558,7 @@ describe("TxPool", () => {
       }
     }).pipe(
       Effect.provide(
-        TxPoolLive({
+        makeTxPoolLayer({
           ...TxPoolConfigDefaults,
           maxBlobTxSize: 1,
         }),
@@ -560,7 +578,7 @@ describe("TxPool", () => {
         }
       }).pipe(
         Effect.provide(
-          TxPoolLive(TxPoolConfigDefaults, {
+          makeTxPoolLayer(TxPoolConfigDefaults, {
             blockGasLimit: null,
             currentFeePerBlobGas: 10n,
           }),
@@ -577,7 +595,7 @@ describe("TxPool", () => {
         assert.strictEqual(result._tag, "Added");
       }).pipe(
         Effect.provide(
-          TxPoolLive(
+          makeTxPoolLayer(
             {
               ...TxPoolConfigDefaults,
               currentBlobBaseFeeRequired: false,
@@ -595,7 +613,7 @@ describe("TxPool", () => {
     Effect.gen(function* () {
       const enabled = yield* supportsBlobs();
       assert.isTrue(enabled);
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect("returns false when blob support is disabled", () =>
@@ -604,7 +622,7 @@ describe("TxPool", () => {
       assert.isFalse(enabled);
     }).pipe(
       Effect.provide(
-        TxPoolLive({
+        makeTxPoolLayer({
           ...TxPoolConfigDefaults,
           blobsSupport: BlobsSupportMode.Disabled,
         }),
@@ -616,7 +634,7 @@ describe("TxPool", () => {
     Effect.gen(function* () {
       const allowed = yield* acceptTxWhenNotSynced();
       assert.isFalse(allowed);
-    }).pipe(Effect.provide(TxPoolLive(TxPoolConfigDefaults))),
+    }).pipe(Effect.provide(makeTxPoolLayer(TxPoolConfigDefaults))),
   );
 
   it.effect("returns true when accept-tx-when-not-synced is enabled", () =>
@@ -625,7 +643,7 @@ describe("TxPool", () => {
       assert.isTrue(allowed);
     }).pipe(
       Effect.provide(
-        TxPoolLive({
+        makeTxPoolLayer({
           ...TxPoolConfigDefaults,
           acceptTxWhenNotSynced: true,
         }),
@@ -637,7 +655,9 @@ describe("TxPool", () => {
     Effect.gen(function* () {
       const outcome = yield* Effect.either(
         getPendingCount().pipe(
-          Effect.provide(TxPoolLive({ ...TxPoolConfigDefaults, size: -1 })),
+          Effect.provide(
+            makeTxPoolLayer({ ...TxPoolConfigDefaults, size: -1 }),
+          ),
         ),
       );
       assert.isTrue(Either.isLeft(outcome));

@@ -14,6 +14,10 @@ import {
   compareReplacedBlobTransactionByFee,
   compareReplacedTransactionByFee,
 } from "./TxPoolSorter";
+import type {
+  TxPoolAdmissionValidatorService,
+  ValidatedTxPoolTransaction,
+} from "./TxPoolAdmissionValidator";
 
 /** Blob transaction support modes (Nethermind BlobsSupportMode parity). */
 export const BlobsSupportMode = {
@@ -141,16 +145,6 @@ export class InvalidTxPoolConfigError extends Data.TaggedError(
   readonly cause?: unknown;
 }> {}
 
-const TransactionSchema = Transaction.Schema as unknown as Schema.Schema<
-  Transaction.Any,
-  unknown
->;
-const TransactionSerializedSchema =
-  Transaction.Serialized as unknown as Schema.Schema<
-    Transaction.Any,
-    Uint8Array
-  >;
-
 /** Result when attempting to add a transaction to the pool. */
 export type TxPoolAddResult =
   | {
@@ -163,13 +157,7 @@ export type TxPoolAddResult =
       readonly hash: Hash.HashType;
     };
 
-type ValidatedTransaction = {
-  readonly tx: Transaction.Any;
-  readonly hash: Hash.HashType;
-  readonly sender: Address.AddressType;
-  readonly isBlob: boolean;
-  readonly size: number;
-};
+type ValidatedTransaction = ValidatedTxPoolTransaction;
 
 /** Error raised when a transaction fails schema validation. */
 export class InvalidTxPoolTransactionError extends Data.TaggedError(
@@ -351,6 +339,11 @@ export class TxPoolHeadInfo extends Context.Tag("TxPoolHeadInfo")<
 
 const withTxPool = <A, E>(f: (pool: TxPoolService) => Effect.Effect<A, E>) =>
   Effect.flatMap(TxPool, f);
+
+const TxPoolAdmissionValidator =
+  Context.GenericTag<TxPoolAdmissionValidatorService>(
+    "TxPoolAdmissionValidator",
+  );
 
 const parseMinBlobTxPriorityFee = (value: MinBlobTxPriorityFeeInput) =>
   Effect.try({
@@ -599,226 +592,13 @@ const makeTxPoolHeadInfo = (
     getCurrentFeePerBlobGas: () => Effect.succeed(config.currentFeePerBlobGas),
   }) satisfies TxPoolHeadInfoService;
 
-const minDefinedBigInt = (
-  left: bigint | null,
-  right: bigint | null,
-): bigint | null => {
-  if (left === null) {
-    return right;
-  }
-  if (right === null) {
-    return left;
-  }
-  return left < right ? left : right;
-};
-
-type TxPoolFilterInput = {
-  readonly parsed: Transaction.Any;
-  readonly isBlob: boolean;
-  readonly currentFeePerBlobGas: bigint;
-  readonly effectiveGasLimit: bigint | null;
-};
-
-type TxPoolPostHashFilterInput = TxPoolFilterInput & {
-  readonly size: number;
-};
-
-type IncomingTxFilter<Ctx> = (
-  input: Ctx,
-) => Effect.Effect<void, TxPoolValidationError>;
-
-const runIncomingTxFilters = <Ctx>(
-  filters: ReadonlyArray<IncomingTxFilter<Ctx>>,
-  input: Ctx,
-) => Effect.forEach(filters, (filter) => filter(input), { discard: true });
-
 const makeTxPool = (config: TxPoolConfigInput) =>
   Effect.gen(function* () {
     const validatedConfig = yield* decodeConfig(config);
-    const headInfo = yield* TxPoolHeadInfo;
+    const admissionValidator = yield* TxPoolAdmissionValidator;
     const stateRef = yield* Ref.make(emptyState);
-
-    const encodeTransaction = (tx: Transaction.Any) =>
-      Effect.try({
-        try: () => Schema.encodeSync(TransactionSerializedSchema)(tx),
-        catch: (cause) =>
-          new TxPoolTransactionEncodingError({
-            message: "Failed to encode transaction",
-            cause,
-          }),
-      });
-
-    const recoverSender = (tx: Transaction.Any) =>
-      Effect.try({
-        try: () => Transaction.getSender(tx),
-        catch: (cause) =>
-          new TxPoolSenderRecoveryError({
-            message: "Failed to recover transaction sender",
-            cause,
-          }),
-      });
-
-    const decodeTransaction = (tx: Transaction.Any) =>
-      Schema.validate(TransactionSchema)(tx).pipe(
-        Effect.mapError(
-          (cause) =>
-            new InvalidTxPoolTransactionError({
-              message: "Invalid transaction",
-              cause,
-            }),
-        ),
-      );
-
-    const notSupportedTxFilter: IncomingTxFilter<TxPoolFilterInput> = ({
-      isBlob,
-    }) => {
-      if (
-        isBlob &&
-        validatedConfig.blobsSupport === BlobsSupportMode.Disabled
-      ) {
-        return Effect.fail(
-          new TxPoolBlobSupportDisabledError({
-            message: "Blob transactions are disabled",
-          }),
-        );
-      }
-      return Effect.void;
-    };
-
-    const priorityFeeTooLowFilter: IncomingTxFilter<TxPoolFilterInput> = ({
-      isBlob,
-      parsed,
-    }) => {
-      if (
-        isBlob &&
-        parsed.maxPriorityFeePerGas < validatedConfig.minBlobTxPriorityFee
-      ) {
-        return Effect.fail(
-          new TxPoolPriorityFeeTooLowError({
-            minPriorityFeePerGas: validatedConfig.minBlobTxPriorityFee,
-            maxPriorityFeePerGas: parsed.maxPriorityFeePerGas,
-          }),
-        );
-      }
-      return Effect.void;
-    };
-
-    const blobBaseFeeFilter: IncomingTxFilter<TxPoolFilterInput> = ({
-      isBlob,
-      parsed,
-      currentFeePerBlobGas,
-    }) => {
-      if (
-        isBlob &&
-        validatedConfig.currentBlobBaseFeeRequired &&
-        parsed.maxFeePerBlobGas < currentFeePerBlobGas
-      ) {
-        return Effect.fail(
-          new TxPoolBlobFeeCapTooLowError({
-            currentFeePerBlobGas,
-            maxFeePerBlobGas: parsed.maxFeePerBlobGas,
-          }),
-        );
-      }
-      return Effect.void;
-    };
-
-    const gasLimitTxFilter: IncomingTxFilter<TxPoolFilterInput> = ({
-      parsed,
-      effectiveGasLimit,
-    }) => {
-      if (effectiveGasLimit !== null && parsed.gasLimit > effectiveGasLimit) {
-        return Effect.fail(
-          new TxPoolGasLimitExceededError({
-            gasLimit: parsed.gasLimit,
-            configuredLimit: effectiveGasLimit,
-          }),
-        );
-      }
-      return Effect.void;
-    };
-
-    const sizeTxFilter: IncomingTxFilter<TxPoolPostHashFilterInput> = ({
-      isBlob,
-      size,
-    }) => {
-      if (isBlob && validatedConfig.maxBlobTxSize !== null) {
-        if (size > validatedConfig.maxBlobTxSize) {
-          return Effect.fail(
-            new TxPoolMaxBlobTxSizeExceededError({
-              size,
-              maxSize: validatedConfig.maxBlobTxSize,
-            }),
-          );
-        }
-      }
-
-      if (!isBlob && validatedConfig.maxTxSize !== null) {
-        if (size > validatedConfig.maxTxSize) {
-          return Effect.fail(
-            new TxPoolMaxTxSizeExceededError({
-              size,
-              maxSize: validatedConfig.maxTxSize,
-            }),
-          );
-        }
-      }
-
-      return Effect.void;
-    };
-
-    const preHashFilters: ReadonlyArray<IncomingTxFilter<TxPoolFilterInput>> = [
-      notSupportedTxFilter,
-      priorityFeeTooLowFilter,
-      blobBaseFeeFilter,
-      gasLimitTxFilter,
-    ];
-
-    const postHashFilters: ReadonlyArray<
-      IncomingTxFilter<TxPoolPostHashFilterInput>
-    > = [sizeTxFilter];
-
     const validateTransaction = (tx: Transaction.Any) =>
-      Effect.gen(function* () {
-        const parsed = yield* decodeTransaction(tx);
-        const isBlob = Transaction.isEIP4844(parsed);
-        const currentBlockGasLimit = yield* headInfo.getBlockGasLimit();
-        const currentFeePerBlobGas = yield* headInfo.getCurrentFeePerBlobGas();
-        const configuredGasLimit =
-          validatedConfig.gasLimit === null
-            ? null
-            : BigInt(validatedConfig.gasLimit);
-        const effectiveGasLimit = minDefinedBigInt(
-          currentBlockGasLimit,
-          configuredGasLimit,
-        );
-        const filterInput = {
-          parsed,
-          isBlob,
-          currentFeePerBlobGas,
-          effectiveGasLimit,
-        } satisfies TxPoolFilterInput;
-
-        yield* runIncomingTxFilters(preHashFilters, filterInput);
-
-        const encoded = yield* encodeTransaction(parsed);
-        const size = encoded.length;
-        yield* runIncomingTxFilters(postHashFilters, {
-          ...filterInput,
-          size,
-        } satisfies TxPoolPostHashFilterInput);
-
-        const sender = yield* recoverSender(parsed);
-        const hash = Transaction.hash(parsed);
-
-        return {
-          tx: parsed,
-          hash,
-          sender,
-          isBlob,
-          size,
-        } satisfies ValidatedTransaction;
-      });
+      admissionValidator.validate(tx);
 
     const getPendingCount = () =>
       Ref.get(stateRef).pipe(Effect.map((state) => state.transactions.size));
@@ -987,18 +767,22 @@ const makeTxPool = (config: TxPoolConfigInput) =>
 /** Production txpool layer. */
 export const TxPoolLive = (
   config: TxPoolConfigInput,
-  headInfoConfig: TxPoolHeadInfoConfig = TxPoolHeadInfoDefaults,
-): Layer.Layer<TxPool, InvalidTxPoolConfigError> =>
-  Layer.effect(TxPool, makeTxPool(config)).pipe(
-    Layer.provide(TxPoolHeadInfoLive(headInfoConfig)),
-  );
+  _headInfoConfig: TxPoolHeadInfoConfig = TxPoolHeadInfoDefaults,
+): Layer.Layer<
+  TxPool,
+  InvalidTxPoolConfigError,
+  TxPoolAdmissionValidatorService
+> => Layer.effect(TxPool, makeTxPool(config));
 
 /** Deterministic txpool layer for tests. */
 export const TxPoolTest = (
   config: TxPoolConfigInput = TxPoolConfigDefaults,
   headInfoConfig: TxPoolHeadInfoConfig = TxPoolHeadInfoDefaults,
-): Layer.Layer<TxPool, InvalidTxPoolConfigError> =>
-  TxPoolLive(config, headInfoConfig);
+): Layer.Layer<
+  TxPool,
+  InvalidTxPoolConfigError,
+  TxPoolAdmissionValidatorService
+> => TxPoolLive(config, headInfoConfig);
 
 /** Layer providing txpool chain-head admission inputs. */
 export const TxPoolHeadInfoLive = (
