@@ -226,6 +226,32 @@ pub fn parent_header_local(
     return parent.header;
 }
 
+/// Returns the ancestor hash at `distance` from `start` using local store only.
+///
+/// Semantics:
+/// - `distance == 0` returns `start` iff the start block exists locally.
+/// - Walks parent links strictly via local storage; returns null if any
+///   intermediate block is missing or when genesis has no parent.
+/// - Never consults fork caches; performs no allocations.
+pub fn ancestor_hash_local(
+    chain: *Chain,
+    start: Hash.Hash,
+    distance: u64,
+) ?Hash.Hash {
+    if (distance == 0) {
+        return if (get_block_local(chain, start) != null) start else null;
+    }
+    var current = start;
+    var i: u64 = 0;
+    while (i < distance) : (i += 1) {
+        const blk = get_block_local(chain, current) orelse return null;
+        if (blk.header.number == 0) return null; // genesis has no parent
+        current = blk.header.parent_hash;
+    }
+    // Ensure the final ancestor exists locally as well.
+    return if (get_block_local(chain, current) != null) current else null;
+}
+
 /// Generic, comptime-injected head hash reader for any chain-like type.
 pub fn head_hash_of(chain: anytype) !?Hash.Hash {
     // Reuse the snapshot logic in `head_block_of` to avoid duplication.
@@ -973,4 +999,69 @@ test "Chain - safe/finalized head block helpers return null when missing locally
     var fc = Fc{ .safe = Hash.ZERO, .finalized = Hash.ZERO };
     try std.testing.expect(safe_head_block_of(&chain, &fc) == null);
     try std.testing.expect(finalized_head_block_of(&chain, &fc) == null);
+}
+
+test "Chain - ancestor_hash_local returns null when start missing" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    try std.testing.expect(ancestor_hash_local(&chain, Hash.ZERO, 0) == null);
+    try std.testing.expect(ancestor_hash_local(&chain, Hash.ZERO, 1) == null);
+}
+
+test "Chain - ancestor_hash_local returns start for distance 0 when exists" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+
+    const h = ancestor_hash_local(&chain, genesis.hash, 0) orelse return error.Unreachable;
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &h);
+}
+
+test "Chain - ancestor_hash_local returns parent for distance 1" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+
+    var h1 = primitives.BlockHeader.init();
+    h1.number = 1;
+    h1.parent_hash = genesis.hash;
+    const b1 = try Block.from(&h1, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(b1);
+
+    const h = ancestor_hash_local(&chain, b1.hash, 1) orelse return error.Unreachable;
+    try std.testing.expectEqualSlices(u8, &genesis.hash, &h);
+}
+
+test "Chain - ancestor_hash_local returns null for distance 1 from genesis" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    const genesis = try Block.genesis(1, allocator);
+    try chain.putBlock(genesis);
+
+    try std.testing.expect(ancestor_hash_local(&chain, genesis.hash, 1) == null);
+}
+
+test "Chain - ancestor_hash_local returns null when orphan parent missing" {
+    const allocator = std.testing.allocator;
+    var chain = try Chain.init(allocator, null);
+    defer chain.deinit();
+
+    // Orphan block with missing parent
+    var hdr = primitives.BlockHeader.init();
+    hdr.number = 7;
+    hdr.parent_hash = Hash.Hash{ 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA };
+    const orphan = try Block.from(&hdr, &primitives.BlockBody.init(), allocator);
+    try chain.putBlock(orphan);
+
+    try std.testing.expect(ancestor_hash_local(&chain, orphan.hash, 1) == null);
 }
