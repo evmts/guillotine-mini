@@ -28,5 +28,11 @@ worktrees/
 .zig-cache-global/
 .zig-cache-local/
 
-# Local build logs
-build_output.txt
+# Local build/bench/test logs
+build_*.txt
+build_*.log
+bench_*.txt
+test_*.txt
+fmt_*.txt
+rpc_*.txt
+zig_*.txt
