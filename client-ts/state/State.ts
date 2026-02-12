@@ -180,6 +180,12 @@ const cloneAccount = (account: AccountStateType): AccountStateType => ({
 
 const ZERO_STORAGE_VALUE = zeroBytes32() as StorageValueType;
 const EMPTY_CODE = new Uint8Array(0) as RuntimeCode.RuntimeCodeType;
+// Placeholder non-empty storageRoot sentinel used until trie integration.
+const NON_EMPTY_STORAGE_SENTINEL = (() => {
+  const s = new Uint8Array(32);
+  s[0] = 0x01;
+  return s as AccountStateType["storageRoot"];
+})();
 
 const cloneRuntimeCode = (
   code: RuntimeCode.RuntimeCodeType,
@@ -407,6 +413,47 @@ const makeWorldState = Effect.gen(function* () {
       storage.delete(key);
     });
 
+  const maybeResetStorageRootIfNoSlotsForKey = (
+    address: Address.AddressType,
+    key: AccountKey,
+  ) =>
+    Effect.gen(function* () {
+      const prior = accounts.get(key);
+      if (prior && (!storage.has(key) || storage.get(key)!.size === 0)) {
+        if (!bytes32Equals(prior.storageRoot, EMPTY_ACCOUNT.storageRoot)) {
+          const nextAccount: AccountStateType = {
+            ...prior,
+            storageRoot: cloneBytes32(
+              EMPTY_ACCOUNT.storageRoot,
+            ) as AccountStateType["storageRoot"],
+          };
+          if (!accountsEqual(prior, nextAccount)) {
+            yield* setAccount(address, nextAccount);
+          }
+        }
+      }
+    });
+
+  const ensureNonEmptyStorageRootForKey = (
+    address: Address.AddressType,
+    key: AccountKey,
+  ) =>
+    Effect.gen(function* () {
+      const prior = accounts.get(key);
+      if (!prior) return;
+      if (!bytes32Equals(prior.storageRoot, NON_EMPTY_STORAGE_SENTINEL)) {
+        const nextAccount: AccountStateType = {
+          ...prior,
+          storageRoot: cloneBytes32(
+            NON_EMPTY_STORAGE_SENTINEL,
+          ) as AccountStateType["storageRoot"],
+        };
+        if (!accountsEqual(prior, nextAccount)) {
+          yield* setAccount(address, nextAccount);
+        }
+      }
+    });
+
   const clearCodeForKey = (key: AccountKey) =>
     Effect.gen(function* () {
       const previous = codes.get(key);
@@ -450,21 +497,7 @@ const makeWorldState = Effect.gen(function* () {
           storage.delete(key);
         }
         // Maintain storageRoot emptiness invariant: if storage becomes empty, set EMPTY_STORAGE_ROOT
-        const prior = accounts.get(key);
-        if (prior && (!storage.has(key) || storage.get(key)!.size === 0)) {
-          const nextAccount: AccountStateType = {
-            ...prior,
-            storageRoot: cloneBytes32(prior.storageRoot),
-          };
-          if (!bytes32Equals(prior.storageRoot, EMPTY_ACCOUNT.storageRoot)) {
-            nextAccount.storageRoot = cloneBytes32(
-              EMPTY_ACCOUNT.storageRoot,
-            ) as AccountStateType["storageRoot"];
-            if (!accountsEqual(prior, nextAccount)) {
-              yield* setAccount(address, nextAccount);
-            }
-          }
-        }
+        yield* maybeResetStorageRootIfNoSlotsForKey(address, key);
         return;
       }
 
@@ -482,22 +515,7 @@ const makeWorldState = Effect.gen(function* () {
           storage.set(key, nextSlots);
         }
         // Mark storageRoot as non-empty (placeholder) when first slot is created
-        const prior = accounts.get(key);
-        if (prior) {
-          const sentinel = new Uint8Array(32);
-          sentinel[0] = 0x01; // placeholder until trie integration
-          if (!bytes32Equals(prior.storageRoot, sentinel)) {
-            const nextAccount: AccountStateType = {
-              ...prior,
-              storageRoot: cloneBytes32(
-                sentinel,
-              ) as AccountStateType["storageRoot"],
-            };
-            if (!accountsEqual(prior, nextAccount)) {
-              yield* setAccount(address, nextAccount);
-            }
-          }
-        }
+        yield* ensureNonEmptyStorageRootForKey(address, key);
         return;
       }
 
@@ -516,22 +534,7 @@ const makeWorldState = Effect.gen(function* () {
         storage.set(key, nextSlots);
       }
       // Mark storageRoot as non-empty (placeholder) on update as well
-      const prior = accounts.get(key);
-      if (prior) {
-        const sentinel = new Uint8Array(32);
-        sentinel[0] = 0x01;
-        if (!bytes32Equals(prior.storageRoot, sentinel)) {
-          const nextAccount: AccountStateType = {
-            ...prior,
-            storageRoot: cloneBytes32(
-              sentinel,
-            ) as AccountStateType["storageRoot"],
-          };
-          if (!accountsEqual(prior, nextAccount)) {
-            yield* setAccount(address, nextAccount);
-          }
-        }
-      }
+      yield* ensureNonEmptyStorageRootForKey(address, key);
     });
 
   const setAccount = (
