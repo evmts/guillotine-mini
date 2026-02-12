@@ -40,23 +40,23 @@ pub const AccountJournal = struct {
     // ---------------------------------------------------------------------
 
     /// Record a cache-only read of an account (survives restore).
-    pub fn cache(self: *Self, addr: Address, acct: AccountState) JournalError!usize {
-        return self.journal.append(.{ .key = addr, .value = acct, .tag = .just_cache });
+    pub fn cache(self: *Self, address: Address, acct: AccountState) JournalError!usize {
+        return self.journal.append(.{ .key = address, .value = acct, .tag = .just_cache });
     }
 
     /// Record a new account creation.
-    pub fn create(self: *Self, addr: Address, acct: AccountState) JournalError!usize {
-        return self.journal.append(.{ .key = addr, .value = acct, .tag = .create });
+    pub fn create(self: *Self, address: Address, acct: AccountState) JournalError!usize {
+        return self.journal.append(.{ .key = address, .value = acct, .tag = .create });
     }
 
     /// Record an account update.
-    pub fn update(self: *Self, addr: Address, acct: AccountState) JournalError!usize {
-        return self.journal.append(.{ .key = addr, .value = acct, .tag = .update });
+    pub fn update(self: *Self, address: Address, acct: AccountState) JournalError!usize {
+        return self.journal.append(.{ .key = address, .value = acct, .tag = .update });
     }
 
     /// Record an account deletion.
-    pub fn delete(self: *Self, addr: Address) JournalError!usize {
-        return self.journal.append(.{ .key = addr, .value = null, .tag = .delete });
+    pub fn delete(self: *Self, address: Address) JournalError!usize {
+        return self.journal.append(.{ .key = address, .value = null, .tag = .delete });
     }
 
     // ---------------------------------------------------------------------
