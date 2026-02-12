@@ -22,9 +22,11 @@ pub const TrieError = error{
 };
 
 const DefaultRlp = TriePrimitives.Rlp;
-const DefaultHash = TriePrimitives.Hash;
+// Use primitives.crypto.Hash for keccak256 to match Voltaire's canonical hashing utils
+// (primitives.Hash.keccak256 currently forwards to std.crypto without options on Zig 0.15).
+const DefaultHash = TriePrimitives.crypto.Hash;
 
-/// 32-byte hash type from Voltaire primitives.
+/// 32-byte hash type from Voltaire primitives (canonical hash type).
 pub const Hash32 = TriePrimitives.Hash.Hash;
 
 /// EMPTY_TRIE_ROOT = keccak256(RLP(b"")) = keccak256(0x80)

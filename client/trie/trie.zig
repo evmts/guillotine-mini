@@ -14,7 +14,8 @@ pub const Trie = primitives.Trie;
 /// - Uses Voltaire primitives hashing (`primitives.Hash.keccak256`).
 /// - Returns `primitives.Hash.Hash` (32-byte Keccak-256 digest).
 pub fn secureKey(raw_key: []const u8) primitives.Hash.Hash {
-    return primitives.Hash.keccak256(raw_key);
+    // Use primitives.crypto.Hash.keccak256 to ensure correct std options signature.
+    return @import("primitives").crypto.Hash.keccak256(raw_key);
 }
 
 /// Insert a value into a secure trie using a raw (unhashed) key.
