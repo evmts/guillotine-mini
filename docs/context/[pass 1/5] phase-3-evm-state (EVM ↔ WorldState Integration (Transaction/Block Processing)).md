@@ -1,76 +1,77 @@
-# [pass 1/5] phase-3-evm-state (EVM ↔ WorldState Integration (Transaction/Block Processing))
+# [pass 1/5] phase-3-evm-state — EVM ↔ WorldState Integration (Transaction/Block Processing)
 
-## Phase Goals (from `prd/GUILLOTINE_CLIENT_PLAN.md`)
-- Connect the guillotine-mini EVM to WorldState for transaction and block processing.
-- Target components:
-  - `client/evm/host_adapter.zig` (HostInterface implementation over WorldState)
-  - `client/evm/processor.zig` (transaction processing pipeline)
-- Structural references:
-  - Nethermind: `nethermind/src/Nethermind/Nethermind.Evm/`
-  - Existing EVM behavior: `src/evm.zig`, `src/host.zig`
+This context file aggregates the exact paths and authoritative references to implement Phase 3, focused on wiring the EVM to the WorldState for transaction and block processing in Effect.ts (client-ts), using the existing Guillotine EVM as behavioral reference and Nethermind for architectural boundaries.
 
-## Relevant Specs Read (from `prd/ETHEREUM_SPECS_REFERENCE.md` + source files)
-- `execution-specs/src/ethereum/forks/prague/vm/__init__.py`
-  - Defines `BlockEnvironment`, `TransactionEnvironment`, `Message`, `Evm`, and child-call merge behavior.
-- `execution-specs/src/ethereum/forks/prague/fork.py`
-  - Core flow for this phase: `state_transition`, `apply_body`, `check_transaction`, `process_transaction`, `process_withdrawals`.
-  - Includes SetCode transaction checks and authorization handling.
-- `execution-specs/src/ethereum/forks/cancun/fork.py`
-  - Blob transaction rules (`max_fee_per_blob_gas`, versioned hash checks) and system tx pattern.
-- `execution-specs/src/ethereum/forks/london/fork.py`
-  - Baseline EIP-1559 transaction checks, fee accounting, gas refund flow.
-- EIPs read for tx/block processing behavior:
-  - `EIPs/EIPS/eip-1559.md` (base fee + effective gas price model)
-  - `EIPs/EIPS/eip-2930.md` (access list semantics and intrinsic costs)
-  - `EIPs/EIPS/eip-4844.md` (blob transaction format and blob gas accounting)
-  - `EIPs/EIPS/eip-7702.md` (set-code transaction + authorization list rules)
-  - `EIPs/EIPS/eip-2929.md`, `EIPs/EIPS/eip-3529.md`, `EIPs/EIPS/eip-3651.md`, `EIPs/EIPS/eip-3860.md` (warm/cold access, refunds, warm coinbase, initcode metering)
-- devp2p status:
-  - `devp2p/` exists but has no files in this checkout, so no phase-3-relevant devp2p spec file could be read locally.
+## Phase Goals (from prd/GUILLOTINE_CLIENT_PLAN.md)
+- Connect EVM to WorldState for transaction/block processing.
+- Key components to implement/port:
+  - `client/evm/host_adapter.zig` → Effect.ts Host adapter mirroring `src/host.zig` semantics.
+  - `client/evm/processor.zig` → Effect.ts Transaction processor wrapping EVM execution over journaled state.
+- Architectural references: `nethermind/src/Nethermind/Nethermind.Evm/` (module boundaries and responsibilities), plus DB surfaces from Nethermind.Db for persistence APIs used by higher layers.
 
-## Nethermind DB Inventory (requested path: `nethermind/src/Nethermind/Nethermind.Db/`)
-Key files noted:
-- Interfaces and abstractions:
-  - `IDb.cs`, `IColumnsDb.cs`, `IReadOnlyDb.cs`, `IReadOnlyDbProvider.cs`, `IDbProvider.cs`, `IDbFactory.cs`, `IFullDb.cs`, `ITunableDb.cs`
-- Providers/implementations:
-  - `DbProvider.cs`, `DbProviderExtensions.cs`, `MemDb.cs`, `MemColumnsDb.cs`, `ReadOnlyDb.cs`, `ReadOnlyColumnsDb.cs`, `NullDb.cs`
-- Batching/settings/metadata:
-  - `InMemoryWriteBatch.cs`, `InMemoryColumnBatch.cs`, `RocksDbSettings.cs`, `DbNames.cs`, `MetadataDbKeys.cs`
-- Pruning and maintenance:
-  - `PruningConfig.cs`, `PruningMode.cs`, `FullPruningTrigger.cs`, `FullPruningCompletionBehavior.cs`, `FullPruning/*`
-- Domain columns:
-  - `ReceiptsColumns.cs`, `BlobTxsColumns.cs`
+## Specs To Follow (from prd/ETHEREUM_SPECS_REFERENCE.md)
+Authoritative execution rules live in `execution-specs` per-fork. Prioritize latest activated hardforks for correctness, fall back to earlier forks for deltas.
 
-## Voltaire Zig APIs (requested path: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`)
-Path is present. Relevant APIs for EVM ↔ WorldState integration:
-- Primitives exports (`/Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/root.zig`)
-  - `Address`, `Hash`, `Hex`, `Transaction`, `Block`, `Receipt`, `AccessList`, `Authorization`, `Nonce`, `Gas`, `GasUsed`, `BaseFeePerGas`, `StateRoot`, `Storage`, `StorageValue`, `Bytecode`, `Bytes`, `Rlp`, `Uint`.
-- State manager surface (`/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/root.zig`)
-  - `StateManager`, `JournaledState`, `ForkBackend`, cache types.
-- `StateManager` methods (`/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/StateManager.zig`)
-  - `getBalance`, `setBalance`, `getNonce`, `setNonce`, `getCode`, `setCode`, `getStorage`, `setStorage`, `checkpoint`, `revert`, `commit`, `snapshot`, `revertToSnapshot`.
-- `JournaledState` behavior (`/Users/williamcory/voltaire/packages/voltaire-zig/src/state-manager/JournaledState.zig`)
-  - Read cascade (local cache -> fork backend) and synchronized checkpoint/revert/commit.
-- EVM host contract (`/Users/williamcory/voltaire/packages/voltaire-zig/src/evm/host.zig`)
-  - Host vtable API mirrors guillotine-mini host methods for balance/code/storage/nonce.
+- VM core (Cancun as current baseline):
+  - `execution-specs/src/ethereum/forks/cancun/vm/__init__.py` — EVM entry (stack/memory/gas core)
+  - `execution-specs/src/ethereum/forks/cancun/fork.py` — Transaction and block processing glue
+- Additional per-fork references (when needed for pre/post-Cancun behavior):
+  - `execution-specs/src/ethereum/forks/shanghai/vm/__init__.py`, `.../shanghai/fork.py`
+- Cross-cutting:
+  - `execution-specs/src/ethereum/forks/cancun/state.py` — World state transitions
+  - `execution-specs/src/ethereum/forks/cancun/transactions.py` — TX validation/normalization
 
-## Existing Guillotine-mini Host + EVM Behavior (required reference)
-- Host interface (`src/host.zig`)
-  - `HostInterface` vtable functions: `getBalance`, `setBalance`, `getCode`, `setCode`, `getStorage`, `setStorage`, `getNonce`, `setNonce`.
-- EVM host touch points (`src/evm.zig`)
-  - Uses host methods across call/create paths for account/state mutations and reads.
-  - Revert/snapshot logic restores storage, balances, warm access sets, transient state, and selfdestruct tracking.
-  - CREATE/CREATE2 paths enforce initcode/code-size and nonce/collision behavior with host-backed writes.
+These files define the source of truth for gas accounting, access lists, warm/cold rules, refunds, receipts, logs, and state root updates.
 
-## Test Fixtures Inventory
-`ethereum-tests/` directories present:
-- `ABITests/`, `BasicTests/`, `BlockchainTests/`, `DifficultyTests/`, `EOFTests/`, `GenesisTests/`, `KeyStoreTests/`, `LegacyTests/`, `PoWTests/`, `RLPTests/`, `TransactionTests/`, `TrieTests/`.
-- Fixture bundles present: `ethereum-tests/fixtures_general_state_tests.tgz`, `ethereum-tests/fixtures_blockchain_tests.tgz`.
-- `ethereum-tests/GeneralStateTests/` directory is not currently unpacked in this checkout.
+## Guillotine EVM Reference (this repo)
+- `src/evm.zig` — EVM engine (behavioral reference; do not reimplement semantics in TS)
+- `src/host.zig` — Minimal HostInterface used by the EVM for external state access
+  - Methods: `getBalance`, `setBalance`, `getCode`, `setCode`, `getStorage`, `setStorage`, `getNonce`, `setNonce`
+  - Note: Nested calls are handled internally by `EVM.inner_call`; the HostInterface is for outer world-state interactions.
 
-`execution-spec-tests/` status:
-- Directory exists with `execution-spec-tests/fixtures/`.
-- No deeper fixture directories/files were found in this checkout (empty fixture tree at current depth scan).
+## Nethermind Architectural References
+While this phase focuses on EVM↔State wiring, DB APIs and layering inform boundaries and lifecycles. Key DB files (for naming and separation of concerns):
+- `nethermind/src/Nethermind/Nethermind.Db/IDb.cs`, `IReadOnlyDb.cs`, `IFullDb.cs` — DB surfaces
+- `DbProvider.cs`, `IDbProvider.cs`, `ReadOnlyDbProvider.cs` — provider abstraction
+- `MemDb.cs`, `MemColumnsDb.cs`, `MemDbFactory.cs` — in-memory impls (useful for tests)
+- `RocksDbSettings.cs`, `CompressingDb.cs`, `SimpleFilePublicKeyDb.cs` — persistence details
+- `PruningConfig.cs`, `IPruningConfig.cs`, `FullPruning/*` — pruning strategies
+- `Metrics.cs` — instrumentation surfaces
 
-## Summary
-Collected phase-3 goals, execution-spec tx/block processing anchors (Prague/Cancun/London), relevant EIP rule files for gas/accounting and tx types, requested Nethermind.Db key files, Voltaire Zig primitives/state-manager APIs, guillotine-mini host/EVM integration points, and currently available fixture locations (including missing/unpacked fixtures).
+EVM module (for structure, not code): `nethermind/src/Nethermind/Nethermind.Evm/` (use to mirror responsibilities like Host/State adapters, precompile handling, execution tracing, and gas accounting separation).
+
+## Voltaire Zig APIs (upstream primitives and state manager)
+Base path: `/Users/williamcory/voltaire/packages/voltaire-zig/src/`
+- EVM core:
+  - `evm/evm.zig`, `evm/frame.zig`, `evm/host.zig`, `evm/precompiles/*`
+- State management:
+  - `state-manager/JournaledState.zig`, `state-manager/StateManager.zig`, `state-manager/ForkBackend.zig`
+- Primitives used pervasively:
+  - `primitives/Address`, `primitives/Hash`, `primitives/Hex`, `primitives/Transaction`, `primitives/Uint/*`, `primitives/Storage*`, `primitives/Receipt`, `primitives/Block*`
+
+These inform how to shape the Effect.ts services and data models. In TS, always import from `voltaire-effect/primitives` rather than redefining types.
+
+## Test Fixtures
+- ethereum-tests (classic fixtures): `ethereum-tests/`
+  - Present dirs: `ABITests/`, `BasicTests/`, `BlockchainTests/`, `DifficultyTests/`, `EOFTests/`, `GenesisTests/`, `RLPTests/`, `TransactionTests/`, `TrieTests/`, `PoWTests/`
+  - General state tests (tarball present, not extracted): `ethereum-tests/fixtures_general_state_tests.tgz`
+- execution-spec-tests (Python-generated fixtures): `execution-spec-tests/`
+  - `execution-spec-tests/fixtures/blockchain_tests` → symlink to `ethereum-tests/BlockchainTests`
+  - Additional state test fixtures may need to be generated/extracted if required for this pass.
+
+## Implementation Notes for Effect.ts (client-ts)
+- Services as `Context.Tag`s with `Layer`-based DI:
+  - `HostAdapter` service: translates EVM host calls to WorldState reads/writes.
+  - `EvmProcessor` service: validates+executes TXs, produces receipts, updates state roots.
+- Composition style: `Effect.gen(function* () { ... })` and typed error channels (`Data.TaggedError`).
+- Resource safety: use `Effect.acquireRelease` where world-state snapshots/journals require cleanup.
+- Tests: `@effect/vitest` with `it.effect()`; cover each public function (host adapter methods, tx processing entry), and verify against canonical fixtures (start with small `BlockchainTests` cases; expand to `GeneralStateTests` once extracted).
+
+## Quick Path Index
+- Plan: `prd/GUILLOTINE_CLIENT_PLAN.md` (Phase 3 section)
+- Specs: `execution-specs/src/ethereum/forks/cancun/vm/__init__.py`, `.../cancun/fork.py`, `.../cancun/state.py`, `.../cancun/transactions.py`
+- EVM host (this repo): `src/host.zig`
+- Nethermind DB surfaces: `nethermind/src/Nethermind/Nethermind.Db/`
+- Voltaire Zig (reference APIs): `/Users/williamcory/voltaire/packages/voltaire-zig/src/{evm,state-manager,primitives}`
+- Fixtures: `ethereum-tests/`, `execution-spec-tests/fixtures/blockchain_tests`
+
