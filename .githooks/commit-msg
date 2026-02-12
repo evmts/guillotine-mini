@@ -1,0 +1,28 @@
+#!/usr/bin/env sh
+# Enforce commit message format:
+# "EMOJI type(scope): description"
+# Allowed emojis: 🐛, ♻️, 🧪, ⚡
+# Allowed types: fix, refactor, test, perf
+
+COMMIT_MSG_FILE="$1"
+SUBJECT=$(head -n1 "$COMMIT_MSG_FILE")
+
+case "$SUBJECT" in
+  "Merge "*|"Revert "*)
+    # Allow merges/reverts without enforcement
+    exit 0
+    ;;
+esac
+
+regex='^([🐛♻️🧪⚡])\s+(fix|refactor|test|perf)\([^)]+\):\s+.+$'
+
+if printf %s "$SUBJECT" | grep -Eq "$regex"; then
+  exit 0
+else
+  echo "✖ Commit message must match: 'EMOJI type(scope): description'" >&2
+  echo "  Allowed EMOJI: 🐛 ♻️ 🧪 ⚡" >&2
+  echo "  Allowed type: fix | refactor | test | perf" >&2
+  echo "  Example: '🧪 test(phase-0-db): add unit test for contains'" >&2
+  exit 1
+fi
+
