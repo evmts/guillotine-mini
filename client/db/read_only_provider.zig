@@ -37,11 +37,12 @@ const Slot = struct {
 /// - `slots` caches per-DbName `ReadOnlyDb` wrappers so vtable pointers remain
 ///   stable without heap allocations for the wrapper object itself.
 pub const ReadOnlyDbProvider = struct {
+    const slot_count = std.meta.fields(DbName).len;
     base: *const DbProvider,
     overlay_allocator: ?std.mem.Allocator,
     // Initialize fixed slots with default `Slot{ .present = false }` repeated N times.
     // Avoids zeroing non-null pointers inside nested structs.
-    slots: [std.meta.fields(DbName).len]Slot = [_]Slot{Slot{ .present = false }} ** std.meta.fields(DbName).len,
+    slots: [slot_count]Slot = [_]Slot{Slot{ .present = false }} ** slot_count,
 
     /// Create a strict read-only provider (no write overlay). No allocations.
     pub fn init_strict(base: *const DbProvider) ReadOnlyDbProvider {
