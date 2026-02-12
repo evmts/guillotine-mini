@@ -11,11 +11,18 @@
 /// - `Nethermind.Evm/TransactionProcessing/TransactionProcessor.cs` → ValidateStatic
 const std = @import("std");
 const primitives = @import("primitives");
+const EffectiveGasPrice = primitives.EffectiveGasPrice;
 const Hardfork = primitives.Hardfork;
 const tx_mod = primitives.Transaction;
 const intrinsic_gas = @import("intrinsic_gas.zig");
 const calculate_intrinsic_gas = intrinsic_gas.calculate_intrinsic_gas;
 const MAX_INIT_CODE_SIZE = intrinsic_gas.MAX_INIT_CODE_SIZE;
+
+inline fn to_bytes_be(x: u256) [32]u8 {
+    var out: [32]u8 = undefined;
+    std.mem.writeInt(u256, &out, x, .big);
+    return out;
+}
 
 fn assert_supported_tx_type(comptime Tx: type, comptime context: []const u8) void {
     if (Tx != tx_mod.LegacyTransaction and
@@ -76,25 +83,22 @@ pub fn validate_transaction(
 pub fn calculate_effective_gas_price(
     tx: anytype,
     base_fee_per_gas: u256,
-) error{ PriorityFeeGreaterThanMaxFee, InsufficientMaxFeePerGas, GasPriceBelowBaseFee, UnsupportedTransactionType }!u256 {
+) error{ PriorityFeeGreaterThanMaxFee, InsufficientMaxFeePerGas, GasPriceBelowBaseFee, UnsupportedTransactionType }!EffectiveGasPrice {
     const Tx = @TypeOf(tx);
     comptime assert_supported_tx_type(Tx, "calculate_effective_gas_price");
 
-    if (comptime Tx == tx_mod.LegacyTransaction or Tx == tx_mod.Eip2930Transaction) {
+    if (comptime (Tx == tx_mod.LegacyTransaction or Tx == tx_mod.Eip2930Transaction)) {
         if (tx.gas_price < base_fee_per_gas) return error.GasPriceBelowBaseFee;
-        return tx.gas_price;
+        return EffectiveGasPrice.fromBytes(to_bytes_be(tx.gas_price));
     }
 
     if (tx.max_fee_per_gas < tx.max_priority_fee_per_gas) return error.PriorityFeeGreaterThanMaxFee;
     if (tx.max_fee_per_gas < base_fee_per_gas) return error.InsufficientMaxFeePerGas;
 
-    const max_priority_allowed = tx.max_fee_per_gas - base_fee_per_gas;
-    const priority_fee = if (tx.max_priority_fee_per_gas < max_priority_allowed)
-        tx.max_priority_fee_per_gas
-    else
-        max_priority_allowed;
-
-    return base_fee_per_gas + priority_fee;
+    const base_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(base_fee_per_gas));
+    const max_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(tx.max_fee_per_gas));
+    const tip_u = EffectiveGasPrice.U256.from_bytes(to_bytes_be(tx.max_priority_fee_per_gas));
+    return EffectiveGasPrice.calculate(base_u, max_u, tip_u).effective;
 }
 
 // =============================================================================
@@ -455,7 +459,7 @@ test "calculate_effective_gas_price — legacy ok" {
     };
 
     const effective = try calculate_effective_gas_price(tx, 10);
-    try std.testing.expectEqual(@as(u256, 100), effective);
+    try std.testing.expectEqual(@as(u64, 100), try effective.toU64());
 }
 
 test "calculate_effective_gas_price — legacy rejects below base fee" {
@@ -495,7 +499,7 @@ test "calculate_effective_gas_price — eip1559 caps priority fee" {
     };
 
     const effective = try calculate_effective_gas_price(tx, 10);
-    try std.testing.expectEqual(@as(u256, 25), effective);
+    try std.testing.expectEqual(@as(u64, 25), try effective.toU64());
 }
 
 test "calculate_effective_gas_price — eip1559 priority fee above max fee" {
@@ -560,7 +564,7 @@ pub fn preprice_transaction(
     PriorityFeeGreaterThanMaxFee,
     InsufficientMaxFeePerGas,
     GasPriceBelowBaseFee,
-}!struct { intrinsic: u64, effective_gas_price: u256 } {
+}!struct { intrinsic: u64, effective_gas_price: EffectiveGasPrice } {
     const intrinsic = try validate_transaction(tx, hardfork);
     const effective = try calculate_effective_gas_price(tx, base_fee_per_gas);
     return .{ .intrinsic = intrinsic, .effective_gas_price = effective };
@@ -587,7 +591,7 @@ test "preprice_transaction — legacy ok" {
 
     const priced = try preprice_transaction(tx, .LONDON, 10);
     try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), priced.intrinsic);
-    try std.testing.expectEqual(@as(u256, 100), priced.effective_gas_price);
+    try std.testing.expectEqual(@as(u64, 100), try priced.effective_gas_price.toU64());
 }
 
 test "preprice_transaction — eip2930 ok" {
@@ -609,7 +613,7 @@ test "preprice_transaction — eip2930 ok" {
 
     const priced = try preprice_transaction(tx, .LONDON, 10);
     try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), priced.intrinsic);
-    try std.testing.expectEqual(@as(u256, 50), priced.effective_gas_price);
+    try std.testing.expectEqual(@as(u64, 50), try priced.effective_gas_price.toU64());
 }
 
 test "preprice_transaction — eip1559 ok (cap priority)" {
@@ -634,7 +638,7 @@ test "preprice_transaction — eip1559 ok (cap priority)" {
     // intrinsic base cost only
     try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), priced.intrinsic);
     // effective = base_fee(10) + min(20, 25-10=15) = 25
-    try std.testing.expectEqual(@as(u256, 25), priced.effective_gas_price);
+    try std.testing.expectEqual(@as(u64, 25), try priced.effective_gas_price.toU64());
 }
 
 test "preprice_transaction — eip4844 ok" {
@@ -662,7 +666,7 @@ test "preprice_transaction — eip4844 ok" {
 
     const priced = try preprice_transaction(tx, .CANCUN, 10);
     try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), priced.intrinsic);
-    try std.testing.expectEqual(@as(u256, 11), priced.effective_gas_price); // 10 + min(1, 90)
+    try std.testing.expectEqual(@as(u64, 11), try priced.effective_gas_price.toU64()); // 10 + min(1, 90)
 }
 
 test "preprice_transaction — eip7702 ok with authorization intrinsic" {
@@ -698,7 +702,7 @@ test "preprice_transaction — eip7702 ok with authorization intrinsic" {
 
     const priced = try preprice_transaction(tx, .PRAGUE, 10);
     try std.testing.expectEqual(@as(u64, expected_intrinsic), priced.intrinsic);
-    try std.testing.expectEqual(@as(u256, 12), priced.effective_gas_price); // 10 + min(2, 10)
+    try std.testing.expectEqual(@as(u64, 12), try priced.effective_gas_price.toU64()); // 10 + min(2, 10)
 }
 
 test "preprice_transaction — fork gating enforced" {
