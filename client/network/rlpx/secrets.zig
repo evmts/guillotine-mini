@@ -49,25 +49,25 @@ pub fn deriveSecrets(
     var nonce_cat: [64]u8 = undefined;
     @memcpy(nonce_cat[0..32], &recipient_nonce);
     @memcpy(nonce_cat[32..64], &initiator_nonce);
-    const inner: Bytes32 = crypto.hash.keccak256(&nonce_cat);
+    const inner: Bytes32 = crypto.Hash.keccak256(&nonce_cat);
 
     // shared-secret = keccak256(ephemeral-key || inner)
     var eph_cat_inner: [64]u8 = undefined;
     @memcpy(eph_cat_inner[0..32], &ephemeral_key);
     @memcpy(eph_cat_inner[32..64], &inner);
-    const shared: Bytes32 = crypto.hash.keccak256(&eph_cat_inner);
+    const shared: Bytes32 = crypto.Hash.keccak256(&eph_cat_inner);
 
     // aes-secret = keccak256(ephemeral-key || shared-secret)
     var eph_cat_shared: [64]u8 = undefined;
     @memcpy(eph_cat_shared[0..32], &ephemeral_key);
     @memcpy(eph_cat_shared[32..64], &shared);
-    const aes: Bytes32 = crypto.hash.keccak256(&eph_cat_shared);
+    const aes: Bytes32 = crypto.Hash.keccak256(&eph_cat_shared);
 
     // mac-secret = keccak256(ephemeral-key || aes-secret)
     var eph_cat_aes: [64]u8 = undefined;
     @memcpy(eph_cat_aes[0..32], &ephemeral_key);
     @memcpy(eph_cat_aes[32..64], &aes);
-    const mac: Bytes32 = crypto.hash.keccak256(&eph_cat_aes);
+    const mac: Bytes32 = crypto.Hash.keccak256(&eph_cat_aes);
 
     return .{ .shared = shared, .aes = aes, .mac = mac };
 }
@@ -79,22 +79,22 @@ test "deriveSecrets: zero vectors match spec composition" {
     var nonce_cat: [64]u8 = undefined;
     @memcpy(nonce_cat[0..32], &zero32);
     @memcpy(nonce_cat[32..64], &zero32);
-    const inner = crypto.hash.keccak256(&nonce_cat);
+    const inner = crypto.Hash.keccak256(&nonce_cat);
 
     var eph_cat_inner: [64]u8 = undefined;
     @memcpy(eph_cat_inner[0..32], &zero32);
     @memcpy(eph_cat_inner[32..64], &inner);
-    const shared = crypto.hash.keccak256(&eph_cat_inner);
+    const shared = crypto.Hash.keccak256(&eph_cat_inner);
 
     var eph_cat_shared: [64]u8 = undefined;
     @memcpy(eph_cat_shared[0..32], &zero32);
     @memcpy(eph_cat_shared[32..64], &shared);
-    const aes = crypto.hash.keccak256(&eph_cat_shared);
+    const aes = crypto.Hash.keccak256(&eph_cat_shared);
 
     var eph_cat_aes: [64]u8 = undefined;
     @memcpy(eph_cat_aes[0..32], &zero32);
     @memcpy(eph_cat_aes[32..64], &aes);
-    const mac = crypto.hash.keccak256(&eph_cat_aes);
+    const mac = crypto.Hash.keccak256(&eph_cat_aes);
 
     const got = deriveSecrets(zero32, zero32, zero32);
     try std.testing.expectEqualSlices(u8, &shared, &got.shared);
