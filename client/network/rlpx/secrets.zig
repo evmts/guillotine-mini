@@ -22,6 +22,9 @@ const crypto = @import("crypto");
 const Bytes32 = primitives.Bytes32.Bytes32;
 
 /// Bundle of RLPx session secrets derived from ephemeral shared key and nonces.
+///
+/// Follows devp2p/rlpx.md. This type is stable API surface for other
+/// networking components; fields are opaque to callers.
 pub const Secrets = struct {
     /// shared-secret per RLPx spec (32 bytes)
     shared: Bytes32,
