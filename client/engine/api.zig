@@ -184,25 +184,19 @@ pub const EngineApi = struct {
     }
 };
 
-fn validate_capabilities(list: anytype, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+fn validate_string_list(list: anytype, comptime invalid_err: EngineApi.Error, comptime pred: fn ([]const u8) bool) EngineApi.Error!void {
     const ListType = @TypeOf(list);
-    if (comptime @hasField(ListType, "value")) {
-        return validate_capabilities(list.value, invalid_err);
-    }
-
+    if (comptime @hasField(ListType, "value")) return validate_string_list(list.value, invalid_err, pred);
     if (comptime is_slice_of_byte_slices(ListType)) {
-        for (list) |name| {
-            // Request side: only require versioned engine_* names.
-            if (!method_name.isEngineVersionedMethodName(name)) return invalid_err;
-        }
+        for (list) |name| if (!pred(name)) return invalid_err;
         return;
     }
-
-    if (comptime ListType == std.json.Value) {
-        return validate_json_capabilities(list, invalid_err);
-    }
-
+    if (comptime ListType == std.json.Value) return validate_json_string_array(list, invalid_err, pred);
     return invalid_err;
+}
+
+fn validate_capabilities(list: anytype, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+    return validate_string_list(list, invalid_err, method_name.isEngineVersionedMethodName);
 }
 
 /// Validate a JSON array of strings using a predicate .
@@ -228,14 +222,7 @@ fn validate_json_capabilities(value: std.json.Value, comptime invalid_err: Engin
 }
 
 fn validate_response_capabilities(list: anytype, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
-    const ListType = @TypeOf(list);
-    if (comptime @hasField(ListType, "value")) return validate_response_capabilities(list.value, invalid_err);
-    if (comptime is_slice_of_byte_slices(ListType)) {
-        for (list) |name| if (!method_name.isValidAdvertisableEngineMethodName(name)) return invalid_err;
-        return;
-    }
-    if (comptime ListType == std.json.Value) return validate_json_response_capabilities(list, invalid_err);
-    return invalid_err;
+    return validate_string_list(list, invalid_err, method_name.isValidAdvertisableEngineMethodName);
 }
 
 fn validate_json_response_capabilities(value: std.json.Value, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
