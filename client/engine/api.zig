@@ -133,7 +133,8 @@ pub const EngineApi = struct {
     ) Error!ExchangeCapabilitiesResult {
         try validate_capabilities(params.consensus_client_methods, Error.InvalidParams);
         const result = try self.vtable.exchange_capabilities(self.ptr, params);
-        try validate_capabilities(result.value, Error.InternalError);
+        // Response list must satisfy full advertisable rules
+        try validate_response_capabilities(result.value, Error.InternalError);
         return result;
     }
 
@@ -210,6 +211,31 @@ fn validate_json_capabilities(value: std.json.Value, comptime invalid_err: Engin
             for (array.items) |item| {
                 switch (item) {
                     .string => |name| if (!method_name.isEngineVersionedMethodName(name)) return invalid_err else {},
+                    else => return invalid_err,
+                }
+            }
+        },
+        else => return invalid_err,
+    }
+}
+
+fn validate_response_capabilities(list: anytype, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+    const ListType = @TypeOf(list);
+    if (comptime @hasField(ListType, "value")) return validate_response_capabilities(list.value, invalid_err);
+    if (comptime is_slice_of_byte_slices(ListType)) {
+        for (list) |name| if (!method_name.isValidAdvertisableEngineMethodName(name)) return invalid_err;
+        return;
+    }
+    if (comptime ListType == std.json.Value) return validate_json_response_capabilities(list, invalid_err);
+    return invalid_err;
+}
+
+fn validate_json_response_capabilities(value: std.json.Value, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
+    switch (value) {
+        .array => |array| {
+            for (array.items) |item| {
+                switch (item) {
+                    .string => |name| if (!method_name.isValidAdvertisableEngineMethodName(name)) return invalid_err else {},
                     else => return invalid_err,
                 }
             }
