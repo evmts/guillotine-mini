@@ -19,7 +19,7 @@ import {
   Journal,
   JournalTest,
 } from "./Journal";
-import { bytes32Equals, cloneBytes32 } from "./internal/bytes";
+import { bytes32Equals, cloneBytes32, bytesEquals } from "./internal/bytes";
 import {
   cloneStorageValue,
   isZeroStorageValue,
@@ -33,8 +33,15 @@ type AccountKey = Parameters<typeof Hex.equals>[0];
 type StorageKey = Parameters<typeof Hex.equals>[0];
 /** Canonical runtime code type. */
 type CodeValueType = RuntimeCode.RuntimeCodeType;
-/** Journal key format for world state changes. */
-type WorldStateJournalKey = string;
+/** Journal key format for world state changes (structured to avoid brittle parsing). */
+type WorldStateJournalKey =
+  | { readonly kind: "account"; readonly key: AccountKey }
+  | { readonly kind: "code"; readonly key: AccountKey }
+  | {
+      readonly kind: "storage";
+      readonly accountKey: AccountKey;
+      readonly slotKey: StorageKey;
+    };
 /** Journal value union for world state changes. */
 type WorldStateJournalValue =
   | AccountStateType
@@ -143,37 +150,20 @@ const addressKey = (address: Address.AddressType): AccountKey =>
 const storageSlotKey = (slot: StorageSlotType): StorageKey =>
   Hex.fromBytes(slot);
 
-const accountJournalPrefix = "account:";
-const codeJournalPrefix = "code:";
-const storageJournalPrefix = "storage:";
+const accountJournalKey = (key: AccountKey): WorldStateJournalKey => ({
+  kind: "account",
+  key,
+});
 
-const accountJournalKey = (key: AccountKey): WorldStateJournalKey =>
-  `${accountJournalPrefix}${key}`;
-
-const codeJournalKey = (key: AccountKey): WorldStateJournalKey =>
-  `${codeJournalPrefix}${key}`;
+const codeJournalKey = (key: AccountKey): WorldStateJournalKey => ({
+  kind: "code",
+  key,
+});
 
 const storageJournalKey = (
   key: AccountKey,
   slotKey: StorageKey,
-): WorldStateJournalKey => `${storageJournalPrefix}${key}:${slotKey}`;
-
-const parseStorageJournalKey = (
-  key: WorldStateJournalKey,
-): { readonly accountKey: AccountKey; readonly slotKey: StorageKey } | null => {
-  if (!key.startsWith(storageJournalPrefix)) {
-    return null;
-  }
-  const rest = key.slice(storageJournalPrefix.length);
-  const separator = rest.indexOf(":");
-  if (separator < 0) {
-    return null;
-  }
-  return {
-    accountKey: rest.slice(0, separator) as AccountKey,
-    slotKey: rest.slice(separator + 1) as StorageKey,
-  };
-};
+): WorldStateJournalKey => ({ kind: "storage", accountKey: key, slotKey });
 
 const cloneAccount = (account: AccountStateType): AccountStateType => ({
   ...account,
@@ -193,17 +183,7 @@ const cloneRuntimeCode = (
     ? EMPTY_CODE
     : new Uint8Array(code)) as RuntimeCode.RuntimeCodeType;
 
-const bytesEqual = (left: Uint8Array, right: Uint8Array): boolean => {
-  if (left.length !== right.length) {
-    return false;
-  }
-  for (let i = 0; i < left.length; i += 1) {
-    if (left[i] !== right[i]) {
-      return false;
-    }
-  }
-  return true;
-};
+// Use canonical byte-array equality helper from internal/bytes
 
 const accountsEqual = (
   left: AccountStateType,
@@ -373,7 +353,7 @@ const makeWorldState = Effect.gen(function* () {
             tag: ChangeTag.Create,
           });
           codes.set(key, next);
-        } else if (!bytesEqual(previous, next)) {
+        } else if (!bytesEquals(previous, next)) {
           yield* journal.append({
             key: codeJournalKey(key),
             value: cloneRuntimeCode(previous),
@@ -580,55 +560,56 @@ const makeWorldState = Effect.gen(function* () {
     entry: JournalEntry<WorldStateJournalKey, WorldStateJournalValue>,
   ) =>
     Effect.sync(() => {
-      if (entry.key.startsWith(accountJournalPrefix)) {
-        const key = entry.key.slice(accountJournalPrefix.length) as AccountKey;
-        if (entry.value === null) {
-          accounts.delete(key);
-        } else {
-          accounts.set(key, cloneAccount(entry.value as AccountStateType));
-        }
-        return;
-      }
-
-      if (entry.key.startsWith(codeJournalPrefix)) {
-        const key = entry.key.slice(codeJournalPrefix.length) as AccountKey;
-        if (entry.value === null) {
-          codes.delete(key);
-        } else {
-          codes.set(
-            key,
-            cloneRuntimeCode(entry.value as RuntimeCode.RuntimeCodeType),
-          );
-        }
-        return;
-      }
-
-      const parsed = parseStorageJournalKey(entry.key);
-      if (!parsed) {
-        return;
-      }
-
-      if (entry.value === null) {
-        const slots = storage.get(parsed.accountKey);
-        if (!slots) {
+      const key = entry.key;
+      if (typeof key === "object" && key) {
+        if (key.kind === "account") {
+          const accKey = key.key;
+          if (entry.value === null) {
+            accounts.delete(accKey);
+          } else {
+            accounts.set(accKey, cloneAccount(entry.value as AccountStateType));
+          }
           return;
         }
-        slots.delete(parsed.slotKey);
-        if (slots.size === 0) {
-          storage.delete(parsed.accountKey);
-        }
-        return;
-      }
 
-      const slots =
-        storage.get(parsed.accountKey) ??
-        new Map<StorageKey, StorageValueType>();
-      slots.set(
-        parsed.slotKey,
-        cloneStorageValue(entry.value as StorageValueType),
-      );
-      if (!storage.has(parsed.accountKey)) {
-        storage.set(parsed.accountKey, slots);
+        if (key.kind === "code") {
+          const accKey = key.key;
+          if (entry.value === null) {
+            codes.delete(accKey);
+          } else {
+            codes.set(
+              accKey,
+              cloneRuntimeCode(entry.value as RuntimeCode.RuntimeCodeType),
+            );
+          }
+          return;
+        }
+
+        if (key.kind === "storage") {
+          if (entry.value === null) {
+            const slots = storage.get(key.accountKey);
+            if (!slots) {
+              return;
+            }
+            slots.delete(key.slotKey);
+            if (slots.size === 0) {
+              storage.delete(key.accountKey);
+            }
+            return;
+          }
+
+          const slots =
+            storage.get(key.accountKey) ??
+            new Map<StorageKey, StorageValueType>();
+          slots.set(
+            key.slotKey,
+            cloneStorageValue(entry.value as StorageValueType),
+          );
+          if (!storage.has(key.accountKey)) {
+            storage.set(key.accountKey, slots);
+          }
+          return;
+        }
       }
     });
 
