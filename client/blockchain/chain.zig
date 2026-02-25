@@ -1,7 +1,7 @@
 /// Chain management aliases backed by Voltaire primitives.
 const std = @import("std");
 const blockchain = @import("blockchain");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const validator = @import("validator.zig");
 const local_access = @import("local_access.zig");
 const Block = primitives.Block;

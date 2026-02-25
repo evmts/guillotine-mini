@@ -4,7 +4,7 @@
 /// follows the vtable-based dependency injection pattern used in src/host.zig.
 const std = @import("std");
 const jsonrpc = @import("jsonrpc");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const method_name = @import("method_name.zig");
 
 const ExchangeCapabilitiesMethod = @FieldType(jsonrpc.engine.EngineMethod, "engine_exchangeCapabilities");

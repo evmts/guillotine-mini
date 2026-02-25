@@ -89,7 +89,7 @@ const CallParams = Evm.CallParams;
 const StorageKey = evm.StorageKey;
 const AccessListStorageKey = primitives.State.StorageKey;
 const StorageInjector = @import("storage_injector.zig").StorageInjector;
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Address = primitives.Address.Address;
 const ZERO_ADDRESS = primitives.ZERO_ADDRESS;
 

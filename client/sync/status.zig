@@ -5,7 +5,7 @@
 /// - Otherwise, if any fast/snap phases are still active, report syncing
 /// - Else, report not syncing
 const std = @import("std");
-const SyncStatusMod = @import("primitives").SyncStatus;
+const SyncStatusMod = @import("voltaire").SyncStatus;
 const SyncStatus = SyncStatusMod.SyncStatus;
 const mode = @import("mode.zig");
 

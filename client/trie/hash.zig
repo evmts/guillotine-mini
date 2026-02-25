@@ -13,7 +13,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const TriePrimitives = @import("primitives");
+const TriePrimitives = @import("voltaire");
 // Local error set mirroring Voltaire's TrieError; use until exported upstream
 pub const TrieError = error{
     InvalidNode,

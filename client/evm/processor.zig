@@ -10,7 +10,7 @@
 /// ## Nethermind Parallel
 /// - `Nethermind.Evm/TransactionProcessing/TransactionProcessor.cs` → ValidateStatic
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const EffectiveGasPrice = primitives.EffectiveGasPrice;
 const Hardfork = primitives.Hardfork;
 const tx_mod = primitives.Transaction;

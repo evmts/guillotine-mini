@@ -7,7 +7,7 @@
 /// Nethermind reference:
 /// - Nethermind.Consensus/Comparers/GasPriceTxComparerHelper.cs
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 
 const BaseFeePerGas = primitives.BaseFeePerGas;
 const GasPrice = primitives.GasPrice;

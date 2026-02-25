@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const trie = @import("root.zig");
-const Hex = @import("primitives").Hex;
+const Hex = @import("voltaire").Hex;
 
 test "TrieTests fixtures - trieanyorder" {
     try run_fixture_file("ethereum-tests/TrieTests/trieanyorder.json", false);

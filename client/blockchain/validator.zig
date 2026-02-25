@@ -4,7 +4,7 @@
 /// execution-specs and relevant EIPs (e.g., EIP-1559, EIP-4844). No custom
 /// primitives are introduced; everything is expressed via Voltaire types.
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Blob = primitives.Blob;
 const BlockHeader = primitives.BlockHeader;
 const Hash = primitives.Hash;

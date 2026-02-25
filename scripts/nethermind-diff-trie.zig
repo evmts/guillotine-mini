@@ -1,6 +1,6 @@
 const std = @import("std");
 const client_trie = @import("client_trie");
-const Rlp = @import("primitives").Rlp;
+const Rlp = @import("voltaire").Rlp;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

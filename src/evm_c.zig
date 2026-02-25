@@ -4,7 +4,7 @@ const evm = @import("evm.zig");
 const Evm = evm.Evm;
 const CallResult = evm.CallResult;
 const StorageSlotKey = evm.StorageSlotKey;
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Address = primitives.Address.Address;
 const ZERO_ADDRESS = primitives.ZERO_ADDRESS;
 

@@ -22,7 +22,7 @@
 /// }
 /// ```
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const adapter = @import("adapter.zig");
 const ByteSliceContext = @import("byte_slice_context.zig").ByteSliceContext;
 const Database = adapter.Database;

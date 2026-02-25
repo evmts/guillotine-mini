@@ -2,7 +2,7 @@
 /// Handles yielding for async data requests (storage, balance, code, nonce)
 /// and resuming execution when data is provided
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const log = @import("logger.zig");
 const errors = @import("errors.zig");
 const storage_mod = @import("storage.zig");

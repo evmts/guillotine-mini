@@ -198,7 +198,7 @@ Phase 0 has **minimal Voltaire dependency** — DB works with raw `[]const u8` b
 
 Voltaire is at `../voltaire/packages/voltaire-zig/src/` and imports via:
 ```zig
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 ```
 
 **Primitives module** (`../voltaire/packages/voltaire-zig/src/primitives/`):

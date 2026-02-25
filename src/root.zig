@@ -35,7 +35,7 @@ pub const host = @import("host.zig");
 pub const HostInterface = host.HostInterface;
 
 // Export Hardfork from primitives
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 pub const Hardfork = primitives.Hardfork;
 pub const ForkTransition = primitives.ForkTransition;
 

@@ -21,7 +21,7 @@
 /// The init code word cost (EIP-3860, Shanghai+) adds 2 gas per 32-byte word
 /// of init code for contract creation transactions.
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Hardfork = primitives.Hardfork;
 const tx_mod = primitives.Transaction;
 const access_list = primitives.AccessList;

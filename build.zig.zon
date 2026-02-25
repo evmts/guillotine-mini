@@ -32,7 +32,7 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .primitives = .{
+        .voltaire = .{
             .path = "../voltaire",
         },
         .guillotine_primitives = .{

@@ -14,7 +14,7 @@
 ///   zig build bench-txpool -Doptimize=ReleaseFast  # Release timings (use these)
 const std = @import("std");
 const bench = @import("bench_utils");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const txpool = @import("root.zig");
 
 const Address = primitives.Address;

@@ -16,7 +16,7 @@
 //! - The order of nonces is recipient first, then initiator, matching the spec.
 
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const crypto = @import("crypto");
 
 const Bytes32 = primitives.Bytes32.Bytes32;

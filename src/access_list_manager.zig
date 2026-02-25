@@ -3,7 +3,7 @@
 /// This module manages the warm/cold access state for addresses and storage slots
 /// according to EIP-2929. It's EVM-specific logic, not a primitive type.
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Address = primitives.Address.Address;
 const StorageKey = primitives.State.StorageKey;
 const AccessList = primitives.AccessList.AccessList;

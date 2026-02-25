@@ -1,6 +1,6 @@
 /// Log opcode handlers for the EVM (LOG0-LOG4)
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 const call_result = @import("../call_result.zig");
 

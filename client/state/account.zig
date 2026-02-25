@@ -30,7 +30,7 @@
 /// These predicates are critical for EIP-158 (spurious dragon) empty account
 /// cleanup and EIP-161 state clearing.
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 
 /// Re-export Voltaire's AccountState — the canonical account type.
 pub const AccountState = primitives.AccountState.AccountState;

@@ -4,7 +4,7 @@
 //! canonical Voltaire trie and provides minimal glue that is universally
 //! useful for Ethereum MPT usage in the client.
 
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 
 /// Merkle Patricia Trie implementation (Voltaire primitive).
 pub const Trie = primitives.Trie;

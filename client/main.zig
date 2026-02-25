@@ -2,7 +2,7 @@
 ///
 /// Mirrors Nethermind.Runner.Program as the process-level entrypoint.
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const evm_mod = @import("evm");
 const config_mod = @import("config.zig");
 const cli = @import("cli.zig");

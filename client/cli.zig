@@ -2,7 +2,7 @@
 ///
 /// Mirrors Nethermind.Runner.Program option parsing at a minimal surface.
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const config_mod = @import("config.zig");
 
 const ChainId = primitives.ChainId;

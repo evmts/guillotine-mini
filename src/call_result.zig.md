@@ -201,7 +201,7 @@ for (self.logs, 0..) |log, i| {
 
 ```zig
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Address = primitives.Address;
 const ZERO_ADDRESS = primitives.ZERO_ADDRESS;
 ```

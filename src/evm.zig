@@ -3,7 +3,7 @@
 /// Architecture mirrors evm.zig - Evm orchestrates, Frame executes
 const std = @import("std");
 const log = @import("logger.zig");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 const Address = primitives.Address;
 const Frame = @import("frame.zig").Frame;

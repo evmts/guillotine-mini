@@ -24,7 +24,7 @@ export const ZIG_TARGET: Target = {
   testCmd: "zig build test",
   fmtCmd: "zig fmt client/",
   voltairePath: "/Users/williamcory/voltaire/packages/voltaire-zig/",
-  importStyle: '@import("primitives"), @import("crypto")',
+  importStyle: '@import("voltaire"), @import("crypto")',
   diPattern: "comptime vtable dependency injection (like src/host.zig HostInterface pattern)",
   errorPattern: "explicit error unions, propagate with try, NEVER use catch {}",
   testPattern: 'inline test "..." blocks inside each source file',

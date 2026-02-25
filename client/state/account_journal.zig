@@ -9,7 +9,7 @@
 /// - Delegates snapshot/restore/commit to the underlying Journal.
 /// - No hidden allocations beyond the Journal's append/truncate.
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 
 const Address = primitives.Address.Address;
 const AccountState = primitives.AccountState.AccountState;

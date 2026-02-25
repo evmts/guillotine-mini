@@ -20,7 +20,7 @@
 ///
 /// ```zig
 /// const client_evm = @import("client_evm");
-/// const primitives = @import("primitives");
+/// const primitives = @import("voltaire");
 ///
 /// var state = try StateManager.init(allocator, null);
 /// defer state.deinit();

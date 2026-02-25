@@ -1,6 +1,6 @@
 /// Keccak256 (SHA3) opcode handler for the EVM
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 
 /// Helper function to calculate word count (needed for gas calculation)

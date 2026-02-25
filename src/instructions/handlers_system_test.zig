@@ -1,7 +1,7 @@
 /// Unit tests for system opcode handlers (CREATE, CREATE2, CALL, CALLCODE, DELEGATECALL, STATICCALL, SELFDESTRUCT)
 const std = @import("std");
 const testing = std.testing;
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 const Hardfork = primitives.Hardfork;
 const Address = primitives.Address.Address;

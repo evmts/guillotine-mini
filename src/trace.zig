@@ -1,5 +1,5 @@
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const TraceConfig = primitives.TraceConfig;
 
 /// EIP-3155 compatible trace entry

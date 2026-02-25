@@ -1,6 +1,6 @@
 //! RLPx MAC State Initialization
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const crypto = @import("crypto");
 const Bytes32 = primitives.Bytes32.Bytes32;
 

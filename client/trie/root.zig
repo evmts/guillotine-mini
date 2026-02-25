@@ -47,7 +47,7 @@ pub const secure_trie_root = hash.secure_trie_root;
 /// Root hash for an empty trie (keccak256(RLP(""))).
 pub const EMPTY_TRIE_ROOT = hash.EMPTY_TRIE_ROOT;
 /// 32-byte hash type used for root hashes (canonical primitives hash type).
-pub const Hash32 = @import("primitives").Hash.Hash;
+pub const Hash32 = @import("voltaire").Hash.Hash;
 
 test {
     // Ensure all sub-modules compile and their tests run.

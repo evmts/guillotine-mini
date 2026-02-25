@@ -10,7 +10,7 @@
 /// - ascending/descending contiguous ranges (skip = 0)
 /// - explicit stride requests for header skeleton building
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Hash = primitives.Hash;
 const BlockNumber = primitives.BlockNumber;
 

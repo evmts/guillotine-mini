@@ -1,6 +1,6 @@
 /// Test helper utilities for instruction handler unit tests
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Address = primitives.Address.Address;
 const Hardfork = primitives.Hardfork;
 const evm_mod = @import("evm");

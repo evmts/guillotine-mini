@@ -4,7 +4,7 @@
 /// - separate body + receipt request lists (by block header)
 /// - optional response payloads, in request order
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const BlockHeader = primitives.BlockHeader;
 const BlockBody = primitives.BlockBody;
 const Hash = primitives.Hash;

@@ -1,5 +1,5 @@
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 // Import HostInterface from the core guillotine module exposed in build.zig
 const HostInterface = @import("guillotine").HostInterface;
 

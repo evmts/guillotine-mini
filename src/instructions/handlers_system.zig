@@ -1,6 +1,6 @@
 /// System opcode handlers for the EVM (CALL, CREATE, SELFDESTRUCT)
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 const Address = primitives.Address.Address;
 const precompiles = @import("precompiles");

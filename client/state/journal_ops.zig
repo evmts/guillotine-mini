@@ -11,7 +11,7 @@
 const std = @import("std");
 const state_manager_mod = @import("state-manager");
 const StateManager = state_manager_mod.StateManager;
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Address = primitives.Address.Address;
 
 /// Thin adapter that exposes begin/rollback/commit on top of `StateManager`.

@@ -28,7 +28,7 @@ const HostInterface = evm_mod.HostInterface;
 const state_manager_mod = @import("state-manager");
 const StateManager = state_manager_mod.StateManager;
 const ForkBackend = state_manager_mod.ForkBackend;
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Address = primitives.Address;
 
 /// Adapts a Voltaire `StateManager` to the guillotine-mini `HostInterface` vtable.

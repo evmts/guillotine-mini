@@ -2,7 +2,7 @@
 ///
 /// Mirrors the minimal configuration surface required by the CLI entry point.
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 
 const ChainId = primitives.ChainId;
 const NetworkId = primitives.NetworkId;

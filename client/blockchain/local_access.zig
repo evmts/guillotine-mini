@@ -13,7 +13,7 @@
 /// Voltaire. Track this dependency and migrate to upstream accessors when
 /// available to remove the layering-violation risk.
 const blockchain = @import("blockchain");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 
 const Chain = blockchain.Blockchain;
 const Block = primitives.Block;
@@ -64,12 +64,12 @@ test "local_access: gets block by hash and number after canonical" {
     try chain.putBlock(block);
 
     const by_hash = get_block_local(&chain, block.hash) orelse return error.UnexpectedNull;
-    try std.testing.expect(@import("primitives").Hash.equals(&block.hash, &by_hash.hash));
+    try std.testing.expect(@import("voltaire").Hash.equals(&block.hash, &by_hash.hash));
 
     // Not canonical yet → number lookup should be null.
     try std.testing.expect(get_block_by_number_local(&chain, 0) == null);
 
     try chain.setCanonicalHead(block.hash);
     const by_number = get_block_by_number_local(&chain, 0) orelse return error.UnexpectedNull;
-    try std.testing.expect(@import("primitives").Hash.equals(&block.hash, &by_number.hash));
+    try std.testing.expect(@import("voltaire").Hash.equals(&block.hash, &by_number.hash));
 }

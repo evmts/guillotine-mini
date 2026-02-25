@@ -1,6 +1,6 @@
 const std = @import("std");
 const crypto = @import("crypto");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const trie = @import("client_trie");
 
 const Allocator = std.mem.Allocator;

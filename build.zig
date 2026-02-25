@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
     // in this directory.
 
     // Get the primitives dependency - it handles all crypto lib building internally
-    const primitives_dep = b.dependency("primitives", .{
+    const primitives_dep = b.dependency("voltaire", .{
         .target = target,
         .optimize = optimize,
     });
@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
         },
     });
@@ -61,7 +61,7 @@ pub fn build(b: *std.Build) void {
         // which requires us to specify a target.
         .target = target,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "crypto", .module = crypto_mod },
         },
@@ -107,7 +107,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "crypto", .module = crypto_mod },
         },
@@ -119,7 +119,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
         },
     });
 
@@ -140,7 +140,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
         },
     });
@@ -162,7 +162,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "client_trie", .module = client_trie_mod },
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
         },
     });
@@ -186,7 +186,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
         },
     });
 
@@ -207,7 +207,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
         },
     });
@@ -229,7 +229,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
         },
     });
 
@@ -250,7 +250,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "blockchain", .module = blockchain_mod },
         },
     });
@@ -272,7 +272,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             // Allow txpool code to access HostInterface via the core evm module
             .{ .name = "guillotine", .module = mod },
         },
@@ -297,7 +297,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "jsonrpc", .module = jsonrpc_mod },
         },
@@ -320,7 +320,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "jsonrpc", .module = jsonrpc_mod },
         },
@@ -343,7 +343,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "evm", .module = evm_mod },
         },
     });
@@ -367,7 +367,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "evm", .module = evm_mod },
             .{ .name = "state-manager", .module = state_manager_mod },
         },
@@ -417,7 +417,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "bench_utils", .module = bench_utils_mod },
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "evm", .module = evm_mod },
             .{ .name = "state-manager", .module = state_manager_mod },
         },
@@ -457,7 +457,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "blockchain", .module = blockchain_mod },
             .{ .name = "bench_utils", .module = bench_utils_mod },
         },
@@ -478,7 +478,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
         },
     });
 
@@ -497,7 +497,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
         },
     });
@@ -518,7 +518,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "bench_utils", .module = bench_utils_mod },
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
         },
     });
 
@@ -592,7 +592,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "evm", .module = evm_mod },
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "client_blockchain", .module = client_blockchain_mod },
         },
     });
@@ -887,7 +887,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "guillotine", .module = mod },
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
         },
     });
 
@@ -922,7 +922,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Get WASM-specific primitives modules from dependency
-    const wasm_primitives_dep = b.dependency("primitives", .{
+    const wasm_primitives_dep = b.dependency("voltaire", .{
         .target = wasm_target,
         .optimize = .ReleaseSmall,
     });
@@ -937,7 +937,7 @@ pub fn build(b: *std.Build) void {
         .target = wasm_target,
         .optimize = .ReleaseSmall,
         .imports = &.{
-            .{ .name = "primitives", .module = wasm_primitives_mod },
+            .{ .name = "voltaire", .module = wasm_primitives_mod },
             .{ .name = "crypto", .module = wasm_crypto_mod },
             .{ .name = "precompiles", .module = wasm_precompiles_mod },
         },
@@ -999,7 +999,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "primitives", .module = primitives_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
         },

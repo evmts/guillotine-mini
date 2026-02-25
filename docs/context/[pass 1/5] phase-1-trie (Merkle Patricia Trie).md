@@ -52,7 +52,7 @@ This file collects the exact paths and spec references needed to implement Phase
 
 ## Voltaire Primitives and APIs to use (no custom duplicates)
 - /Users/williamcory/voltaire/packages/voltaire-zig/src/primitives/trie.zig
-  - Exposed via `const primitives = @import("primitives");`
+  - Exposed via `const primitives = @import("voltaire");`
   - Types: `primitives.Trie` (with `put`, `get`, `delete`, `root_hash`), `Node`, `LeafNode`, `ExtensionNode`, `BranchNode`
   - Helpers: `encodePath`, `decodePath`, `keyToNibbles`, `nibblesToKey`
   - Hashing: `hash_node` uses `primitives.Rlp.Rlp` + `primitives.crypto.Keccak256`

@@ -3,7 +3,7 @@
 /// Re-exported from Voltaire primitives to enforce the "no local primitives"
 /// requirement for the database abstraction layer.
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Db = primitives.Db;
 
 pub const Error = Db.Error;

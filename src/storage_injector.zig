@@ -1,7 +1,7 @@
 /// Storage Injector with LRU Cache for Async State Interface
 /// Phase 2: Storage Injector with LRU Cache
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Address = primitives.Address.Address;
 
 /// Simple LRU cache for storage slots

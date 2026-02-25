@@ -1,6 +1,6 @@
 // Tests for evm.zig - moved from inline tests
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const errors = @import("errors.zig");
 const evm = @import("evm.zig");
 const storage = @import("storage.zig");

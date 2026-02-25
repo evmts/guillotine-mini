@@ -2,7 +2,7 @@
 ///
 /// Shared by DB backends that store raw byte slice keys in hash maps.
 const std = @import("std");
-const primitives = @import("primitives");
+const primitives = @import("voltaire");
 const Bytes = primitives.Bytes;
 
 /// Hash/equality context for byte slices.
