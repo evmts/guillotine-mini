@@ -4,7 +4,7 @@ const primitives = @import("voltaire");
 const trie = @import("client_trie");
 
 const Allocator = std.mem.Allocator;
-const Hash32 = trie.Hash32;
+const Hash32 = primitives.Hash.Hash;
 
 const FixtureFile = struct {
     file: []const u8,
