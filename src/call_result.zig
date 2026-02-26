@@ -302,12 +302,7 @@ const primitives = @import("voltaire");
 const Address = primitives.Address;
 const ZERO_ADDRESS = primitives.ZERO_ADDRESS;
 
-/// Log entry structure for EVM events
-pub const Log = struct {
-    address: Address,
-    topics: []const u256,
-    data: []const u8,
-};
+pub const Log = primitives.logs.Log;
 
 /// Record of a self-destruct operation
 pub const SelfDestructRecord = struct {
