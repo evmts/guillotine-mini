@@ -135,7 +135,7 @@ export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize, log_level:
     const log = @import("logger.zig");
     const log_level_enum: log.LogLevel = @enumFromInt(log_level);
 
-    Evm.init(evm_ptr, allocator, null, hardfork, null, log_level_enum) catch {
+    Evm.init(evm_ptr, allocator, null, hardfork, null, primitives.ZERO_ADDRESS, 0, log_level_enum) catch {
         allocator.destroy(evm_ptr);
         allocator.destroy(ctx);
         return null;

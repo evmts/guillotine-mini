@@ -117,7 +117,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         /// Initialize a new EVM instance
         /// Config provides defaults, but hardfork can be overridden at runtime
-        pub fn init(self: *Self, allocator: std.mem.Allocator, h: ?host.HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext, log_level: ?log.LogLevel) !void {
+        pub fn init(self: *Self, allocator: std.mem.Allocator, h: ?host.HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext, origin: primitives.Address, gas_price: u256, log_level: ?log.LogLevel) !void {
             // Set log level if provided
             if (log_level) |level| {
                 log.setLogLevel(level);
@@ -148,8 +148,8 @@ pub fn Evm(comptime config: EvmConfig) type {
                     .block_base_fee = 0,
                     .blob_base_fee = 0,
                 },
-                .origin = primitives.ZERO_ADDRESS,
-                .gas_price = 0,
+                .origin = origin,
+                .gas_price = gas_price,
                 .host = h,
                 .arena = std.heap.ArenaAllocator.init(allocator),
                 .allocator = allocator,
@@ -560,7 +560,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             };
 
             const calldata = params.getInput();
-            const bytecode = self.pending_bytecode;
+            const bytecode = if (params.isCreate()) &[_]u8{} else self.get_code(address);
             const blob_versioned_hashes = if (self.blob_versioned_hashes.len > 0) self.blob_versioned_hashes else null;
             const access_list = self.pending_access_list;
 

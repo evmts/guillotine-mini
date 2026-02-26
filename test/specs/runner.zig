@@ -649,9 +649,6 @@ fn processRlpTransaction(
         sender = try parseAddress(test_sender_hex);
     }
 
-    // Set gas price for the EVM instance
-    evm_instance.gas_price = gas_price;
-
     // Calculate priority fee (entire gas_price goes to coinbase in legacy transactions)
     const base_fee: u256 = if (block_ctx) |ctx| ctx.block_base_fee else 0;
     const priority_fee_per_gas: u256 = if (gas_price > base_fee) gas_price - base_fee else 0;
@@ -669,7 +666,8 @@ fn processRlpTransaction(
     // Increment sender nonce
     try test_host.nonces.put(sender, nonce + 1);
 
-    // Set origin for the transaction
+    // Set transaction context
+    evm_instance.gas_price = gas_price;
     evm_instance.origin = sender;
 
     // Pre-warm sender and target (EIP-2929, Berlin+)
@@ -1143,7 +1141,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
     const host_interface = test_host.hostInterface();
     const Evm = evm_mod.Evm(.{}); // Use default config
     var evm_instance: Evm = undefined;
-    try evm_instance.init(allocator, host_interface, hardfork, block_ctx, null);
+    try evm_instance.init(allocator, host_interface, hardfork, block_ctx, primitives.ZERO_ADDRESS, 0, null);
     defer evm_instance.deinit();
 
     // Attach tracer if provided
@@ -1403,11 +1401,12 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             var priority_fee_per_gas: u256 = 0;
             // Track max fees for upfront balance check (EIP-1559)
             var max_fee_per_gas_for_validation: u256 = 0;
+            // Effective gas price for EVM (used for upfront deduction and refunds)
+            var effective_gas_price: u256 = 0;
             if (tx.object.get("gasPrice")) |gp| {
-                const gas_price_str = gp.string;
-                const gas_price = if (gas_price_str.len == 0) 0 else try std.fmt.parseInt(u256, gas_price_str, 0);
-                evm_instance.gas_price = gas_price;
+                const gas_price = if (gp.string.len == 0) 0 else try std.fmt.parseInt(u256, gp.string, 0);
                 max_fee_per_gas_for_validation = gas_price; // For legacy, max = actual
+                effective_gas_price = gas_price;
                 // If a base fee is present, only the tip (gas_price - base_fee) goes to coinbase.
                 // For blockchain tests, use base fee from block header. Otherwise use env.currentBaseFee.
                 const base_fee_for_priority: u256 = if (block_header_base_fee) |bhf|
@@ -1451,7 +1450,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     @min(max_priority_fee, max_fee_per_gas - base_fee)
                 else
                     0;
-                evm_instance.gas_price = base_fee + priority_fee_per_gas;
+                effective_gas_price = base_fee + priority_fee_per_gas;
             }
 
             // Parse gas limit early for affordability checks
@@ -1513,10 +1512,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
             }
 
-            // Set origin
+            // Set per-tx origin and gas_price on the EVM instance
             evm_instance.origin = sender;
-
-            // priority_fee_per_gas already set above for coinbase rewards
+            evm_instance.gas_price = effective_gas_price;
 
             // Parse to address
             const to = if (tx.object.get("to")) |to_val| blk: {

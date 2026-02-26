@@ -24,7 +24,7 @@ fn createTestEvm(allocator: std.mem.Allocator, hardfork: Hardfork) !*Evm {
         .blob_base_fee = 1,
         .block_hashes = &[_][32]u8{},
     };
-    try evm.init(allocator, null, hardfork, block_context, null);
+    try evm.init(allocator, null, hardfork, block_context, primitives.ZERO_ADDRESS, 0, null);
     try evm.initTransactionState(null);
     return evm;
 }

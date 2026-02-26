@@ -93,6 +93,8 @@ pub const TestHelper = struct {
             null, // no host interface (self-contained)
             config.hardfork,
             TestBlockContext,
+            primitives.ZERO_ADDRESS,
+            0,
             null, // no custom log level
         );
         errdefer evm.deinit();

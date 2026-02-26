@@ -85,7 +85,7 @@ fn run(
     }
 
     var evm_instance: EvmType = undefined;
-    try evm_instance.init(allocator, null, config.hardfork, block_context, null);
+    try evm_instance.init(allocator, null, config.hardfork, block_context, primitives.ZERO_ADDRESS, 0, null);
     defer evm_instance.deinit();
 
     if (trace_enabled) {

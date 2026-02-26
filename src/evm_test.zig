@@ -106,7 +106,7 @@ test "Evm.async_data_request field initialized to .none" {
 
     var evm_instance: Evm = undefined;
 
-    try evm_instance.init(testing.allocator, null, null, null, null);
+    try evm_instance.init(testing.allocator, null, null, null, primitives.ZERO_ADDRESS, 0, null);
     defer evm_instance.deinit();
 
     try testing.expect(evm_instance.storage.async_data_request == .none);
@@ -117,7 +117,7 @@ test "Evm.async_data_request can write/read different request types" {
 
     var evm_instance: Evm = undefined;
 
-    try evm_instance.init(testing.allocator, null, null, null, null);
+    try evm_instance.init(testing.allocator, null, null, null, primitives.ZERO_ADDRESS, 0, null);
     defer evm_instance.deinit();
 
     const addr = primitives.Address.fromHex("0x1111111111111111111111111111111111111111") catch unreachable;
@@ -184,7 +184,7 @@ test "callOrContinue - returns .need_storage on cache miss" {
 
     // Create EVM
     var evm_instance: Evm = undefined;
-    try evm_instance.init(testing.allocator, null, null, null, null);
+    try evm_instance.init(testing.allocator, null, null, null, primitives.ZERO_ADDRESS, 0, null);
     defer evm_instance.deinit();
 
     // Set storage injector before calling
