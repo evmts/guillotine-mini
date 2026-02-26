@@ -65,10 +65,6 @@ pub fn CallParams(config: anytype) type {
         /// Validate call parameters to ensure they meet EVM requirements.
         /// Checks gas limits and other critical constraints.
         pub fn validate(self: @This()) ValidationError!void {
-            // BUG: we should be checking if gas checks are disabled or not
-            // Gas must be non-zero to execute any operation
-            if (self.getGas() == 0) return ValidationError.GasZeroError;
-
             // EIP-3860: Limit init code size to 49152 bytes (2 * max contract size)
             const MAX_INITCODE_SIZE = 49152;
             const MAX_INPUT_SIZE = 1024 * 1024 * 4; // 4MB practical limit for input data

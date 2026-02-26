@@ -284,6 +284,7 @@ pub fn CallResult(config: anytype) type {
                 .success = self.success,
                 .gas_left = self.gas_left,
                 .output = output_copy,
+                .refund_counter = self.refund_counter,
                 .logs = logs_copy,
                 .selfdestructs = selfdestructs_copy,
                 .accessed_addresses = accessed_addresses_copy,
