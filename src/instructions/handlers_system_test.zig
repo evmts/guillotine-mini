@@ -453,6 +453,38 @@ test "CALL: value transfer gas stipend (2300 gas)" {
     try testing.expect(gas_consumed >= GasConstants.CallValueTransferGas);
 }
 
+test "CALL: value transfer to absent precompile charges new account gas" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .CANCUN);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf1}; // CALL
+    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    defer frame.deinit();
+
+    const precompile_addr = Address.fromU256(1);
+    try evm.balances.put(frame.address, 1_000_000);
+
+    try frame.pushStack(0); // out_length
+    try frame.pushStack(0); // out_offset
+    try frame.pushStack(0); // in_length
+    try frame.pushStack(0); // in_offset
+    try frame.pushStack(1); // value
+    try frame.pushStack(addressToU256(precompile_addr)); // address
+    try frame.pushStack(1); // gas
+
+    const initial_gas = frame.gas_remaining;
+
+    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
+    try SystemHandlers.call(&frame);
+
+    const gas_consumed = initial_gas - frame.gas_remaining;
+    try testing.expect(gas_consumed >= GasConstants.CallValueTransferGas + GasConstants.CallNewAccountGas);
+}
+
 test "CALL: memory expansion for calldata" {
     const allocator = testing.allocator;
     var evm = try createTestEvm(allocator, .CANCUN);
@@ -485,6 +517,34 @@ test "CALL: memory expansion for calldata" {
 
     // Verify memory expanded
     try testing.expect(frame.memory_size >= initial_memory_size);
+}
+
+test "CALL: Istanbul base cost is 700 gas" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .ISTANBUL);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf1}; // CALL
+    var frame = try createTestFrame(allocator, evm, bytecode, .ISTANBUL, 10_000);
+    defer frame.deinit();
+
+    try frame.pushStack(0); // out_length
+    try frame.pushStack(0); // out_offset
+    try frame.pushStack(0); // in_length
+    try frame.pushStack(0); // in_offset
+    try frame.pushStack(0); // value
+    try frame.pushStack(0); // address
+    try frame.pushStack(0); // gas
+
+    const initial_gas = frame.gas_remaining;
+    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
+    try SystemHandlers.call(&frame);
+
+    try testing.expectEqual(@as(i64, 700), initial_gas - frame.gas_remaining);
+    try testing.expectEqual(@as(u256, 1), frame.stack.items[0]);
 }
 
 test "CALL: cold vs warm access costs (Berlin+)" {
@@ -627,8 +687,8 @@ test "CALLCODE: with value transfer" {
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
     const target_u256 = addressToU256(target_addr);
 
-    // Give caller balance
-    try evm.setBalanceWithSnapshot(frame.caller, 1000);
+    // CALLCODE checks value affordability against the current execution account.
+    try evm.setBalanceWithSnapshot(frame.address, 1000);
 
     // Setup with value
     try frame.pushStack(0); // out_length
@@ -648,6 +708,37 @@ test "CALLCODE: with value transfer" {
     // Verify gas includes value transfer cost
     const gas_consumed = initial_gas - frame.gas_remaining;
     try testing.expect(gas_consumed >= GasConstants.CallValueTransferGas);
+}
+
+test "CALLCODE: nonzero value fails when current account lacks balance" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .CANCUN);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf2}; // CALLCODE
+    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    defer frame.deinit();
+
+    const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
+    const target_u256 = addressToU256(target_addr);
+
+    try frame.pushStack(0); // out_length
+    try frame.pushStack(0); // out_offset
+    try frame.pushStack(0); // in_length
+    try frame.pushStack(0); // in_offset
+    try frame.pushStack(1); // value
+    try frame.pushStack(target_u256); // address
+    try frame.pushStack(10_000); // gas
+
+    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
+    try SystemHandlers.callcode(&frame);
+
+    try testing.expectEqual(@as(usize, 1), frame.stack.items.len);
+    try testing.expectEqual(@as(u256, 0), frame.stack.items[0]);
+    try testing.expectEqual(@as(u32, 1), frame.pc);
 }
 
 // ============================================================================

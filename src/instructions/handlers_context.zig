@@ -347,14 +347,24 @@ pub fn Handlers(FrameType: type) type {
             const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
 
             if (code.len == 0) {
-                // Return 0 for empty accounts (no code)
-                try frame.pushStack(0);
+                if (evm.accountIsEmpty(ext_addr)) {
+                    try frame.pushStack(0);
+                } else if (evm.accountExists(ext_addr)) {
+                    var empty_hash: [32]u8 = undefined;
+                    std.crypto.hash.sha3.Keccak256.hash(&[_]u8{}, &empty_hash, .{});
+
+                    var empty_hash_u256: u256 = 0;
+                    for (empty_hash) |byte| {
+                        empty_hash_u256 = (empty_hash_u256 << 8) | byte;
+                    }
+                    try frame.pushStack(empty_hash_u256);
+                } else {
+                    try frame.pushStack(0);
+                }
             } else {
-                // Compute keccak256 hash of the code
                 var hash: [32]u8 = undefined;
                 std.crypto.hash.sha3.Keccak256.hash(code, &hash, .{});
 
-                // Convert hash bytes to u256 (big-endian)
                 var hash_u256: u256 = 0;
                 for (hash) |byte| {
                     hash_u256 = (hash_u256 << 8) | byte;

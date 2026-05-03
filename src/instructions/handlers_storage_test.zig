@@ -167,6 +167,39 @@ test "SLOAD: warm access cost (Berlin+)" {
     try testing.expectEqual(@as(i64, GasConstants.WarmStorageReadCost), initial_gas - frame.gas_remaining);
 }
 
+test "SLOAD: pre-Berlin hardfork gas evolution" {
+    const allocator = testing.allocator;
+    const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
+
+    var frontier = try createTestEvm(allocator, .FRONTIER);
+    defer {
+        frontier.deinit();
+        allocator.destroy(frontier);
+    }
+    try testing.expectEqual(@as(u64, 50), try frontier.accessStorageSlot(address, 0));
+
+    var homestead = try createTestEvm(allocator, .HOMESTEAD);
+    defer {
+        homestead.deinit();
+        allocator.destroy(homestead);
+    }
+    try testing.expectEqual(@as(u64, 50), try homestead.accessStorageSlot(address, 0));
+
+    var tangerine = try createTestEvm(allocator, .TANGERINE_WHISTLE);
+    defer {
+        tangerine.deinit();
+        allocator.destroy(tangerine);
+    }
+    try testing.expectEqual(@as(u64, 200), try tangerine.accessStorageSlot(address, 0));
+
+    var istanbul = try createTestEvm(allocator, .ISTANBUL);
+    defer {
+        istanbul.deinit();
+        allocator.destroy(istanbul);
+    }
+    try testing.expectEqual(@as(u64, 800), try istanbul.accessStorageSlot(address, 0));
+}
+
 test "SLOAD: stack underflow error" {
     const allocator = testing.allocator;
     var evm = try createTestEvm(allocator, .CANCUN);

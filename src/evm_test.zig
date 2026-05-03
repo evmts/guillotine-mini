@@ -136,6 +136,56 @@ test "Evm.async_data_request can write/read different request types" {
     try testing.expect(evm_instance.storage.async_data_request == .none);
 }
 
+test "Evm.inner_create top-level uses transaction nonce for multi-byte CREATE address" {
+    const testing = std.testing;
+
+    const caller = try primitives.Address.fromHex("0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    const expected = try primitives.Address.fromHex("0xecbf9aa676d9e0bbba7e517d1350c1b64f8c6779");
+
+    var evm_instance: Evm = undefined;
+    try evm_instance.init(testing.allocator, null, .BERLIN, null, caller, 0, null);
+    defer evm_instance.deinit();
+
+    // Transaction processing increments the sender nonce before entering the EVM.
+    try evm_instance.nonces.put(caller, 0x0cc7);
+
+    const result = try evm_instance.inner_create(0, &.{}, 100_000, null);
+    try testing.expect(result.success);
+    try testing.expect(result.address.equals(expected));
+}
+
+test "Evm.inner_call rolls back logs when callee errors after emitting LOG" {
+    const testing = std.testing;
+
+    var evm_instance: Evm = undefined;
+    try evm_instance.init(testing.allocator, null, .BERLIN, null, primitives.ZERO_ADDRESS, 0, null);
+    defer evm_instance.deinit();
+
+    const caller = try primitives.Address.fromHex("0x1000000000000000000000000000000000000001");
+    const callee = try primitives.Address.fromHex("0x2000000000000000000000000000000000000002");
+    const callee_code = [_]u8{
+        0x60, 0x01, // PUSH1 0x01 (size)
+        0x60, 0x00, // PUSH1 0x00 (offset)
+        0xa0, // LOG0
+        0x60, 0x01, // PUSH1 0x01 (value)
+        0x60, 0x00, // PUSH1 0x00 (slot)
+        0x55, // SSTORE (forces OOG with low gas)
+        0x00, // STOP
+    };
+    try evm_instance.code.put(callee, &callee_code);
+
+    const result = try evm_instance.inner_call(.{ .call = .{
+        .caller = caller,
+        .to = callee,
+        .value = 0,
+        .input = &.{},
+        .gas = 1_000,
+    } });
+
+    try testing.expect(!result.success);
+    try testing.expectEqual(@as(usize, 0), evm_instance.logs.items.len);
+}
+
 // ============================================================================
 // Tests for Phase 4: callOrContinue() and Async Execution
 // ============================================================================

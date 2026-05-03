@@ -22,6 +22,9 @@ pub const HostInterface = struct {
         setStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256, value: u256) void,
         getNonce: *const fn (ptr: *anyopaque, address: Address) u64,
         setNonce: *const fn (ptr: *anyopaque, address: Address, nonce: u64) void,
+        accountExists: ?*const fn (ptr: *anyopaque, address: Address) bool = null,
+        accountHasStorage: ?*const fn (ptr: *anyopaque, address: Address) bool = null,
+        deleteAccount: ?*const fn (ptr: *anyopaque, address: Address) void = null,
     };
 
     pub fn getBalance(self: HostInterface, address: Address) u256 {
@@ -54,5 +57,29 @@ pub const HostInterface = struct {
 
     pub fn setNonce(self: HostInterface, address: Address, nonce: u64) void {
         self.vtable.setNonce(self.ptr, address, nonce);
+    }
+
+    pub fn accountExists(self: HostInterface, address: Address) bool {
+        if (self.vtable.accountExists) |exists| {
+            return exists(self.ptr, address);
+        }
+        return self.getBalance(address) != 0 or self.getNonce(address) != 0 or self.getCode(address).len != 0;
+    }
+
+    pub fn accountHasStorage(self: HostInterface, address: Address) bool {
+        if (self.vtable.accountHasStorage) |has_storage| {
+            return has_storage(self.ptr, address);
+        }
+        return false;
+    }
+
+    pub fn deleteAccount(self: HostInterface, address: Address) void {
+        if (self.vtable.deleteAccount) |delete| {
+            delete(self.ptr, address);
+            return;
+        }
+        self.setBalance(address, 0);
+        self.setCode(address, &[_]u8{});
+        self.setNonce(address, 0);
     }
 };

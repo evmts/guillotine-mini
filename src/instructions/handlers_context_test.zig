@@ -1456,6 +1456,57 @@ test "EXTCODEHASH: returns zero for empty account" {
     try testing.expectEqual(@as(u256, 0), frame.stack.items[0]);
 }
 
+test "EXTCODEHASH: returns empty code hash for account with balance and no code" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .CONSTANTINOPLE);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0x3f}; // EXTCODEHASH
+    var frame = try createTestFrame(allocator, evm, bytecode, .CONSTANTINOPLE, 1_000_000);
+    defer frame.deinit();
+
+    const ext_addr = try Address.fromHex("0x9999999999999999999999999999999999999999");
+    try evm.balances.put(ext_addr, 1);
+    try frame.pushStack(Address.toU256(ext_addr));
+
+    const ContextHandlers = @import("handlers_context.zig").Handlers(@TypeOf(frame));
+    try ContextHandlers.extcodehash(&frame);
+
+    var empty_hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(&[_]u8{}, &empty_hash, .{});
+    var expected: u256 = 0;
+    for (empty_hash) |byte| {
+        expected = (expected << 8) | byte;
+    }
+
+    try testing.expectEqual(expected, frame.stack.items[0]);
+}
+
+test "EXTCODEHASH: returns zero for account with storage but empty account core" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .CONSTANTINOPLE);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0x3f}; // EXTCODEHASH
+    var frame = try createTestFrame(allocator, evm, bytecode, .CONSTANTINOPLE, 1_000_000);
+    defer frame.deinit();
+
+    const ext_addr = try Address.fromHex("0x9999999999999999999999999999999999999999");
+    try evm.storage.storage.put(.{ .address = ext_addr.bytes, .slot = 1 }, 1);
+    try frame.pushStack(Address.toU256(ext_addr));
+
+    const ContextHandlers = @import("handlers_context.zig").Handlers(@TypeOf(frame));
+    try ContextHandlers.extcodehash(&frame);
+
+    try testing.expectEqual(@as(u256, 0), frame.stack.items[0]);
+}
+
 test "EXTCODEHASH: invalid before Constantinople" {
     const allocator = testing.allocator;
     var evm = try createTestEvm(allocator, .BYZANTIUM);

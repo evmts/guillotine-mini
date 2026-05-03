@@ -13,6 +13,13 @@ pub fn Handlers(FrameType: type) type {
 
     return struct {
         /// Helper functions
+        inline fn preBerlinCallGas(hardfork: primitives.Hardfork) u64 {
+            return if (hardfork.isBefore(.TANGERINE_WHISTLE))
+                GasConstants.CallBaseCost
+            else
+                GasConstants.CallCodeCost;
+        }
+
         inline fn wordCount(bytes: u64) u64 {
             return (bytes + 31) / 32;
         }
@@ -144,19 +151,15 @@ pub fn Handlers(FrameType: type) type {
             // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
             // Pre-Tangerine Whistle: Use 40 gas base cost
             if (evm.hardfork.isBefore(.BERLIN)) {
-                gas_cost = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) 40 else GasConstants.CallGas;
+                gas_cost = preBerlinCallGas(evm.hardfork);
             }
 
             if (value_arg > 0) {
                 gas_cost += GasConstants.CallValueTransferGas;
 
-                // Check if target is a precompile (hardfork-aware)
-                // Precompiles are considered to always exist and should not incur new account cost
-                const is_precompile = precompiles.isPrecompile(call_address, evm.hardfork);
-
                 // EIP-150: Check if target account exists
                 // If calling non-existent account with value, add account creation cost
-                const target_exists = is_precompile or blk: {
+                const target_exists = blk: {
                     if (evm.host) |h| {
                         const has_balance = h.getBalance(call_address) > 0;
                         const has_code = h.getCode(call_address).len > 0;
@@ -227,7 +230,8 @@ pub fn Handlers(FrameType: type) type {
             // Read input data from memory
             var input_data: []const u8 = &.{};
             var input_data_buf: ?[]u8 = null;
-            defer if (input_data_buf) |buf| frame.allocator.free(buf);
+            const frame_allocator = frame.allocator;
+            defer if (input_data_buf) |buf| frame_allocator.free(buf);
             if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                 const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                 const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
@@ -256,6 +260,7 @@ pub fn Handlers(FrameType: type) type {
                 .gas = available_gas,
             } };
             const result = evm.inner_call(params);
+            const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
 
             // Write output to memory
             // Note: Memory expansion cost was already charged upfront
@@ -268,25 +273,25 @@ pub fn Handlers(FrameType: type) type {
                 var k: u32 = 0;
                 while (k < copy_len) : (k += 1) {
                     const addr = try add_u32(out_off, k);
-                    try frame.writeMemory(addr, result.output[k]);
+                    try active_frame.writeMemory(addr, result.output[k]);
                 }
             }
 
             // Store return data
-            frame.return_data = result.output;
+            active_frame.return_data = result.output;
 
             // Push success status
             const success_val: u256 = if (result.success) 1 else 0;
-            try frame.pushStack(success_val);
+            try active_frame.pushStack(success_val);
 
             // Refund unused gas (including any unused stipend)
             // Per Python: evm.gas_left += child_evm.gas_left
             // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
             const gas_to_refund = @min(result.gas_left, available_gas);
             const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
-            frame.gas_remaining = @min(frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
+            active_frame.gas_remaining = @min(active_frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
 
-            frame.pc += 1;
+            active_frame.pc += 1;
         }
 
         /// CALLCODE opcode (0xf2) - Message call into this account with another account's code
@@ -318,7 +323,7 @@ pub fn Handlers(FrameType: type) type {
             // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
             // Pre-Tangerine Whistle: Use 40 gas base cost
             if (evm.hardfork.isBefore(.BERLIN)) {
-                gas_cost = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) 40 else GasConstants.CallGas;
+                gas_cost = preBerlinCallGas(evm.hardfork);
             }
 
             if (value_arg > 0) {
@@ -372,7 +377,8 @@ pub fn Handlers(FrameType: type) type {
             // Read input data from memory
             var input_data: []const u8 = &.{};
             var input_data_buf: ?[]u8 = null;
-            defer if (input_data_buf) |buf| frame.allocator.free(buf);
+            const frame_allocator = frame.allocator;
+            defer if (input_data_buf) |buf| frame_allocator.free(buf);
             if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                 const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                 const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
@@ -401,6 +407,7 @@ pub fn Handlers(FrameType: type) type {
                 .gas = available_gas,
             } };
             const result = evm.inner_call(params);
+            const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
 
             // Write output to memory
             if (out_length > 0 and result.output.len > 0) {
@@ -412,24 +419,24 @@ pub fn Handlers(FrameType: type) type {
                 var k: u32 = 0;
                 while (k < copy_len) : (k += 1) {
                     const addr = try add_u32(out_off, k);
-                    try frame.writeMemory(addr, result.output[k]);
+                    try active_frame.writeMemory(addr, result.output[k]);
                 }
             }
 
             // Store return data
-            frame.return_data = result.output;
+            active_frame.return_data = result.output;
 
             // Push success status
-            try frame.pushStack(if (result.success) 1 else 0);
+            try active_frame.pushStack(if (result.success) 1 else 0);
 
             // Refund unused gas (including any unused stipend)
             // Per Python: evm.gas_left += child_evm.gas_left
             // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
             const gas_to_refund = @min(result.gas_left, available_gas);
             const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
-            frame.gas_remaining = @min(frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
+            active_frame.gas_remaining = @min(active_frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
 
-            frame.pc += 1;
+            active_frame.pc += 1;
         }
 
         /// DELEGATECALL opcode (0xf4) - Message call with another account's code, but keep current msg.sender and msg.value
@@ -462,7 +469,7 @@ pub fn Handlers(FrameType: type) type {
             // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
             // Pre-Tangerine Whistle: Use 40 gas base cost
             if (evm.hardfork.isBefore(.BERLIN)) {
-                gas_cost = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) 40 else GasConstants.CallGas;
+                gas_cost = preBerlinCallGas(evm.hardfork);
             }
 
             // EIP-2929 (Berlin+): access target account (warm/cold)
@@ -507,7 +514,8 @@ pub fn Handlers(FrameType: type) type {
             // Read input data from memory
             var input_data: []const u8 = &.{};
             var input_data_buf: ?[]u8 = null;
-            defer if (input_data_buf) |buf| frame.allocator.free(buf);
+            const frame_allocator = frame.allocator;
+            defer if (input_data_buf) |buf| frame_allocator.free(buf);
             if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                 const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                 const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
@@ -535,6 +543,7 @@ pub fn Handlers(FrameType: type) type {
                 .gas = available_gas,
             } };
             const result = evm.inner_call(params);
+            const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
 
             // Write output to memory
             if (out_length > 0 and result.output.len > 0) {
@@ -546,24 +555,24 @@ pub fn Handlers(FrameType: type) type {
                 var k: u32 = 0;
                 while (k < copy_len) : (k += 1) {
                     const addr = try add_u32(out_off, k);
-                    try frame.writeMemory(addr, result.output[k]);
+                    try active_frame.writeMemory(addr, result.output[k]);
                 }
             }
 
             // Store return data
-            frame.return_data = result.output;
+            active_frame.return_data = result.output;
 
             // Push success status
-            try frame.pushStack(if (result.success) 1 else 0);
+            try active_frame.pushStack(if (result.success) 1 else 0);
 
             // Refund unused gas
             // Per Python: evm.gas_left += child_evm.gas_left
             // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
             const gas_to_refund = @min(result.gas_left, available_gas);
             const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
-            frame.gas_remaining = @min(frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
+            active_frame.gas_remaining = @min(active_frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
 
-            frame.pc += 1;
+            active_frame.pc += 1;
         }
 
         /// STATICCALL opcode (0xfa) - Static message call (no state modifications allowed)
@@ -596,7 +605,7 @@ pub fn Handlers(FrameType: type) type {
             // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
             // Pre-Tangerine Whistle: Use 40 gas base cost
             if (evm.hardfork.isBefore(.BERLIN)) {
-                call_gas_cost = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) 40 else GasConstants.CallGas;
+                call_gas_cost = preBerlinCallGas(evm.hardfork);
             }
 
             // EIP-2929 (Berlin+): access target account (warm/cold)
@@ -641,7 +650,8 @@ pub fn Handlers(FrameType: type) type {
             // Read input data from memory
             var input_data: []const u8 = &.{};
             var input_data_buf: ?[]u8 = null;
-            defer if (input_data_buf) |buf| frame.allocator.free(buf);
+            const frame_allocator = frame.allocator;
+            defer if (input_data_buf) |buf| frame_allocator.free(buf);
             if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
                 const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
                 const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
@@ -669,6 +679,7 @@ pub fn Handlers(FrameType: type) type {
                 .gas = available_gas,
             } };
             const result = evm.inner_call(params);
+            const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
 
             // Write output to memory
             if (out_length > 0 and result.output.len > 0) {
@@ -680,24 +691,24 @@ pub fn Handlers(FrameType: type) type {
                 var k: u32 = 0;
                 while (k < copy_len) : (k += 1) {
                     const addr = try add_u32(out_off, k);
-                    try frame.writeMemory(addr, result.output[k]);
+                    try active_frame.writeMemory(addr, result.output[k]);
                 }
             }
 
             // Store return data
-            frame.return_data = result.output;
+            active_frame.return_data = result.output;
 
             // Push success status
-            try frame.pushStack(if (result.success) 1 else 0);
+            try active_frame.pushStack(if (result.success) 1 else 0);
 
             // Refund unused gas
             // Per Python: evm.gas_left += child_evm.gas_left
             // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
             const gas_to_refund = @min(result.gas_left, available_gas);
             const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
-            frame.gas_remaining = @min(frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
+            active_frame.gas_remaining = @min(active_frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
 
-            frame.pc += 1;
+            active_frame.pc += 1;
         }
 
         /// CREATE2 opcode (0xf5) - Create a new contract with deterministic address
