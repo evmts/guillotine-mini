@@ -908,6 +908,10 @@ pub fn Handlers(FrameType: type) type {
                 try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
             }
 
+            // The pre-London selfdestruct refund (24000) is granted at most once per account
+            // per transaction: only when it is not already marked for deletion.
+            const already_marked_for_deletion = evm_ptr.selfdestructed_accounts.contains(frame.address);
+
             // EIP-6780 (Cancun+): Only delete if created in same transaction
             // Pre-Cancun: Always delete the account
             if (frame.hardfork.isAtLeast(.CANCUN)) {
@@ -930,9 +934,9 @@ pub fn Handlers(FrameType: type) type {
                 try evm_ptr.selfdestructed_accounts.put(frame.address, {});
             }
 
-            // Apply refund to EVM's gas_refund counter
+            // Apply refund to EVM's gas_refund counter (at most once per account per tx).
             const refund = frame.selfdestructRefund();
-            if (refund > 0) {
+            if (refund > 0 and !already_marked_for_deletion) {
                 evm_ptr.gas_refund += refund;
             }
 

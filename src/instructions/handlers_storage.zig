@@ -95,16 +95,23 @@ pub fn Handlers(FrameType: type) type {
                         }
                     }
 
-                    // Case 3: Restoring to original value
+                    // Case 3: Restoring to original value. The refunded amount differs between
+                    // Istanbul (GAS_SLOAD=800) and Berlin (EIP-2929: warm=100, cold=2100).
                     if (original_value == value) {
                         if (original_value == 0) {
-                            // Slot was originally empty and was SET earlier (cost 20000)
-                            // Now restored to 0, refund the difference: 20000 - 100 = 19900
-                            evm.add_refund(20000 - 100); // GAS_STORAGE_SET - GAS_SLOAD
+                            // Originally empty, SET earlier (20000), now restored to 0.
+                            if (evm.hardfork.isAtLeast(.BERLIN)) {
+                                evm.add_refund(20000 - 100); // GAS_STORAGE_SET - GAS_WARM_ACCESS = 19900
+                            } else {
+                                evm.add_refund(20000 - 800); // GAS_STORAGE_SET - GAS_SLOAD = 19200 (Istanbul)
+                            }
                         } else {
-                            // Slot was originally non-empty and was UPDATED earlier (cost 5000)
-                            // Now restored to original, refund: 5000 - 100 = 4900
-                            evm.add_refund(5000 - 100); // GAS_STORAGE_UPDATE - GAS_SLOAD
+                            // Originally non-empty, UPDATED earlier (5000), now restored.
+                            if (evm.hardfork.isAtLeast(.BERLIN)) {
+                                evm.add_refund(5000 - 2100 - 100); // UPDATE - COLD_SLOAD - WARM = 2800
+                            } else {
+                                evm.add_refund(5000 - 800); // GAS_STORAGE_UPDATE - GAS_SLOAD = 4200 (Istanbul)
+                            }
                         }
                     }
                 }

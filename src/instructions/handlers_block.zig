@@ -26,7 +26,9 @@ pub fn Handlers(FrameType: type) type {
             // Return 0 if:
             // 1. Requested block >= current block
             // 2. Requested block is more than 256 blocks old
-            const max_block_number = block_number + 256;
+            // Saturating add: a near-maxInt block-number operand must not overflow-panic; it
+            // saturates and the out-of-range checks below still correctly return 0.
+            const max_block_number = block_number +| 256;
             if (block_number >= current_block or current_block > max_block_number) {
                 // Out of range - return zero
                 try frame.pushStack(0);

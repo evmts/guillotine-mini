@@ -107,8 +107,9 @@ pub fn Evm(comptime config: EvmConfig) type {
         opcode_overrides: []const evm_config.OpcodeOverride,
         precompile_overrides: []const evm_config.PrecompileOverride,
 
-        // Buffer for state changes JSON (persists across yields)
-        pending_state_changes_buffer: [16384]u8 = undefined,
+        // State changes JSON (arena-allocated, sized to fit — persists across yields within
+        // a transaction). Previously a fixed 16 KiB array that silently truncated large dumps.
+        pending_state_changes: []const u8 = &.{},
         pending_state_changes_len: usize = 0,
 
         // Async executor (initialized after Self is fully constructed)
@@ -164,7 +165,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .pending_storage_injector = null,
                 .opcode_overrides = config.opcode_overrides,
                 .precompile_overrides = config.precompile_overrides,
-                .pending_state_changes_buffer = undefined,
+                .pending_state_changes = &.{},
                 .pending_state_changes_len = 0,
                 .async_executor = null, // Initialized when needed
                 .logs = undefined,
@@ -1032,13 +1033,17 @@ pub fn Evm(comptime config: EvmConfig) type {
             if (self.storage.storage_injector) |injector| {
                 const result = try injector.dumpChanges(self);
                 log.debug("dumpStateChanges: Got {} bytes from injector", .{result.len});
-                // Copy to persistent buffer in Evm struct
-                const copy_len = @min(result.len, self.pending_state_changes_buffer.len);
-                if (copy_len > 0) {
-                    @memcpy(self.pending_state_changes_buffer[0..copy_len], result[0..copy_len]);
-                }
-                self.pending_state_changes_len = copy_len;
-                return self.pending_state_changes_buffer[0..copy_len];
+                // Copy into an arena-allocated buffer sized to fit (persists for the tx; no
+                // truncation). Falls back to the raw result if allocation fails.
+                const buf = self.arena.allocator().alloc(u8, result.len) catch {
+                    self.pending_state_changes = result;
+                    self.pending_state_changes_len = result.len;
+                    return result;
+                };
+                @memcpy(buf, result);
+                self.pending_state_changes = buf;
+                self.pending_state_changes_len = buf.len;
+                return self.pending_state_changes;
             }
             log.debug("dumpStateChanges: No injector, returning empty", .{});
             self.pending_state_changes_len = 0;
@@ -1886,9 +1891,11 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
 
                 if (success and frame_output.len > 0) {
-                    // Check code size limit (EIP-170: 24576 bytes)
-                    const max_code_size = 24576;
-                    if (frame_output.len > max_code_size) {
+                    // EIP-170 (Spurious Dragon+): deployed code may not exceed 24576 bytes.
+                    // EIP-3541 (London+): deployed code may not start with the 0xEF byte.
+                    const exceeds_size = self.hardfork.isAtLeast(.SPURIOUS_DRAGON) and frame_output.len > 24576;
+                    const ef_prefix = self.hardfork.isAtLeast(.LONDON) and frame_output[0] == 0xEF;
+                    if (exceeds_size or ef_prefix) {
                         _ = self.frames.pop();
 
                         // Revert nonce on failure

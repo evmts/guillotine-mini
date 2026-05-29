@@ -51,18 +51,20 @@ pub const Bytecode = struct {
     /// Returns the N bytes following the current PC (for PUSHN instructions)
     pub fn readImmediate(self: *const Bytecode, pc: u32, size: u8) ?u256 {
         const pc_usize: usize = @intCast(pc);
-        const size_usize: usize = size;
 
-        // Check if we have enough bytes: current position + 1 (opcode) + size
-        if (pc_usize + 1 + size_usize > self.code.len) {
+        // A PUSHn whose immediate runs past the end of code is valid: the missing trailing
+        // bytes are treated as zero (available bytes are the high-order bytes). Only the
+        // opcode byte itself being out of bounds is degenerate.
+        if (pc_usize >= self.code.len) {
             return null;
         }
 
         var result: u256 = 0;
         var i: u8 = 0;
         while (i < size) : (i += 1) {
-            const idx: usize = pc_usize + 1 + i;
-            result = (result << 8) | self.code[idx];
+            const idx: usize = pc_usize + 1 + @as(usize, i);
+            const byte: u8 = if (idx < self.code.len) self.code[idx] else 0; // zero-pad truncated PUSH
+            result = (result << 8) | byte;
         }
         return result;
     }

@@ -844,6 +844,28 @@ export fn evm_continue_ffi(
                 const balance = std.mem.readInt(u256, data_ptr[20..52], .big);
                 break :blk .{ .continue_with_balance = .{ .address = addr, .balance = balance } };
             },
+            3 => blk: {
+                // Code: address(20) + code bytes (remainder). Answers a need_code request.
+                if (data_len < 20) {
+                    request_out.output_type = 255;
+                    return false;
+                }
+                var addr: Address = undefined;
+                @memcpy(&addr.bytes, data_ptr[0..20]);
+                const code = data_ptr[20..data_len];
+                break :blk .{ .continue_with_code = .{ .address = addr, .code = code } };
+            },
+            4 => blk: {
+                // Nonce: address(20) + nonce(8, big-endian). Answers a need_nonce request.
+                if (data_len < 28) {
+                    request_out.output_type = 255;
+                    return false;
+                }
+                var addr: Address = undefined;
+                @memcpy(&addr.bytes, data_ptr[0..20]);
+                const nonce = std.mem.readInt(u64, data_ptr[20..28], .big);
+                break :blk .{ .continue_with_nonce = .{ .address = addr, .nonce = nonce } };
+            },
             5 => .{ .continue_after_commit = {} },
             else => {
                 request_out.output_type = 255;
@@ -873,7 +895,7 @@ export fn evm_get_state_changes(
         // Read from evm struct
         const copy_len = @min(ctx.evm.pending_state_changes_len, buffer_len);
         if (copy_len > 0) {
-            @memcpy(buffer[0..copy_len], ctx.evm.pending_state_changes_buffer[0..copy_len]);
+            @memcpy(buffer[0..copy_len], ctx.evm.pending_state_changes[0..copy_len]);
         }
         return copy_len;
     }

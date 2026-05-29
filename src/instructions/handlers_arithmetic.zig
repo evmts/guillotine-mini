@@ -140,8 +140,8 @@ pub fn Handlers(FrameType: type) type {
                 }
                 break :blk len;
             };
-            // EIP-160: GAS_EXPONENTIATION_PER_BYTE = 50 (missing from primitives lib)
-            const EXP_BYTE_COST: u64 = 50;
+            // EIP-160 (Spurious Dragon) raised the EXP per-byte cost from 10 to 50.
+            const EXP_BYTE_COST: u64 = if (frame.hardfork.isAtLeast(.SPURIOUS_DRAGON)) 50 else 10;
             const dynamic_gas = EXP_BYTE_COST * byte_len;
             try frame.consumeGas(GasConstants.GasSlowStep + dynamic_gas);
 
