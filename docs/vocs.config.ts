@@ -4,6 +4,8 @@ import { defineConfig } from 'vocs/config'
 
 const tevmSites = [
 	{ text: 'Tevm', link: 'https://tevm.sh' },
+	{ text: 'Contract', link: 'https://contract.tevm.sh' },
+	{ text: 'Logger', link: 'https://logger.tevm.sh' },
 	{ text: 'Test', link: 'https://test.tevm.sh' },
 	{ text: 'Bundler', link: 'https://bundler.tevm.sh' },
 	{ text: 'CLI', link: 'https://cli.tevm.sh' },

@@ -4,11 +4,33 @@ title: Guillotine Mini — a small, readable EVM in Zig
 description: A small, embeddable Ethereum Virtual Machine written in Zig — spec-first, hardfork-aware, and easy to read.
 ---
 
-# Guillotine Mini
+<div className="tevm-hero">
+  <span className="tevm-hero-eyebrow">guillotine · mini</span>
 
-A small, embeddable **Ethereum Virtual Machine written in Zig**. One `Evm` type,
-one `call()` entry point, hardforks from Frontier through Osaka, precompiles,
-transaction-scoped state, and EIP-3155 tracing.
+  <h1>A readable EVM,<br /><span className="tevm-hero-accent">written in Zig</span></h1>
+
+  <div className="tevm-hero-sub">
+    A small, embeddable Ethereum Virtual Machine. One <span className="tevm-hero-code">Evm</span> type, one{' '}
+    <span className="tevm-hero-code">call()</span> entry point, hardforks from Frontier through Osaka,
+    precompiles, transaction-scoped state, and EIP-3155 tracing.
+  </div>
+
+  <div className="tevm-hero-actions">
+    <a className="tevm-button tevm-button--primary" href="/getting-started">Get started →</a>
+    <a className="tevm-button" href="/opcode-explorer">Step through bytecode</a>
+    <a className="tevm-button" href="https://github.com/evmts/guillotine-mini">GitHub</a>
+  </div>
+
+  <div className="tevm-install">
+    <div className="tevm-install-code">
+      <span className="tevm-prompt">$</span>
+      <span>
+        zig fetch <span className="tevm-flag">--save</span>{' '}
+        {'https://github.com/evmts/guillotine-mini/archive/refs/tags/v0.1.0.tar.gz'}
+      </span>
+    </div>
+  </div>
+</div>
 
 ```zig
 const Evm = guillotine.Evm(guillotine.EvmConfig{});
@@ -81,3 +103,24 @@ into. It is pre-1.0: public APIs may change between minor releases.
   Rust artifact in the Voltaire dependency. See
   [Building from Source](/native-build#webassembly).
 
+
+## The rest of the family
+
+Guillotine Mini is one site in the Tevm docs family. Each of these is a live,
+separately versioned project:
+
+<div className="tevm-sites">
+  <a className="tevm-site-card" href="https://tevm.sh"><span className="tevm-site-card-name">Tevm</span><span className="tevm-site-card-host">tevm.sh</span></a>
+  <a className="tevm-site-card" href="https://contract.tevm.sh"><span className="tevm-site-card-name">Contract</span><span className="tevm-site-card-host">contract.tevm.sh</span></a>
+  <a className="tevm-site-card" href="https://logger.tevm.sh"><span className="tevm-site-card-name">Logger</span><span className="tevm-site-card-host">logger.tevm.sh</span></a>
+  <a className="tevm-site-card" href="https://test.tevm.sh"><span className="tevm-site-card-name">Test</span><span className="tevm-site-card-host">test.tevm.sh</span></a>
+  <a className="tevm-site-card" href="https://bundler.tevm.sh"><span className="tevm-site-card-name">Bundler</span><span className="tevm-site-card-host">bundler.tevm.sh</span></a>
+  <a className="tevm-site-card" href="https://cli.tevm.sh"><span className="tevm-site-card-name">CLI</span><span className="tevm-site-card-host">cli.tevm.sh</span></a>
+  <a className="tevm-site-card" href="https://ethers.tevm.sh"><span className="tevm-site-card-name">Ethers</span><span className="tevm-site-card-host">ethers.tevm.sh</span></a>
+  <a className="tevm-site-card" href="https://mud.tevm.sh"><span className="tevm-site-card-name">MUD</span><span className="tevm-site-card-host">mud.tevm.sh</span></a>
+  <a className="tevm-site-card" href="https://examples.tevm.sh"><span className="tevm-site-card-name">Examples</span><span className="tevm-site-card-host">examples.tevm.sh</span></a>
+  <a className="tevm-site-card" href="https://voltaire.tevm.sh"><span className="tevm-site-card-name">Voltaire</span><span className="tevm-site-card-host">voltaire.tevm.sh</span></a>
+  <a className="tevm-site-card" href="https://guillotine.tevm.sh"><span className="tevm-site-card-name">Guillotine</span><span className="tevm-site-card-host">guillotine.tevm.sh</span></a>
+  <a className="tevm-site-card" data-current="true" href="https://mini.tevm.sh"><span className="tevm-site-card-name">Mini</span><span className="tevm-site-card-host">mini.tevm.sh</span></a>
+  <a className="tevm-site-card" href="https://zevm.tevm.sh"><span className="tevm-site-card-name">ZEVM</span><span className="tevm-site-card-host">zevm.tevm.sh</span></a>
+</div>

@@ -2,3 +2,4 @@ dist/
 .vocs/
 .vercel/
 node_modules/
+src/pages.gen.ts

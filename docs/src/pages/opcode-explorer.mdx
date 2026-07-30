@@ -1,0 +1,40 @@
+---
+title: Opcode & gas explorer
+description: Step through EVM bytecode one instruction at a time and watch the stack, memory, storage and gas move.
+---
+
+import { OpcodeStepper } from '../components/OpcodeStepper'
+
+# Opcode & gas explorer
+
+Guillotine Mini's interpreter is a loop over one byte at a time: decode, check
+the stack, charge gas, mutate the frame. This page runs that same loop in your
+browser so you can watch it happen.
+
+Pick an example or paste your own hex, then **Step** through it. The highlighted
+row is the program counter; the right pane is the frame the interpreter is
+mutating.
+
+<OpcodeStepper />
+
+## What it models
+
+- **Stack, memory and storage** — every value is a 256-bit word, memory grows in
+  32-byte words, storage is a slot map scoped to this run.
+- **Gas, including the dynamic parts** — memory expansion is charged
+  quadratically, `EXP` pays per exponent byte, and `SLOAD`/`SSTORE` pay the
+  EIP-2929 cold-access surcharge on first touch.
+- **Jump validation** — `JUMP` and `JUMPI` only accept a `JUMPDEST` that is a
+  real instruction, not a byte inside a `PUSH` immediate.
+
+## What it does not
+
+This is a reading aid, not a second EVM. It implements arithmetic, comparison,
+bitwise, stack, memory, storage, jump and halting opcodes — no hashing, no
+environment opcodes, no calls or creates, and no gas refunds. For any of those,
+the answer lives in [`src/frame.zig`](https://github.com/evmts/guillotine-mini/blob/main/src/frame.zig)
+and is exercised by the fixtures described in
+[Testing and Debugging](/guides/testing).
+
+To run the real thing over the same bytecode, see
+[Executing Bytecode](/guides/executing-bytecode).
