@@ -1,0 +1,193 @@
+# Using It from C
+
+Guillotine Mini exposes a flat C ABI (`src/root_c.zig`) over an opaque handle, so
+anything with an FFI — C, C++, Rust, Go, Python (ctypes/cffi), Node
+(node-ffi/napi), Bun (`bun:ffi`) — can drive the EVM.
+
+## Build the library
+
+```sh
+zig build native
+```
+
+```
+$ ls -la zig-out/lib
+-rw-r--r--  1 williamcory  staff  26578284  libguillotine_mini.a
+```
+
+That is a **static** archive (~26 MB unstripped, Debug) containing the EVM,
+Voltaire's primitives, `blst`, and `c-kzg-4844`. For a release build:
+
+```sh
+zig build native -Doptimize=ReleaseFast
+```
+
+There is no generated `.h` — the ABI is stable enough to declare by hand, and the
+declarations below are transcribed from the actual `export fn` signatures.
+
+## Lifecycle
+
+```c
+typedef struct EvmHandle EvmHandle;
+
+EvmHandle *evm_create(const char *hardfork_name, size_t hardfork_len, uint8_t log_level);
+void       evm_destroy(EvmHandle *handle);
+```
+
+`hardfork_name` is the enum name as text: `"CANCUN"`, `"PRAGUE"`, `"BERLIN"`, … and
+`log_level` selects the internal logger's verbosity. Every other function takes a
+nullable handle and returns a benign value if it is `NULL`, so a failed
+`evm_create` cannot turn into a segfault three calls later.
+
+## A complete C program
+
+Three calls are mandatory before `evm_execute`: `evm_set_bytecode`,
+`evm_set_code` for the target address, and `evm_set_execution_context`. Skipping
+`evm_set_code` yields `success=1, gas_used=0` and no output, because the call
+resolves to an empty account — a silent no-op, not an error. Skipping the context
+call leaves gas at 0.
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdbool.h>
+
+typedef struct EvmHandle EvmHandle;
+
+EvmHandle *evm_create(const char *hardfork_name, size_t hardfork_len, uint8_t log_level);
+void       evm_destroy(EvmHandle *handle);
+bool       evm_set_bytecode(EvmHandle *handle, const uint8_t *bytecode, size_t len);
+bool       evm_set_code(EvmHandle *handle, const uint8_t addr[20], const uint8_t *code, size_t len);
+bool       evm_set_execution_context(EvmHandle *handle, int64_t gas,
+                                     const uint8_t caller[20], const uint8_t address[20],
+                                     const uint8_t value[32],
+                                     const uint8_t *calldata, size_t calldata_len);
+bool       evm_execute(EvmHandle *handle);
+bool       evm_is_success(EvmHandle *handle);
+int64_t    evm_get_gas_used(EvmHandle *handle);
+int64_t    evm_get_gas_remaining(EvmHandle *handle);
+size_t     evm_get_output_len(EvmHandle *handle);
+size_t     evm_get_output(EvmHandle *handle, uint8_t *buffer, size_t buffer_len);
+
+int main(void) {
+    EvmHandle *evm = evm_create("CANCUN", 6, 0);
+    if (!evm) { printf("create failed\n"); return 1; }
+
+    /* PUSH1 0x2a PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 RETURN */
+    const uint8_t code[] = { 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xF3 };
+    evm_set_bytecode(evm, code, sizeof code);
+
+    uint8_t caller[20] = {0}, address[20] = {0}, value[32] = {0};
+    address[19] = 0x42;
+
+    evm_set_code(evm, address, code, sizeof code);
+    evm_set_execution_context(evm, 100000, caller, address, value, NULL, 0);
+
+    evm_execute(evm);
+
+    printf("success=%d gas_used=%lld gas_left=%lld\n", evm_is_success(evm),
+           (long long)evm_get_gas_used(evm), (long long)evm_get_gas_remaining(evm));
+
+    size_t n = evm_get_output_len(evm);
+    uint8_t out[64];
+    if (n > 0 && n <= sizeof out) {
+        evm_get_output(evm, out, sizeof out);
+        printf("output=0x");
+        for (size_t i = 0; i < n; i++) printf("%02x", out[i]);
+        printf("\n");
+    }
+
+    evm_destroy(evm);
+    return 0;
+}
+```
+
+### Linking
+
+`libguillotine_mini.a` is **not** self-contained: `blst`, `c-kzg-4844`, and the
+Rust `libcrypto_wrappers.a` are separate archives that `zig build` produced into
+the cache. Linking only the first one fails with undefined `blst_*`,
+`verify_kzg_proof`, and `crypto.bls12_381.*` symbols. All four are needed:
+
+```sh
+zig build native
+
+CRYPTO=$(find ~/.cache/zig/p -name libcrypto_wrappers.a -path '*target/release*' | head -1)
+BLST=$(find .zig-cache -name libblst.a | xargs -I{} sh -c 'lipo -info {} >/dev/null 2>&1 && echo {}' | head -1)
+KZG=$(find .zig-cache -name libc-kzg-4844.a | xargs -I{} sh -c 'lipo -info {} >/dev/null 2>&1 && echo {}' | head -1)
+
+cc main.c zig-out/lib/libguillotine_mini.a "$BLST" "$KZG" "$CRYPTO" -o demo
+./demo
+```
+
+The `lipo -info` filter is there because the cache also holds `wasm32` builds of
+the same archive names, and passing one of those to the native linker fails with
+`archive member '/' not a mach-o file`. This is clumsy; a proper packaged
+distribution would ship one merged archive plus a header, and that is worth doing
+before 1.0.
+
+Real output from exactly that program and link line on macOS arm64:
+
+```
+success=1 gas_used=18 gas_left=99982
+output=0x000000000000000000000000000000000000000000000000000000000000002a
+```
+
+The output-buffer idiom is deliberate: ask for the length, allocate, then copy.
+Nothing crosses the boundary that the caller does not own.
+
+## Setting up context and state
+
+```c
+bool evm_set_execution_context(EvmHandle *h, /* caller, address, value, calldata, gas, … */);
+bool evm_set_blockchain_context(EvmHandle *h, /* chain id, number, timestamp, coinbase, base fee, … */);
+bool evm_set_access_list_addresses(EvmHandle *h, const uint8_t *addrs, size_t count);
+bool evm_set_access_list_storage_keys(EvmHandle *h, const uint8_t *keys, size_t count);
+bool evm_set_blob_hashes(EvmHandle *h, const uint8_t *hashes, size_t count);
+
+bool evm_set_balance(EvmHandle *h, const uint8_t addr[20], const uint8_t value[32]);
+bool evm_set_nonce(EvmHandle *h, const uint8_t addr[20], uint64_t nonce);
+bool evm_set_code(EvmHandle *h, const uint8_t addr[20], const uint8_t *code, size_t len);
+bool evm_set_storage(EvmHandle *h, const uint8_t addr[20], const uint8_t key[32], const uint8_t value[32]);
+bool evm_get_storage(EvmHandle *h, const uint8_t addr[20], const uint8_t key[32], uint8_t out[32]);
+```
+
+Addresses are 20 raw bytes and 256-bit values are 32 raw bytes, big-endian. Read
+`src/root_c.zig` for the exact parameter order of the two context setters, which
+take many scalars.
+
+## Results, logs, and state changes
+
+```c
+uint64_t evm_get_gas_refund(EvmHandle *h);
+size_t   evm_get_log_count(EvmHandle *h);
+bool     evm_get_log(EvmHandle *h, size_t index, /* out params */);
+size_t   evm_get_storage_change_count(EvmHandle *h);
+bool     evm_get_storage_change(EvmHandle *h, size_t index, /* out params */);
+size_t   evm_get_state_changes(EvmHandle *h, uint8_t *buffer, size_t buffer_len); /* JSON */
+```
+
+`evm_get_state_changes` writes a JSON document describing the state diff, which is
+the pragmatic path for a scripting-language binding: one call instead of a loop
+over typed accessors.
+
+## Async / resumable execution
+
+```c
+bool evm_enable_storage_injector(EvmHandle *h);
+bool evm_call_ffi(EvmHandle *h, /* … */);
+bool evm_continue_ffi(EvmHandle *h, /* … */);
+```
+
+This is the pair that makes JavaScript bindings possible: `evm_call_ffi` runs until
+the EVM needs a state value it does not have, the host fetches it (over RPC, say),
+and `evm_continue_ffi` resumes. It is the C-level face of
+`callOrContinue`/`executeUntilYieldOrComplete`.
+
+## WebAssembly
+
+`zig build wasm` targets `wasm32-wasi` and exports the same symbols. It currently
+**does not build** — see [Building from Source](/native-build#webassembly) for the
+exact error and status.

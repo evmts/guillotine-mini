@@ -1,0 +1,189 @@
+# Configuring the EVM
+
+`guillotine.Evm` is a function from a comptime `EvmConfig` to a type:
+
+```zig
+const Evm = guillotine.Evm(guillotine.EvmConfig{});
+const SmallEvm = guillotine.Evm(guillotine.EvmConfig{ .stack_size = 64 });
+// Evm and SmallEvm are different, non-interchangeable types.
+```
+
+Because the config is comptime, limits become constants the optimizer can fold,
+and custom opcodes and precompiles cost no dispatch overhead at runtime.
+
+## The fields
+
+```zig
+pub const EvmConfig = struct {
+    hardfork: Hardfork = Hardfork.DEFAULT,     // PRAGUE
+    stack_size: u12 = 1024,
+    max_bytecode_size: u32 = 24576,            // EIP-170
+    max_initcode_size: u32 = 49152,            // EIP-3860
+    block_gas_limit: u64 = 30_000_000,
+    memory_initial_capacity: usize = 4096,
+    memory_limit: u64 = 0xFFFFFF,              // ~16 MiB
+    max_call_depth: u16 = 1024,
+    opcode_overrides: []const OpcodeOverride = &.{},
+    precompile_overrides: []const PrecompileOverride = &.{},
+    loop_quota: ?u32 = /* 1_000_000 in Debug/ReleaseSafe, null otherwise */,
+    enable_beacon_roots: bool = true,           // EIP-4788
+    enable_historical_block_hashes: bool = true, // EIP-2935
+    enable_validator_deposits: bool = true,
+    enable_validator_withdrawals: bool = true,
+};
+```
+
+`loop_quota` is a safety valve, not a spec feature: in debug and safe builds the
+interpreter panics after a million iterations of an internal loop rather than
+hanging. In `ReleaseFast`/`ReleaseSmall` it defaults to off.
+
+The four `enable_*` flags control the system-contract updates that real forks
+perform at the start of a block — beacon roots (EIP-4788), historical block hashes
+(EIP-2935), and the deposit/withdrawal contracts. Turn them off when you want a
+bare interpreter and not a block-processing environment.
+
+`EvmConfig.fromBuildOptions()` reads the same fields from a `build_options`
+module, which is how the spec-test harness builds one EVM per fork without
+duplicating configuration.
+
+## Remember: `init` overrides the fork
+
+```zig
+const BerlinEvm = guillotine.Evm(guillotine.EvmConfig{ .hardfork = .BERLIN });
+var vm: BerlinEvm = undefined;
+
+try vm.init(alloc, null, null, null, guillotine.ZERO_ADDRESS, 0, null);
+// vm.getActiveFork() == PRAGUE  ← not BERLIN
+
+try vm.init(alloc, null, .BERLIN, null, guillotine.ZERO_ADDRESS, 0, null);
+// vm.getActiveFork() == BERLIN
+```
+
+Both lines above were run. Always pass the fork to `init`.
+
+## Custom precompiles
+
+A precompile override is an address plus a function. It can add a new precompile
+or shadow a built-in one, and it may carry an opaque context pointer for FFI use:
+
+```zig
+pub const PrecompileOverride = struct {
+    address: Address,
+    execute: *const fn (
+        ctx: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        input: []const u8,
+        gas_limit: u64,
+    ) anyerror!PrecompileOutput,
+    context: ?*anyopaque = null,
+};
+
+pub const PrecompileOutput = struct {
+    output: []const u8,
+    gas_used: u64,
+    success: bool,
+};
+```
+
+A complete, verified example — a precompile at `0x…0999` that reverses its input
+for 10 gas, plus a contract that `STATICCALL`s it:
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+
+fn addr(comptime hex: []const u8) guillotine.Address {
+    return guillotine.Address.fromHex(hex) catch unreachable;
+}
+
+const REVERSE_ADDR = addr("0x0000000000000000000000000000000000000999");
+
+fn reverseBytes(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    input: []const u8,
+    gas_limit: u64,
+) anyerror!guillotine.PrecompileOutput {
+    _ = ctx;
+    if (gas_limit < 10) return .{ .output = &.{}, .gas_used = gas_limit, .success = false };
+    const out = try allocator.alloc(u8, input.len);
+    for (input, 0..) |b, i| out[input.len - 1 - i] = b;
+    return .{ .output = out, .gas_used = 10, .success = true };
+}
+
+const CustomEvm = guillotine.Evm(guillotine.EvmConfig{
+    .hardfork = .BERLIN,
+    .precompile_overrides = &.{.{ .address = REVERSE_ADDR, .execute = reverseBytes }},
+});
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    var vm: CustomEvm = undefined;
+    try vm.init(gpa.allocator(), null, .BERLIN, null, guillotine.ZERO_ADDRESS, 0, null);
+    defer vm.deinit();
+
+    // PUSH4 0x01020304  PUSH1 0x00 MSTORE          (value occupies bytes 28..32)
+    // retSize=4 retOff=0 argSize=4 argOff=28  PUSH2 0x0999  PUSH2 0xffff  STATICCALL
+    // POP  RETURN 4 bytes from memory 0
+    const caller_code = [_]u8{
+        0x63, 0x01, 0x02, 0x03, 0x04,
+        0x60, 0x00, 0x52,
+        0x60, 0x04, 0x60, 0x00, 0x60, 0x04, 0x60, 0x1c,
+        0x61, 0x09, 0x99,
+        0x61, 0xff, 0xff,
+        0xFA,
+        0x50,
+        0x60, 0x04, 0x60, 0x00, 0xF3,
+    };
+
+    const target = addr("0x0000000000000000000000000000000000000050");
+    try vm.code.put(target, &caller_code);
+
+    const r = vm.call(.{ .call = .{
+        .caller = guillotine.ZERO_ADDRESS,
+        .to = target,
+        .value = 0,
+        .input = &.{},
+        .gas = 200_000,
+    } });
+    std.debug.print("success={} out={x}\n", .{ r.success, r.output });
+}
+```
+
+```
+$ zig build run
+fork=BERLIN
+via-staticcall: success=true out=04030201
+```
+
+:::warning
+Overrides are consulted when a precompile is invoked **from bytecode**. A
+top-level `vm.call(.{ .staticcall = .{ .to = REVERSE_ADDR, … } })` straight at an
+override address returned `success=true` with **empty output** in testing — the
+top-level path only recognizes built-in precompile addresses. Invoke custom
+precompiles from a contract frame.
+:::
+
+## Custom opcodes
+
+```zig
+pub const OpcodeOverride = struct {
+    opcode: u8,
+    handler: *const anyopaque,
+};
+```
+
+The handler is type-erased because its signature is the interpreter's internal
+handler signature, which is not part of the stable API yet. Overrides are looked
+up through `vm.getOpcodeOverride(op)`. This is the mechanism for L2-flavoured
+opcodes and instrumentation; if you use it, pin the version, since the handler
+ABI can change before 1.0.
+
+## Choosing limits deliberately
+
+- Lower `max_call_depth` to test depth-limit behaviour cheaply.
+- Lower `memory_limit` to make a memory-bomb test fail fast.
+- Raise `max_bytecode_size` only if you are modelling a non-Ethereum chain — the
+  24 576-byte limit is consensus on mainnet.

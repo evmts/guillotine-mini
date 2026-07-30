@@ -1,0 +1,4 @@
+dist/
+.vocs/
+.vercel/
+node_modules/

@@ -1,0 +1,85 @@
+# Where This Fits
+
+Guillotine Mini is one layer of a stack that spans Zig and TypeScript. Knowing
+which layer you are looking at saves a lot of confusion, because several of these
+projects have the word "EVM" in their description.
+
+## The layers
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│  Tevm            TypeScript Ethereum tooling: an EVM you can  │
+│  tevm.sh         run in Node or the browser, a bundler that   │
+│                  imports Solidity, viem/ethers integration    │
+├───────────────────────────────────────────────────────────────┤
+│  Guillotine      Full execution client in Zig: blocks, txpool,│
+│  guillotine      state trie, JSON-RPC, Engine API, devp2p     │
+├───────────────────────────────────────────────────────────────┤
+│  Guillotine      ◀ you are here                               │
+│  Mini            The EVM engine: interpreter, gas, hardforks, │
+│  mini.tevm.sh    precompiles, tracing. No blocks, no network  │
+├───────────────────────────────────────────────────────────────┤
+│  Voltaire        Zig primitives: Address, U256, RLP, SSZ,     │
+│  voltaire        crypto (keccak, secp256k1, BLS12-381, KZG),  │
+│                  precompiles, JSON-RPC types, state helpers   │
+└───────────────────────────────────────────────────────────────┘
+
+  ZEVM            A separate, performance-oriented EVM effort —
+                  a sibling of Guillotine Mini, not a layer of it
+```
+
+## Project by project
+
+**[Voltaire](https://github.com/evmts/voltaire)** — the foundation. Every type
+Guillotine Mini uses comes from here: `Address`, `Hardfork`, `GasConstants`, RLP,
+the log type, the precompile implementations, and the cryptography (including the
+Rust-backed BLS and KZG). Guillotine Mini imports it as `@import("voltaire")` and
+re-exports the parts you need, so you rarely depend on it directly.
+
+**Guillotine Mini (this project)** — the execution engine. Give it bytecode, state,
+and a block context, and it tells you what happened: gas, output, logs, state
+changes, and optionally a trace. It deliberately knows nothing about blocks,
+transactions signatures, the mempool, or the network.
+
+**[Guillotine](https://github.com/evmts/guillotine)** — the full client being built
+around this engine, following Nethermind's module boundaries in Zig: database
+abstraction, Merkle Patricia Trie, world state with journalling, block processing,
+transaction pool, JSON-RPC, Engine API, devp2p, sync. In this repository you can
+see that work in progress under `client/`, `client-ts/`, and `prd/`, which is why
+`zig build --help` lists steps like `test-trie`, `test-txpool`, and `test-engine`.
+
+**[Tevm](https://tevm.sh)** — the TypeScript side of the family: an EVM that runs
+in Node and the browser, a Solidity-importing bundler, test utilities, and
+viem/ethers bindings. Tevm is where the C ABI and the (currently broken) wasm
+target matter, because that is how a Zig EVM gets driven from JavaScript.
+
+**ZEVM** — a separate performance-focused EVM in Zig. It is a *sibling* of
+Guillotine Mini rather than a dependency of it: same problem, different trade-off.
+Guillotine Mini optimizes for being obviously correct and readable; ZEVM optimizes
+for speed. Having both is deliberate — the readable one is the oracle you check the
+fast one against.
+
+## Which one do I want?
+
+| If you want to… | Use |
+| --- | --- |
+| Run EVM bytecode from Zig | **Guillotine Mini** |
+| Run EVM bytecode from JS/TS with a nice API | Tevm |
+| Run a node, follow a chain, serve RPC | Guillotine |
+| Use Ethereum types, RLP, or crypto in Zig | Voltaire |
+| Chase maximum execution throughput | ZEVM |
+| Understand what a hardfork actually changed | **Guillotine Mini** + the execution-specs |
+
+## Reference material this project treats as authoritative
+
+1. [`execution-specs`](https://github.com/ethereum/execution-specs) and the
+   [EIPs](https://eips.ethereum.org) — for EVM and state-transition behaviour
+2. [`devp2p`](https://github.com/ethereum/devp2p) — wire formats
+3. [`execution-apis`](https://github.com/ethereum/execution-apis) — JSON-RPC and
+   Engine API
+4. [`ethereum/tests`](https://github.com/ethereum/tests) and
+   [`execution-spec-tests`](https://github.com/ethereum/execution-spec-tests) —
+   validation
+5. Nethermind — architecture reference only, never behavioural truth
+
+The Yellow Paper is background reading and is out of date past Shanghai.

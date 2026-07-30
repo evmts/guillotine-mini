@@ -1,0 +1,120 @@
+# `CallParams` / `CallResult`
+
+Both are generated per config and reached through the EVM type:
+
+```zig
+const Evm = guillotine.Evm(guillotine.EvmConfig{});
+const Params = Evm.CallParams;
+const Result = Evm.CallResult;
+```
+
+## `CallParams`
+
+```zig
+union(enum) {
+    call: struct { caller: Address, to: Address, value: u256, input: []const u8, gas: u64 },
+    callcode: struct { caller: Address, to: Address, value: u256, input: []const u8, gas: u64 },
+    delegatecall: struct { caller: Address, to: Address, input: []const u8, gas: u64 },
+    staticcall: struct { caller: Address, to: Address, input: []const u8, gas: u64 },
+    create: struct { caller: Address, value: u256, init_code: []const u8, gas: u64 },
+    create2: struct { caller: Address, value: u256, init_code: []const u8, salt: u256, gas: u64 },
+}
+```
+
+Construct them inline at the call site:
+
+```zig
+vm.call(.{ .call = .{ .caller = a, .to = b, .value = 0, .input = &.{}, .gas = 100_000 } });
+vm.call(.{ .staticcall = .{ .caller = a, .to = b, .input = calldata, .gas = 50_000 } });
+vm.call(.{ .create2 = .{ .caller = a, .value = 0, .init_code = code, .salt = 1, .gas = 200_000 } });
+```
+
+### Methods
+
+```zig
+pub const ValidationError = error{
+    GasZeroError, InvalidInputSize, InvalidInitCodeSize,
+    InvalidCreateValue, InvalidStaticCallValue,
+};
+
+pub fn validate(self) ValidationError!void   // initcode ≤ 49152, input ≤ 4 MiB
+pub fn getGas(self) u64
+pub fn setGas(self: *@This(), gas: u64) void
+pub fn getCaller(self) Address
+pub fn getInput(self) []const u8             // init_code for creates
+pub fn get_to(self) ?Address                 // null for creates
+pub fn hasValue(self) bool
+pub fn isReadOnly(self) bool                 // true only for staticcall
+pub fn isCreate(self) bool
+pub fn clone(self, allocator) !@This()       // deep-copies input/init_code
+pub fn deinit(self, allocator) void          // frees what clone allocated
+```
+
+`call()` runs `validate()` first and returns a failed `CallResult` with
+`gas_left = 0` if it fails.
+
+Input slices are borrowed. `clone`/`deinit` exist for the case where the params
+must outlive the buffer — e.g. a queued or resumable call.
+
+## `CallResult`
+
+```zig
+success: bool,
+gas_left: u64,
+output: []const u8,
+refund_counter: u64 = 0,
+logs: []const Log = &.{},
+selfdestructs: []const SelfDestructRecord = &.{},
+accessed_addresses: []const Address = &.{},
+accessed_storage: []const StorageAccess = &.{},
+trace: ?ExecutionTrace = null,
+error_info: ?[]const u8 = null,
+created_address: ?Address = null,
+```
+
+| Field | Meaning |
+| --- | --- |
+| `success` | `RETURN`/`STOP` succeeded; `false` for revert **and** exceptional halt |
+| `gas_left` | unspent gas. Revert leaves gas; an exceptional halt leaves 0 |
+| `output` | `RETURN` payload, or `REVERT` payload on failure |
+| `refund_counter` | accumulated `SSTORE` refund, **before** the end-of-tx cap |
+| `logs` | logs emitted during the transaction |
+| `selfdestructs` | `SELFDESTRUCT` records (EIP-6780 aware) |
+| `accessed_addresses` / `accessed_storage` | what the execution touched |
+| `trace` | populated on the FFI paths; Zig callers use `Tracer` |
+| `error_info` | sometimes a message; **often `null` even on failure** |
+| `created_address` | set for successful `create`/`create2` only |
+
+All slices point into the EVM's arena and are invalidated by `deinit()` — and the
+logs buffer is also cleared at the end of each `call()`. Copy anything you need to
+keep.
+
+### Constructors
+
+Mostly used internally, occasionally useful when stubbing:
+
+```zig
+pub fn success_with_output(allocator, gas_left, output) !Self
+pub fn success_empty(allocator, gas_left) !Self
+pub fn success_with_logs(allocator, gas_left, output, logs) !Self
+pub fn failure(allocator, gas_left) !Self
+pub fn failure_with_error(allocator, gas_left, error_info) !Self
+pub fn revert_with_data(allocator, gas_left, revert_data) !Self
+```
+
+## Reading a result correctly
+
+```zig
+const r = vm.call(params);
+
+if (r.success) {
+    // r.output is the RETURN data; r.created_address is set for creates
+} else if (r.gas_left > 0) {
+    // reverted: r.output holds the revert payload (e.g. an ABI-encoded Error)
+} else {
+    // exceptional halt: out of gas, invalid opcode, stack error, …
+}
+```
+
+Do not branch on `error_info != null` — it is not consistently populated. The
+`gas_left` test above is the reliable revert-vs-halt discriminator.

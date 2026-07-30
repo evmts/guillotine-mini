@@ -1,0 +1,139 @@
+# Tracing (EIP-3155)
+
+Tracing is how you find out *where* your EVM and a reference implementation stop
+agreeing. Guillotine Mini emits [EIP-3155](https://eips.ethereum.org/EIPS/eip-3155)
+entries: one per executed instruction, with PC, opcode, gas, gas cost, stack,
+memory, depth, and the refund counter.
+
+## Capturing a trace
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+
+const Evm = guillotine.Evm(guillotine.EvmConfig{});
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var vm: Evm = undefined;
+    try vm.init(allocator, null, .CANCUN, null, guillotine.ZERO_ADDRESS, 0, null);
+    defer vm.deinit();
+
+    var tracer = guillotine.Tracer.init(allocator);
+    defer tracer.deinit();
+    tracer.enable();
+    vm.setTracer(&tracer);
+
+    const target = try guillotine.Address.fromHex(
+        "0x0000000000000000000000000000000000000044",
+    );
+    // PUSH1 0x01  PUSH1 0x02  ADD  STOP
+    try vm.code.put(target, &[_]u8{ 0x60, 0x01, 0x60, 0x02, 0x01, 0x00 });
+
+    _ = vm.call(.{ .call = .{
+        .caller = guillotine.ZERO_ADDRESS,
+        .to = target,
+        .value = 0,
+        .input = &.{},
+        .gas = 100_000,
+    } });
+
+    std.debug.print("steps={}\n", .{tracer.entries.items.len});
+    for (tracer.entries.items) |e| {
+        std.debug.print("  pc={d} op={s} gas={d} cost={d}\n", .{
+            e.pc, e.opName, e.gas, e.gasCost,
+        });
+    }
+}
+```
+
+```
+$ zig build run
+trace: steps=4
+  pc=0 op=PUSH1 gas=100000 cost=3
+  pc=2 op=PUSH1 gas=99997 cost=3
+  pc=4 op=ADD gas=99994 cost=3
+  pc=5 op=STOP gas=99991 cost=0
+```
+
+`gas` is the gas remaining *before* the instruction executes and `gasCost` is what
+that instruction charges — the same convention geth's `--debug` tracer uses, so
+the two are directly comparable line by line.
+
+Forgetting `tracer.enable()` is the usual reason a trace comes back empty:
+`Tracer.init` leaves `enabled = false`.
+
+## A trace entry
+
+```zig
+pub const TraceEntry = struct {
+    pc: u64,
+    op: u8,
+    gas: u64,
+    gasCost: u64,
+    memory: ?[]const u8,
+    memSize: usize,
+    stack: []const u256,
+    returnData: ?[]const u8,
+    depth: usize,
+    refund: i64,
+    opName: []const u8,
+    error_msg: ?[]const u8 = null,
+
+    pub fn toJson(self: *const TraceEntry, allocator: std.mem.Allocator) !std.json.Value;
+};
+```
+
+`toJson` produces EIP-3155 shapes: `gas` and `gasCost` as hex strings, `memory`
+and `returnData` as `0x…` strings or `null`, `stack` as an array of hex strings.
+That means a captured trace can be diffed against `evm t8n --trace` output or an
+execution-specs trace with an ordinary JSON diff.
+
+The tracer owns its allocations and frees them in `deinit()`; if you keep entries
+past that point, copy them.
+
+Also note that `memory` and `returnData` capture is governed by the tracer's
+`config` (a `voltaire.TraceConfig`). Full memory capture on a long execution is
+expensive — leave it off unless you are actually diffing memory.
+
+## Getting a trace out of a `CallResult`
+
+`CallResult.trace` is an `?ExecutionTrace`, populated on the paths that build one
+(notably the FFI/C entry points). For Zig callers, the `Tracer` above is the
+direct route and gives you the same data.
+
+## Stepping by hand
+
+For a debugger you often want control rather than a log:
+
+```zig
+vm.setBytecode(bytecode);
+while (true) {
+    try vm.step();                   // exactly one instruction
+    const pc = vm.getPC();
+    const frame = vm.getCurrentFrame() orelse break;
+    std.debug.print("pc={d} stack_len={d} gas={d}\n", .{
+        pc, frame.stack.items.len, frame.gas_remaining,
+    });
+}
+```
+
+`getCurrentFrame()` returns the innermost `Frame`, which is where the stack,
+memory, and gas actually live. `vm.getBytecode()` returns the code the current
+frame is executing, which is not necessarily the code you set — inside a
+`DELEGATECALL` it is the callee's.
+
+## Comparing against the reference implementation
+
+The repository ships tooling for exactly this loop:
+
+```sh
+bun scripts/isolate-test.ts "transStorageReset"
+```
+
+It runs one spec test with maximum debug output, captures both traces, and prints
+the first divergence with PC, opcode, gas, and stack context, along with the
+Python reference file to read next. See [Testing and Debugging](/guides/testing).

@@ -1,0 +1,61 @@
+# Module Exports
+
+Everything below is exported from `src/root.zig`, i.e. available as
+`@import("guillotine_mini").<name>`.
+
+## Types
+
+| Export | Kind | Notes |
+| --- | --- | --- |
+| `Evm` | `fn (comptime EvmConfig) type` | the EVM type constructor — see [Evm](/reference/evm) |
+| `EvmConfig` | struct | comptime configuration — see [EvmConfig](/reference/config) |
+| `OpcodeOverride` | struct | `{ opcode: u8, handler: *const anyopaque }` |
+| `PrecompileOverride` | struct | custom precompile registration |
+| `PrecompileOutput` | struct | `{ output, gas_used, success }` |
+| `Frame` | `fn (comptime EvmConfig) type` | one call frame: stack, memory, PC, gas |
+| `HostInterface` | struct | pluggable state backend — see [host guide](/guides/host-interface) |
+| `BlockContext` | struct | chain id, block number/timestamp, coinbase, fees, block hashes |
+| `StorageKey`, `StorageSlotKey` | struct | map keys for storage |
+| `Address` | struct | 20-byte address (from Voltaire), `fromHex`, `.bytes` |
+| `ZERO_ADDRESS` | const | the zero address |
+| `Hardfork` | enum | Frontier…Osaka, `DEFAULT == PRAGUE` |
+| `ForkTransition` | struct | block/timestamp-based fork switch |
+| `Log` | struct | `voltaire.logs.Log` — `{ address, topics, data }` |
+| `SelfDestructRecord` | struct | one `SELFDESTRUCT` observation |
+| `StorageAccess` | struct | one storage touch, for access reporting |
+| `TraceStep`, `ExecutionTrace` | struct | structured trace attached to `CallResult` |
+| `Tracer`, `TraceEntry` | struct | EIP-3155 capture — see [tracing](/guides/tracing) |
+| `CallError` | error set | see [Errors](/reference/errors) |
+| `Dispatcher` | struct | instruction dispatch table |
+
+`CallParams` and `CallResult` are *not* top-level types: they are members of the
+EVM type you construct, because they depend on its config. Reach them as
+`Evm.CallParams` / `Evm.CallResult`. See [CallParams / CallResult](/reference/call).
+
+## Functions
+
+| Export | Signature | Notes |
+| --- | --- | --- |
+| `getOpName` | `fn (u8) []const u8` | opcode mnemonic, e.g. `0x01` → `"ADD"` |
+
+## Namespaces
+
+The submodules are exported too, for when you need something not re-exported at
+the top level: `evm`, `frame`, `host`, `evm_config`, `call_params`, `call_result`,
+`errors`, `trace`, `opcode`, `dispatcher`.
+
+```zig
+const guillotine = @import("guillotine_mini");
+
+const Evm = guillotine.Evm(guillotine.EvmConfig{});
+const MyFrame = guillotine.Frame(guillotine.EvmConfig{});
+
+// namespace access
+const StorageKey = guillotine.evm.StorageKey;
+```
+
+## Versioning
+
+The package is `0.1.0` and pre-1.0: any of the above can change in a minor
+release. The most likely churn is the opcode-override handler signature (currently
+type-erased for exactly this reason) and the async `callOrContinue` surface.

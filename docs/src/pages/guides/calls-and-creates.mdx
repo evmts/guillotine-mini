@@ -1,0 +1,185 @@
+# Calls and Creates
+
+The six `CallParams` variants map one-to-one onto EVM call semantics. Nested
+calls made *by bytecode* (`CALL`, `DELEGATECALL`, `STATICCALL`, `CALLCODE`,
+`CREATE`, `CREATE2`) are handled internally by `inner_call` / `inner_create` — you
+do not implement them, and they do not go through the `HostInterface`.
+
+## The variants
+
+```zig
+.call        = .{ .caller, .to, .value, .input, .gas }
+.callcode    = .{ .caller, .to, .value, .input, .gas }   // external code, caller's storage
+.delegatecall = .{ .caller, .to, .input, .gas }          // no value field: value is inherited
+.staticcall  = .{ .caller, .to, .input, .gas }           // read-only, no value field
+.create      = .{ .caller, .value, .init_code, .gas }
+.create2     = .{ .caller, .value, .init_code, .salt, .gas }
+```
+
+The absent fields are the point: `delegatecall` and `staticcall` cannot carry
+value because the type does not let them, so a whole class of mistake is a
+compile error rather than a consensus bug.
+
+Helpers on the union, useful when you are writing a dispatcher of your own:
+
+```zig
+params.getGas()      params.setGas(g)
+params.getCaller()   params.get_to()      // ?Address — null for creates
+params.getInput()    params.hasValue()
+params.isReadOnly()  params.isCreate()
+try params.validate() // EIP-3860 initcode limit, 4 MiB input sanity limit
+```
+
+## Deploying with CREATE
+
+Init code runs, and whatever it `RETURN`s becomes the deployed code. This init
+code copies its own trailing byte (a `STOP`) out as the runtime code:
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+
+const Evm = guillotine.Evm(guillotine.EvmConfig{});
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const deployer = try guillotine.Address.fromHex(
+        "0x0000000000000000000000000000000000001000",
+    );
+
+    var vm: Evm = undefined;
+    // origin MUST be the deployer for a top-level create — see the warning below
+    try vm.init(allocator, null, .CANCUN, null, deployer, 0, null);
+    defer vm.deinit();
+
+    // PUSH1 0x01 PUSH1 0x0c PUSH1 0x00 CODECOPY   PUSH1 0x01 PUSH1 0x00 RETURN   STOP
+    //   copy 1 byte from code offset 12 to memory 0, return it as the runtime code
+    const init_code = [_]u8{
+        0x60, 0x01, 0x60, 0x0c, 0x60, 0x00, 0x39,
+        0x60, 0x01, 0x60, 0x00, 0xF3,
+        0x00,
+    };
+
+    const r = vm.call(.{ .create = .{
+        .caller = deployer,
+        .value = 0,
+        .init_code = &init_code,
+        .gas = 200_000,
+    } });
+
+    std.debug.print("success={} created={} code_len={}\n", .{
+        r.success,
+        r.created_address != null,
+        if (r.created_address) |a| vm.get_code(a).len else 0,
+    });
+}
+```
+
+```
+$ zig build run
+create match=true actual=9410c9031b8d168b22bb86acbd32b0af2c62a4a8 code_len=1
+```
+
+`0x9410c903…` is the canonical `CREATE` address for sender
+`0x…001000` at nonce 0 — cross-checked against
+`cast compute-address --nonce 0 0x0000000000000000000000000000000000001000`.
+
+:::warning[Top-level creates derive the address from `origin`, not `caller`]
+For a **top-level** `create`/`create2` (no frame on the stack yet),
+`inner_create` takes the sender from `self.origin`, falling back to it because
+there is no current frame — the `.caller` field you pass in `CallParams` is not
+what the address derivation sees. If `origin` and `caller` disagree, the deployed
+address will not match `computeCreate2Address(caller, …)`.
+
+Verified: with `origin = ZERO_ADDRESS` and `.caller = 0x…001000`, a `create2`
+landed at `0xae84db77…` instead of the canonical `0x7f77e3a4…`. Passing
+`origin = deployer` to `init` makes prediction and reality agree. This is
+consistent with how a real transaction works — for a creation transaction the
+origin *is* the deployer — but it is a sharp edge when you drive `call()`
+directly.
+:::
+
+`created_address` is only set for `create` / `create2`. The deployment cost
+(200 gas per byte of returned code), the EIP-3541 `0xEF` rejection, the
+EIP-3860 initcode metering, and the EIP-170 24 576-byte code limit are all
+applied inside `inner_create`.
+
+## CREATE2 and deterministic addresses
+
+```zig
+const salt: u256 = 0x1234;
+const predicted = try vm.computeCreate2Address(deployer, salt, &init_code);
+
+const r = vm.call(.{ .create2 = .{
+    .caller = deployer,
+    .value = 0,
+    .init_code = &init_code,
+    .salt = salt,
+    .gas = 200_000,
+} });
+// with origin == deployer:
+// r.created_address.? == predicted == 0x7f77e3a484b323d0da2e1c2a15da2db7858554d5
+```
+
+That value also matches
+`cast create2 --deployer 0x…001000 --salt 0x…1234 --init-code 0x6001600c60003960016000f300`.
+
+## Multi-contract scenarios need a host
+
+A contract that `CALL`s another contract needs both codes to be readable *during*
+execution. With the internal state backend that does not work: `call()` resets the
+internal `code` map and only the entry-point's bytecode survives, so the inner
+`CALL` hits an empty account and returns nothing (verified — the outer contract
+returned `0x0` instead of the inner contract's `0x2a`).
+
+Put the code in a [`HostInterface`](/guides/host-interface) instead. The EVM never
+clears host state, and `CALL`/`EXTCODESIZE`/`EXTCODECOPY` read through to it.
+
+## Static context propagates
+
+A `staticcall` marks the frame read-only, and every frame below it inherits that.
+`SSTORE`, `TSTORE`, `LOG*`, `CREATE*`, `SELFDESTRUCT`, and value-bearing `CALL`
+all fail with `WriteProtection` inside it. There is no way to opt back out, which
+is the correct behaviour and worth remembering when a nested call fails for no
+obvious reason.
+
+## Depth and reentrancy
+
+`max_call_depth` defaults to 1024 (`EvmConfig`). Exceeding it is not a trap: the
+offending `CALL` pushes 0 on the stack and execution continues, per spec. If you
+are testing depth behaviour, lower the limit in the config rather than writing
+1024 frames of bytecode.
+
+## Value transfer
+
+`call` with non-zero value moves balance before executing, adds the 2 300-gas
+stipend to the callee's budget, and rolls the transfer back if the frame reverts.
+Insufficient balance makes the `CALL` return 0 without consuming the child gas —
+again, not a Zig error.
+
+## Stepping instead of running to completion
+
+For debuggers and for hosts that need to answer state reads asynchronously, the
+EVM can yield instead of blocking:
+
+```zig
+vm.setBytecode(bytecode);
+const out = try vm.callOrContinue(input);      // may return a "needs data" yield
+const done = try vm.executeUntilYieldOrComplete();
+const final = try vm.finalizeAndReturnResult();
+```
+
+and for single-instruction control:
+
+```zig
+try vm.step();                    // execute exactly one opcode
+const pc = vm.getPC();
+const frame = vm.getCurrentFrame(); // ?*Frame — stack, memory, gas
+```
+
+This is the mechanism behind the async storage injector used by the
+JavaScript/TypeScript bindings, where a state read has to round-trip to a JS
+provider mid-execution.
