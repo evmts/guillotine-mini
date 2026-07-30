@@ -1,0 +1,548 @@
+/*
+ * Shared tevm.sh design tokens.
+ *
+ * These mirror the token set used by the sibling docs sites (bundler.tevm.sh,
+ * contract.tevm.sh, …) so the family reads as one system. Keep the names and
+ * values in sync when the shared theme moves — everything below is expressed
+ * with `light-dark()` so both color schemes are correct by construction.
+ */
+:root {
+	--tevm-accent: light-dark(#0085ff, #4da6ff);
+	--tevm-accent-strong: light-dark(#0066cc, #2e8ce6);
+	--tevm-accent-soft: light-dark(#0085ff14, #4da6ff1f);
+	--tevm-bg-raised: light-dark(#ffffff, #14161a);
+	--tevm-bg-sunken: light-dark(#f5f6f8, #0c0e11);
+	--tevm-border: light-dark(#1018281f, #ffffff1a);
+	--tevm-border-strong: light-dark(#10182833, #ffffff2e);
+	--tevm-text: light-dark(#101828, #e6e9ee);
+	--tevm-text-muted: light-dark(#475467, #98a2b3);
+	--tevm-terminal-bg: light-dark(#0b0e14, #07090d);
+	--tevm-terminal-border: light-dark(#10182840, #ffffff1f);
+	--tevm-term-prompt: #4da6ff;
+	--tevm-term-flag: #7dd3fc;
+	--tevm-term-string: #fdb022;
+	--tevm-term-success: #32d583;
+	--tevm-term-error: #f97066;
+	--tevm-term-dim: #8b93a3;
+	--tevm-term-text: #c7cfdb;
+	--tevm-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Monaco, Consolas,
+		'Liberation Mono', 'Courier New', monospace;
+	--tevm-radius: 10px;
+	--tevm-radius-sm: 6px;
+}
+
+/* ---------------------------------------------------------------- hero --- */
+
+.tevm-hero {
+	position: relative;
+	overflow: hidden;
+	margin: -1rem 0 2.5rem;
+	padding: 3.5rem 2rem 3rem;
+	border: 1px solid var(--tevm-border);
+	border-radius: calc(var(--tevm-radius) + 6px);
+	background:
+		radial-gradient(60rem 24rem at 85% -10%, var(--tevm-accent-soft), transparent 60%),
+		radial-gradient(40rem 20rem at -10% 110%, var(--tevm-accent-soft), transparent 60%),
+		var(--tevm-bg-raised);
+}
+
+.tevm-hero::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	opacity: 0.35;
+	background-image:
+		linear-gradient(var(--tevm-border) 1px, transparent 1px),
+		linear-gradient(90deg, var(--tevm-border) 1px, transparent 1px);
+	background-size: 44px 44px;
+	mask-image: radial-gradient(50rem 26rem at 50% 0, #000, transparent 75%);
+	-webkit-mask-image: radial-gradient(50rem 26rem at 50% 0, #000, transparent 75%);
+}
+
+.tevm-hero > * {
+	position: relative;
+}
+
+.tevm-hero-eyebrow {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.25rem 0.75rem;
+	border: 1px solid var(--tevm-border-strong);
+	border-radius: 999px;
+	background: var(--tevm-bg-raised);
+	color: var(--tevm-accent);
+	font-family: var(--tevm-mono);
+	font-size: 0.78rem;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.tevm-hero h1 {
+	margin: 1rem 0 0.5rem;
+	padding: 0;
+	border: none;
+	font-size: clamp(2.2rem, 5vw, 3.4rem);
+	line-height: 1.05;
+	letter-spacing: -0.03em;
+}
+
+.tevm-hero h1 .tevm-hero-accent {
+	color: var(--tevm-accent);
+}
+
+.tevm-hero-sub {
+	max-width: 42rem;
+	margin: 0 0 1.75rem;
+	color: var(--tevm-text-muted);
+	font-size: 1.05rem;
+}
+
+.tevm-hero-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+.tevm-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.55rem 1.1rem;
+	border: 1px solid var(--tevm-border-strong);
+	border-radius: var(--tevm-radius-sm);
+	background: var(--tevm-bg-raised);
+	color: var(--tevm-text);
+	font-size: 0.9rem;
+	font-weight: 600;
+	text-decoration: none;
+	transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.tevm-button:hover {
+	border-color: var(--tevm-accent);
+	transform: translateY(-1px);
+}
+
+.tevm-button:active {
+	transform: translateY(0);
+}
+
+.tevm-button--primary {
+	border-color: transparent;
+	background: var(--tevm-accent);
+	color: #fff;
+}
+
+.tevm-button--primary:hover {
+	background: var(--tevm-accent-strong);
+}
+
+/* ------------------------------------------------------------- install --- */
+
+.tevm-install {
+	margin: 1.75rem 0 0;
+	max-width: 46rem;
+	border: 1px solid var(--tevm-terminal-border);
+	border-radius: var(--tevm-radius);
+	background: var(--tevm-terminal-bg);
+	overflow: hidden;
+}
+
+.tevm-install-code {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	padding: 0.85rem 1rem;
+	font-family: var(--tevm-mono);
+	font-size: 0.85rem;
+	color: var(--tevm-term-text);
+	overflow-x: auto;
+}
+
+.tevm-install-code .tevm-prompt {
+	color: var(--tevm-term-prompt);
+	user-select: none;
+}
+
+.tevm-install-code .tevm-flag {
+	color: var(--tevm-term-flag);
+}
+
+/* ---------------------------------------------------------- code window --- */
+
+.tevm-codewin {
+	margin: 2rem 0;
+	border: 1px solid var(--tevm-terminal-border);
+	border-radius: var(--tevm-radius);
+	background: var(--tevm-terminal-bg);
+	overflow: hidden;
+}
+
+.tevm-codewin-titlebar {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	padding: 0.6rem 0.85rem;
+	border-bottom: 1px solid var(--tevm-terminal-border);
+}
+
+.tevm-codewin-dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 999px;
+	background: #4b5563;
+}
+
+.tevm-codewin-dot:first-child {
+	background: #f97066;
+}
+.tevm-codewin-dot:nth-child(2) {
+	background: #fdb022;
+}
+.tevm-codewin-dot:nth-child(3) {
+	background: #32d583;
+}
+
+.tevm-codewin-title {
+	margin-left: 0.5rem;
+	color: var(--tevm-term-dim);
+	font-family: var(--tevm-mono);
+	font-size: 0.75rem;
+}
+
+/* ------------------------------------------------------------ features --- */
+
+.tevm-features {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+	gap: 1rem;
+	margin: 2rem 0;
+}
+
+.tevm-feature {
+	padding: 1.1rem 1.2rem;
+	border: 1px solid var(--tevm-border);
+	border-radius: var(--tevm-radius);
+	background: var(--tevm-bg-raised);
+}
+
+.tevm-feature h3 {
+	margin: 0 0 0.35rem;
+	border: none;
+	padding: 0;
+	font-size: 0.95rem;
+}
+
+.tevm-feature p {
+	margin: 0;
+	color: var(--tevm-text-muted);
+	font-size: 0.88rem;
+	line-height: 1.5;
+}
+
+/* --------------------------------------------------------- family grid --- */
+
+.tevm-sites {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+	gap: 0.6rem;
+	margin: 1.5rem 0 2rem;
+}
+
+.tevm-site-card {
+	display: block;
+	padding: 0.7rem 0.85rem;
+	border: 1px solid var(--tevm-border);
+	border-radius: var(--tevm-radius-sm);
+	background: var(--tevm-bg-raised);
+	text-decoration: none;
+	transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.tevm-site-card:hover {
+	border-color: var(--tevm-accent);
+	transform: translateY(-1px);
+}
+
+.tevm-site-card-name {
+	display: block;
+	color: var(--tevm-text);
+	font-size: 0.9rem;
+	font-weight: 600;
+}
+
+.tevm-site-card-host {
+	display: block;
+	color: var(--tevm-text-muted);
+	font-family: var(--tevm-mono);
+	font-size: 0.75rem;
+}
+
+.tevm-site-card[data-current='true'] {
+	border-color: var(--tevm-accent);
+	background: var(--tevm-accent-soft);
+}
+
+/* ------------------------------------------------------ opcode stepper --- */
+
+.gm-stepper {
+	margin: 1.5rem 0 2rem;
+	border: 1px solid var(--tevm-border);
+	border-radius: var(--tevm-radius);
+	background: var(--tevm-bg-raised);
+	overflow: hidden;
+}
+
+.gm-stepper-bar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.7rem 0.85rem;
+	border-bottom: 1px solid var(--tevm-border);
+	background: var(--tevm-bg-sunken);
+}
+
+.gm-stepper-bar select,
+.gm-stepper-bar input {
+	padding: 0.35rem 0.5rem;
+	border: 1px solid var(--tevm-border-strong);
+	border-radius: var(--tevm-radius-sm);
+	background: var(--tevm-bg-raised);
+	color: var(--tevm-text);
+	font-family: var(--tevm-mono);
+	font-size: 0.8rem;
+}
+
+.gm-stepper-bar input {
+	flex: 1 1 16rem;
+	min-width: 10rem;
+}
+
+.gm-btn {
+	padding: 0.35rem 0.7rem;
+	border: 1px solid var(--tevm-border-strong);
+	border-radius: var(--tevm-radius-sm);
+	background: var(--tevm-bg-raised);
+	color: var(--tevm-text);
+	font-size: 0.8rem;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.gm-btn:hover:not(:disabled) {
+	border-color: var(--tevm-accent);
+}
+
+.gm-btn:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.gm-btn--primary {
+	border-color: transparent;
+	background: var(--tevm-accent);
+	color: #fff;
+}
+
+.gm-stepper-body {
+	display: grid;
+	grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+	gap: 0;
+}
+
+@media (max-width: 900px) {
+	.gm-stepper-body {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+.gm-pane {
+	padding: 0.85rem 1rem;
+	min-width: 0;
+}
+
+.gm-pane + .gm-pane {
+	border-left: 1px solid var(--tevm-border);
+}
+
+@media (max-width: 900px) {
+	.gm-pane + .gm-pane {
+		border-left: none;
+		border-top: 1px solid var(--tevm-border);
+	}
+}
+
+.gm-pane-title {
+	margin: 0 0 0.5rem;
+	color: var(--tevm-text-muted);
+	font-family: var(--tevm-mono);
+	font-size: 0.72rem;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.gm-code {
+	max-height: 20rem;
+	overflow-y: auto;
+	font-family: var(--tevm-mono);
+	font-size: 0.8rem;
+}
+
+.gm-row {
+	display: grid;
+	grid-template-columns: 4rem 5rem 1fr auto;
+	gap: 0.5rem;
+	padding: 0.2rem 0.4rem;
+	border-radius: var(--tevm-radius-sm);
+	color: var(--tevm-text);
+	white-space: nowrap;
+}
+
+.gm-row[data-current='true'] {
+	background: var(--tevm-accent-soft);
+	outline: 1px solid var(--tevm-accent);
+}
+
+.gm-row[data-done='true'] {
+	opacity: 0.55;
+}
+
+.gm-pc {
+	color: var(--tevm-text-muted);
+}
+
+.gm-mnemonic {
+	color: var(--tevm-accent);
+	font-weight: 600;
+}
+
+.gm-arg {
+	color: var(--tevm-text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.gm-gas {
+	color: var(--tevm-text-muted);
+	font-size: 0.72rem;
+}
+
+.gm-stack {
+	display: flex;
+	flex-direction: column-reverse;
+	gap: 0.25rem;
+	min-height: 4rem;
+	font-family: var(--tevm-mono);
+	font-size: 0.78rem;
+}
+
+.gm-stack-item {
+	display: flex;
+	gap: 0.5rem;
+	padding: 0.25rem 0.45rem;
+	border: 1px solid var(--tevm-border);
+	border-radius: var(--tevm-radius-sm);
+	background: var(--tevm-bg-sunken);
+	overflow: hidden;
+}
+
+.gm-stack-item[data-top='true'] {
+	border-color: var(--tevm-accent);
+}
+
+.gm-stack-index {
+	color: var(--tevm-text-muted);
+}
+
+.gm-stack-value {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.gm-empty {
+	color: var(--tevm-text-muted);
+	font-family: var(--tevm-mono);
+	font-size: 0.78rem;
+}
+
+.gm-meters {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	margin-bottom: 0.75rem;
+}
+
+.gm-meter {
+	flex: 1 1 7rem;
+	padding: 0.45rem 0.6rem;
+	border: 1px solid var(--tevm-border);
+	border-radius: var(--tevm-radius-sm);
+	background: var(--tevm-bg-sunken);
+}
+
+.gm-meter-label {
+	display: block;
+	color: var(--tevm-text-muted);
+	font-size: 0.68rem;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.gm-meter-value {
+	display: block;
+	color: var(--tevm-text);
+	font-family: var(--tevm-mono);
+	font-size: 0.95rem;
+	font-weight: 600;
+}
+
+.gm-note {
+	margin-top: 0.75rem;
+	padding: 0.5rem 0.65rem;
+	border-left: 2px solid var(--tevm-accent);
+	background: var(--tevm-accent-soft);
+	color: var(--tevm-text);
+	font-size: 0.8rem;
+	line-height: 1.5;
+}
+
+.gm-note--error {
+	border-left-color: var(--tevm-term-error);
+	background: light-dark(#f9706614, #f9706622);
+}
+
+.gm-note code {
+	font-family: var(--tevm-mono);
+}
+
+.gm-return {
+	margin-top: 0.5rem;
+	word-break: break-all;
+	font-family: var(--tevm-mono);
+	font-size: 0.75rem;
+	color: var(--tevm-text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tevm-button,
+	.tevm-site-card {
+		transition: none;
+	}
+	.tevm-button:hover,
+	.tevm-site-card:hover {
+		transform: none;
+	}
+}
+
+.tevm-hero-code {
+	padding: 0.1em 0.35em;
+	border: 1px solid var(--tevm-border);
+	border-radius: var(--tevm-radius-sm);
+	background: var(--tevm-bg-sunken);
+	font-family: var(--tevm-mono);
+	font-size: 0.88em;
+}
