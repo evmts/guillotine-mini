@@ -145,6 +145,7 @@ test "Evm.inner_create top-level uses transaction nonce for multi-byte CREATE ad
     var evm_instance: Evm = undefined;
     try evm_instance.init(testing.allocator, null, .BERLIN, null, caller, 0, null);
     defer evm_instance.deinit();
+    try evm_instance.initTransactionState(null);
 
     // Transaction processing increments the sender nonce before entering the EVM.
     try evm_instance.nonces.put(caller, 0x0cc7);
@@ -160,6 +161,7 @@ test "Evm.inner_call rolls back logs when callee errors after emitting LOG" {
     var evm_instance: Evm = undefined;
     try evm_instance.init(testing.allocator, null, .BERLIN, null, primitives.ZERO_ADDRESS, 0, null);
     defer evm_instance.deinit();
+    try evm_instance.initTransactionState(null);
 
     const caller = try primitives.Address.fromHex("0x1000000000000000000000000000000000000001");
     const callee = try primitives.Address.fromHex("0x2000000000000000000000000000000000000002");
@@ -174,7 +176,7 @@ test "Evm.inner_call rolls back logs when callee errors after emitting LOG" {
     };
     try evm_instance.code.put(callee, &callee_code);
 
-    const result = try evm_instance.inner_call(.{ .call = .{
+    const result = evm_instance.inner_call(.{ .call = .{
         .caller = caller,
         .to = callee,
         .value = 0,

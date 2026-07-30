@@ -1,0 +1,102 @@
+# `EvmConfig`
+
+Comptime configuration. `guillotine.Evm(config)` returns a distinct type per
+config, so limits are constants and overrides cost nothing at runtime.
+
+```zig
+pub const EvmConfig = struct {
+    hardfork: Hardfork = Hardfork.DEFAULT,
+    stack_size: u12 = 1024,
+    max_bytecode_size: u32 = 24576,
+    max_initcode_size: u32 = 49152,
+    block_gas_limit: u64 = 30_000_000,
+    memory_initial_capacity: usize = 4096,
+    memory_limit: u64 = 0xFFFFFF,
+    max_call_depth: u16 = 1024,
+    opcode_overrides: []const OpcodeOverride = &.{},
+    precompile_overrides: []const PrecompileOverride = &.{},
+    loop_quota: ?u32 = if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) 1_000_000 else null,
+    enable_beacon_roots: bool = true,
+    enable_historical_block_hashes: bool = true,
+    enable_validator_deposits: bool = true,
+    enable_validator_withdrawals: bool = true,
+
+    pub fn fromBuildOptions() EvmConfig;
+};
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `hardfork` | `PRAGUE` | default fork. **Overridden by the `init` argument**; `null` there means `PRAGUE`, not this field |
+| `stack_size` | 1024 | maximum stack depth |
+| `max_bytecode_size` | 24 576 | EIP-170 deployed-code limit |
+| `max_initcode_size` | 49 152 | EIP-3860 initcode limit |
+| `block_gas_limit` | 30 000 000 | used for the default `BlockContext` |
+| `memory_initial_capacity` | 4 096 | initial per-frame memory allocation |
+| `memory_limit` | `0xFFFFFF` | ~16 MiB cap on memory expansion |
+| `max_call_depth` | 1024 | nesting limit; exceeding it makes `CALL` push 0 |
+| `opcode_overrides` | `&.{}` | custom opcode handlers |
+| `precompile_overrides` | `&.{}` | custom/shadowing precompiles |
+| `loop_quota` | 1 000 000 in Debug/ReleaseSafe, else `null` | interpreter-loop safety valve, not a spec feature |
+| `enable_beacon_roots` | `true` | EIP-4788 beacon-root contract update per transaction |
+| `enable_historical_block_hashes` | `true` | EIP-2935 historical block hash contract |
+| `enable_validator_deposits` | `true` | deposit-contract system updates |
+| `enable_validator_withdrawals` | `true` | withdrawal-contract system updates |
+
+`fromBuildOptions()` reads `hardfork`, `max_call_depth`, `stack_size`,
+`max_bytecode_size`, `max_initcode_size`, `block_gas_limit`,
+`memory_initial_capacity`, and `memory_limit` from a `build_options` module —
+the mechanism the spec-test harness uses to build one EVM per fork. Unknown
+hardfork strings fall back to `CANCUN`.
+
+## `OpcodeOverride`
+
+```zig
+pub const OpcodeOverride = struct {
+    opcode: u8,
+    handler: *const anyopaque,
+};
+```
+
+Type-erased on purpose: the handler signature is the interpreter's internal one
+and is not stable pre-1.0. Looked up via `vm.getOpcodeOverride(op)`.
+
+## `PrecompileOverride`
+
+```zig
+pub const PrecompileOverride = struct {
+    address: Address,
+    execute: *const fn (
+        ctx: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        input: []const u8,
+        gas_limit: u64,
+    ) anyerror!PrecompileOutput,
+    context: ?*anyopaque = null,
+};
+
+pub const PrecompileOutput = struct {
+    output: []const u8,
+    gas_used: u64,
+    success: bool,
+};
+```
+
+`allocator` is the EVM's arena allocator — allocate `output` from it and do not
+free it yourself. `context` is for FFI handlers that need to reach back into a
+host object. Looked up via `vm.getPrecompileOverride(address)`.
+
+See [Configuring the EVM](/guides/configuration#custom-precompiles) for a verified
+worked example, including the caveat that overrides are only reached when the
+precompile is invoked from bytecode.
+
+## Type identity
+
+```zig
+const A = guillotine.Evm(guillotine.EvmConfig{});
+const B = guillotine.Evm(guillotine.EvmConfig{ .stack_size = 512 });
+// A != B; A.CallResult != B.CallResult
+```
+
+If you need to store EVMs of different configurations together, you need your own
+interface over them — there is no erased base type.

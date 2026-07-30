@@ -1,0 +1,197 @@
+# State and Storage
+
+With `host = null`, the EVM owns its state: four `AutoHashMap`s for balances,
+nonces, code, and created accounts, plus a `Storage` struct for persistent,
+original, and transient slots. That is enough to run tests and tools without
+wiring up a database. To back state with something real, see
+[Backing State with a Host](/guides/host-interface).
+
+## Seeding accounts
+
+The maps are public fields, so setup is direct:
+
+```zig
+const alice = try guillotine.Address.fromHex("0x00000000000000000000000000000000000a11ce");
+const target = try guillotine.Address.fromHex("0x0000000000000000000000000000000000000042");
+
+try vm.balances.put(alice, 10_000_000_000_000_000_000); // 10 ETH in wei
+try vm.nonces.put(alice, 3);
+try vm.code.put(target, &bytecode);
+```
+
+:::danger[Read this before you seed anything]
+`call()` begins by calling `initTransactionState`, which **clears the internal
+`balances`, `nonces`, `code`, and storage maps**. The only pre-seeded value that
+survives is the code of the *call target*, because `call()` reads that out one
+line before the reset.
+
+Verified consequences of that, with the internal state backend (`host = null`):
+
+- `try vm.balances.put(alice, 1_000_000)` then a call → `vm.get_balance(alice)` is `0`.
+- Pre-seeding a *second* contract's code and `CALL`ing into it from the target
+  returns empty data, because that code was cleared.
+- `try vm.storage.set(...)` before the first `call()` **panics**: `vm.storage` is
+  `undefined` until `initTransactionState` runs.
+
+So the internal maps are usable for the single-contract case and not much more.
+For multi-contract scenarios, funded accounts, or pre-existing storage, implement
+a [`HostInterface`](/guides/host-interface) — the EVM never clears your host's
+state, and every read falls through to it.
+:::
+
+For writes that must be undone if the current call frame reverts, use the
+snapshotting setters instead of touching the maps:
+
+```zig
+try vm.setBalanceWithSnapshot(alice, new_balance);
+try vm.setNonceWithSnapshot(alice, new_nonce);
+try vm.setCodeWithSnapshot(target, new_code);
+```
+
+Each nested call pushes balance/nonce/code snapshots; a revert restores from the
+snapshot for that depth. Direct `put` on the map bypasses that machinery — fine
+for pre-transaction setup, wrong for anything mid-execution.
+
+## Reading state back
+
+```zig
+const bal = vm.get_balance(alice);         // u256, 0 if absent
+const nonce = vm.getNonce(alice);          // u64
+const code = vm.get_code(target);          // []const u8, empty if absent
+const slot = try vm.storage.get(target, 1); // u256, only after initTransactionState
+const orig = vm.storage.get_original(target, 1);
+```
+
+`get_original` is the value the slot had at the start of the transaction. It is
+not a convenience — it is load-bearing for `SSTORE` gas and refunds
+(EIP-2200/EIP-3529), which are defined in terms of the triple
+(original, current, new).
+
+## A round-trip through SSTORE and SLOAD
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+
+const Evm = guillotine.Evm(guillotine.EvmConfig{});
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var vm: Evm = undefined;
+    try vm.init(allocator, null, .CANCUN, null, guillotine.ZERO_ADDRESS, 0, null);
+    defer vm.deinit();
+
+    const target = try guillotine.Address.fromHex(
+        "0x0000000000000000000000000000000000000042",
+    );
+
+    // PUSH1 0x07 PUSH1 0x01 SSTORE   PUSH1 0x01 SLOAD
+    // PUSH1 0x00 MSTORE   PUSH1 0x20 PUSH1 0x00 RETURN
+    try vm.code.put(target, &[_]u8{
+        0x60, 0x07, 0x60, 0x01, 0x55,
+        0x60, 0x01, 0x54,
+        0x60, 0x00, 0x52,
+        0x60, 0x20, 0x60, 0x00, 0xF3,
+    });
+
+    const r = vm.call(.{ .call = .{
+        .caller = guillotine.ZERO_ADDRESS,
+        .to = target,
+        .value = 0,
+        .input = &.{},
+        .gas = 100_000,
+    } });
+
+    std.debug.print("success={} gas_left={} out=0x{x} slot1={}\n", .{
+        r.success,
+        r.gas_left,
+        std.mem.readInt(u256, r.output[0..32], .big),
+        try vm.storage.get(target, 1),
+    });
+}
+```
+
+```
+$ zig build run
+storage: success=true gas_left=77776 out=0x7 slot1=7
+```
+
+22 224 gas: 20 000 for a zero→nonzero `SSTORE`, 2 100 for the cold slot on the
+`SSTORE`, 100 for the now-warm `SLOAD`, and 24 for the pushes, `MSTORE`, and
+memory expansion. The state change is visible on `vm.storage` after the call
+returns.
+
+## Warm and cold access (EIP-2929)
+
+Access tracking is cumulative for the whole transaction, and once something is
+warm it stays warm even across a reverted frame's *gas* accounting. The two
+methods return the gas that should be charged and mark the entry warm:
+
+```zig
+const addr_cost = try vm.accessAddress(target);              // 2600 cold, 100 warm
+const slot_cost = try vm.accessStorageSlot(target, 1);       // 2100 cold, 100 warm
+```
+
+`preWarmTransaction(target)` applies the transaction-start warm set: the origin,
+the target, the access list you installed with `setAccessList`, the precompiles,
+and — from Shanghai (EIP-3651) — the coinbase.
+
+## Transient storage (EIP-1153)
+
+Transient slots are always warm (100 gas), never refunded, and cleared at the
+*transaction* boundary rather than the call boundary:
+
+```zig
+// after initTransactionState (or after a first call()), never before
+try vm.storage.set_transient(target, 0, 1);
+const t = vm.storage.get_transient(target, 0); // 1
+vm.storage.clear_transient();                  // end of transaction
+```
+
+`TSTORE` in a static context is a `WriteProtection` failure, matching the spec.
+
+## Transaction boundaries
+
+If you reuse one `Evm` across several transactions, mark the boundary explicitly:
+
+```zig
+try vm.initTransactionState(blob_versioned_hashes); // resets tx-scoped state
+```
+
+Read the name literally: this **resets** transaction state rather than merely
+advancing a boundary. It re-creates `Storage` (dropping persistent, original, and
+transient slots), clears `balances`, `nonces`, and `code`, resets the access-list
+manager, the frame stack, the log buffer, the created/selfdestructed/touched
+account sets and the snapshot stacks, and installs the blob hashes for `BLOBHASH`.
+
+So the order matters: call `initTransactionState` **first**, then seed accounts,
+then `call()`. It is not a way to carry chain state from one transaction to the
+next — if you need that, keep your state in a [host](/guides/host-interface),
+which the EVM does not clear.
+
+`call()` invokes `initTransactionState` itself when you have not, which is why
+the getting-started example works without it.
+
+## Account existence and emptiness
+
+```zig
+vm.accountExists(addr)   // has balance, nonce, code, or storage
+vm.accountIsEmpty(addr)  // exists but nonce == 0, balance == 0, code.len == 0
+```
+
+The distinction matters pre-Spurious-Dragon (EIP-161 empty-account deletion) and
+for `CALL`-to-empty-account gas. `selfdestructed_accounts` and `touched_accounts`
+carry the EIP-6780 and pre-Paris rules respectively; the EVM maintains them for
+you during execution.
+
+## CREATE addresses
+
+Both address derivations are available without executing anything:
+
+```zig
+const a1 = try vm.computeCreateAddress(sender, nonce);            // keccak(rlp([sender, nonce]))[12..]
+const a2 = try vm.computeCreate2Address(sender, salt, init_code); // EIP-1014
+```

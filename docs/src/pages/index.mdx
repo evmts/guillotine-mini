@@ -1,0 +1,83 @@
+---
+layout: landing
+title: Guillotine Mini — a small, readable EVM in Zig
+description: A small, embeddable Ethereum Virtual Machine written in Zig — spec-first, hardfork-aware, and easy to read.
+---
+
+# Guillotine Mini
+
+A small, embeddable **Ethereum Virtual Machine written in Zig**. One `Evm` type,
+one `call()` entry point, hardforks from Frontier through Osaka, precompiles,
+transaction-scoped state, and EIP-3155 tracing.
+
+```zig
+const Evm = guillotine.Evm(guillotine.EvmConfig{});
+var vm: Evm = undefined;
+try vm.init(allocator, null, .CANCUN, null, guillotine.ZERO_ADDRESS, 0, null);
+defer vm.deinit();
+
+// PUSH1 0x2a PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 RETURN
+try vm.code.put(target, &[_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xF3 });
+
+const result = vm.call(.{ .call = .{
+    .caller = guillotine.ZERO_ADDRESS,
+    .to = target,
+    .value = 0,
+    .input = &.{},
+    .gas = 100_000,
+} });
+// result.success == true, result.gas_left == 99982, result.output == 32 bytes of 0x2a
+```
+
+[Get started →](/getting-started)
+
+## Why it exists
+
+Most production EVMs are optimized first and readable second: bytecode is
+pre-analyzed into fused superinstructions, gas is folded into blocks, and the
+mapping from a line of the Python execution-specs to a line of the
+implementation stops being obvious. That is the right trade for a client on
+mainnet, and the wrong trade when what you need is *to know what the spec says*.
+
+Guillotine Mini takes the other side of that trade:
+
+- **Spec-first.** The Python [execution-specs](https://github.com/ethereum/execution-specs)
+  are the source of truth. When intuition, the Yellow Paper, and the specs
+  disagree, the specs win. Gas is charged in the same order, in the same place.
+- **Small enough to read.** A bytecode interpreter (`frame.zig`), an
+  orchestrator for state and nested calls (`evm.zig`), a pluggable state backend
+  (`host.zig`). No hidden layers.
+- **Tested against the real fixtures.** `ethereum/tests` and
+  `execution-spec-tests` fixtures run as ordinary `zig build` steps, sliced per
+  hardfork and per EIP so a single failing EIP is one command away.
+- **Embeddable.** It is a Zig module first, a static library second, and a C ABI
+  third. There is no runtime, no global state, and no allocator you did not hand
+  it: transaction-scoped memory lives in an arena you own.
+
+## What it is good for
+
+| You want to… | Guillotine Mini gives you |
+| --- | --- |
+| Run bytecode and inspect the result | `vm.call(.{ .call = … })` → gas, output, logs, selfdestructs |
+| Debug a divergence against a reference client | EIP-3155 traces via `Tracer`, step-by-step with `vm.step()` |
+| Model a fork's gas rules | `Hardfork` at construction time or runtime; per-fork spec suites |
+| Add an opcode or a precompile | `EvmConfig.opcode_overrides` / `precompile_overrides` (comptime) |
+| Drive the EVM from another language | A static library plus a stable `evm_*` C ABI |
+| Embed in a client | Pluggable `HostInterface` for balances, code, nonces, storage |
+
+## What it is not
+
+It is not a full Ethereum client, and it is not tuned for throughput. Block
+processing, the transaction pool, JSON-RPC, and devp2p live one level up in
+[Guillotine](/stack). Guillotine Mini is the execution engine those things call
+into. It is pre-1.0: public APIs may change between minor releases.
+
+## Status, honestly
+
+- `zig build test --summary all` — **992 passed, 6 skipped, 0 failed** on
+  macOS/arm64 with Zig 0.15.2.
+- `zig build` and `zig build native` (static library for FFI) succeed.
+- `zig build wasm` currently **fails** on a missing `wasm32-unknown-unknown`
+  Rust artifact in the Voltaire dependency. See
+  [Building from Source](/native-build#webassembly).
+

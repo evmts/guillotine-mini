@@ -115,7 +115,10 @@ fn load_genesis_block_context(chain_id: u64, hardfork: primitives.Hardfork) !?ev
         else => return null,
     };
 
-    const file = try std.fs.cwd().openFile(genesis_path, .{});
+    const file = std.fs.cwd().openFile(genesis_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
     defer file.close();
 
     var reader = file.deprecatedReader();

@@ -1,0 +1,91 @@
+# Hardforks
+
+Guillotine Mini implements one codebase with runtime fork checks, rather than a
+directory per fork like the Python execution-specs. The fork is a value you set;
+gas schedules and opcode availability follow from it.
+
+## The forks
+
+`guillotine.Hardfork` comes from Voltaire and covers the full history, including
+the no-op difficulty-bomb forks so that block-number mapping stays honest:
+
+`FRONTIER`, `HOMESTEAD`, `DAO`, `TANGERINE_WHISTLE`, `SPURIOUS_DRAGON`,
+`BYZANTIUM`, `CONSTANTINOPLE`, `PETERSBURG`, `ISTANBUL`, `MUIR_GLACIER`,
+`BERLIN`, `LONDON`, `ARROW_GLACIER`, `GRAY_GLACIER`, `MERGE`, `SHANGHAI`,
+`CANCUN`, `PRAGUE`, `OSAKA`.
+
+`Hardfork.DEFAULT` is **`PRAGUE`**.
+
+:::warning
+`EvmConfig.hardfork` is *not* used when you pass `null` as the hardfork argument
+to `init` — `null` resolves to `Hardfork.DEFAULT` (`PRAGUE`). This is verifiable:
+an EVM configured with `.hardfork = .BERLIN` and initialized with `null` reports
+`vm.getActiveFork() == PRAGUE`. Pass the fork explicitly to `init` and treat the
+config field as a default for tooling only.
+:::
+
+```zig
+var vm: Evm = undefined;
+try vm.init(allocator, null, .BERLIN, null, guillotine.ZERO_ADDRESS, 0, null);
+std.debug.print("{s}\n", .{@tagName(vm.getActiveFork())}); // BERLIN
+```
+
+## What each fork changes here
+
+| Fork | Behaviour you can observe |
+| --- | --- |
+| Homestead | `DELEGATECALL`; `CREATE` failure semantics |
+| Tangerine Whistle | EIP-150 gas repricing, 63/64 call-gas rule |
+| Spurious Dragon | EIP-161 empty-account deletion, EIP-170 code size limit |
+| Byzantium | `REVERT`, `RETURNDATASIZE`, `RETURNDATACOPY`, `STATICCALL` |
+| Constantinople | `CREATE2`, `SHL`/`SHR`/`SAR`, `EXTCODEHASH` |
+| Istanbul | EIP-2200 `SSTORE` repricing, `CHAINID`, `SELFBALANCE` |
+| Berlin | EIP-2929 warm/cold access, EIP-2930 access lists |
+| London | EIP-1559 + `BASEFEE`, EIP-3529 reduced refunds, EIP-3541 `0xEF` ban |
+| Merge | `PREVRANDAO` replaces `DIFFICULTY` |
+| Shanghai | `PUSH0`, warm coinbase, EIP-3860 initcode metering |
+| Cancun | `TLOAD`/`TSTORE`, `MCOPY`, `BLOBHASH`, `BLOBBASEFEE`, EIP-6780 `SELFDESTRUCT` |
+| Prague | BLS12-381 precompiles (EIP-2537), EIP-7702 set-code transactions |
+| Osaka | EIP-7883/7823 ModExp changes, EIP-7825 tx gas cap |
+
+## Mid-chain fork transitions
+
+For tests and tools that replay across a fork boundary, an `Evm` carries an
+optional `fork_transition` (`voltaire.ForkTransition`). When set,
+`getActiveFork()` resolves the fork from the current block context instead of the
+fixed field, so one instance can process blocks either side of the boundary.
+
+```zig
+vm.fork_transition = .{ /* voltaire.ForkTransition */ };
+const active = vm.getActiveFork(); // derived from vm.block_context
+```
+
+## Running the fork-specific test suites
+
+The build exposes a step per fork, and sub-steps for the large ones, so you can
+iterate on one EIP without paying for the whole matrix:
+
+```sh
+zig build specs                      # all state tests
+zig build specs-berlin-acl           # EIP-2929/2930 access lists
+zig build specs-cancun-mcopy         # EIP-5656
+zig build specs-shanghai-push0       # EIP-3855
+zig build specs-prague-bls-pairing   # EIP-2537 pairing
+zig build specs-osaka-modexp-misc    # EIP-7883
+```
+
+`TEST_FILTER` narrows any of them by substring:
+
+```sh
+TEST_FILTER="transientStorage" zig build specs
+```
+
+The spec suites need the `execution-specs` submodule (and, for the classic
+fixtures, `ethereum-tests`); tests whose fixtures are absent skip rather than
+fail. See [Testing and Debugging](/guides/testing).
+
+## Which fork should I pick?
+
+If you are reproducing mainnet behaviour today, use `.PRAGUE`. If you are writing
+a test for a specific EIP, use the first fork that contains it — that is what the
+spec fixtures do, and it makes the intent of the test legible.

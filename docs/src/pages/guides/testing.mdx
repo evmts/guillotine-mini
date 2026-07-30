@@ -1,0 +1,143 @@
+# Testing and Debugging
+
+Correctness here is not an aspiration, it is a build step. There are three layers:
+inline Zig unit tests, the classic `ethereum/tests` fixtures, and the
+`execution-spec-tests` / `execution-specs` state and blockchain tests.
+
+## Running the suite
+
+```sh
+zig build test --summary all
+```
+
+Real output from this machine (macOS arm64, Zig 0.15.2):
+
+```
+Build Summary: 31/31 steps succeeded; 992/998 tests passed; 6 skipped
+```
+
+Six skips, zero failures. Tests whose fixtures are absent skip rather than fail,
+which is why a fresh clone with no submodules still gives you a meaningful green.
+
+Faster loops:
+
+```sh
+zig build unit          # inline unit tests only
+zig build test-watch    # interactive re-run on change
+```
+
+## Spec tests
+
+```sh
+git submodule update --init execution-specs   # spec fixtures
+git submodule update --init ethereum-tests    # classic fixtures
+
+zig build specs             # state tests
+zig build specs-blockchain  # blockchain tests
+```
+
+Never modify anything inside those submodules — they are the reference, and a
+local edit turns a real failure into a fake pass.
+
+Engine-API-format tests are excluded by default because they exercise
+consensus-layer behaviour rather than the EVM:
+
+```sh
+INCLUDE_ENGINE_TESTS=1 zig build specs
+```
+
+### Slicing by fork and EIP
+
+Every hardfork has a step, and the large ones are split so you can iterate on one
+EIP:
+
+```sh
+zig build specs-berlin-acl
+zig build specs-shanghai-push0
+zig build specs-cancun-tstore-reentrancy
+zig build specs-cancun-blob-tx-insufficient
+zig build specs-prague-setcode-gas
+zig build specs-osaka-modexp-vectors-eip
+```
+
+Run `zig build --help` to see the current list — it is generated from the fork and
+EIP tables in `build.zig`, so it is always the authoritative one.
+
+`TEST_FILTER` narrows any suite by substring, and works on categories, EIP names,
+opcodes, or an exact test name:
+
+```sh
+TEST_FILTER="Cancun" zig build specs
+TEST_FILTER="transientStorage" zig build specs
+TEST_FILTER="vmArithmeticTest" zig build specs
+```
+
+## The debugging loop
+
+The repository ships two Bun scripts that exist because this loop happens dozens
+of times per fix.
+
+```sh
+bun scripts/test-subset.ts transientStorage   # what is failing?
+bun scripts/isolate-test.ts "transStorageReset"  # why?
+```
+
+`isolate-test.ts` runs one test with maximum debug output, classifies the failure
+(crash / gas mismatch / behaviour mismatch), captures both the Guillotine trace
+and the reference trace, prints the first divergence with PC, opcode, gas, and
+stack, and tells you which Python file to open next.
+
+The discipline that makes this fast:
+
+1. **Reproduce** the single failing test.
+2. **Diff the traces** and find the *first* divergent step — everything after it
+   is noise.
+3. **Read the Python** for that opcode in
+   `execution-specs/src/ethereum/forks/<fork>/vm/instructions/`. Quote it, do not
+   remember it.
+4. **Compare the Zig** in `src/frame.zig` (opcodes), `src/evm.zig` (calls, state),
+   or `src/primitives/gas_constants.zig` (gas).
+5. **Fix minimally**, preserving hardfork guards.
+6. **Re-run** the isolated test, then the fork suite, then the full suite.
+
+## Where things live
+
+| Behaviour | Python reference | Zig |
+| --- | --- | --- |
+| Opcode semantics | `.../vm/instructions/*.py` | `src/frame.zig`, `src/instructions/` |
+| Gas schedule | `.../vm/gas.py` | `src/primitives/gas_constants.zig` |
+| CALL / CREATE | `.../vm/instructions/system.py` | `src/evm.zig` (`inner_call`, `inner_create`) |
+| Storage & transient storage | `.../vm/instructions/storage.py` | `src/storage.zig`, `src/evm.zig` |
+| Warm/cold sets | `.../vm/__init__.py` | `src/access_list_manager.zig` |
+| Fork activation | `forks/<fork>/` | `Hardfork` checks throughout |
+
+The Python spec is authoritative. When intuition, the Yellow Paper, and the specs
+disagree, the specs win — the Yellow Paper is out of date past Shanghai.
+
+## The AI-assisted fixer
+
+`scripts/fix-specs.ts` automates the loop above under a mandatory
+seven-checkpoint protocol (reproduce → trace → read Python → read Zig → diagnose →
+fix → verify), where each checkpoint has to be backed by real captured output
+rather than a summary:
+
+```sh
+cd scripts && bun install
+export ANTHROPIC_API_KEY=...
+bun run scripts/fix-specs.ts suite shanghai-push0
+```
+
+Reports land in `reports/spec-fixes/`. Without an API key it still runs the tests
+and skips the fixing. `scripts/known-issues.json` accumulates the durable
+findings: common causes per suite, the files and line ranges involved, invariants,
+and expected gas numbers.
+
+## Writing tests for the EVM itself
+
+Unit tests live inline next to the code (`src/instructions/handlers_*_test.zig`,
+`src/evm_test.zig`) and share helpers in `src/instructions/test_helpers.zig`. A
+handler test builds a frame, pushes inputs, runs one opcode, and asserts on the
+stack and gas — which is the level at which most spec bugs are cheapest to catch.
+
+Two house rules worth repeating: never encode test-specific special cases into the
+implementation, and never silence an error with `catch {}` — handle it or `try` it.

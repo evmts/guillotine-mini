@@ -1,0 +1,187 @@
+# Executing Bytecode
+
+Everything enters the EVM through one method:
+
+```zig
+pub fn call(self: *Self, params: CallParams) CallResult
+```
+
+`CallParams` is a tagged union with six variants — `call`, `callcode`,
+`delegatecall`, `staticcall`, `create`, `create2` — so the shape of the call site
+tells you which semantics you get. `call()` does not return an error union: a
+failed execution is a `CallResult` with `success = false`, and out-of-gas,
+revert, and invalid-opcode are all normal outcomes rather than Zig errors.
+
+## Passing calldata and reading the return value
+
+This program deploys a contract that echoes the first calldata word back, then
+calls it. Complete and runnable:
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+
+const Evm = guillotine.Evm(guillotine.EvmConfig{});
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var vm: Evm = undefined;
+    try vm.init(allocator, null, .CANCUN, null, guillotine.ZERO_ADDRESS, 0, null);
+    defer vm.deinit();
+
+    const target = try guillotine.Address.fromHex(
+        "0x0000000000000000000000000000000000000042",
+    );
+
+    // PUSH1 0x00 CALLDATALOAD  PUSH1 0x00 MSTORE  PUSH1 0x20 PUSH1 0x00 RETURN
+    try vm.code.put(target, &[_]u8{
+        0x60, 0x00, 0x35,
+        0x60, 0x00, 0x52,
+        0x60, 0x20, 0x60, 0x00, 0xF3,
+    });
+
+    var input: [32]u8 = @splat(0);
+    std.mem.writeInt(u256, &input, 0xdeadbeef, .big);
+
+    const result = vm.call(.{ .call = .{
+        .caller = guillotine.ZERO_ADDRESS,
+        .to = target,
+        .value = 0,
+        .input = &input,
+        .gas = 100_000,
+    } });
+
+    std.debug.print("success={} echoed=0x{x}\n", .{
+        result.success,
+        std.mem.readInt(u256, result.output[0..32], .big),
+    });
+}
+```
+
+```
+$ zig build run
+echo success=true out=0xdeadbeef
+```
+
+Note that `.input` is a borrowed slice: the EVM does not take ownership. If you
+need the params to outlive the buffer, `CallParams` has `clone(allocator)` and a
+matching `deinit(allocator)`.
+
+## Reading the result
+
+`CallResult` (see [reference](/reference/call)) is the whole observable outcome of
+an execution:
+
+```zig
+success: bool,
+gas_left: u64,
+output: []const u8,
+refund_counter: u64 = 0,
+logs: []const Log = &.{},
+selfdestructs: []const SelfDestructRecord = &.{},
+accessed_addresses: []const Address = &.{},
+accessed_storage: []const StorageAccess = &.{},
+trace: ?ExecutionTrace = null,
+error_info: ?[]const u8 = null,
+created_address: ?Address = null,
+```
+
+- `output` is the `RETURN` payload on success, and the `REVERT` payload on
+  failure. A revert with no data and an out-of-gas both look like
+  `success = false, output.len = 0` — use `error_info` to tell them apart when it
+  is populated.
+- `gas_left` is what the frame did not spend. Gas *used* is your limit minus this.
+- `refund_counter` is the accumulated `SSTORE` refund before the end-of-transaction
+  cap is applied. Applying the cap (1/5 post-London, 1/2 before) is the caller's job,
+  because it is a transaction-level rule, not a frame-level one.
+- Everything slice-shaped is allocated in the EVM's arena and dies with
+  `vm.deinit()`. Copy it out if you need it later.
+
+## Logs
+
+`LOG0`–`LOG4` accumulate on the EVM for the whole transaction and are surfaced on
+the result. This contract writes one byte to memory and emits it with one topic:
+
+```zig
+const target = try guillotine.Address.fromHex(
+    "0x0000000000000000000000000000000000000043",
+);
+
+// PUSH1 0xff PUSH1 0x00 MSTORE8   PUSH1 0x2a PUSH1 0x01 PUSH1 0x00 LOG1   STOP
+try vm.code.put(target, &[_]u8{
+    0x60, 0xff, 0x60, 0x00, 0x53,
+    0x60, 0x2a, 0x60, 0x01, 0x60, 0x00, 0xA1,
+    0x00,
+});
+
+const r = vm.call(.{ .call = .{
+    .caller = guillotine.ZERO_ADDRESS,
+    .to = target,
+    .value = 0,
+    .input = &.{},
+    .gas = 100_000,
+} });
+
+std.debug.print("count={} topic0=0x{x} data_len={}\n", .{
+    r.logs.len, r.logs[0].topics[0], r.logs[0].data.len,
+});
+```
+
+Real output from that program:
+
+```
+logs: success=true count=1 topic0=0x2a data_len=1
+```
+
+`Log` is `voltaire.logs.Log` — re-exported as `guillotine.Log` so you do not have
+to depend on Voltaire directly for it.
+
+## Failure modes
+
+Three outcomes, with the numbers those exact programs produce at a 100 000 gas
+limit:
+
+```zig
+// PUSH1 0xff PUSH1 0x00 MSTORE8  PUSH1 0x01 PUSH1 0x00 REVERT
+const revert_code = [_]u8{ 0x60, 0xff, 0x60, 0x00, 0x53, 0x60, 0x01, 0x60, 0x00, 0xFD };
+// → success=false gas_left=99982 output=ff error_info=null
+//   REVERT refunds the unspent gas and returns its memory range as output.
+
+// 0xFE (INVALID)
+const invalid_code = [_]u8{0xFE};
+// → success=false gas_left=0 error_info=null
+//   An exceptional halt burns everything and returns nothing.
+```
+
+Calling an address with no code is a **successful no-op**, exactly as on mainnet —
+not an error:
+
+```
+empty-account success=true gas_left=100000 out_len=0
+```
+
+If you meant to require a contract, check `vm.get_code(addr).len` yourself.
+
+Note that `error_info` was `null` in both failure cases above: it is populated on
+some paths only, so do not build control flow on it. Distinguish revert from halt
+by `gas_left` (a revert leaves gas; an exceptional halt does not).
+
+## Gas you have to supply yourself
+
+`call()` charges *frame* gas. It does not charge the 21 000 intrinsic gas of a
+transaction, nor per-byte calldata cost, nor does it validate a signature,
+nonce, or balance for fees — those are transaction-level concerns that belong to
+whatever is driving the EVM. If you are reproducing a transaction, subtract
+intrinsic gas from the tx gas limit before passing `.gas`.
+
+For access-list and blob-carrying transactions, set the transaction-scoped inputs
+before calling:
+
+```zig
+vm.setAccessList(access_list);          // EIP-2930, pre-warms addresses and slots
+vm.setBlobVersionedHashes(&hashes);     // EIP-4844, backs BLOBHASH
+try vm.preWarmTransaction(target);      // EIP-2929/3651 warm set for the tx
+```

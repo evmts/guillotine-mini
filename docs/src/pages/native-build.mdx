@@ -1,0 +1,129 @@
+# Building from Source
+
+## Toolchain
+
+| Requirement | Version verified | Why |
+| --- | --- | --- |
+| Zig | 0.15.2 (`minimum_zig_version = 0.15.1`) | the whole build |
+| Rust / Cargo | 1.89.0 (`rust-toolchain.toml`) | `libcrypto_wrappers.a` in Voltaire |
+| `cc` + `ar` | Apple clang / GCC | `blst`, `c-kzg-4844` |
+| git | any | submodules, only for spec fixtures |
+
+There is no way to skip Cargo: some cryptography arrives as a Rust static library
+that `zig build` drives for you. If `cargo` is not on `PATH`, the build fails while
+building the dependency, not while compiling Zig.
+
+## Clone and build
+
+```sh
+git clone https://github.com/evmts/guillotine-mini
+cd guillotine-mini
+zig build
+zig build test --summary all
+```
+
+Submodules are **not** required for the default build or test run. Verified
+output:
+
+```
+$ zig build
++ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./src/server.c
++ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./build/assembly.S
++ ar rc libblst.a assembly.o server.o
++ ranlib libblst.a
+    Finished `release` profile [optimized] target(s) in 0.20s
+
+$ zig build test --summary all
+Build Summary: 31/31 steps succeeded; 992/998 tests passed; 6 skipped
+```
+
+The first build compiles `blst`, `c-kzg-4844`, and the Rust wrappers, so expect a
+few minutes; afterwards it is seconds.
+
+## Platform support
+
+| Platform | Status |
+| --- | --- |
+| macOS arm64 | verified here — build, tests, static library, C linking |
+| macOS x86_64 | expected to work; same toolchain path |
+| Linux x86_64 / arm64 | what CI targets |
+| Windows | untested. `blst`'s assembly and the Rust wrapper build are the likely friction; MSYS2/WSL is the pragmatic route |
+| `wasm32-wasi` | **currently broken**, see below |
+
+## Consuming it from another language
+
+### From Zig
+
+```sh
+zig fetch --save https://github.com/evmts/guillotine-mini/archive/refs/tags/v0.1.0.tar.gz
+```
+
+then `guillotine.module("guillotine_mini")` — see [Getting Started](/getting-started).
+Note that `v0.1.0` is not tagged yet; pin a commit archive until it is.
+
+### From C and anything with an FFI
+
+```sh
+zig build native            # → zig-out/lib/libguillotine_mini.a  (26 MB, Debug)
+zig build native -Doptimize=ReleaseFast
+```
+
+The archive is not self-contained — you also need `blst`, `c-kzg-4844`, and
+`libcrypto_wrappers.a`. [Using It from C](/guides/c-ffi#linking) has the working
+link line and a verified end-to-end run.
+
+### From npm
+
+```sh
+npm install @tevm/guillotine-mini
+```
+
+This ships **Zig source**, not a binary. It is for projects that already resolve
+dependencies through npm and want to point `build.zig.zon` at `node_modules`.
+There is no JavaScript API in this package.
+
+## WebAssembly
+
+```sh
+zig build wasm
+```
+
+This **fails today**:
+
+```
+error: /Users/…/.cache/zig/p/primitives-0.1.0-…/target/wasm32-unknown-unknown/release/libcrypto_wrappers.a: file not found
+
+Build Summary: 4/8 steps succeeded; 1 failed
+wasm transitive failure
++- run sh transitive failure
+   +- install guillotine_mini transitive failure
+      +- compile exe guillotine_mini ReleaseSmall wasm32-wasi failure
+```
+
+The Zig side is fine: `src/root_c.zig` compiles for `wasm32-wasi` and the build
+exports the whole `evm_*` surface (`--export=evm_create`, `--export=evm_execute`, …)
+with `-fno-entry -OReleaseSmall`. What is missing is a `wasm32-unknown-unknown`
+build of the Voltaire Rust crypto library; the dependency only publishes the host
+build.
+
+Fixing it means having Voltaire build (or vendor) `libcrypto_wrappers.a` for
+`wasm32-unknown-unknown`, or compiling the affected precompiles in pure Zig for
+wasm targets. Until then, treat the documented ~100–200 KB wasm bundle as a goal
+rather than a fact.
+
+## Build targets you will actually use
+
+```sh
+zig build              # build everything
+zig build test         # unit + spec tests that have fixtures
+zig build unit         # inline unit tests only
+zig build specs        # execution-specs state tests
+zig build native       # static library for FFI
+zig build wasm         # WebAssembly (currently broken)
+zig build test-watch   # interactive runner
+```
+
+`zig build --help` lists the full set, including the per-fork and per-EIP spec
+steps and the `bench-*` and `test-*` steps belonging to the in-progress full-client
+work (`client/`, `client-ts/`). Those extra steps are why `zig build test` runs 31
+steps rather than one.

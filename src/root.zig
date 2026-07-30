@@ -36,6 +36,8 @@ pub const HostInterface = host.HostInterface;
 
 // Export Hardfork from primitives
 const primitives = @import("voltaire");
+pub const Address = primitives.Address;
+pub const ZERO_ADDRESS = primitives.ZERO_ADDRESS;
 pub const Hardfork = primitives.Hardfork;
 pub const ForkTransition = primitives.ForkTransition;
 

@@ -1,0 +1,179 @@
+# `Evm`
+
+```zig
+pub fn Evm(comptime config: EvmConfig) type
+```
+
+Returns the EVM type for a configuration. Members below are on that type;
+signatures are transcribed from `src/evm.zig`.
+
+## Associated types
+
+```zig
+Evm.CallParams          // union(enum) — the six call shapes
+Evm.CallResult          // struct — the outcome
+Evm.CallOrContinueInput
+Evm.CallOrContinueOutput
+```
+
+## Lifecycle
+
+```zig
+pub fn init(
+    self: *Self,
+    allocator: std.mem.Allocator,
+    h: ?host.HostInterface,
+    hardfork: ?Hardfork,
+    block_context: ?BlockContext,
+    origin: primitives.Address,
+    gas_price: u256,
+    log_level: ?log.LogLevel,
+) !void
+
+pub fn deinit(self: *Self) void
+```
+
+Initializes in place — `var vm: Evm = undefined; try vm.init(…)`. Notes that bite:
+
+- `hardfork = null` means `Hardfork.DEFAULT` (**`PRAGUE`**), *not*
+  `config.hardfork`.
+- `block_context = null` means all-zero fields with `chain_id = 1` and
+  `block_gas_limit = config.block_gas_limit`.
+- `origin` is the transaction origin, and it is what top-level `CREATE`/`CREATE2`
+  address derivation uses.
+- Transaction-scoped memory lives in an arena owned by the EVM; `deinit` frees it
+  all at once. Anything you take out of a `CallResult` must be copied first.
+
+```zig
+pub fn initTransactionState(self: *Self, blob_versioned_hashes: ?[]const [32]u8) !void
+```
+
+Resets **all** transaction state: recreates `Storage`, clears `balances`,
+`nonces`, `code`, the access-list manager, frames, logs, the created/
+selfdestructed/touched sets, and the snapshot stacks, and installs the blob
+hashes. `call()` invokes it for you at the start of every call.
+
+## Executing
+
+```zig
+pub fn call(self: *Self, params: CallParams) CallResult
+```
+
+The main entry point. Never returns an error union — failures come back as
+`success = false`. Internally it: validates params, derives the target address
+(including `CREATE`/`CREATE2` derivation), resets transaction state, pre-warms per
+EIP-2929/2930/3651, dispatches to `inner_create` or the call path, then clears
+transient storage and the per-transaction sets before returning.
+
+```zig
+pub fn inner_call(self: *Self, …) errors.CallError!…
+pub fn inner_create(self: *Self, value: u256, init_code: []const u8, gas: u64, salt: ?u256) errors.CallError!struct {
+    address: primitives.Address, success: bool, gas_left: u64, output: []const u8,
+}
+```
+
+These implement nested calls and creates and are what the `CALL*`/`CREATE*`
+opcodes use. You do not normally call them directly; they are public because the
+interpreter needs them.
+
+### Async / stepwise
+
+```zig
+pub fn callOrContinue(self: *Self, …) !CallOrContinueOutput
+pub fn executeUntilYieldOrComplete(self: *Self) !CallOrContinueOutput
+pub fn finalizeAndReturnResult(self: *Self) !CallOrContinueOutput
+pub fn step(self: *Self) !void
+pub fn getCurrentFrame(self: *Self) ?*FrameType
+pub fn getPC(self: *const Self) u32
+pub fn getBytecode(self: *const Self) []const u8
+```
+
+## Per-transaction inputs
+
+```zig
+pub fn setBytecode(self: *Self, bytecode: []const u8) void
+pub fn setAccessList(self: *Self, access_list: ?primitives.AccessList.AccessList) void
+pub fn setBlobVersionedHashes(self: *Self, hashes: []const [32]u8) void
+pub fn setTracer(self: *Self, tracer: *trace.Tracer) void
+pub fn preWarmTransaction(self: *Self, target: primitives.Address) errors.CallError!void
+```
+
+## Forks
+
+```zig
+pub fn getActiveFork(self: *const Self) Hardfork
+```
+
+Returns `fork_transition.getActiveFork(block_number, block_timestamp)` when a
+`fork_transition` is set, otherwise the `hardfork` field.
+
+## State
+
+```zig
+pub fn get_balance(self: *Self, address: primitives.Address) u256
+pub fn get_code(self: *Self, address: primitives.Address) []const u8
+pub fn getNonce(self: *Self, address: primitives.Address) u64
+
+pub fn setBalanceWithSnapshot(self: *Self, addr: primitives.Address, new_balance: u256) !void
+pub fn setNonceWithSnapshot(self: *Self, addr: primitives.Address, new_nonce: u64) !void
+pub fn setCodeWithSnapshot(self: *Self, addr: primitives.Address, new_code: []const u8) !void
+
+pub fn accountExists(self: *Self, addr: primitives.Address) bool
+pub fn accountIsEmpty(self: *Self, addr: primitives.Address) bool
+```
+
+Use the `*WithSnapshot` setters for anything that must revert with the current
+frame. Reads fall through to the `HostInterface` when one is installed.
+
+## Access lists (EIP-2929)
+
+```zig
+pub fn accessAddress(self: *Self, address: primitives.Address) !u64
+pub fn accessStorageSlot(self: *Self, contract_address: primitives.Address, slot: u256) !u64
+```
+
+Both return the gas to charge (cold 2600 / 2100, warm 100) and mark the entry warm.
+
+## Addresses
+
+```zig
+pub fn computeCreateAddress(self: *Self, sender: primitives.Address, nonce: u64) !primitives.Address
+pub fn computeCreate2Address(self: *Self, sender: primitives.Address, salt: u256, init_code: []const u8) !primitives.Address
+```
+
+Verified against `cast`: `computeCreate2Address(0x…001000, 0x1234, 0x6001600c60003960016000f300)`
+= `0x7f77e3a484b323d0da2e1c2a15da2db7858554d5`, and
+`computeCreateAddress(0x…001000, 0)` = `0x9410c9031b8d168b22bb86acbd32b0af2c62a4a8`.
+
+## Refunds and diagnostics
+
+```zig
+pub fn add_refund(self: *Self, amount: u64) void
+pub fn sub_refund(self: *Self, amount: u64) void
+pub fn dumpStateChanges(self: *Self) ![]const u8   // JSON
+pub fn getOpcodeOverride(self: *const Self, opcode: u8) ?*const anyopaque
+pub fn getPrecompileOverride(self: *const Self, address: primitives.Address) ?*const evm_config.PrecompileOverride
+```
+
+## Notable fields
+
+```zig
+storage: Storage,                 // undefined until initTransactionState
+balances: std.AutoHashMap(Address, u256),
+nonces: std.AutoHashMap(Address, u64),
+code: std.AutoHashMap(Address, []const u8),
+access_list_manager: AccessListManager,
+gas_refund: u64,
+hardfork: Hardfork,
+fork_transition: ?primitives.ForkTransition,
+origin: primitives.Address,
+gas_price: u256,
+host: ?host.HostInterface,
+block_context: BlockContext,
+blob_versioned_hashes: []const [32]u8,
+logs: std.ArrayList(Log),
+created_accounts / selfdestructed_accounts / touched_accounts: AutoHashMap(Address, void),
+```
+
+`storage` being `undefined` before `initTransactionState` is real: touching it
+first panics.

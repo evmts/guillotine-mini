@@ -25,7 +25,10 @@ test "TrieTests fixtures - hex_encoded_securetrie_test" {
 
 fn run_fixture_file(path: []const u8, secure: bool) !void {
     const allocator = testing.allocator;
-    const file = try std.fs.cwd().openFile(path, .{});
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
     defer file.close();
 
     const contents = try file.readToEndAlloc(allocator, 16 * 1024 * 1024);

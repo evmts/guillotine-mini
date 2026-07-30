@@ -1,0 +1,145 @@
+# C API
+
+Complete list of exported symbols, transcribed from `src/root_c.zig`. Zig types map
+to C as you would expect: `[*]const u8` → `const uint8_t *`, `usize` → `size_t`,
+`bool` → `bool`, `?*EvmHandle` → `EvmHandle *` (nullable). All 256-bit values are
+32 raw big-endian bytes; all addresses are 20 raw bytes.
+
+Build the library with `zig build native` and see
+[Using It from C](/guides/c-ffi#linking) for the full, verified link line — the
+archive is not self-contained.
+
+## Lifecycle
+
+```c
+EvmHandle *evm_create(const uint8_t *hardfork_name, size_t hardfork_len, uint8_t log_level);
+void       evm_destroy(EvmHandle *handle);
+```
+
+## Setup (before `evm_execute`)
+
+```c
+bool evm_set_bytecode(EvmHandle *h, const uint8_t *bytecode, size_t bytecode_len);
+
+bool evm_set_execution_context(EvmHandle *h,
+                               int64_t gas,
+                               const uint8_t *caller_bytes,   /* 20 */
+                               const uint8_t *address_bytes,  /* 20 */
+                               const uint8_t *value_bytes,    /* 32 */
+                               const uint8_t *calldata, size_t calldata_len);
+
+void evm_set_blockchain_context(EvmHandle *h,
+                                const uint8_t *chain_id_bytes,          /* 32 */
+                                uint64_t block_number,
+                                uint64_t block_timestamp,
+                                const uint8_t *block_difficulty_bytes,  /* 32 */
+                                const uint8_t *block_prevrandao_bytes,  /* 32 */
+                                const uint8_t *block_coinbase_bytes,    /* 20 */
+                                uint64_t block_gas_limit,
+                                const uint8_t *block_base_fee_bytes,    /* 32 */
+                                const uint8_t *blob_base_fee_bytes);    /* 32 */
+
+bool evm_set_access_list_addresses(EvmHandle *h, const uint8_t *addresses, size_t count);
+bool evm_set_access_list_storage_keys(EvmHandle *h, const uint8_t *addresses,
+                                      const uint8_t *slots, size_t count);
+bool evm_set_blob_hashes(EvmHandle *h, const uint8_t *hashes, size_t count);
+```
+
+`evm_set_blockchain_context` returns `void` — it cannot fail beyond a null handle.
+The access-list arrays are packed: `count` × 20 bytes, and for storage keys a
+parallel array of `count` × 32-byte slots aligned with the addresses array.
+
+:::warning
+`evm_set_bytecode` alone is not enough. `evm_execute` performs a `CALL` to the
+context address and resolves code from account state, so you must also call
+`evm_set_code(handle, address, code, len)`. Without it you get
+`success=1, gas_used=0` and no output — a silent no-op, since calling an
+empty account succeeds on Ethereum.
+:::
+
+## State
+
+```c
+bool evm_set_balance(EvmHandle *h, const uint8_t *address_bytes, const uint8_t *balance_bytes /* 32 */);
+bool evm_set_nonce(EvmHandle *h, const uint8_t *address_bytes, uint64_t nonce);
+bool evm_set_code(EvmHandle *h, const uint8_t *address_bytes, const uint8_t *code, size_t code_len);
+bool evm_set_storage(EvmHandle *h, const uint8_t *address_bytes,
+                     const uint8_t *slot_bytes /* 32 */, const uint8_t *value_bytes /* 32 */);
+bool evm_get_storage(EvmHandle *h, const uint8_t *address_bytes,
+                     const uint8_t *slot_bytes /* 32 */, uint8_t *value_bytes /* 32 out */);
+```
+
+## Execute and read results
+
+```c
+bool    evm_execute(EvmHandle *h);           /* returns result.success */
+bool    evm_is_success(EvmHandle *h);
+int64_t evm_get_gas_used(EvmHandle *h);
+int64_t evm_get_gas_remaining(EvmHandle *h);
+size_t  evm_get_output_len(EvmHandle *h);
+size_t  evm_get_output(EvmHandle *h, uint8_t *buffer, size_t buffer_len);
+uint64_t evm_get_gas_refund(EvmHandle *h);
+```
+
+`evm_execute` returns `false` both when the bytecode is empty (nothing was set) and
+when execution failed — check `evm_get_output_len`/`evm_is_success` to tell those
+apart.
+
+## Logs and storage diffs
+
+```c
+size_t evm_get_log_count(EvmHandle *h);
+bool   evm_get_log(EvmHandle *h, size_t index,
+                   uint8_t *address_out,      /* 20 */
+                   size_t  *topics_count_out,
+                   uint8_t *topics_out,       /* up to 4 × 32 */
+                   size_t  *data_len_out,
+                   uint8_t *data_out, size_t data_max_len);
+
+size_t evm_get_storage_change_count(EvmHandle *h);
+bool   evm_get_storage_change(EvmHandle *h, size_t index,
+                              uint8_t *address_out, /* 20 */
+                              uint8_t *slot_out,    /* 32 */
+                              uint8_t *value_out);  /* 32 */
+
+size_t evm_get_state_changes(EvmHandle *h, uint8_t *buffer, size_t buffer_len); /* JSON */
+```
+
+## Resumable execution
+
+```c
+typedef struct {
+    uint8_t  output_type;      /* 0=result, 1=need_storage, 2=need_balance, 5=ready_to_commit */
+    uint8_t  address[20];
+    uint8_t  slot[32];         /* storage requests only */
+    uint32_t json_len;
+    uint8_t  json_data[16384]; /* state-changes JSON, inline */
+} AsyncRequest;
+
+bool evm_enable_storage_injector(EvmHandle *h);
+bool evm_call_ffi(EvmHandle *h, AsyncRequest *request_out);
+bool evm_continue_ffi(EvmHandle *h,
+                      uint8_t continue_type, /* 1=storage 2=balance 3=code 4=nonce 5=after_commit */
+                      const uint8_t *data_ptr, size_t data_len,
+                      AsyncRequest *request_out);
+```
+
+The loop is: `evm_enable_storage_injector`, then `evm_call_ffi`; if
+`output_type != 0`, fetch the requested value for `address`/`slot`, hand it back
+with `evm_continue_ffi` and the matching `continue_type`, and repeat until
+`output_type == 0`. `AsyncRequest` is an `extern struct`, so its layout is the C
+layout — note the 16 KiB inline JSON buffer when allocating it.
+
+## WebAssembly exports
+
+`zig build wasm` exports the same names with `--export=` flags (`evm_create`,
+`evm_destroy`, `evm_set_bytecode`, `evm_set_execution_context`,
+`evm_set_blockchain_context`, `evm_execute`, `evm_get_gas_remaining`,
+`evm_get_gas_used`, `evm_is_success`, `evm_get_output_len`, `evm_get_output`,
+`evm_set_storage`, `evm_get_storage`, `evm_set_balance`, `evm_set_code`,
+`evm_set_access_list_addresses`, `evm_set_access_list_storage_keys`,
+`evm_set_blob_hashes`, `evm_call_ffi`, `evm_continue_ffi`,
+`evm_get_state_changes`, `evm_enable_storage_injector`).
+
+That target does not currently build — see
+[Building from Source](/native-build#webassembly).

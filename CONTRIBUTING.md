@@ -4,8 +4,8 @@ Thanks for helping improve Guillotine Mini. This guide covers setup, workflows, 
 
 ## Prerequisites
 
-- Zig `0.15.1` or later
-- Cargo (Rust build tool) - required for cryptographic dependencies
+- Zig `0.15.1`
+- Rust and Cargo `1.89.0` (pinned by `rust-toolchain.toml`)
 - Python `3.10+`
 - uv (Python package manager): `brew install uv`
 - Bun (TypeScript scripts/agents): `brew install bun`
@@ -30,14 +30,11 @@ cd scripts && bun install && cd -
 # Build library + modules
 zig build
 
-# Run all tests (unit + spec tests)
-zig build test
+# Run the default Zig test suite
+zig build test --summary all
 
-# Run execution-spec tests (generation happens automatically)
+# Run execution-spec tests (optional; generation happens automatically)
 zig build specs
-
-# Interactive runner
-zig build test-watch
 
 # Build WASM + show size
 zig build wasm
@@ -135,13 +132,6 @@ TEST_SEQUENTIAL=1 TEST_FILTER="vmIOandFlowOperations" \
 rg -n "Trace Divergence|Difference in|Our EVM|Reference" reports/divergence_example.log
 ```
 
-You can also validate tracing independently:
-
-```bash
-zig build test-trace
-cat trace_test.json | head -n 10
-```
-
 Tip: Generation prints are verbose. Using `TEST_FILTER` to reduce to a few tests keeps logs manageable.
 
 ## AI-Assisted Fixer (Optional)
@@ -170,4 +160,3 @@ If `ANTHROPIC_API_KEY` is not set, the script still runs tests but skips auto‑
 ## Known Status
 
 The EVM currently passes most tests. Some failure is expected in deep/future suites; that’s acceptable while we focus on runner stability, trace/diff quality, and developer ergonomics.
-

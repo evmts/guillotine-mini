@@ -1,0 +1,207 @@
+# Backing State with a Host
+
+`HostInterface` is how the EVM reads and writes account state that lives outside
+of it — a database, a Merkle-Patricia-Trie-backed world state, an RPC provider, or
+a test fixture. It is a classic Zig fat pointer: an opaque `ptr` plus a `vtable`.
+
+Pass one as the second argument to `init` and the EVM will route balance, nonce,
+code, and storage access through it instead of its internal maps. That is also the
+answer to the internal maps' [reset behaviour](/guides/state-and-storage): the EVM
+never clears your state.
+
+```zig
+pub const HostInterface = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        getBalance: *const fn (ptr: *anyopaque, address: Address) u256,
+        setBalance: *const fn (ptr: *anyopaque, address: Address, balance: u256) void,
+        getCode: *const fn (ptr: *anyopaque, address: Address) []const u8,
+        setCode: *const fn (ptr: *anyopaque, address: Address, code: []const u8) void,
+        getStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256) u256,
+        setStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256, value: u256) void,
+        getNonce: *const fn (ptr: *anyopaque, address: Address) u64,
+        setNonce: *const fn (ptr: *anyopaque, address: Address, nonce: u64) void,
+
+        // optional — null is fine, sensible defaults are used
+        accountExists: ?*const fn (ptr: *anyopaque, address: Address) bool = null,
+        accountHasStorage: ?*const fn (ptr: *anyopaque, address: Address) bool = null,
+        deleteAccount: ?*const fn (ptr: *anyopaque, address: Address) void = null,
+    };
+};
+```
+
+Note what is *not* here: there is no `call` and no `create`. Nested calls are
+handled inside the EVM by `inner_call` / `inner_create`. A host answers state
+questions; it does not execute anything.
+
+## A complete host
+
+This one keeps everything in hash maps. It is small enough to read and real
+enough to run — the program below was executed as written:
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+
+const MapHost = struct {
+    balances: std.AutoHashMap(guillotine.Address, u256),
+    code: std.AutoHashMap(guillotine.Address, []const u8),
+    storage: std.AutoHashMap(struct { guillotine.Address, u256 }, u256),
+
+    fn getBalance(ptr: *anyopaque, a: guillotine.Address) u256 {
+        const self: *MapHost = @ptrCast(@alignCast(ptr));
+        return self.balances.get(a) orelse 0;
+    }
+    fn setBalance(ptr: *anyopaque, a: guillotine.Address, v: u256) void {
+        const self: *MapHost = @ptrCast(@alignCast(ptr));
+        self.balances.put(a, v) catch {};
+    }
+    fn getCode(ptr: *anyopaque, a: guillotine.Address) []const u8 {
+        const self: *MapHost = @ptrCast(@alignCast(ptr));
+        return self.code.get(a) orelse &.{};
+    }
+    fn setCode(ptr: *anyopaque, a: guillotine.Address, c: []const u8) void {
+        const self: *MapHost = @ptrCast(@alignCast(ptr));
+        self.code.put(a, c) catch {};
+    }
+    fn getStorage(ptr: *anyopaque, a: guillotine.Address, slot: u256) u256 {
+        const self: *MapHost = @ptrCast(@alignCast(ptr));
+        return self.storage.get(.{ a, slot }) orelse 0;
+    }
+    fn setStorage(ptr: *anyopaque, a: guillotine.Address, slot: u256, v: u256) void {
+        const self: *MapHost = @ptrCast(@alignCast(ptr));
+        self.storage.put(.{ a, slot }, v) catch {};
+    }
+    fn getNonce(_: *anyopaque, _: guillotine.Address) u64 {
+        return 0;
+    }
+    fn setNonce(_: *anyopaque, _: guillotine.Address, _: u64) void {}
+
+    const vtable = guillotine.HostInterface.VTable{
+        .getBalance = getBalance,
+        .setBalance = setBalance,
+        .getCode = getCode,
+        .setCode = setCode,
+        .getStorage = getStorage,
+        .setStorage = setStorage,
+        .getNonce = getNonce,
+        .setNonce = setNonce,
+    };
+
+    fn interface(self: *MapHost) guillotine.HostInterface {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+};
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var host_state = MapHost{
+        .balances = std.AutoHashMap(guillotine.Address, u256).init(allocator),
+        .code = std.AutoHashMap(guillotine.Address, []const u8).init(allocator),
+        .storage = std.AutoHashMap(struct { guillotine.Address, u256 }, u256).init(allocator),
+    };
+    defer host_state.balances.deinit();
+    defer host_state.code.deinit();
+    defer host_state.storage.deinit();
+
+    const target = try guillotine.Address.fromHex(
+        "0x0000000000000000000000000000000000000055",
+    );
+    // NUMBER TIMESTAMP ADD  PUSH1 0x00 MSTORE  PUSH1 0x20 PUSH1 0x00 RETURN
+    try host_state.code.put(target, &[_]u8{
+        0x43, 0x42, 0x01,
+        0x60, 0x00, 0x52,
+        0x60, 0x20, 0x60, 0x00, 0xF3,
+    });
+
+    const Evm = guillotine.Evm(guillotine.EvmConfig{});
+    var vm: Evm = undefined;
+    try vm.init(allocator, host_state.interface(), .CANCUN, .{
+        .chain_id = 1,
+        .block_number = 21_000_000,
+        .block_timestamp = 1_700_000_000,
+        .block_difficulty = 0,
+        .block_prevrandao = 0,
+        .block_coinbase = guillotine.ZERO_ADDRESS,
+        .block_gas_limit = 30_000_000,
+        .block_base_fee = 7,
+        .blob_base_fee = 1,
+    }, guillotine.ZERO_ADDRESS, 10, null);
+    defer vm.deinit();
+
+    const r = vm.call(.{ .call = .{
+        .caller = guillotine.ZERO_ADDRESS,
+        .to = target,
+        .value = 0,
+        .input = &.{},
+        .gas = 100_000,
+    } });
+
+    std.debug.print("success={} sum={d}\n", .{
+        r.success,
+        std.mem.readInt(u256, r.output[0..32], .big),
+    });
+}
+```
+
+```
+$ zig build run
+host+block: success=true sum=1721000000
+```
+
+`1_700_000_000 + 21_000_000 = 1_721_000_000` — the contract read `NUMBER` and
+`TIMESTAMP` from the `BlockContext` you passed, and its code came from the host.
+
+## Block context
+
+The second half of "external state" is the block. `BlockContext` is a plain
+struct, and `null` means all zeros with `chain_id = 1`:
+
+```zig
+pub const BlockContext = struct {
+    chain_id: u256,
+    block_number: u64,
+    block_timestamp: u64,
+    block_difficulty: u256,
+    block_prevrandao: u256,
+    block_coinbase: primitives.Address,
+    block_gas_limit: u64,
+    block_base_fee: u256,
+    blob_base_fee: u256,
+    block_hashes: []const [32]u8 = &.{}, // most recent 256, for BLOCKHASH
+};
+```
+
+`block_hashes` is indexed the way the Python spec does it — relative to the
+current block number — so a short slice simply means `BLOCKHASH` returns zero for
+older blocks, which is also what mainnet does beyond 256 blocks.
+
+## Writes, snapshots, and reverts
+
+The host is written through as execution proceeds, and the EVM's own snapshot
+stacks handle reverting balances, nonces, and code for a failed frame. Storage
+reverts are handled by the `Storage` layer's cache. If your host is a database
+with its own transaction semantics, the simplest correct integration is to let
+the EVM finish and then commit, rather than trying to interleave your own
+snapshots with the EVM's.
+
+## Optional methods
+
+- `accountExists` — if `null`, existence is inferred from balance/nonce/code.
+- `accountHasStorage` — matters for EIP-161 empty-account rules on old forks.
+- `deleteAccount` — needed for correct `SELFDESTRUCT` before Cancun; from Cancun
+  (EIP-6780) deletion only happens for same-transaction creations.
+
+## Async hosts
+
+If your state lives behind an RPC boundary, a synchronous vtable is a problem.
+The EVM supports yielding mid-execution instead: `callOrContinue`,
+`executeUntilYieldOrComplete`, and `finalizeAndReturnResult`, together with the
+storage injector (`evm_enable_storage_injector` in the C API). The EVM stops,
+tells you what it needs, and resumes when you provide it. See
+[Calls and Creates](/guides/calls-and-creates#stepping-instead-of-running-to-completion).

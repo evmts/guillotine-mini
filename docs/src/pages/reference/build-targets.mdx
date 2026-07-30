@@ -1,0 +1,77 @@
+# Build Targets
+
+Transcribed from `zig build --help` on this checkout. Descriptions are the ones
+`build.zig` prints.
+
+## Core
+
+| Step | Description |
+| --- | --- |
+| `install` (default) | Copy build artifacts to prefix path |
+| `uninstall` | Remove build artifacts from prefix path |
+| `test` | Run tests (unit + spec tests whose fixtures are present) |
+| `unit` | Run unit tests only (fast) |
+| `native` | Build native static library for FFI → `zig-out/lib/libguillotine_mini.a` |
+| `wasm` | Build WASM library and show bundle size — **currently fails**, see [Building from Source](/native-build#webassembly) |
+
+## Full-client work in progress
+
+These belong to the Guillotine client being built in this repository
+(`client/`, `client-ts/`), not to the EVM itself. They are why `zig build test`
+runs 31 steps.
+
+| Step | Description |
+| --- | --- |
+| `test-db` | database abstraction layer tests |
+| `test-trie` | Merkle Patricia Trie tests |
+| `nethermind-diff` | Nethermind trie differential test |
+| `test-state` | world state journal tests |
+| `test-network` | devp2p networking tests |
+| `test-sync` | synchronization tests |
+| `test-blockchain` | chain management tests |
+| `test-txpool` | txpool tests |
+| `test-rpc` | JSON-RPC server tests |
+| `test-engine` | Engine API tests |
+| `test-runner` | runner CLI tests |
+| `test-evm-adapter` | EVM ↔ WorldState integration tests |
+| `bench-network`, `bench-evm`, `bench-state`, `bench-blockchain`, `bench-db`, `bench-trie`, `bench-txpool` | micro-benchmarks for the same subsystems |
+
+## Spec tests
+
+| Step | Description |
+| --- | --- |
+| `specs` | execution-specs STATE tests |
+| `specs-blockchain` | execution-specs BLOCKCHAIN tests |
+
+Per-fork aggregates: `specs-frontier`, `specs-homestead`, `specs-byzantium`,
+`specs-constantinople`, `specs-istanbul`, `specs-berlin`, `specs-paris`,
+`specs-shanghai`, `specs-cancun`, `specs-prague`, `specs-osaka`.
+
+### Sub-targets
+
+| Fork | Steps |
+| --- | --- |
+| Frontier | `specs-frontier-precompiles`, `-identity`, `-create`, `-call`, `-calldata`, `-dup`, `-push`, `-stack`, `-opcodes` |
+| Byzantium | `specs-byzantium-modexp` (EIP-198, 352 tests) |
+| Constantinople | `specs-constantinople-bitshift` (EIP-145, ~250), `specs-constantinople-create2` (EIP-1014, ~250) |
+| Istanbul | `specs-istanbul-blake2` (EIP-152), `specs-istanbul-chainid` (EIP-1344) |
+| Berlin | `specs-berlin-acl`, `specs-berlin-intrinsic-gas-cost`, `specs-berlin-intrinsic-type0`, `specs-berlin-intrinsic-type1` |
+| Shanghai | `specs-shanghai-push0` (EIP-3855), `specs-shanghai-warmcoinbase` (EIP-3651), `specs-shanghai-initcode-basic` (162), `specs-shanghai-initcode-eof` (24), `specs-shanghai-withdrawals` (EIP-4895) |
+| Cancun | `specs-cancun-tstore-basic`, `-tstore-reentrancy`, `-tstore-contexts-execution` (60), `-tstore-contexts-tload-reentrancy` (48), `-tstore-contexts-reentrancy` (20), `-tstore-contexts-create` (20), `-tstore-contexts-selfdestruct` (12), `-tstore-contexts-clear` (4), `specs-cancun-mcopy`, `specs-cancun-selfdestruct-basic` (306), `-selfdestruct-collision` (52), `-selfdestruct-reentrancy` (36), `-selfdestruct-revert` (12), `specs-cancun-blobbasefee`, `specs-cancun-blob-precompile-basic` (310), `-blob-precompile-gas` (48), `specs-cancun-blob-opcodes-basic` (75), `-blob-opcodes-contexts` (23), `specs-cancun-blob-tx-small`, `-blob-tx-subtraction`, `-blob-tx-insufficient`, `-blob-tx-sufficient`, `-blob-tx-valid-combos` |
+| Prague | `specs-prague-calldata-cost-type0`, `-type1-2`, `-type3`, `-type4`, `-refunds` (EIP-7623), `specs-prague-bls-g1`, `-bls-g2`, `-bls-pairing`, `-bls-map`, `-bls-misc` (EIP-2537), `specs-prague-setcode-calls`, `-setcode-gas`, `-setcode-txs`, `-setcode-advanced` (EIP-7702) |
+| Osaka | `specs-osaka-modexp-variable-gas`, `-modexp-vectors-eip`, `-modexp-vectors-legacy`, `-modexp-misc` (EIP-7883), `specs-osaka-other` |
+
+## Options and environment
+
+| Flag / variable | Effect |
+| --- | --- |
+| `-Doptimize=ReleaseFast\|ReleaseSafe\|ReleaseSmall\|Debug` | standard Zig optimization mode |
+| `-Dtarget=<triple>` | cross-compile |
+| `-Dnethermind-diff=true` | include the Nethermind trie diff in `zig build test` |
+| `-Drefresh-specs=true` | force re-fetch of execution-specs fixtures |
+| `TEST_FILTER="<substring>"` | narrow any spec suite by test name, category, EIP, or opcode |
+| `INCLUDE_ENGINE_TESTS=1` | include `blockchain_test_engine` consensus-layer fixtures |
+
+Run `zig build --help` on your checkout for the current, authoritative list — the
+spec steps are generated from tables in `build.zig` and change as suites are
+added.

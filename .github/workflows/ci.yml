@@ -6,15 +6,15 @@ on:
 
 jobs:
   build-test:
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - name: Install Zig 0.15.1
         uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.15.1
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@1.89.0
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -27,4 +27,4 @@ jobs:
       - name: Build
         run: zig build
       - name: Test
-        run: zig build test
+        run: zig build test --summary all

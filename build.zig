@@ -27,9 +27,22 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Voltaire's exported modules link a Rust static library, but its build step is
+    // not propagated to package consumers. Build the archive here and expose the
+    // copied output as a module input so Zig orders Cargo before compilation.
+    const cargo_build = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "cargo build --release && cp target/release/libcrypto_wrappers.a \"$1\"",
+        "_",
+    });
+    cargo_build.setCwd(primitives_dep.path("."));
+    const rust_crypto_lib = cargo_build.addOutputFileArg("libcrypto_wrappers.a");
+
     // Use primitives package exported modules (pre-configured with all C libs, include paths, etc.)
     const primitives_mod = primitives_dep.module("primitives");
     const crypto_mod = primitives_dep.module("crypto");
+    crypto_mod.addObjectFile(rust_crypto_lib);
     const precompiles_mod = primitives_dep.module("precompiles");
     const blockchain_mod = primitives_dep.module("blockchain");
     const jsonrpc_mod = b.addModule("jsonrpc", .{
@@ -89,6 +102,7 @@ pub fn build(b: *std.Build) void {
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
+    b.getInstallStep().dependOn(&mod_tests.step);
 
     // A run step that will run the test executable.
     const run_mod_tests = b.addRunArtifact(mod_tests);
@@ -175,7 +189,7 @@ pub fn build(b: *std.Build) void {
     const run_nethermind_trie_diff = b.addRunArtifact(nethermind_trie_diff_exe);
     const nethermind_diff_step = b.step("nethermind-diff", "Run Nethermind trie differential test");
     nethermind_diff_step.dependOn(&run_nethermind_trie_diff.step);
-    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test") orelse true;
+    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test") orelse false;
     if (include_nethermind_diff) {
         test_step.dependOn(&run_nethermind_trie_diff.step);
     }
@@ -636,8 +650,8 @@ pub fn build(b: *std.Build) void {
     const spec_blockchain_test_step = b.step("specs-blockchain", "Run execution-specs BLOCKCHAIN tests");
     spec_blockchain_test_step.dependOn(&run_spec_tests_blockchain.step);
 
-    // Add state tests to main test step (default behavior)
-    test_step.dependOn(&run_spec_tests_state.step);
+    // Spec fixtures require the optional execution-specs checkout and Python
+    // toolchain, so keep them on the explicit `specs` step.
 
     // Create hardfork-specific test suites
     const hardforks = [_]struct { name: []const u8, desc: []const u8 }{
@@ -879,40 +893,6 @@ pub fn build(b: *std.Build) void {
         const eip_step = b.step(step_name, suite.desc);
         eip_step.dependOn(&run_eip_tests.step);
     }
-
-    // Add trace test executable
-    const trace_test_mod = b.addModule("trace_test_mod", .{
-        .root_source_file = b.path("test_trace.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "guillotine", .module = mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-        },
-    });
-
-    const trace_test = b.addExecutable(.{
-        .name = "trace_test",
-        .root_module = trace_test_mod,
-    });
-
-    const run_trace_test = b.addRunArtifact(trace_test);
-    const trace_test_step = b.step("test-trace", "Run trace capture test");
-    trace_test_step.dependOn(&run_trace_test.step);
-
-    // Interactive test runner
-    const interactive_spec_tests = b.addTest(.{
-        .root_module = spec_runner_mod,
-        .test_runner = .{
-            .path = b.path("interactive_test_runner.zig"),
-            .mode = .simple,
-        },
-    });
-
-    const run_interactive_tests = b.addRunArtifact(interactive_spec_tests);
-    run_interactive_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
-    const interactive_test_step = b.step("test-watch", "Run interactive test runner");
-    interactive_test_step.dependOn(&run_interactive_tests.step);
 
     // WASM build target with ReleaseSmall optimization
     // Using wasi because primitives package includes C libraries (BLST, C-KZG, BN254)

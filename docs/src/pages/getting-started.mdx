@@ -1,0 +1,175 @@
+# Getting Started
+
+This page takes you from an empty directory to a Zig program that executes EVM
+bytecode and prints the result. Every command and every number below was run on
+the machine that wrote this page.
+
+## Prerequisites
+
+| Tool | Version used | Required for |
+| --- | --- | --- |
+| Zig | 0.15.2 (`minimum_zig_version` is 0.15.1) | everything |
+| Rust / Cargo | 1.89.0 | builds `libcrypto_wrappers.a` in the Voltaire dependency |
+| A C compiler (`cc`) | Xcode CLT / GCC | builds `blst` and `c-kzg-4844` |
+| Node.js ≥ 20 | 24.x | only the npm release workflow and these docs |
+| Python 3.8+, `uv`, Bun | — | optional: spec-fixture generation and the TS helper scripts |
+
+Platforms: **macOS (arm64/x86_64) and Linux (x86_64/arm64)** are what the build
+is exercised on. Windows is untested — see [Building from Source](/native-build).
+
+Cargo is not optional. The cryptography (BLS12-381, KZG, secp256k1 wrappers)
+comes from [Voltaire](https://github.com/evmts/voltaire) and part of it is a
+Rust static library that `zig build` compiles for you:
+
+```
+$ zig build
++ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./src/server.c
++ cc -O2 -fno-builtin -fPIC -Wall -Wextra -Werror -c ./build/assembly.S
++ ar rc libblst.a assembly.o server.o
++ ranlib libblst.a
+    Finished `release` profile [optimized] target(s) in 0.20s
+```
+
+## Add it to a Zig project
+
+Fetch the tagged source archive:
+
+```sh
+zig fetch --save https://github.com/evmts/guillotine-mini/archive/refs/tags/v0.1.0.tar.gz
+```
+
+:::warning
+`v0.1.0` has not been tagged on GitHub yet — the release pipeline creates it. Until
+then, pin a commit:
+
+```sh
+zig fetch --save https://github.com/evmts/guillotine-mini/archive/<commit-sha>.tar.gz
+```
+:::
+
+Or, if you are already managing source dependencies through npm:
+
+```sh
+npm install @tevm/guillotine-mini
+```
+
+and point a path dependency at it in `build.zig.zon`:
+
+```zig
+.dependencies = .{
+    .guillotine_mini = .{ .path = "node_modules/@tevm/guillotine-mini" },
+},
+```
+
+The npm package ships **Zig source**, not a prebuilt binary. Node cannot execute
+it; the package is a delivery mechanism for projects that already have a
+`node_modules` and want one dependency manager instead of two.
+
+### Wire up `build.zig`
+
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const guillotine = b.dependency("guillotine_mini", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "myapp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    exe.root_module.addImport("guillotine_mini", guillotine.module("guillotine_mini"));
+    b.installArtifact(exe);
+
+    const run = b.addRunArtifact(exe);
+    b.step("run", "Run myapp").dependOn(&run.step);
+}
+```
+
+## Your first execution
+
+`src/main.zig` — this is complete, not an excerpt:
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+
+pub fn main() !void {
+    const Evm = guillotine.Evm(guillotine.EvmConfig{});
+
+    var vm: Evm = undefined;
+    try vm.init(
+        std.heap.page_allocator, // allocator
+        null, // host: null = use the EVM's own in-memory state
+        .CANCUN, // hardfork
+        null, // block context: null = zeroed defaults
+        guillotine.ZERO_ADDRESS, // tx origin
+        0, // gas price
+        null, // log level
+    );
+    defer vm.deinit();
+
+    // PUSH1 0x2a  PUSH1 0x00  MSTORE  PUSH1 0x20  PUSH1 0x00  RETURN
+    const bytecode = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xF3 };
+
+    const target = try guillotine.Address.fromHex(
+        "0x0000000000000000000000000000000000000042",
+    );
+    try vm.code.put(target, &bytecode);
+
+    const result = vm.call(.{ .call = .{
+        .caller = guillotine.ZERO_ADDRESS,
+        .to = target,
+        .value = 0,
+        .input = &.{},
+        .gas = 100_000,
+    } });
+
+    std.debug.print("success={} gas_left={} output_len={}\n", .{
+        result.success, result.gas_left, result.output.len,
+    });
+    if (result.output.len == 32) {
+        std.debug.print("word=0x{x}\n", .{
+            std.mem.readInt(u256, result.output[0..32], .big),
+        });
+    }
+}
+```
+
+```
+$ zig build run
+success=true gas_left=99982 output_len=32
+word=0x2a
+```
+
+18 gas: `PUSH1`×4 = 12, `MSTORE` = 3 plus 3 for expanding memory by one word,
+`RETURN` = 0.
+
+## Three things to know immediately
+
+1. **`Evm` is a function of a comptime config.** `guillotine.Evm(config)` returns
+   a *type*. Two different configs are two different types that do not mix. See
+   [Configuring the EVM](/guides/configuration).
+2. **`init` takes a pointer to uninitialized memory.** The idiom is
+   `var vm: Evm = undefined; try vm.init(...)`. `Evm` is large and self-referential;
+   it initializes in place rather than being returned by value.
+3. **The hardfork argument to `init` wins, and `null` does not mean
+   "use the config".** Passing `null` selects `Hardfork.DEFAULT`, which is
+   currently **`PRAGUE`** — even if your `EvmConfig.hardfork` says `.BERLIN`.
+   Always pass the fork explicitly. Verify with `vm.getActiveFork()`.
+
+## Next
+
+- [Executing Bytecode](/guides/executing-bytecode) — calldata, revert data, logs
+- [State and Storage](/guides/state-and-storage) — balances, code, storage, transient storage
+- [Tracing](/guides/tracing) — EIP-3155 output and step-by-step execution
+- [Reference](/reference/evm) — the actual API surface

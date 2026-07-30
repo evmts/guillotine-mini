@@ -1,0 +1,81 @@
+# Errors
+
+`guillotine.CallError` (`src/errors.zig`) is the error set used by the internal
+execution paths. `vm.call()` does **not** return it — it converts failures into a
+`CallResult` with `success = false`. You see `CallError` from `inner_call`,
+`inner_create`, `accessAddress`, `preWarmTransaction`, `step`, and the async
+entry points.
+
+```zig
+pub const CallError = error{
+    // execution
+    InvalidJump,
+    InvalidJumpDestination,
+    MissingJumpDestMetadata,
+    InvalidOpcode,
+    InvalidBytecode,
+    InvalidPush,
+    TruncatedPush,
+    OutOfGas,
+    OutOfBounds,
+    StackUnderflow,
+    StackOverflow,
+    RevertExecution,
+    ExecutionTimeout,
+
+    // calls and creates
+    CallDepthExceeded,
+    ContractNotFound,
+    ContractCollision,
+    InsufficientBalance,
+    StaticCallViolation,
+    WriteProtection,
+    CreateInitCodeSizeLimit,
+    CreateContractSizeLimit,
+    InitcodeTooLarge,
+    BytecodeTooLarge,
+
+    // state and memory
+    MemoryError,
+    StorageError,
+    AccountNotFound,
+    PrecompileError,
+    OutOfMemory,
+    AllocationError,
+    NoSpaceLeft,
+
+    // async
+    NeedAsyncData,
+};
+```
+
+## The ones worth understanding
+
+| Error | Spec counterpart | When |
+| --- | --- | --- |
+| `OutOfGas` | `OutOfGasError` | any charge that exceeds remaining gas |
+| `RevertExecution` | `Revert` | the `REVERT` opcode; unspent gas is returned |
+| `InvalidOpcode` | `InvalidOpcode` | undefined byte, or an opcode not yet active in this fork |
+| `InvalidJump` / `InvalidJumpDestination` | `InvalidJumpDestError` | `JUMP`/`JUMPI` to a non-`JUMPDEST` |
+| `StackUnderflow` / `StackOverflow` | `StackUnderflowError` / `StackOverflowError` | bounded by `config.stack_size` |
+| `WriteProtection` | `WriteInStaticContext` | state-changing op inside a `STATICCALL` |
+| `StaticCallViolation` | ditto | value-bearing call inside a static context |
+| `CallDepthExceeded` | depth limit | beyond `config.max_call_depth`; surfaces as `CALL` pushing 0 |
+| `InsufficientBalance` | — | value transfer exceeding the sender's balance |
+| `ContractCollision` | `AddressCollision` | `CREATE`/`CREATE2` to an occupied address |
+| `CreateInitCodeSizeLimit` / `InitcodeTooLarge` | EIP-3860 | initcode over 49 152 bytes |
+| `CreateContractSizeLimit` / `BytecodeTooLarge` | EIP-170 | returned code over 24 576 bytes |
+| `NeedAsyncData` | — | not a failure: the EVM is asking for state and can be resumed |
+| `ExecutionTimeout` | — | the `loop_quota` safety valve tripped |
+
+`NeedAsyncData` is the one to special-case. It means "call
+`executeUntilYieldOrComplete` again once you have supplied the value", not "this
+execution failed".
+
+## Mapping failures back to spec behaviour
+
+Most exceptional halts consume all remaining gas and return no data, which is why
+`CallResult` collapses them to `success = false, gas_left = 0`. `REVERT` is the
+exception: gas is preserved and the payload comes back in `output`. When you need
+the specific reason inside Zig, call `inner_call` and inspect the error instead of
+going through `call()`.
