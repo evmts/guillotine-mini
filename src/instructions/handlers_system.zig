@@ -260,7 +260,7 @@ pub fn Handlers(FrameType: type) type {
                 .gas = available_gas,
             } };
             const result = evm.inner_call(params);
-            const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
+            const active_frame = evm.getCurrentFrame() orelse frame;
 
             // Write output to memory
             // Note: Memory expansion cost was already charged upfront
@@ -407,7 +407,7 @@ pub fn Handlers(FrameType: type) type {
                 .gas = available_gas,
             } };
             const result = evm.inner_call(params);
-            const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
+            const active_frame = evm.getCurrentFrame() orelse frame;
 
             // Write output to memory
             if (out_length > 0 and result.output.len > 0) {
@@ -543,7 +543,7 @@ pub fn Handlers(FrameType: type) type {
                 .gas = available_gas,
             } };
             const result = evm.inner_call(params);
-            const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
+            const active_frame = evm.getCurrentFrame() orelse frame;
 
             // Write output to memory
             if (out_length > 0 and result.output.len > 0) {
@@ -679,7 +679,7 @@ pub fn Handlers(FrameType: type) type {
                 .gas = available_gas,
             } };
             const result = evm.inner_call(params);
-            const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
+            const active_frame = evm.getCurrentFrame() orelse frame;
 
             // Write output to memory
             if (out_length > 0 and result.output.len > 0) {

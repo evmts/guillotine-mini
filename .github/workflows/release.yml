@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-npm:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Zig 0.15.1
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.1
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@1.89.0
+      - name: Install Node.js 24.4.1
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.4.1
+          registry-url: https://registry.npmjs.org
+      - name: Install npm 11.4.2
+        run: npm install --global npm@11.4.2
+      - name: Verify release version
+        run: |
+          set -euo pipefail
+          package_version="$(node --input-type=module -e "import data from './package.json' with { type: 'json' }; process.stdout.write(data.version)")"
+          test "${GITHUB_REF_NAME#v}" = "$package_version"
+          grep -F ".version = \"$package_version\"," build.zig.zon
+      - name: Build
+        run: zig build
+      - name: Test
+        run: zig build test --summary all
+      - name: Inspect package
+        run: npm pack --dry-run
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
