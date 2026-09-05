@@ -948,10 +948,13 @@ pub fn build(b: *std.Build) void {
         .root_module = wasm_mod,
     });
     wasm_lib.entry = .disabled;
+    wasm_lib.wasi_exec_model = .reactor;
     wasm_lib.export_table = true;
 
     // Export all functions starting with evm_
     wasm_lib.root_module.export_symbol_names = &.{
+        "evm_alloc",
+        "evm_free",
         "evm_create",
         "evm_destroy",
         "evm_set_bytecode",
@@ -975,23 +978,29 @@ pub fn build(b: *std.Build) void {
         "evm_continue_ffi",
         "evm_get_state_changes",
         "evm_enable_storage_injector",
+        "evm_set_nonce",
+        "evm_get_log_count",
+        "evm_get_log",
+        "evm_get_gas_refund",
+        "evm_get_storage_change_count",
+        "evm_get_storage_change",
     };
 
     const wasm_install = b.addInstallArtifact(wasm_lib, .{});
 
-    // Add step to log WASM size
-    const wasm_size_step = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        "ls -lh zig-out/bin/guillotine_mini.wasm | awk '{print \"WASM build size: \" $5}'",
-    });
-    wasm_size_step.step.dependOn(&wasm_install.step);
+    const wasm_step = b.step("wasm", "Build the WASI reactor library");
+    wasm_step.dependOn(&wasm_install.step);
 
-    const wasm_step = b.step("wasm", "Build WASM library and show bundle size");
-    wasm_step.dependOn(&wasm_size_step.step);
+    // Exercise the real artifact with Node's WASI implementation, including
+    // its linked crypto precompiles. No npm dependencies or external fixtures.
+    const wasm_test = b.addSystemCommand(&.{"node"});
+    wasm_test.addFileArg(b.path("test/wasm.test.mjs"));
+    wasm_test.addArtifactArg(wasm_lib);
+    const wasm_test_step = b.step("test-wasm", "Run WASM execution and crypto regression tests (Node 22+)");
+    wasm_test_step.dependOn(&wasm_test.step);
 
-    // NOTE: WASM build is NOT part of default install step because WASI libc
-    // requires a main symbol when C libraries are linked. Use `zig build wasm` explicitly.
+    // WASM is an explicit cross-compilation target; native installs do not need
+    // the Rust WASM standard library. Use `zig build wasm` to build the reactor.
 
     // Native C library build for Rust FFI integration
     const native_mod = b.addModule("guillotine_mini_native", .{

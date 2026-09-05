@@ -39,8 +39,10 @@ zig build specs
 # Interactive runner
 zig build test-watch
 
-# Build WASM + show size
+# Build and exercise the WASM artifact (Node 22+ for tests)
+rustup target add wasm32-unknown-unknown
 zig build wasm
+zig build test-wasm
 ```
 
 ## Running Spec Subsets (fast iteration)

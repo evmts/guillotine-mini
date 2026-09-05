@@ -58,6 +58,8 @@
         "test_runner.zig",
         "interactive_test_runner.zig",
         "test_trace.zig",
+        "examples/wasm.mjs",
+        "CHANGELOG.md",
         "LICENSE",
         "README.md",
     },

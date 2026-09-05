@@ -1,0 +1,46 @@
+name: WASM
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  wasm:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: guillotine-mini
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: guillotine-mini
+      - name: Read Voltaire revision
+        id: native
+        working-directory: .
+        run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: evmts/voltaire
+          ref: ${{ steps.native.outputs.voltaire }}
+          path: voltaire
+          submodules: recursive
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.12.0'
+      - name: Install Rust WASM target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Build WASM from source
+        run: zig build wasm --summary all
+      - name: Test WASM execution
+        run: zig build test-wasm --summary all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guillotine-mini-wasm
+          path: guillotine-mini/zig-out/bin/guillotine_mini.wasm
+          if-no-files-found: error

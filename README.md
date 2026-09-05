@@ -68,11 +68,43 @@ zig build
 zig build test
 zig build specs
 zig build wasm
+zig build test-wasm
 ```
 
 ```bash
 TEST_FILTER="push0" zig build specs
 ```
+
+## WebAssembly
+
+The WASM build uses the adjacent `../voltaire` checkout and requires Zig 0.15.2,
+Rust/Cargo, and Python 3. Install Rust's WASM standard library once:
+
+```bash
+rustup target add wasm32-unknown-unknown
+zig build wasm
+zig build test-wasm
+node examples/wasm.mjs
+```
+
+`zig build wasm` builds the Rust crypto archive automatically and writes
+`zig-out/bin/guillotine_mini.wasm`. The example returns a 32-byte word containing
+42 and reports 18 gas used. The test and example require Node 22 or newer and
+have no npm dependencies.
+
+The artifact is a **WASI Preview 1 reactor**. Supply a WASI implementation and
+call `_initialize` once before using the C API; Node's `WASI.initialize(instance)`
+does this. Browser hosts need a WASI Preview 1 adapter. Crypto precompiles are
+linked into the module, including BN254 and BLS12-381; no JavaScript crypto
+callbacks are required. The two `env` imports, `js_opcode_callback` and
+`js_precompile_callback`, select the built-in implementation when they return 0.
+
+Use `evm_alloc(length)` and `evm_free(pointer, length)` for host transfer buffers.
+Zero-length allocation returns 0; freeing a null pointer is a no-op. Input setters
+copy buffers, so the host can release them after the call. Recreate typed-array
+views after allocations or EVM calls because WebAssembly memory may grow.
+Call `evm_destroy(handle)` when finished with an instance. See the complete
+[Node example](examples/wasm.mjs) and [execution regression tests](test/wasm.test.mjs).
 
 ## Docs
 
@@ -85,7 +117,7 @@ TEST_FILTER="push0" zig build specs
 - Full hardfork support (Frontier → Osaka)
 - 20+ EIPs implemented
 - EIP-3155 tracing
-- WASM target (~193 KB optimized)
+- WASM target with linked crypto precompiles (WASI Preview 1)
 - 100% ethereum/tests coverage
 
 ## More

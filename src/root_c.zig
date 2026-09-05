@@ -12,19 +12,6 @@ const PrecompileOutput = evm_config_mod.PrecompileOutput;
 
 const builtin = @import("builtin");
 
-/// WASI's libc always expects a `main(int, char**)` symbol even with `_start`
-/// disabled. Provide a no-op stub so linking succeeds while keeping native
-/// builds untouched.
-fn wasiNoopMain(_: c_int, _: [*][*]u8) callconv(.c) c_int {
-    return 0;
-}
-
-comptime {
-    if (builtin.target.os.tag == .wasi) {
-        @export(&wasiNoopMain, .{ .name = "main" });
-    }
-}
-
 // Only declare extern functions when building for WASM
 const js_opcode_callback = if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64)
     struct {
@@ -97,6 +84,20 @@ const ZERO_ADDRESS = primitives.ZERO_ADDRESS;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 var allocator = gpa.allocator();
 
+/// Allocate a host transfer buffer in the module's linear memory.
+/// Returns null for zero length or allocation failure. Release with evm_free
+/// using the same pointer and length after the C API has copied the input.
+export fn evm_alloc(len: usize) ?[*]u8 {
+    if (len == 0) return null;
+    const buffer = allocator.alloc(u8, len) catch return null;
+    return buffer.ptr;
+}
+
+/// Release a transfer buffer returned by evm_alloc. Null is a no-op.
+export fn evm_free(ptr: ?[*]u8, len: usize) void {
+    if (ptr) |buffer| allocator.free(buffer[0..len]);
+}
+
 // Opaque handle for EVM instance
 const EvmHandle = opaque {};
 
@@ -163,6 +164,11 @@ export fn evm_destroy(handle: ?*EvmHandle) void {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
         ctx.evm.deinit();
+        allocator.free(ctx.bytecode);
+        allocator.free(ctx.calldata);
+        allocator.free(ctx.access_list_addresses);
+        allocator.free(ctx.access_list_storage_keys);
+        if (ctx.blob_versioned_hashes) |hashes| allocator.free(hashes);
         allocator.destroy(ctx.evm);
         allocator.destroy(ctx);
     }
@@ -226,6 +232,7 @@ export fn evm_set_execution_context(
 
             ctx.calldata = calldata_copy;
         } else {
+            allocator.free(ctx.calldata);
             ctx.calldata = &[_]u8{};
         }
 
@@ -292,12 +299,8 @@ export fn evm_set_access_list_addresses(
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
 
-        // Free old access list if any
-        if (ctx.access_list_addresses.len > 0) {
-            allocator.free(ctx.access_list_addresses);
-        }
-
         if (count == 0) {
+            allocator.free(ctx.access_list_addresses);
             ctx.access_list_addresses = &[_]Address{};
             return true;
         }
@@ -308,6 +311,7 @@ export fn evm_set_access_list_addresses(
             @memcpy(&addr_list[i].bytes, addresses[i * 20 .. (i + 1) * 20]);
         }
 
+        allocator.free(ctx.access_list_addresses);
         ctx.access_list_addresses = addr_list;
         return true;
     }
@@ -324,12 +328,8 @@ export fn evm_set_access_list_storage_keys(
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
 
-        // Free old storage keys if any
-        if (ctx.access_list_storage_keys.len > 0) {
-            allocator.free(ctx.access_list_storage_keys);
-        }
-
         if (count == 0) {
+            allocator.free(ctx.access_list_storage_keys);
             ctx.access_list_storage_keys = &[_]AccessListStorageKey{};
             return true;
         }
@@ -350,6 +350,7 @@ export fn evm_set_access_list_storage_keys(
             keys[i] = .{ .address = addr.bytes, .slot = slot };
         }
 
+        allocator.free(ctx.access_list_storage_keys);
         ctx.access_list_storage_keys = keys;
         return true;
     }
@@ -365,12 +366,8 @@ export fn evm_set_blob_hashes(
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
 
-        // Free old blob hashes if any
-        if (ctx.blob_versioned_hashes) |old_hashes| {
-            allocator.free(old_hashes);
-        }
-
         if (count == 0) {
+            if (ctx.blob_versioned_hashes) |old_hashes| allocator.free(old_hashes);
             ctx.blob_versioned_hashes = null;
             return true;
         }
@@ -381,6 +378,7 @@ export fn evm_set_blob_hashes(
             @memcpy(&hash_list[i], hashes[i * 32 .. (i + 1) * 32]);
         }
 
+        if (ctx.blob_versioned_hashes) |old_hashes| allocator.free(old_hashes);
         ctx.blob_versioned_hashes = hash_list;
         return true;
     }
@@ -449,6 +447,10 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
             ctx.evm.setBlobVersionedHashes(hashes);
         }
 
+        // The synchronous call API resolves code by address. pending_bytecode
+        // is consumed only by the async executor, so install the supplied code
+        // here as well or a WASM host receives success without executing it.
+        ctx.evm.code.put(ctx.address, ctx.bytecode) catch return false;
         const result = ctx.evm.call(call_params);
 
         ctx.result = result;
