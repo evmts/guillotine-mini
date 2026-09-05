@@ -39,6 +39,9 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build native crypto archive
+        working-directory: voltaire
+        run: cargo build --release --lib
       - name: Build
         run: zig build
       - name: Test
