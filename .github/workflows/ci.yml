@@ -7,14 +7,28 @@ on:
 jobs:
   build-test:
     runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: guillotine-mini
     steps:
       - uses: actions/checkout@v4
         with:
+          path: guillotine-mini
           submodules: recursive
-      - name: Install Zig 0.15.1
+      - name: Read native dependency pin
+        id: native
+        working-directory: .
+        run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: evmts/voltaire
+          ref: ${{ steps.native.outputs.voltaire }}
+          path: voltaire
+          submodules: recursive
+      - name: Install Zig 0.15.2
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: 0.15.1
+          version: 0.15.2
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -28,3 +42,5 @@ jobs:
         run: zig build
       - name: Test
         run: zig build test
+      - name: Unit and native trace regressions
+        run: zig build unit test-trace -Doptimize=ReleaseSafe

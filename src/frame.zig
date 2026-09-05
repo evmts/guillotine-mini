@@ -509,33 +509,26 @@ pub fn Frame(comptime config: EvmConfig) type {
             // Capture trace before executing opcode
             const evm = self.getEvm();
             if (evm.tracer) |tracer| {
+                if (!tracer.enabled or tracer.entries.items.len >= tracer.max_entries) {
+                    try self.executeOpcode(opcode);
+                    return;
+                }
+                const frame_index = evm.frames.items.len - 1;
+                const trace_allocator = self.allocator;
                 const gas_before = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-
-                // Get memory slice for tracing if configured
-                const mem_slice: ?[]const u8 = if (tracer.config.tracksMemory())
-                    try self.getMemorySlice(self.allocator)
-                else
-                    null;
-
-                // Execute opcode first to measure actual gas cost
-                const pc_before = self.pc;
-                try self.executeOpcode(opcode);
-                const gas_after = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                const actual_gas_cost = gas_before - gas_after;
-
-                // Capture trace entry with actual gas cost
-                try tracer.captureState(
-                    @as(u64, pc_before),
-                    opcode,
-                    gas_before,
-                    actual_gas_cost,
-                    mem_slice,
-                    self.stack.items,
-                    self.return_data,
-                    evm.frames.items.len,
-                    @as(i64, @intCast(evm.gas_refund)),
-                    opcode_utils.getOpName(opcode),
-                );
+                const mem_slice: ?[]const u8 = if (tracer.config.tracksMemory()) try self.getMemorySlice(self.allocator) else null;
+                defer if (mem_slice) |memory| trace_allocator.free(memory);
+                const entry_index = tracer.entries.items.len;
+                // Capture before execution: nested calls may reallocate frames,
+                // and RPC stack/memory snapshots describe the entering opcode.
+                try tracer.captureState(@as(u64, self.pc), opcode, gas_before, 0, mem_slice, self.stack.items, self.return_data, evm.frames.items.len, @as(i64, @intCast(evm.gas_refund)), opcode_utils.getOpName(opcode));
+                const execution_result = self.executeOpcode(opcode);
+                const gas_after = @as(u64, @intCast(@max(evm.frames.items[frame_index].gas_remaining, 0)));
+                tracer.entries.items[entry_index].gasCost = gas_before -| gas_after;
+                if (execution_result) |_| {} else |err| {
+                    tracer.entries.items[entry_index].error_msg = try tracer.allocator.dupe(u8, @errorName(err));
+                }
+                try execution_result;
                 return;
             }
 

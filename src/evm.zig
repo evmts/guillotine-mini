@@ -859,7 +859,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             defer _ = self.frames.pop();
 
             // Execute the frame (don't cache pointer - it may become invalid during nested calls)
-            self.frames.items[self.frames.items.len - 1].execute() catch {
+            self.frames.items[self.frames.items.len - 1].execute() catch |err| {
                 // Error case - reverse value transfer if needed
                 if (value > 0 and self.host != null) {
                     if (self.host) |h| {
@@ -870,7 +870,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     }
                 }
                 // Return failure (arena will clean up)
-                return makeFailure(self.arena.allocator(), 0);
+                return CallResult.failure_with_error(self.arena.allocator(), 0, @errorName(err)) catch makeFailure(self.arena.allocator(), 0);
             };
 
             // Get frame results (refetch pointer after execution)

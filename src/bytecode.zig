@@ -184,6 +184,8 @@ test "Bytecode: readImmediate" {
         try std.testing.expect(false); // Should not be null
     }
 
-    // Try to read beyond bytecode (should return null)
-    try std.testing.expect(bytecode.readImmediate(3, 2) == null);
+    // Missing PUSH immediate bytes are zero-padded; a missing opcode is null.
+    try std.testing.expectEqual(@as(?u256, 0x3400), bytecode.readImmediate(3, 2));
+    try std.testing.expectEqual(@as(?u256, 0), bytecode.readImmediate(4, 32));
+    try std.testing.expect(bytecode.readImmediate(5, 2) == null);
 }

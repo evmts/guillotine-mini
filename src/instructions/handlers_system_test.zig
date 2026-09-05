@@ -35,10 +35,10 @@ fn createTestFrame(
     bytecode: []const u8,
     hardfork: Hardfork,
     gas: i64,
-) !Frame {
+) !*Frame {
     const caller = try Address.fromHex("0x1111111111111111111111111111111111111111");
     const address = try Address.fromHex("0x2222222222222222222222222222222222222222");
-    return try Frame.init(
+    try evm.frames.append(evm.arena.allocator(), try Frame.init(
         allocator,
         bytecode,
         gas,
@@ -49,7 +49,10 @@ fn createTestFrame(
         @ptrCast(evm),
         hardfork,
         false, // is_static
-    );
+    ));
+    // Handlers resume through getCurrentFrame after nested calls. Test the
+    // registered parent frame, just as the interpreter does.
+    return evm.getCurrentFrame().?;
 }
 
 // Helper to convert u256 to Address
@@ -84,7 +87,7 @@ test "CREATE: basic contract creation" {
     }
 
     const bytecode = &[_]u8{0xf0}; // CREATE
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Setup: value=0, offset=0, length=0 (empty init code)
@@ -95,8 +98,8 @@ test "CREATE: basic contract creation" {
     const initial_gas = frame.gas_remaining;
 
     // Execute CREATE
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.create(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.create(frame);
 
     // Verify stack has address (should be non-zero on success)
     try testing.expectEqual(@as(usize, 1), frame.stack.items.len);
@@ -123,7 +126,7 @@ test "CREATE: static call violation" {
     }
 
     const bytecode = &[_]u8{0xf0}; // CREATE
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Make this a static call
@@ -135,8 +138,8 @@ test "CREATE: static call violation" {
     try frame.pushStack(0); // value
 
     // Execute CREATE - should fail
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.create(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.create(frame);
 
     // Verify error
     try testing.expectError(error.StaticCallViolation, result);
@@ -151,7 +154,7 @@ test "CREATE: gas calculation for init code" {
     }
 
     const bytecode = &[_]u8{0xf0}; // CREATE
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Write some init code to memory
@@ -168,8 +171,8 @@ test "CREATE: gas calculation for init code" {
     const initial_gas = frame.gas_remaining;
 
     // Execute CREATE
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.create(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.create(frame);
 
     // Verify gas consumed includes memory expansion
     try testing.expect(initial_gas > frame.gas_remaining);
@@ -184,7 +187,7 @@ test "CREATE: stack underflow error" {
     }
 
     const bytecode = &[_]u8{0xf0}; // CREATE
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Only push 2 values (need 3)
@@ -192,8 +195,8 @@ test "CREATE: stack underflow error" {
     try frame.pushStack(0);
 
     // Execute CREATE
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.create(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.create(frame);
 
     // Verify error
     try testing.expectError(error.StackUnderflow, result);
@@ -212,7 +215,7 @@ test "CREATE2: basic contract creation" {
     }
 
     const bytecode = &[_]u8{0xf5}; // CREATE2
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Setup: value=0, offset=0, length=0, salt=0x1234
@@ -224,8 +227,8 @@ test "CREATE2: basic contract creation" {
     const initial_gas = frame.gas_remaining;
 
     // Execute CREATE2
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.create2(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.create2(frame);
 
     // Verify stack has address
     try testing.expectEqual(@as(usize, 1), frame.stack.items.len);
@@ -248,7 +251,7 @@ test "CREATE2: hardfork check (before Constantinople)" {
     }
 
     const bytecode = &[_]u8{0xf5}; // CREATE2
-    var frame = try createTestFrame(allocator, evm, bytecode, .BYZANTIUM, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .BYZANTIUM, 1_000_000);
     defer frame.deinit();
 
     // Setup stack
@@ -258,8 +261,8 @@ test "CREATE2: hardfork check (before Constantinople)" {
     try frame.pushStack(0); // value
 
     // Execute CREATE2 - should fail before Constantinople
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.create2(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.create2(frame);
 
     // Verify error
     try testing.expectError(error.InvalidOpcode, result);
@@ -274,7 +277,7 @@ test "CREATE2: static call violation" {
     }
 
     const bytecode = &[_]u8{0xf5}; // CREATE2
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     frame.is_static = true;
@@ -286,8 +289,8 @@ test "CREATE2: static call violation" {
     try frame.pushStack(0); // value
 
     // Execute CREATE2
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.create2(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.create2(frame);
 
     // Verify error
     try testing.expectError(error.StaticCallViolation, result);
@@ -302,7 +305,7 @@ test "CREATE2: deterministic address with salt" {
     }
 
     const bytecode = &[_]u8{0xf5}; // CREATE2
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Setup with specific salt
@@ -313,8 +316,8 @@ test "CREATE2: deterministic address with salt" {
     try frame.pushStack(0); // value
 
     // Execute CREATE2
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.create2(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.create2(frame);
 
     // Get first address
     const addr1 = frame.stack.items[0];
@@ -328,7 +331,7 @@ test "CREATE2: deterministic address with salt" {
     try frame.pushStack(0);
     frame.pc = 0; // Reset PC
 
-    try SystemHandlers.create2(&frame);
+    try SystemHandlers.create2(frame);
     const addr2 = frame.stack.items[0];
 
     // Second create2 to same address should fail (returns 0)
@@ -348,7 +351,7 @@ test "CALL: basic call success" {
     }
 
     const bytecode = &[_]u8{0xf1}; // CALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -366,8 +369,8 @@ test "CALL: basic call success" {
     const initial_gas = frame.gas_remaining;
 
     // Execute CALL
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.call(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.call(frame);
 
     // Verify success pushed to stack
     try testing.expectEqual(@as(usize, 1), frame.stack.items.len);
@@ -389,7 +392,7 @@ test "CALL: static call with value violation" {
     }
 
     const bytecode = &[_]u8{0xf1}; // CALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     frame.is_static = true;
@@ -407,8 +410,8 @@ test "CALL: static call with value violation" {
     try frame.pushStack(10000); // gas
 
     // Execute CALL
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.call(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.call(frame);
 
     // Verify error
     try testing.expectError(error.StaticCallViolation, result);
@@ -423,7 +426,7 @@ test "CALL: value transfer gas stipend (2300 gas)" {
     }
 
     const bytecode = &[_]u8{0xf1}; // CALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -444,8 +447,8 @@ test "CALL: value transfer gas stipend (2300 gas)" {
     const initial_gas = frame.gas_remaining;
 
     // Execute CALL
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.call(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.call(frame);
 
     // Verify gas consumed includes value transfer cost
     const gas_consumed = initial_gas - frame.gas_remaining;
@@ -462,7 +465,7 @@ test "CALL: value transfer to absent precompile charges new account gas" {
     }
 
     const bytecode = &[_]u8{0xf1}; // CALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const precompile_addr = Address.fromU256(1);
@@ -478,8 +481,8 @@ test "CALL: value transfer to absent precompile charges new account gas" {
 
     const initial_gas = frame.gas_remaining;
 
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.call(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.call(frame);
 
     const gas_consumed = initial_gas - frame.gas_remaining;
     try testing.expect(gas_consumed >= GasConstants.CallValueTransferGas + GasConstants.CallNewAccountGas);
@@ -494,7 +497,7 @@ test "CALL: memory expansion for calldata" {
     }
 
     const bytecode = &[_]u8{0xf1}; // CALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -512,8 +515,8 @@ test "CALL: memory expansion for calldata" {
     const initial_memory_size = frame.memory_size;
 
     // Execute CALL
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.call(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.call(frame);
 
     // Verify memory expanded
     try testing.expect(frame.memory_size >= initial_memory_size);
@@ -528,7 +531,7 @@ test "CALL: Istanbul base cost is 700 gas" {
     }
 
     const bytecode = &[_]u8{0xf1}; // CALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .ISTANBUL, 10_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .ISTANBUL, 10_000);
     defer frame.deinit();
 
     try frame.pushStack(0); // out_length
@@ -540,8 +543,8 @@ test "CALL: Istanbul base cost is 700 gas" {
     try frame.pushStack(0); // gas
 
     const initial_gas = frame.gas_remaining;
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.call(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.call(frame);
 
     try testing.expectEqual(@as(i64, 700), initial_gas - frame.gas_remaining);
     try testing.expectEqual(@as(u256, 1), frame.stack.items[0]);
@@ -556,7 +559,7 @@ test "CALL: cold vs warm access costs (Berlin+)" {
     }
 
     const bytecode = &[_]u8{0xf1}; // CALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .BERLIN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .BERLIN, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -573,8 +576,8 @@ test "CALL: cold vs warm access costs (Berlin+)" {
 
     const initial_gas_cold = frame.gas_remaining;
 
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.call(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.call(frame);
 
     const gas_consumed_cold = initial_gas_cold - frame.gas_remaining;
 
@@ -592,7 +595,7 @@ test "CALL: cold vs warm access costs (Berlin+)" {
     try frame.pushStack(10000);
 
     const initial_gas_warm = frame.gas_remaining;
-    try SystemHandlers.call(&frame);
+    try SystemHandlers.call(frame);
 
     const gas_consumed_warm = initial_gas_warm - frame.gas_remaining;
 
@@ -609,7 +612,7 @@ test "CALL: stack underflow error" {
     }
 
     const bytecode = &[_]u8{0xf1}; // CALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Only push 6 values (need 7)
@@ -621,8 +624,8 @@ test "CALL: stack underflow error" {
     try frame.pushStack(0);
 
     // Execute CALL
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.call(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.call(frame);
 
     // Verify error
     try testing.expectError(error.StackUnderflow, result);
@@ -641,7 +644,7 @@ test "CALLCODE: basic call" {
     }
 
     const bytecode = &[_]u8{0xf2}; // CALLCODE
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -659,8 +662,8 @@ test "CALLCODE: basic call" {
     const initial_gas = frame.gas_remaining;
 
     // Execute CALLCODE
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.callcode(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.callcode(frame);
 
     // Verify success pushed to stack
     try testing.expectEqual(@as(usize, 1), frame.stack.items.len);
@@ -681,7 +684,7 @@ test "CALLCODE: with value transfer" {
     }
 
     const bytecode = &[_]u8{0xf2}; // CALLCODE
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -702,8 +705,8 @@ test "CALLCODE: with value transfer" {
     const initial_gas = frame.gas_remaining;
 
     // Execute CALLCODE
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.callcode(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.callcode(frame);
 
     // Verify gas includes value transfer cost
     const gas_consumed = initial_gas - frame.gas_remaining;
@@ -719,7 +722,7 @@ test "CALLCODE: nonzero value fails when current account lacks balance" {
     }
 
     const bytecode = &[_]u8{0xf2}; // CALLCODE
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -733,8 +736,8 @@ test "CALLCODE: nonzero value fails when current account lacks balance" {
     try frame.pushStack(target_u256); // address
     try frame.pushStack(10_000); // gas
 
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.callcode(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.callcode(frame);
 
     try testing.expectEqual(@as(usize, 1), frame.stack.items.len);
     try testing.expectEqual(@as(u256, 0), frame.stack.items[0]);
@@ -754,7 +757,7 @@ test "DELEGATECALL: basic call" {
     }
 
     const bytecode = &[_]u8{0xf4}; // DELEGATECALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -771,8 +774,8 @@ test "DELEGATECALL: basic call" {
     const initial_gas = frame.gas_remaining;
 
     // Execute DELEGATECALL
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.delegatecall(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.delegatecall(frame);
 
     // Verify success pushed to stack
     try testing.expectEqual(@as(usize, 1), frame.stack.items.len);
@@ -793,7 +796,7 @@ test "DELEGATECALL: hardfork check (before Homestead)" {
     }
 
     const bytecode = &[_]u8{0xf4}; // DELEGATECALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .FRONTIER, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .FRONTIER, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -808,8 +811,8 @@ test "DELEGATECALL: hardfork check (before Homestead)" {
     try frame.pushStack(10000);
 
     // Execute DELEGATECALL - should fail before Homestead
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.delegatecall(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.delegatecall(frame);
 
     // Verify error
     try testing.expectError(error.InvalidOpcode, result);
@@ -824,7 +827,7 @@ test "DELEGATECALL: preserves caller context" {
     }
 
     const bytecode = &[_]u8{0xf4}; // DELEGATECALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -842,8 +845,8 @@ test "DELEGATECALL: preserves caller context" {
     try frame.pushStack(10000);
 
     // Execute DELEGATECALL
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.delegatecall(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.delegatecall(frame);
 
     // Verify caller unchanged (delegatecall preserves msg.sender)
     try testing.expectEqual(original_caller, frame.caller);
@@ -858,7 +861,7 @@ test "DELEGATECALL: stack underflow error" {
     }
 
     const bytecode = &[_]u8{0xf4}; // DELEGATECALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Only push 5 values (need 6)
@@ -869,8 +872,8 @@ test "DELEGATECALL: stack underflow error" {
     try frame.pushStack(0);
 
     // Execute DELEGATECALL
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.delegatecall(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.delegatecall(frame);
 
     // Verify error
     try testing.expectError(error.StackUnderflow, result);
@@ -889,7 +892,7 @@ test "STATICCALL: basic call" {
     }
 
     const bytecode = &[_]u8{0xfa}; // STATICCALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -906,8 +909,8 @@ test "STATICCALL: basic call" {
     const initial_gas = frame.gas_remaining;
 
     // Execute STATICCALL
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.staticcall(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.staticcall(frame);
 
     // Verify success pushed to stack
     try testing.expectEqual(@as(usize, 1), frame.stack.items.len);
@@ -928,7 +931,7 @@ test "STATICCALL: hardfork check (before Byzantium)" {
     }
 
     const bytecode = &[_]u8{0xfa}; // STATICCALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .HOMESTEAD, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .HOMESTEAD, 1_000_000);
     defer frame.deinit();
 
     const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -943,8 +946,8 @@ test "STATICCALL: hardfork check (before Byzantium)" {
     try frame.pushStack(10000);
 
     // Execute STATICCALL - should fail before Byzantium
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.staticcall(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.staticcall(frame);
 
     // Verify error
     try testing.expectError(error.InvalidOpcode, result);
@@ -959,7 +962,7 @@ test "STATICCALL: propagates static context to child" {
     }
 
     const bytecode = &[_]u8{0xfa}; // STATICCALL
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Start with non-static frame
@@ -977,8 +980,8 @@ test "STATICCALL: propagates static context to child" {
     try frame.pushStack(10000);
 
     // Execute STATICCALL
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.staticcall(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.staticcall(frame);
 
     // Verify call completed (child should be in static context)
     try testing.expectEqual(@as(usize, 1), frame.stack.items.len);
@@ -997,7 +1000,7 @@ test "SELFDESTRUCT: basic destruction" {
     }
 
     const bytecode = &[_]u8{0xff}; // SELFDESTRUCT
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const beneficiary_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -1012,8 +1015,8 @@ test "SELFDESTRUCT: basic destruction" {
     const initial_gas = frame.gas_remaining;
 
     // Execute SELFDESTRUCT
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.selfdestruct(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.selfdestruct(frame);
 
     // Verify gas consumed (base 5000 + potential cold access)
     try testing.expect(initial_gas > frame.gas_remaining);
@@ -1034,7 +1037,7 @@ test "SELFDESTRUCT: EIP-6780 Cancun behavior (only deletes if created in same tx
     }
 
     const bytecode = &[_]u8{0xff}; // SELFDESTRUCT
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const beneficiary_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -1050,8 +1053,8 @@ test "SELFDESTRUCT: EIP-6780 Cancun behavior (only deletes if created in same tx
     try frame.pushStack(beneficiary_u256);
 
     // Execute SELFDESTRUCT
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.selfdestruct(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.selfdestruct(frame);
 
     // Verify account marked for deletion (only when created in same tx)
     try testing.expect(evm.selfdestructed_accounts.contains(frame.address));
@@ -1066,7 +1069,7 @@ test "SELFDESTRUCT: pre-Cancun always deletes" {
     }
 
     const bytecode = &[_]u8{0xff}; // SELFDESTRUCT
-    var frame = try createTestFrame(allocator, evm, bytecode, .SHANGHAI, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .SHANGHAI, 1_000_000);
     defer frame.deinit();
 
     const beneficiary_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -1079,8 +1082,8 @@ test "SELFDESTRUCT: pre-Cancun always deletes" {
     try frame.pushStack(beneficiary_u256);
 
     // Execute SELFDESTRUCT
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.selfdestruct(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.selfdestruct(frame);
 
     // Verify account marked for deletion (pre-Cancun always deletes)
     try testing.expect(evm.selfdestructed_accounts.contains(frame.address));
@@ -1095,7 +1098,7 @@ test "SELFDESTRUCT: static call violation" {
     }
 
     const bytecode = &[_]u8{0xff}; // SELFDESTRUCT
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     frame.is_static = true;
@@ -1107,8 +1110,8 @@ test "SELFDESTRUCT: static call violation" {
     try frame.pushStack(beneficiary_u256);
 
     // Execute SELFDESTRUCT
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.selfdestruct(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.selfdestruct(frame);
 
     // Verify error (note: gas is charged BEFORE static check per Python reference)
     try testing.expectError(error.StaticCallViolation, result);
@@ -1123,7 +1126,7 @@ test "SELFDESTRUCT: cold access cost (Berlin+)" {
     }
 
     const bytecode = &[_]u8{0xff}; // SELFDESTRUCT
-    var frame = try createTestFrame(allocator, evm, bytecode, .BERLIN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .BERLIN, 1_000_000);
     defer frame.deinit();
 
     const beneficiary_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -1138,8 +1141,8 @@ test "SELFDESTRUCT: cold access cost (Berlin+)" {
     const initial_gas = frame.gas_remaining;
 
     // Execute SELFDESTRUCT
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.selfdestruct(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.selfdestruct(frame);
 
     // Verify gas consumed includes cold access cost (5000 base + 2600 cold)
     const gas_consumed = initial_gas - frame.gas_remaining;
@@ -1155,7 +1158,7 @@ test "SELFDESTRUCT: new account cost" {
     }
 
     const bytecode = &[_]u8{0xff}; // SELFDESTRUCT
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Beneficiary that doesn't exist
@@ -1171,8 +1174,8 @@ test "SELFDESTRUCT: new account cost" {
     const initial_gas = frame.gas_remaining;
 
     // Execute SELFDESTRUCT
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.selfdestruct(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.selfdestruct(frame);
 
     // Verify gas consumed includes new account cost (25000)
     const gas_consumed = initial_gas - frame.gas_remaining;
@@ -1188,7 +1191,7 @@ test "SELFDESTRUCT: balance transfer to beneficiary" {
     }
 
     const bytecode = &[_]u8{0xff}; // SELFDESTRUCT
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     const beneficiary_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -1205,8 +1208,8 @@ test "SELFDESTRUCT: balance transfer to beneficiary" {
     try frame.pushStack(beneficiary_u256);
 
     // Execute SELFDESTRUCT
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.selfdestruct(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.selfdestruct(frame);
 
     // Verify balance transferred
     const beneficiary_final_balance = evm.balances.get(beneficiary_addr) orelse 0;
@@ -1226,7 +1229,7 @@ test "SELFDESTRUCT: self-destruct to self" {
     }
 
     const bytecode = &[_]u8{0xff}; // SELFDESTRUCT
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Beneficiary is self
@@ -1244,8 +1247,8 @@ test "SELFDESTRUCT: self-destruct to self" {
     try frame.pushStack(beneficiary_u256);
 
     // Execute SELFDESTRUCT
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    try SystemHandlers.selfdestruct(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.selfdestruct(frame);
 
     // Verify balance is burned when created in same tx and beneficiary is self
     const final_balance = evm.balances.get(frame.address) orelse 0;
@@ -1261,14 +1264,14 @@ test "SELFDESTRUCT: stack underflow error" {
     }
 
     const bytecode = &[_]u8{0xff}; // SELFDESTRUCT
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
     defer frame.deinit();
 
     // Empty stack (need 1 value)
 
     // Execute SELFDESTRUCT
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.selfdestruct(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.selfdestruct(frame);
 
     // Verify error
     try testing.expectError(error.StackUnderflow, result);
@@ -1283,7 +1286,7 @@ test "SELFDESTRUCT: out of gas error" {
     }
 
     const bytecode = &[_]u8{0xff}; // SELFDESTRUCT
-    var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 100); // Very low gas
+    const frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 100); // Very low gas
     defer frame.deinit();
 
     const beneficiary_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
@@ -1293,8 +1296,8 @@ test "SELFDESTRUCT: out of gas error" {
     try frame.pushStack(beneficiary_u256);
 
     // Execute SELFDESTRUCT
-    const SystemHandlers = @import("handlers_system.zig").Handlers(@TypeOf(frame));
-    const result = SystemHandlers.selfdestruct(&frame);
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.selfdestruct(frame);
 
     // Verify error (needs at least 5000 gas)
     try testing.expectError(error.OutOfGas, result);

@@ -33,12 +33,12 @@
     // internet connectivity.
     .dependencies = .{
         .voltaire = .{
-            .url = "https://github.com/evmts/voltaire/archive/713946c65695be007c2c80368d44717a51cbef7f.tar.gz",
-            .hash = "primitives-0.1.0-9n3NfXVr9wA7sedXnfO0iiG0q0Gq7GJo3gFYyDc_8Fxi",
+            // Native development and CI use the adjacent Voltaire checkout.
+            .path = "../voltaire",
         },
         .guillotine_primitives = .{
-            .url = "https://github.com/evmts/voltaire/archive/713946c65695be007c2c80368d44717a51cbef7f.tar.gz",
-            .hash = "primitives-0.1.0-9n3NfXVr9wA7sedXnfO0iiG0q0Gq7GJo3gFYyDc_8Fxi",
+            // Native development and CI use the adjacent Voltaire checkout.
+            .path = "../voltaire",
         },
     },
     // Specifies the set of files and directories that are included in this package.

@@ -108,6 +108,7 @@ test "Evm.async_data_request field initialized to .none" {
 
     try evm_instance.init(testing.allocator, null, null, null, primitives.ZERO_ADDRESS, 0, null);
     defer evm_instance.deinit();
+    try evm_instance.initTransactionState(null);
 
     try testing.expect(evm_instance.storage.async_data_request == .none);
 }
@@ -119,6 +120,7 @@ test "Evm.async_data_request can write/read different request types" {
 
     try evm_instance.init(testing.allocator, null, null, null, primitives.ZERO_ADDRESS, 0, null);
     defer evm_instance.deinit();
+    try evm_instance.initTransactionState(null);
 
     const addr = primitives.Address.fromHex("0x1111111111111111111111111111111111111111") catch unreachable;
 
@@ -145,6 +147,7 @@ test "Evm.inner_create top-level uses transaction nonce for multi-byte CREATE ad
     var evm_instance: Evm = undefined;
     try evm_instance.init(testing.allocator, null, .BERLIN, null, caller, 0, null);
     defer evm_instance.deinit();
+    try evm_instance.initTransactionState(null);
 
     // Transaction processing increments the sender nonce before entering the EVM.
     try evm_instance.nonces.put(caller, 0x0cc7);
@@ -160,6 +163,7 @@ test "Evm.inner_call rolls back logs when callee errors after emitting LOG" {
     var evm_instance: Evm = undefined;
     try evm_instance.init(testing.allocator, null, .BERLIN, null, primitives.ZERO_ADDRESS, 0, null);
     defer evm_instance.deinit();
+    try evm_instance.initTransactionState(null);
 
     const caller = try primitives.Address.fromHex("0x1000000000000000000000000000000000000001");
     const callee = try primitives.Address.fromHex("0x2000000000000000000000000000000000000002");
@@ -174,7 +178,7 @@ test "Evm.inner_call rolls back logs when callee errors after emitting LOG" {
     };
     try evm_instance.code.put(callee, &callee_code);
 
-    const result = try evm_instance.inner_call(.{ .call = .{
+    const result = evm_instance.inner_call(.{ .call = .{
         .caller = caller,
         .to = callee,
         .value = 0,
@@ -236,6 +240,7 @@ test "callOrContinue - returns .need_storage on cache miss" {
     var evm_instance: Evm = undefined;
     try evm_instance.init(testing.allocator, null, null, null, primitives.ZERO_ADDRESS, 0, null);
     defer evm_instance.deinit();
+    try evm_instance.initTransactionState(null);
 
     // Set storage injector before calling
     var injector = try StorageInjector.init(evm_instance.arena.allocator());

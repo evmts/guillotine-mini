@@ -86,6 +86,8 @@ pub const Tracer = struct {
     entries: std.ArrayList(TraceEntry),
     allocator: std.mem.Allocator,
     enabled: bool = false,
+    /// Maximum retained steps; execution continues after this limit.
+    max_entries: usize = std.math.maxInt(usize),
     config: TraceConfig = TraceConfig.from(),
 
     pub fn init(allocator: std.mem.Allocator) Tracer {

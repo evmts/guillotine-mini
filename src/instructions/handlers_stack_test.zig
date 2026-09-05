@@ -280,7 +280,7 @@ test "PUSH32: pushes all 32 bytes" {
     try testing.expectEqual(@as(u32, 33), frame.pc);
 }
 
-test "PUSH: insufficient bytecode error" {
+test "PUSH: truncated immediate is zero-padded" {
     const allocator = testing.allocator;
     var evm = try createTestEvm(allocator, .CANCUN);
     defer {
@@ -295,10 +295,13 @@ test "PUSH: insufficient bytecode error" {
 
     // Execute PUSH2 (expecting 2 bytes, only 1 available)
     const StackHandlers = @import("handlers_stack.zig").Handlers(@TypeOf(frame));
-    const result = StackHandlers.push(&frame, 0x61);
+    try StackHandlers.push(&frame, 0x61);
 
-    // Verify error
-    try testing.expectError(error.InvalidPush, result);
+    // Ethereum PUSH pads missing trailing immediate bytes with zero.
+    try testing.expectEqual(@as(usize, 1), frame.stack.items.len);
+    try testing.expectEqual(@as(u256, 0x1200), frame.stack.items[0]);
+    try testing.expectEqual(@as(u32, 3), frame.pc);
+    try testing.expectEqual(@as(i64, 999_997), frame.gas_remaining);
 }
 
 test "PUSH: stack overflow error" {
