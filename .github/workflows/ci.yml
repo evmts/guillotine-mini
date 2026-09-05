@@ -6,7 +6,8 @@ on:
 
 jobs:
   build-test:
-    runs-on: macos-latest
+    # Zig 0.15.x cannot link against the latest macOS SDK; revisit with Zig upgrades.
+    runs-on: macos-15
     defaults:
       run:
         working-directory: guillotine-mini
