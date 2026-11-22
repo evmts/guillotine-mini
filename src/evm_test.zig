@@ -8,6 +8,28 @@ const Evm = evm.Evm(.{}); // Default config
 const StorageInjector = @import("storage_injector.zig").StorageInjector;
 const AsyncDataRequest = storage.AsyncDataRequest;
 
+test "P256VERIFY is pre-warmed at transaction start from Osaka" {
+    const testing = std.testing;
+    const Address = primitives.Address;
+    const gas = primitives.GasConstants;
+    const origin = Address.fromU256(0x200);
+    const target = Address.fromU256(0x201);
+
+    for ([_]primitives.Hardfork{ .CANCUN, .PRAGUE, .OSAKA }) |fork| {
+        var instance: Evm = undefined;
+        try instance.init(testing.allocator, null, fork, null, origin, 0, null);
+        defer instance.deinit();
+        try instance.initTransactionState(null);
+        try instance.preWarmTransaction(target);
+
+        const expected = if (fork == .OSAKA) gas.WarmStorageReadCost else gas.ColdAccountAccessCost;
+        try testing.expectEqual(expected, try instance.accessAddress(Address.fromU256(0x0100)));
+        try testing.expectEqual(gas.ColdAccountAccessCost, try instance.accessAddress(Address.fromU256(0x00ff)));
+        try testing.expectEqual(gas.ColdAccountAccessCost, try instance.accessAddress(Address.fromU256(0x0101)));
+        try testing.expectEqual(gas.WarmStorageReadCost, try instance.accessAddress(Address.fromU256(0x01)));
+    }
+}
+
 test "AsyncDataRequest - union size and field access" {
     const testing = std.testing;
 

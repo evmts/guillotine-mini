@@ -22,6 +22,13 @@ const access_list_manager_mod = @import("access_list_manager.zig");
 const AccessListManager = access_list_manager_mod.AccessListManager;
 const AccessListSnapshot = access_list_manager_mod.AccessListSnapshot;
 
+const p256verify_address = Address.fromU256(0x0100);
+
+fn isPrecompile(address: Address, hardfork: Hardfork) bool {
+    if (address.equals(p256verify_address)) return hardfork.isAtLeast(.OSAKA);
+    return precompiles.isPrecompile(address, hardfork);
+}
+
 // Re-export StorageKey from Voltaire primitives (canonical path)
 pub const StorageKey = primitives.State.StorageKey;
 pub const StorageSlotKey = StorageKey; // Backwards compatibility alias
@@ -427,7 +434,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             var it = self.touched_accounts.iterator();
             while (it.next()) |entry| {
                 const addr = entry.key_ptr.*;
-                if (precompiles.isPrecompile(addr, self.hardfork)) continue;
+                if (isPrecompile(addr, self.hardfork)) continue;
                 if (self.accountIsEmpty(addr)) {
                     self.deleteAccountState(addr);
                 }
@@ -574,7 +581,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         ///   - Transaction origin (sender)
         ///   - Transaction target (if not zero address)
         ///   - Coinbase address (Shanghai+, EIP-3651)
-        ///   - All precompile addresses (0x01-0x09 Berlin-Istanbul, 0x01-0x0A Cancun+, 0x01-0x12 Prague+)
+        ///   - All precompile addresses active in the current fork
         ///
         /// Pre-Berlin: No-op (no warm/cold distinction)
         ///
@@ -614,7 +621,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             // Pre-warm precompiles
             // EIP-2929: Precompiles are always warm at transaction start
             // Determine number of precompiles based on hardfork
-            // Berlin-Istanbul: 0x01-0x09 (9 precompiles: ECRECOVER through BLAKE2F)
+            // Berlin: 0x01-0x09 (ECRECOVER through BLAKE2F)
             // Cancun+: 0x01-0x0A (10 precompiles, added KZG point evaluation at 0x0A via EIP-4844)
             // Prague+: 0x01-0x13 (standard BLS12-381 precompile table in Voltaire)
             const precompile_count: usize = if (self.hardfork.isAtLeast(.PRAGUE))
@@ -622,7 +629,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             else if (self.hardfork.isAtLeast(.CANCUN))
                 0x0A // Cancun: Includes KZG point evaluation
             else
-                0x09; // Berlin-Istanbul: Up to BLAKE2F
+                0x09; // Berlin: Up to BLAKE2F
 
             var precompile_addrs: [0x13]primitives.Address = undefined;
             var i: usize = 0;
@@ -630,6 +637,9 @@ pub fn Evm(comptime config: EvmConfig) type {
                 precompile_addrs[i] = primitives.Address.fromU256(i + 1);
             }
             try self.pre_warm_addresses(precompile_addrs[0..precompile_count]);
+            if (isPrecompile(p256verify_address, self.hardfork)) {
+                try self.pre_warm_addresses(&.{p256verify_address});
+            }
         }
 
         /// Set bytecode for the next call() invocation
@@ -775,7 +785,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             // Check if this is a precompile address with empty bytecode (like inner_call)
             if (bytecode.len == 0) {
                 // Check if this is a precompile address (hardfork-aware)
-                if (precompiles.isPrecompile(address, self.hardfork)) {
+                if (isPrecompile(address, self.hardfork)) {
                     // Use the precompiles module to handle all precompile execution
                     const result = precompiles.execute(
                         self.arena.allocator(),
@@ -1445,7 +1455,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
 
                 // Check if this is a standard precompile address (hardfork-aware)
-                if (precompiles.isPrecompile(address, self.hardfork)) {
+                if (isPrecompile(address, self.hardfork)) {
                     // Use the precompiles module to handle all precompile execution
                     const result = precompiles.execute(
                         self.arena.allocator(),

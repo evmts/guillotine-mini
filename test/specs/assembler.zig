@@ -86,7 +86,7 @@ const LllExpr = union(enum) {
     opcode: []const u8,
     number: u256,
     list: []LllExpr,
-    mload: u256, // Memory load @x
+    load: struct { index: u256, opcode: u8 },
 
     fn deinit(self: *LllExpr, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -187,9 +187,11 @@ fn parseLllAtom(code: []const u8, pos: *usize) !LllExpr {
     while (pos.* < code.len and std.ascii.isWhitespace(code[pos.*])) : (pos.* += 1) {}
     if (pos.* >= code.len) return error.InvalidFormat;
 
-    // Check for memory reference @x
+    // LLL uses @x for memory loads and @@x for storage loads.
     if (code[pos.*] == '@') {
         pos.* += 1;
+        const storage = pos.* < code.len and code[pos.*] == '@';
+        if (storage) pos.* += 1;
         const start = pos.*;
 
         // Find end of number/atom
@@ -205,8 +207,7 @@ fn parseLllAtom(code: []const u8, pos: *usize) !LllExpr {
         // Parse the number/identifier
         const index = if (isNumber(atom)) try parseNumber(atom) else return error.InvalidFormat;
 
-        // Return as mload variant
-        return LllExpr{ .mload = index };
+        return LllExpr{ .load = .{ .index = index, .opcode = if (storage) 0x54 else 0x51 } };
     }
 
     const start = pos.*;
@@ -248,14 +249,13 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
             // Push the number
             return compilePushValue(allocator, value);
         },
-        .mload => |index| {
-            // @x compiles to: PUSH index, MLOAD
+        .load => |load| {
             var bytecode = std.ArrayList(u8){};
             defer bytecode.deinit(allocator);
-            const push_bytes = try compilePushValue(allocator, index);
+            const push_bytes = try compilePushValue(allocator, load.index);
             defer allocator.free(push_bytes);
             try bytecode.appendSlice(allocator, push_bytes);
-            try bytecode.append(allocator, 0x51); // MLOAD
+            try bytecode.append(allocator, load.opcode);
             return bytecode.toOwnedSlice(allocator);
         },
         .list => |items| {
@@ -341,6 +341,12 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                     return bytecode.toOwnedSlice(allocator);
                 }
 
+                const opcode = try getOpcode(op_name);
+                if (opcode >= 0x60 and opcode <= 0x7f) {
+                    if (items.len != 2 or items[1] != .number) return error.InvalidFormat;
+                    return compilePush(allocator, opcode - 0x5f, items[1].number);
+                }
+
                 // Regular opcode with arguments - compile in REVERSE order
                 var bytecode = std.ArrayList(u8){};
                 defer bytecode.deinit(allocator);
@@ -363,7 +369,6 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                 }
 
                 // Then execute the opcode
-                const opcode = try getOpcode(op_name);
                 try bytecode.append(allocator, opcode);
 
                 return bytecode.toOwnedSlice(allocator);
@@ -376,51 +381,18 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
 
 // Helper to compile a PUSH for a value
 fn compilePushValue(allocator: std.mem.Allocator, value: u256) ![]u8 {
-    var bytecode = std.ArrayList(u8){};
-    defer bytecode.deinit(allocator);
+    const bits = 256 - @clz(value);
+    const width: u8 = @intCast(@max(1, (bits + 7) / 8));
+    return compilePush(allocator, width, value);
+}
 
-    // For addresses (20 bytes), use PUSH20
-    if (value > 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF and
-        value <= 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)
-    {
-        try bytecode.append(allocator, 0x73); // PUSH20
-        var j: u8 = 19;
-        while (true) : (j -%= 1) {
-            try bytecode.append(allocator, @intCast((value >> @intCast(j * 8)) & 0xFF));
-            if (j == 0) break;
-        }
-    } else if (value == 0) {
-        try bytecode.append(allocator, 0x60); // PUSH1
-        try bytecode.append(allocator, 0);
-    } else if (value <= 0xFF) {
-        try bytecode.append(allocator, 0x60); // PUSH1
-        try bytecode.append(allocator, @intCast(value));
-    } else if (value <= 0xFFFF) {
-        try bytecode.append(allocator, 0x61); // PUSH2
-        try bytecode.append(allocator, @intCast(value >> 8));
-        try bytecode.append(allocator, @intCast(value & 0xFF));
-    } else if (value <= 0xFFFFFF) {
-        try bytecode.append(allocator, 0x62); // PUSH3
-        try bytecode.append(allocator, @intCast(value >> 16));
-        try bytecode.append(allocator, @intCast((value >> 8) & 0xFF));
-        try bytecode.append(allocator, @intCast(value & 0xFF));
-    } else if (value <= 0xFFFFFFFF) {
-        try bytecode.append(allocator, 0x63); // PUSH4
-        try bytecode.append(allocator, @intCast(value >> 24));
-        try bytecode.append(allocator, @intCast((value >> 16) & 0xFF));
-        try bytecode.append(allocator, @intCast((value >> 8) & 0xFF));
-        try bytecode.append(allocator, @intCast(value & 0xFF));
-    } else {
-        // For larger values, use PUSH32
-        try bytecode.append(allocator, 0x7f); // PUSH32
-        var j: u8 = 31;
-        while (true) : (j -%= 1) {
-            try bytecode.append(allocator, @intCast((value >> @intCast(j * 8)) & 0xFF));
-            if (j == 0) break;
-        }
-    }
-
-    return bytecode.toOwnedSlice(allocator);
+fn compilePush(allocator: std.mem.Allocator, width: u8, value: u256) ![]u8 {
+    const bytecode = try allocator.alloc(u8, 1 + @as(usize, width));
+    bytecode[0] = 0x5f + width;
+    var encoded: [32]u8 = undefined;
+    std.mem.writeInt(u256, &encoded, value, .big);
+    @memcpy(bytecode[1..], encoded[encoded.len - width ..]);
+    return bytecode;
 }
 
 // Compile complex expressions with labels and multiple parts
@@ -668,7 +640,7 @@ fn compileSingleExpression(allocator: std.mem.Allocator, code: []const u8) ![]u8
         const token = tokens.items[i];
 
         // Check for PUSH opcodes that need immediate values
-        if (std.mem.startsWith(u8, token, "PUSH")) {
+        if (std.ascii.startsWithIgnoreCase(token, "PUSH")) {
             const opcode = try getOpcode(token);
             try bytecode.append(allocator, opcode);
 
@@ -687,35 +659,9 @@ fn compileSingleExpression(allocator: std.mem.Allocator, code: []const u8) ![]u8
                 }
             }
         } else if (isNumber(token)) {
-            // It's a standalone number (auto-select PUSH size)
-            const value = try parseNumber(token);
-            if (value <= 0xFF) {
-                try bytecode.append(allocator, 0x60); // PUSH1
-                try bytecode.append(allocator, @intCast(value));
-            } else if (value <= 0xFFFF) {
-                try bytecode.append(allocator, 0x61); // PUSH2
-                try bytecode.append(allocator, @intCast(value >> 8));
-                try bytecode.append(allocator, @intCast(value & 0xFF));
-            } else if (value <= 0xFFFFFF) {
-                try bytecode.append(allocator, 0x62); // PUSH3
-                try bytecode.append(allocator, @intCast(value >> 16));
-                try bytecode.append(allocator, @intCast((value >> 8) & 0xFF));
-                try bytecode.append(allocator, @intCast(value & 0xFF));
-            } else if (value <= 0xFFFFFFFF) {
-                try bytecode.append(allocator, 0x63); // PUSH4
-                try bytecode.append(allocator, @intCast(value >> 24));
-                try bytecode.append(allocator, @intCast((value >> 16) & 0xFF));
-                try bytecode.append(allocator, @intCast((value >> 8) & 0xFF));
-                try bytecode.append(allocator, @intCast(value & 0xFF));
-            } else {
-                // For larger values, use PUSH32
-                try bytecode.append(allocator, 0x7f); // PUSH32
-                var j: u8 = 31;
-                while (true) : (j -%= 1) {
-                    try bytecode.append(allocator, @intCast((value >> @intCast(j * 8)) & 0xFF));
-                    if (j == 0) break;
-                }
-            }
+            const push = try compilePushValue(allocator, try parseNumber(token));
+            defer allocator.free(push);
+            try bytecode.appendSlice(allocator, push);
         } else {
             // It's a regular opcode
             const opcode = try getOpcode(token);
@@ -752,7 +698,10 @@ fn parseNumber(token: []const u8) !u256 {
     return try std.fmt.parseInt(u256, token, 10);
 }
 
-fn getOpcode(name: []const u8) !u8 {
+fn getOpcode(token: []const u8) !u8 {
+    var buffer: [16]u8 = undefined;
+    if (token.len > buffer.len) return error.UnknownOpcode;
+    const name = std.ascii.upperString(&buffer, token);
     // Stack operations
     if (std.mem.eql(u8, name, "STOP")) return 0x00;
     if (std.mem.eql(u8, name, "ADD")) return 0x01;
@@ -784,6 +733,7 @@ fn getOpcode(name: []const u8) !u8 {
     if (std.mem.eql(u8, name, "SHL")) return 0x1b;
     if (std.mem.eql(u8, name, "SHR")) return 0x1c;
     if (std.mem.eql(u8, name, "SAR")) return 0x1d;
+    if (std.mem.eql(u8, name, "CLZ")) return 0x1e;
 
     // SHA3
     if (std.mem.eql(u8, name, "SHA3") or std.mem.eql(u8, name, "KECCAK256")) return 0x20;
@@ -954,7 +904,22 @@ test "compile { } format assembly" {
     const bytecode1 = try compileAssembly(allocator, asm1);
     defer allocator.free(bytecode1);
 
-    // Expected: PUSH1 0x01=0x60 0x01, PUSH1 0x02=0x60 0x02, ADD=0x01
-    const expected1 = [_]u8{ 0x60, 0x01, 0x60, 0x02, 0x01 };
+    // The brace-delimited sequence adds an implicit STOP.
+    const expected1 = [_]u8{ 0x60, 0x01, 0x60, 0x02, 0x01, 0x00 };
     try std.testing.expectEqualSlices(u8, &expected1, bytecode1);
+}
+
+test "compile pushes with the smallest width without truncating" {
+    const allocator = std.testing.allocator;
+    const bytecode = try compileAssembly(allocator, "(asm 0x0102030405 0x100000000000000000000000000000000000000000)");
+    defer allocator.free(bytecode);
+    const expected = [_]u8{ 0x64, 1, 2, 3, 4, 5, 0x74, 0x10 } ++ [_]u8{0} ** 20;
+    try std.testing.expectEqualSlices(u8, &expected, bytecode);
+}
+
+test "compile LLL storage reads and lowercase opcode names" {
+    const allocator = std.testing.allocator;
+    const bytecode = try compileAssembly(allocator, "{ (sstore 1 (add @@0 @2)) }");
+    defer allocator.free(bytecode);
+    try std.testing.expectEqualSlices(u8, &.{ 0x60, 2, 0x51, 0x60, 0, 0x54, 0x01, 0x60, 1, 0x55, 0x00 }, bytecode);
 }

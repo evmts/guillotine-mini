@@ -12,7 +12,7 @@ jobs:
       run:
         working-directory: guillotine-mini
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: guillotine-mini
           submodules: recursive
@@ -20,18 +20,22 @@ jobs:
         id: native
         working-directory: .
         run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: evmts/voltaire
           ref: ${{ steps.native.outputs.voltaire }}
           path: voltaire
           submodules: recursive
       - name: Install Zig 0.15.2
-        uses: goto-bus-stop/setup-zig@v2
+        uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a # v1
         with:
           version: 0.15.2
+      - name: Install .NET SDK for Nethermind
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/

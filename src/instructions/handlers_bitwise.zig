@@ -116,5 +116,15 @@ pub fn Handlers(FrameType: type) type {
             try frame.pushStack(result);
             frame.pc += 1;
         }
+
+        /// CLZ opcode (0x1e) - Count leading zeros in a 256-bit word (EIP-7939).
+        pub fn clz(frame: *FrameType) FrameType.EvmError!void {
+            if (frame.hardfork.isBefore(.OSAKA)) return error.InvalidOpcode;
+
+            try frame.consumeGas(GasConstants.GasFastStep);
+            const value = try frame.popStack();
+            try frame.pushStack(@as(u256, @clz(value)));
+            frame.pc += 1;
+        }
     };
 }

@@ -182,15 +182,16 @@ pub fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestRe
     if (pid == 0) {
         // Child process - run the test
         std.testing.allocator_instance = .{};
-        t.func() catch {
-            std.posix.exit(1);
+        const exit_code: u8 = if (t.func()) |_| 0 else |err| blk: {
+            std.debug.print("{s}: {s}\n", .{ t.name, @errorName(err) });
+            break :blk 1;
         };
 
         if (std.testing.allocator_instance.deinit() == .leak) {
             std.posix.exit(2); // Exit code 2 for memory leak
         }
 
-        std.posix.exit(0); // Success
+        std.posix.exit(exit_code);
     } else {
         if (nofork) {
             // No fork mode: we already executed in current process.

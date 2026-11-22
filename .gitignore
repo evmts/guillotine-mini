@@ -12,6 +12,10 @@ zig-out/
 target/
 Cargo.lock
 
+# Nethermind trie differential
+/scripts/nethermind-diff-trie/bin/
+/scripts/nethermind-diff-trie/obj/
+
 # Bun
 node_modules/
 .bun/

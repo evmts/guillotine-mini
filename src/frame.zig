@@ -427,6 +427,7 @@ pub fn Frame(comptime config: EvmConfig) type {
                 0x1b => try BitwiseHandlers.shl(self),
                 0x1c => try BitwiseHandlers.shr(self),
                 0x1d => try BitwiseHandlers.sar(self),
+                0x1e => try BitwiseHandlers.clz(self),
                 0x20 => try KeccakHandlers.sha3(self),
                 0x30 => try ContextHandlers.address(self),
                 0x31 => try ContextHandlers.balance(self),
