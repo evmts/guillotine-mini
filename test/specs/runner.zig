@@ -200,7 +200,7 @@ pub fn runJsonTestWithPathAndName(allocator: std.mem.Allocator, test_case: std.j
             defer hardforks_to_test.deinit(allocator);
 
             // Check for each hardfork in order
-            inline for (&[_][]const u8{ "Cancun", "Prague", "Shanghai", "Paris", "Merge", "London", "Berlin" }) |fork_name| {
+            inline for (&[_][]const u8{ "Cancun", "Prague", "Osaka", "Shanghai", "Paris", "Merge", "London", "Berlin" }) |fork_name| {
                 if (p.object.get(fork_name)) |_| {
                     if (Hardfork.fromString(fork_name)) |hf| {
                         try hardforks_to_test.append(allocator, hf);
@@ -449,6 +449,43 @@ fn hardforkToString(hf: Hardfork) []const u8 {
     };
 }
 
+/// Returns the `post` entries recorded for `hf`. Fixtures name Merge "Paris"
+/// and Petersburg "ConstantinopleFix".
+fn postForkEntries(post: std.json.Value, hf: Hardfork) ?std.json.Value {
+    if (post != .object) return null;
+    if (post.object.get(hardforkToString(hf))) |entries| return entries;
+    return switch (hf) {
+        .MERGE => post.object.get("Paris"),
+        .PETERSBURG => post.object.get("ConstantinopleFix"),
+        else => null,
+    };
+}
+
+/// True when the first `post` entry for `hf` expects an exception containing `needle`.
+fn postExpectsException(test_case: std.json.Value, hf: Hardfork, needle: []const u8) bool {
+    const post = test_case.object.get("post") orelse return false;
+    const entries = postForkEntries(post, hf) orelse return false;
+    if (entries != .array or entries.array.items.len == 0) return false;
+    const first = entries.array.items[0];
+    if (first != .object) return false;
+    const exception = first.object.get("expectException") orelse return false;
+    if (exception != .string) return false;
+    return std.mem.indexOf(u8, exception.string, needle) != null;
+}
+
+/// EIP-7825 (Osaka): maximum gas a single transaction may request (2^24).
+const TX_MAX_GAS_LIMIT: u64 = 16_777_216;
+
+fn exceedsTxGasLimitCap(hf: Hardfork, gas_limit: u64) bool {
+    return hf.isAtLeast(.OSAKA) and gas_limit > TX_MAX_GAS_LIMIT;
+}
+
+/// EIP-7702: an authorization applies only on chain 0 (any chain) or the
+/// transaction's own chain.
+fn authorizationChainIdValid(auth_chain_id: u256, tx_chain_id: u256) bool {
+    return auth_chain_id == 0 or auth_chain_id == tx_chain_id;
+}
+
 /// Extract hardfork from test JSON
 /// Checks post/expect sections and returns the detected hardfork
 fn extractHardfork(test_case: std.json.Value) ?Hardfork {
@@ -466,7 +503,7 @@ fn extractHardfork(test_case: std.json.Value) ?Hardfork {
         if (post == .object) {
             // Try common hardfork names (in reverse chronological order, preferring older forks for multi-fork tests)
             // Include common aliases
-            inline for (&[_][]const u8{ "Cancun", "Prague", "Shanghai", "Paris", "Merge", "London", "Berlin", "Istanbul", "ConstantinopleFix", "Constantinople", "Byzantium", "Homestead" }) |fork_name| {
+            inline for (&[_][]const u8{ "Cancun", "Prague", "Osaka", "Shanghai", "Paris", "Merge", "London", "Berlin", "Istanbul", "ConstantinopleFix", "Constantinople", "Byzantium", "Homestead" }) |fork_name| {
                 if (post.object.get(fork_name)) |_| {
                     if (Hardfork.fromString(fork_name)) |hf| {
                         return hf;
@@ -1537,11 +1574,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 if (to == null) {
                     // Transaction should be rejected - check if test expects this
                     if (test_case.object.get("post")) |post| {
-                        const fork_data = if (hardfork) |hf| switch (hf) {
-                            .PRAGUE => post.object.get("Prague"),
-                            .CANCUN => post.object.get("Cancun"),
-                            else => post.object.get("Cancun"),
-                        } else post.object.get("Cancun");
+                        const fork_data = postForkEntries(post, hardfork orelse .CANCUN);
 
                         if (fork_data) |fd| {
                             if (fd == .array and fd.array.items.len > 0) {
@@ -1567,11 +1600,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 var max_blobs: usize = 6; // Default for Cancun
                 if (test_case.object.get("config")) |config| {
                     if (config.object.get("blobSchedule")) |schedule| {
-                        const fork_name = if (hardfork) |hf| switch (hf) {
-                            .PRAGUE => "Prague",
-                            .CANCUN => "Cancun",
-                            else => "Cancun",
-                        } else "Cancun";
+                        const fork_name = hardforkToString(hardfork orelse .CANCUN);
 
                         if (schedule.object.get(fork_name)) |fork_config| {
                             if (fork_config.object.get("max")) |max_val| {
@@ -1585,11 +1614,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 if (blob_count > max_blobs) {
                     // Transaction should be rejected - check if test expects this
                     if (test_case.object.get("post")) |post| {
-                        const fork_data = if (hardfork) |hf| switch (hf) {
-                            .PRAGUE => post.object.get("Prague"),
-                            .CANCUN => post.object.get("Cancun"),
-                            else => post.object.get("Cancun"),
-                        } else post.object.get("Cancun");
+                        const fork_data = postForkEntries(post, hardfork orelse .CANCUN);
 
                         if (fork_data) |fd| {
                             if (fd == .array and fd.array.items.len > 0) {
@@ -1626,11 +1651,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     if (hash[0] != 0x01) {
                         // Transaction should be rejected - check if test expects this
                         if (test_case.object.get("post")) |post| {
-                            const fork_data = if (hardfork) |hf| switch (hf) {
-                                .PRAGUE => post.object.get("Prague"),
-                                .CANCUN => post.object.get("Cancun"),
-                                else => post.object.get("Cancun"),
-                            } else post.object.get("Cancun");
+                            const fork_data = postForkEntries(post, hardfork orelse .CANCUN);
 
                             if (fork_data) |fd| {
                                 if (fd == .array and fd.array.items.len > 0) {
@@ -1765,15 +1786,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                             // Transaction is invalid - initcode too large
                             // Check if test expects this exception
                             if (test_case.object.get("post")) |post| {
-                                const fork_data = if (hardfork) |fork| switch (fork) {
-                                    .PRAGUE => post.object.get("Prague"),
-                                    .CANCUN => post.object.get("Cancun"),
-                                    .SHANGHAI => post.object.get("Shanghai"),
-                                    .MERGE => post.object.get("Merge") orelse post.object.get("Paris"),
-                                    .LONDON => post.object.get("London"),
-                                    .BERLIN => post.object.get("Berlin"),
-                                    else => post.object.get(hardforkToString(fork)),
-                                } else null;
+                                const fork_data = if (hardfork) |fork| postForkEntries(post, fork) else null;
 
                                 if (fork_data) |fd| {
                                     if (fd == .array and fd.array.items.len > 0) {
@@ -1804,15 +1817,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             if (gas_limit < intrinsic_gas) {
                 // Transaction is invalid - check if test expects this
                 if (test_case.object.get("post")) |post| {
-                    const fork_data = if (hardfork) |hf| switch (hf) {
-                        .PRAGUE => post.object.get("Prague"),
-                        .CANCUN => post.object.get("Cancun"),
-                        .SHANGHAI => post.object.get("Shanghai"),
-                        .MERGE => post.object.get("Merge") orelse post.object.get("Paris"),
-                        .LONDON => post.object.get("London"),
-                        .BERLIN => post.object.get("Berlin"),
-                        else => post.object.get(hardforkToString(hf)),
-                    } else null;
+                    const fork_data = if (hardfork) |hf| postForkEntries(post, hf) else null;
 
                     if (fork_data) |fd| {
                         if (fd == .array and fd.array.items.len > 0) {
@@ -1832,6 +1837,14 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 }
                 // If we get here, the test doesn't expect this exception, so fail
                 return error.IntrinsicGasTooLow;
+            }
+
+            // EIP-7825 (Osaka+): reject transactions above the per-tx gas cap.
+            if (hardfork) |hf| {
+                if (exceedsTxGasLimitCap(hf, gas_limit)) {
+                    if (postExpectsException(test_case, hf, "GAS_LIMIT_EXCEEDS_MAXIMUM")) continue;
+                    return error.TransactionGasLimitExceedsMaximum;
+                }
             }
 
             // Calculate execution gas (gas available after intrinsic cost)
@@ -1990,22 +2003,23 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             var auth_refund_count: u64 = 0;
             if (tx.object.get("authorizationList")) |auth_list_json| {
                 if (auth_list_json == .array) {
+                    // The transaction's chain ID: explicit on the tx, else the env's.
+                    const tx_chain_id: u256 = if (tx.object.get("chainId")) |cid|
+                        try parseU256FromJson(cid)
+                    else if (block_ctx) |ctx| ctx.chain_id else 1;
                     for (auth_list_json.array.items) |auth_json| {
                         // Parse authorization: {chainId, address, nonce, v, r, s}
-                        const auth_chain_id = try parseIntFromJson(auth_json.object.get("chainId").?);
-
-                        // EIP-7702: Validate chain ID
-                        // If chain_id != 0 (0 means "any chain") and chain_id != transaction_chain_id, skip this authorization
-                        if (auth_chain_id != 0) {
-                            const tx_chain_id = if (block_ctx) |ctx| ctx.chain_id else 1;
-                            if (auth_chain_id != tx_chain_id) {
-                                continue; // Skip this authorization due to chain ID mismatch
-                            }
-                        }
+                        // Chain IDs and nonces are u256 on the wire; parse wide so
+                        // out-of-range values are skipped instead of failing the test.
+                        const auth_chain_id = try parseU256FromJson(auth_json.object.get("chainId").?);
+                        if (!authorizationChainIdValid(auth_chain_id, tx_chain_id)) continue;
 
                         const auth_addr_str = auth_json.object.get("address").?.string;
                         const auth_addr = try parseAddress(auth_addr_str);
-                        const auth_nonce = try parseIntFromJson(auth_json.object.get("nonce").?);
+                        const auth_nonce_wide = try parseU256FromJson(auth_json.object.get("nonce").?);
+                        // EIP-7702: skip authorizations whose nonce is >= 2^64 - 1.
+                        if (auth_nonce_wide >= std.math.maxInt(u64)) continue;
+                        const auth_nonce: u64 = @intCast(auth_nonce_wide);
 
                         // Get authority (signer) if available
                         var authority: ?Address = null;
@@ -2582,4 +2596,47 @@ fn parseHexData(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     }
 
     return final_result;
+}
+
+test "authorizationChainIdValid accepts chain 0 and the tx chain only" {
+    try testing.expect(authorizationChainIdValid(0, 1));
+    try testing.expect(authorizationChainIdValid(1, 1));
+    try testing.expect(authorizationChainIdValid(0x0539, 0x0539));
+    try testing.expect(!authorizationChainIdValid(2, 1));
+    try testing.expect(!authorizationChainIdValid(std.math.maxInt(u256), 1));
+}
+
+test "exceedsTxGasLimitCap applies from Osaka at 2^24" {
+    try testing.expect(!exceedsTxGasLimitCap(.PRAGUE, TX_MAX_GAS_LIMIT + 1));
+    try testing.expect(!exceedsTxGasLimitCap(.OSAKA, TX_MAX_GAS_LIMIT));
+    try testing.expect(exceedsTxGasLimitCap(.OSAKA, TX_MAX_GAS_LIMIT + 1));
+}
+
+test "Osaka post sections resolve to the Osaka fork" {
+    const json =
+        \\{"post": {"Osaka": [{"expectException": "TransactionException.GAS_LIMIT_EXCEEDS_MAXIMUM"}]}}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+
+    try testing.expectEqual(@as(?Hardfork, .OSAKA), extractHardfork(parsed.value));
+    try testing.expect(postExpectsException(parsed.value, .OSAKA, "GAS_LIMIT_EXCEEDS_MAXIMUM"));
+    try testing.expect(!postExpectsException(parsed.value, .PRAGUE, "GAS_LIMIT_EXCEEDS_MAXIMUM"));
+}
+
+test "postForkEntries resolves fixture fork aliases" {
+    const json =
+        \\{"Paris": [1], "ConstantinopleFix": [2]}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+
+    try testing.expect(postForkEntries(parsed.value, .MERGE) != null);
+    try testing.expect(postForkEntries(parsed.value, .PETERSBURG) != null);
+    try testing.expect(postForkEntries(parsed.value, .OSAKA) == null);
+}
+
+test {
+    // Compile every runner path, not just the helpers above.
+    std.testing.refAllDecls(@This());
 }

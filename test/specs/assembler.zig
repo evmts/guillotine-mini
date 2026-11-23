@@ -341,6 +341,14 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                     return bytecode.toOwnedSlice(allocator);
                 }
 
+                // (PUSHn value) takes value as its immediate, not as a stack argument.
+                if (items.len == 2 and items[1] == .number) {
+                    const push_opcode = try getOpcode(op_name);
+                    if (push_opcode >= 0x60 and push_opcode <= 0x7f) {
+                        return compilePushImmediate(allocator, push_opcode, items[1].number);
+                    }
+                }
+
                 // Regular opcode with arguments - compile in REVERSE order
                 var bytecode = std.ArrayList(u8){};
                 defer bytecode.deinit(allocator);
@@ -372,6 +380,19 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
             return error.InvalidFormat;
         },
     }
+}
+
+// Emit PUSHn followed by `value` as an n-byte big-endian immediate.
+fn compilePushImmediate(allocator: std.mem.Allocator, opcode: u8, value: u256) ![]u8 {
+    const size: u16 = opcode - 0x5f;
+    if (size < 32 and value >> @intCast(size * 8) != 0) return error.PushValueTooLarge;
+    const bytecode = try allocator.alloc(u8, 1 + size);
+    bytecode[0] = opcode;
+    var i: u16 = 0;
+    while (i < size) : (i += 1) {
+        bytecode[1 + i] = @truncate(value >> @intCast((size - 1 - i) * 8));
+    }
+    return bytecode;
 }
 
 // Helper to compile a PUSH for a value
@@ -954,7 +975,17 @@ test "compile { } format assembly" {
     const bytecode1 = try compileAssembly(allocator, asm1);
     defer allocator.free(bytecode1);
 
-    // Expected: PUSH1 0x01=0x60 0x01, PUSH1 0x02=0x60 0x02, ADD=0x01
-    const expected1 = [_]u8{ 0x60, 0x01, 0x60, 0x02, 0x01 };
+    // Expected: PUSH1 0x01, PUSH1 0x02, ADD, then the implicit STOP that ends every { } sequence
+    const expected1 = [_]u8{ 0x60, 0x01, 0x60, 0x02, 0x01, 0x00 };
     try std.testing.expectEqualSlices(u8, &expected1, bytecode1);
+}
+
+test "LLL (PUSHn value) uses value as the immediate" {
+    const allocator = std.testing.allocator;
+
+    const bytecode = try compileAssembly(allocator, "{ (PUSH2 0x0102) }");
+    defer allocator.free(bytecode);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x61, 0x01, 0x02, 0x00 }, bytecode);
+
+    try std.testing.expectError(error.PushValueTooLarge, compileAssembly(allocator, "{ (PUSH1 0x0100) }"));
 }

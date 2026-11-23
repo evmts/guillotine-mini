@@ -89,6 +89,7 @@ pub fn build(b: *std.Build) void {
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
+    linkRustSupport(mod_tests);
 
     // A run step that will run the test executable.
     const run_mod_tests = b.addRunArtifact(mod_tests);
@@ -126,6 +127,7 @@ pub fn build(b: *std.Build) void {
     const client_db_tests = b.addTest(.{
         .root_module = client_db_mod,
     });
+    linkRustSupport(client_db_tests);
 
     const run_client_db_tests = b.addRunArtifact(client_db_tests);
     test_step.dependOn(&run_client_db_tests.step);
@@ -148,10 +150,28 @@ pub fn build(b: *std.Build) void {
     const client_trie_tests = b.addTest(.{
         .root_module = client_trie_mod,
     });
+    linkRustSupport(client_trie_tests);
 
     const run_client_trie_tests = b.addRunArtifact(client_trie_tests);
-    test_step.dependOn(&run_client_trie_tests.step);
-    unit_test_step.dependOn(&run_client_trie_tests.step);
+
+    // client/trie/fixtures.zig reads ethereum-tests/TrieTests at run time. A
+    // standard clone has no submodules, so `test` and `unit` run the
+    // fixture-free trie tests unless the fixtures are checked out.
+    // `zig build test-trie` always runs the full suite.
+    const has_trie_fixtures = pathExists(b, "ethereum-tests/TrieTests/trietest.json");
+    if (has_trie_fixtures) {
+        test_step.dependOn(&run_client_trie_tests.step);
+        unit_test_step.dependOn(&run_client_trie_tests.step);
+    } else {
+        const client_trie_unit_tests = b.addTest(.{
+            .root_module = client_trie_mod,
+            .filters = &.{ "hash.test.", "root.test.", "node.test." },
+        });
+        linkRustSupport(client_trie_unit_tests);
+        const run_client_trie_unit_tests = b.addRunArtifact(client_trie_unit_tests);
+        test_step.dependOn(&run_client_trie_unit_tests.step);
+        unit_test_step.dependOn(&run_client_trie_unit_tests.step);
+    }
 
     const client_trie_test_step = b.step("test-trie", "Run Merkle Patricia Trie tests");
     client_trie_test_step.dependOn(&run_client_trie_tests.step);
@@ -171,11 +191,12 @@ pub fn build(b: *std.Build) void {
         .name = "nethermind_trie_diff",
         .root_module = nethermind_trie_diff_mod,
     });
+    linkRustSupport(nethermind_trie_diff_exe);
 
     const run_nethermind_trie_diff = b.addRunArtifact(nethermind_trie_diff_exe);
     const nethermind_diff_step = b.step("nethermind-diff", "Run Nethermind trie differential test");
     nethermind_diff_step.dependOn(&run_nethermind_trie_diff.step);
-    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test") orelse true;
+    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test (requires .NET and the nethermind submodule)") orelse false;
     if (include_nethermind_diff) {
         test_step.dependOn(&run_nethermind_trie_diff.step);
     }
@@ -193,6 +214,7 @@ pub fn build(b: *std.Build) void {
     const client_state_tests = b.addTest(.{
         .root_module = client_state_mod,
     });
+    linkRustSupport(client_state_tests);
 
     const run_client_state_tests = b.addRunArtifact(client_state_tests);
     test_step.dependOn(&run_client_state_tests.step);
@@ -215,6 +237,7 @@ pub fn build(b: *std.Build) void {
     const client_network_tests = b.addTest(.{
         .root_module = client_network_mod,
     });
+    linkRustSupport(client_network_tests);
 
     const run_client_network_tests = b.addRunArtifact(client_network_tests);
     test_step.dependOn(&run_client_network_tests.step);
@@ -236,6 +259,7 @@ pub fn build(b: *std.Build) void {
     const client_sync_tests = b.addTest(.{
         .root_module = client_sync_mod,
     });
+    linkRustSupport(client_sync_tests);
 
     const run_client_sync_tests = b.addRunArtifact(client_sync_tests);
     test_step.dependOn(&run_client_sync_tests.step);
@@ -258,6 +282,7 @@ pub fn build(b: *std.Build) void {
     const client_blockchain_tests = b.addTest(.{
         .root_module = client_blockchain_mod,
     });
+    linkRustSupport(client_blockchain_tests);
 
     const run_client_blockchain_tests = b.addRunArtifact(client_blockchain_tests);
     test_step.dependOn(&run_client_blockchain_tests.step);
@@ -281,6 +306,7 @@ pub fn build(b: *std.Build) void {
     const client_txpool_tests = b.addTest(.{
         .root_module = client_txpool_mod,
     });
+    linkRustSupport(client_txpool_tests);
 
     const run_client_txpool_tests = b.addRunArtifact(client_txpool_tests);
     test_step.dependOn(&run_client_txpool_tests.step);
@@ -306,6 +332,7 @@ pub fn build(b: *std.Build) void {
     const client_rpc_tests = b.addTest(.{
         .root_module = client_rpc_mod,
     });
+    linkRustSupport(client_rpc_tests);
 
     const run_client_rpc_tests = b.addRunArtifact(client_rpc_tests);
     test_step.dependOn(&run_client_rpc_tests.step);
@@ -329,6 +356,7 @@ pub fn build(b: *std.Build) void {
     const client_engine_tests = b.addTest(.{
         .root_module = client_engine_mod,
     });
+    linkRustSupport(client_engine_tests);
 
     const run_client_engine_tests = b.addRunArtifact(client_engine_tests);
     test_step.dependOn(&run_client_engine_tests.step);
@@ -351,10 +379,27 @@ pub fn build(b: *std.Build) void {
     const client_runner_tests = b.addTest(.{
         .root_module = client_runner_mod,
     });
+    linkRustSupport(client_runner_tests);
 
     const run_client_runner_tests = b.addRunArtifact(client_runner_tests);
-    test_step.dependOn(&run_client_runner_tests.step);
-    unit_test_step.dependOn(&run_client_runner_tests.step);
+
+    // "runner parses CLI flags and emits config" loads the Sepolia genesis from
+    // the execution-specs submodule. Without it, `test` and `unit` run the
+    // other runner tests; `zig build test-runner` always runs all of them.
+    const has_genesis_assets = pathExists(b, "execution-specs/src/ethereum/assets/sepolia.json");
+    if (has_genesis_assets) {
+        test_step.dependOn(&run_client_runner_tests.step);
+        unit_test_step.dependOn(&run_client_runner_tests.step);
+    } else {
+        const client_runner_unit_tests = b.addTest(.{
+            .root_module = client_runner_mod,
+            .filters = &.{ "cli.test.", "config.test.", "main.test.runner main accepts default args" },
+        });
+        linkRustSupport(client_runner_unit_tests);
+        const run_client_runner_unit_tests = b.addRunArtifact(client_runner_unit_tests);
+        test_step.dependOn(&run_client_runner_unit_tests.step);
+        unit_test_step.dependOn(&run_client_runner_unit_tests.step);
+    }
 
     const client_runner_test_step = b.step("test-runner", "Run runner CLI tests");
     client_runner_test_step.dependOn(&run_client_runner_tests.step);
@@ -376,6 +421,7 @@ pub fn build(b: *std.Build) void {
     const client_evm_tests = b.addTest(.{
         .root_module = client_evm_mod,
     });
+    linkRustSupport(client_evm_tests);
 
     const run_client_evm_tests = b.addRunArtifact(client_evm_tests);
     test_step.dependOn(&run_client_evm_tests.step);
@@ -405,6 +451,7 @@ pub fn build(b: *std.Build) void {
         .name = "bench_network_rlpx",
         .root_module = client_network_bench_mod,
     });
+    linkRustSupport(client_network_bench);
 
     const run_client_network_bench = b.addRunArtifact(client_network_bench);
     const bench_network_step = b.step("bench-network", "Run devp2p RLPx micro-benchmarks");
@@ -427,6 +474,7 @@ pub fn build(b: *std.Build) void {
         .name = "bench_evm",
         .root_module = client_evm_bench_mod,
     });
+    linkRustSupport(client_evm_bench);
 
     const run_client_evm_bench = b.addRunArtifact(client_evm_bench);
     const bench_evm_step = b.step("bench-evm", "Run EVM ↔ WorldState integration benchmarks");
@@ -446,6 +494,7 @@ pub fn build(b: *std.Build) void {
         .name = "bench_state",
         .root_module = client_state_bench_mod,
     });
+    linkRustSupport(client_state_bench);
 
     const run_client_state_bench = b.addRunArtifact(client_state_bench);
     const bench_state_step = b.step("bench-state", "Run world state journal benchmarks");
@@ -467,6 +516,7 @@ pub fn build(b: *std.Build) void {
         .name = "bench_blockchain",
         .root_module = client_blockchain_bench_mod,
     });
+    linkRustSupport(client_blockchain_bench);
 
     const run_client_blockchain_bench = b.addRunArtifact(client_blockchain_bench);
     const bench_blockchain_step = b.step("bench-blockchain", "Run chain management benchmarks");
@@ -486,6 +536,7 @@ pub fn build(b: *std.Build) void {
         .name = "bench_db",
         .root_module = client_db_bench_mod,
     });
+    linkRustSupport(client_db_bench);
 
     const run_client_db_bench = b.addRunArtifact(client_db_bench);
     const bench_db_step = b.step("bench-db", "Run database abstraction layer benchmarks");
@@ -506,6 +557,7 @@ pub fn build(b: *std.Build) void {
         .name = "bench_trie",
         .root_module = client_trie_bench_mod,
     });
+    linkRustSupport(client_trie_bench);
 
     const run_client_trie_bench = b.addRunArtifact(client_trie_bench);
     const bench_trie_step = b.step("bench-trie", "Run Merkle Patricia Trie benchmarks");
@@ -526,6 +578,7 @@ pub fn build(b: *std.Build) void {
         .name = "bench_txpool",
         .root_module = client_txpool_bench_mod,
     });
+    linkRustSupport(client_txpool_bench);
 
     const run_client_txpool_bench = b.addRunArtifact(client_txpool_bench);
     const bench_txpool_step = b.step("bench-txpool", "Run transaction pool benchmarks");
@@ -605,6 +658,7 @@ pub fn build(b: *std.Build) void {
             .mode = .simple,
         },
     });
+    linkRustSupport(spec_tests_state);
 
     const spec_tests_blockchain = b.addTest(.{
         .root_module = spec_runner_mod,
@@ -613,6 +667,7 @@ pub fn build(b: *std.Build) void {
             .mode = .simple,
         },
     });
+    linkRustSupport(spec_tests_blockchain);
 
     // Make spec test compilation depend on test generation pipeline
     spec_tests_state.step.dependOn(&update_spec_root_state.step);
@@ -636,8 +691,34 @@ pub fn build(b: *std.Build) void {
     const spec_blockchain_test_step = b.step("specs-blockchain", "Run execution-specs BLOCKCHAIN tests");
     spec_blockchain_test_step.dependOn(&run_spec_tests_blockchain.step);
 
-    // Add state tests to main test step (default behavior)
-    test_step.dependOn(&run_spec_tests_state.step);
+    // Spec state tests read filled fixtures from the execution-specs submodule
+    // and regenerate them with uv when missing. A standard clone has neither,
+    // so `test` includes them only when the fixtures exist or -Dspecs=true.
+    // `zig build specs` always runs them.
+    const has_state_fixtures = pathExists(b, "execution-specs/tests/eest/static/state_tests");
+    const include_specs = b.option(bool, "specs", "Run execution-specs state tests during zig build test (default: when filled fixtures exist)") orelse has_state_fixtures;
+    if (include_specs) {
+        test_step.dependOn(&run_spec_tests_state.step);
+    }
+
+    // The spec runner's own unit tests need no fixtures. They also compile the
+    // runner, so `test` catches runner regressions in a standard clone.
+    const spec_runner_unit_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/specs/runner.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "evm", .module = evm_mod },
+                .{ .name = "voltaire", .module = primitives_mod },
+                .{ .name = "client_blockchain", .module = client_blockchain_mod },
+            },
+        }),
+    });
+    linkRustSupport(spec_runner_unit_tests);
+    const run_spec_runner_unit_tests = b.addRunArtifact(spec_runner_unit_tests);
+    test_step.dependOn(&run_spec_runner_unit_tests.step);
+    unit_test_step.dependOn(&run_spec_runner_unit_tests.step);
 
     // Create hardfork-specific test suites
     const hardforks = [_]struct { name: []const u8, desc: []const u8 }{
@@ -809,6 +890,7 @@ pub fn build(b: *std.Build) void {
                     .mode = .simple,
                 },
             });
+            linkRustSupport(sub_tests);
 
             sub_tests.step.dependOn(&update_spec_root_state.step);
 
@@ -833,6 +915,7 @@ pub fn build(b: *std.Build) void {
                 .mode = .simple,
             },
         });
+        linkRustSupport(fork_tests);
 
         fork_tests.step.dependOn(&update_spec_root_state.step);
 
@@ -867,6 +950,7 @@ pub fn build(b: *std.Build) void {
                 .mode = .simple,
             },
         });
+        linkRustSupport(eip_tests);
 
         eip_tests.step.dependOn(&update_spec_root_state.step);
 
@@ -895,6 +979,7 @@ pub fn build(b: *std.Build) void {
         .name = "trace_test",
         .root_module = trace_test_mod,
     });
+    linkRustSupport(trace_test);
 
     const run_trace_test = b.addRunArtifact(trace_test);
     const trace_test_step = b.step("test-trace", "Run trace capture test");
@@ -908,6 +993,7 @@ pub fn build(b: *std.Build) void {
             .mode = .simple,
         },
     });
+    linkRustSupport(interactive_spec_tests);
 
     const run_interactive_tests = b.addRunArtifact(interactive_spec_tests);
     run_interactive_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
@@ -1019,6 +1105,7 @@ pub fn build(b: *std.Build) void {
         .name = "guillotine_mini",
         .root_module = native_mod,
     });
+    linkRustSupport(native_lib);
 
     const native_install = b.addInstallArtifact(native_lib, .{});
 
@@ -1036,4 +1123,22 @@ pub fn build(b: *std.Build) void {
     //
     // Lastly, the Zig build system is relatively simple and self-contained,
     // and reading its source code will allow you to master it.
+}
+
+/// Voltaire's Rust archive (libcrypto_wrappers.a) references the platform
+/// unwinder (`_Unwind_*`), which Zig does not link implicitly. Link libgcc_s on
+/// Linux and libgcc_eh on Windows GNU. macOS gets the unwinder from libSystem;
+/// wasm32 has none and needs none.
+fn linkRustSupport(compile: *std.Build.Step.Compile) void {
+    const t = compile.rootModuleTarget();
+    switch (t.os.tag) {
+        .linux => compile.root_module.linkSystemLibrary("gcc_s", .{}),
+        .windows => if (t.abi.isGnu()) compile.root_module.linkSystemLibrary("gcc_eh", .{}),
+        else => {},
+    }
+}
+
+fn pathExists(b: *std.Build, sub_path: []const u8) bool {
+    b.build_root.handle.access(sub_path, .{}) catch return false;
+    return true;
 }
