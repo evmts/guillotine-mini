@@ -6,21 +6,35 @@ const EvmConfig = evm_config_mod.EvmConfig;
 const OpcodeOverride = evm_config_mod.OpcodeOverride;
 const PrecompileOverride = evm_config_mod.PrecompileOverride;
 const PrecompileOutput = evm_config_mod.PrecompileOutput;
+const trace = @import("trace.zig");
+const tracers = @import("tracers.zig");
+const inspector = @import("inspector.zig");
 
 // External JavaScript callback functions (provided as WASM imports)
 // These are called BY WASM to execute custom handlers defined in JavaScript
 
 const builtin = @import("builtin");
+const is_wasm = builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64;
+var js_opcode_callbacks_enabled = false;
+
+/// Enable calls to the JS opcode handler for this WASM instance.
+export fn evm_set_js_opcode_callbacks_enabled(enabled: bool) void {
+    if (is_wasm) js_opcode_callbacks_enabled = enabled;
+}
+
+pub fn jsOpcodeCallbacksEnabled() bool {
+    return is_wasm and js_opcode_callbacks_enabled;
+}
 
 // Only declare extern functions when building for WASM
-const js_opcode_callback = if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64)
+const js_opcode_callback = if (is_wasm)
     struct {
         extern "env" fn js_opcode_callback(opcode: u8, frame_ptr: usize) c_int;
     }.js_opcode_callback
 else
     undefined;
 
-const js_precompile_callback = if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64)
+const js_precompile_callback = if (is_wasm)
     struct {
         extern "env" fn js_precompile_callback(
             address_ptr: [*]const u8,
@@ -37,7 +51,7 @@ else
 
 /// Public wrapper to check if JavaScript opcode callback exists and call it
 pub fn tryCallJsOpcodeHandler(opcode: u8, frame_ptr: usize) bool {
-    if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64) {
+    if (is_wasm) {
         const result = js_opcode_callback(opcode, frame_ptr);
         return result != 0;
     }
@@ -54,7 +68,7 @@ pub fn tryCallJsPrecompileHandler(
     output_ptr: *[*]u8,
     gas_used: *u64,
 ) bool {
-    if (builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64) {
+    if (is_wasm) {
         const result = js_precompile_callback(
             address_ptr,
             input_ptr,
@@ -101,8 +115,7 @@ export fn evm_free(ptr: ?[*]u8, len: usize) void {
 // Opaque handle for EVM instance
 const EvmHandle = opaque {};
 
-// Note: Custom handlers are now registered via JavaScript imports (js_opcode_callback, js_precompile_callback)
-// No runtime storage needed in Zig since JavaScript manages the handler registry
+const TraceKind = enum { opcode, call, access_list };
 
 // Store execution context for later use
 const ExecutionContext = struct {
@@ -117,7 +130,164 @@ const ExecutionContext = struct {
     access_list_storage_keys: []AccessListStorageKey,
     blob_versioned_hashes: ?[]const [32]u8,
     result: ?CallResult,
+    trace_config: ?primitives.TraceConfig = null,
+    call_tracer_options: ?tracers.CallTracer.Options = null,
+    track_access_list: bool = false,
+    tracer: ?trace.Tracer = null,
+    call_tracer: ?tracers.CallTracer = null,
+    access_list_tracker: ?tracers.AccessListInspector = null,
+    inspectors: [2]inspector.Inspector = undefined,
+    mux: inspector.MuxInspector = undefined,
+    trace_json: [3]?[]const u8 = @splat(null),
+    trace_gas_limit: u64 = 0,
+
+    fn clearTracing(self: *ExecutionContext) void {
+        self.evm.tracer = null;
+        self.evm.clearInspector();
+        if (self.tracer) |*tracer| tracer.deinit();
+        if (self.call_tracer) |*tracer| tracer.deinit();
+        if (self.access_list_tracker) |*tracker| tracker.deinit();
+        self.tracer = null;
+        self.call_tracer = null;
+        self.access_list_tracker = null;
+        for (&self.trace_json) |*cached| {
+            if (cached.*) |bytes| allocator.free(bytes);
+            cached.* = null;
+        }
+    }
+
+    fn prepareExecution(self: *ExecutionContext) void {
+        self.result = null;
+        self.evm.origin = self.caller;
+        self.clearTracing();
+        self.trace_gas_limit = @intCast(self.gas);
+        if (self.trace_config) |config| {
+            self.tracer = trace.Tracer.init(allocator);
+            self.tracer.?.config = config;
+            self.tracer.?.enable();
+            self.evm.setTracer(&self.tracer.?);
+        }
+        var count: usize = 0;
+        if (self.call_tracer_options) |options| {
+            self.call_tracer = tracers.CallTracer.init(allocator, options);
+            self.inspectors[count] = self.call_tracer.?.inspector();
+            count += 1;
+        }
+        if (self.track_access_list) {
+            self.access_list_tracker = tracers.AccessListInspector.init(allocator, .{});
+            self.inspectors[count] = self.access_list_tracker.?.inspector();
+            count += 1;
+        }
+        switch (count) {
+            0 => {},
+            1 => self.evm.setInspector(self.inspectors[0]),
+            2 => {
+                self.mux = inspector.MuxInspector.init(self.inspectors[0..count]);
+                self.evm.setInspector(self.mux.inspector());
+            },
+            else => unreachable,
+        }
+    }
+
+    fn tracePayload(self: *ExecutionContext, kind: TraceKind) []const u8 {
+        const result = self.result orelse return &.{};
+        const cached = &self.trace_json[@intFromEnum(kind)];
+        if (cached.*) |bytes| return bytes;
+
+        var writer: std.Io.Writer.Allocating = .init(allocator);
+        defer writer.deinit();
+        switch (kind) {
+            .opcode => {
+                const tracer = if (self.tracer) |*value| value else return &.{};
+                tracer.writeEip3155Jsonl(&writer.writer, .{
+                    .output = result.output,
+                    .gas_used = self.trace_gas_limit -| result.gas_left,
+                    .pass = result.success,
+                    .error_msg = Evm.resultErrorName(result),
+                }) catch return &.{};
+            },
+            .call => {
+                const tracer = if (self.call_tracer) |*value| value else return &.{};
+                tracer.writeGethJson(&writer.writer) catch return &.{};
+            },
+            .access_list => {
+                const tracker = if (self.access_list_tracker) |*value| value else return &.{};
+                tracker.writeJson(&writer.writer) catch return &.{};
+            },
+        }
+        cached.* = writer.toOwnedSlice() catch return &.{};
+        return cached.*.?;
+    }
 };
+
+fn getContext(handle: ?*EvmHandle) ?*ExecutionContext {
+    return @ptrCast(@alignCast(handle orelse return null));
+}
+
+fn copyBytes(bytes: []const u8, buffer: [*]u8, buffer_len: usize) usize {
+    const len = @min(bytes.len, buffer_len);
+    if (len != 0) @memcpy(buffer[0..len], bytes[0..len]);
+    return len;
+}
+
+/// Configure EIP-3155 opcode tracing for subsequent executions.
+export fn evm_enable_tracing(handle: ?*EvmHandle, enable_memory: bool, disable_stack: bool, disable_storage: bool, enable_return_data: bool) void {
+    const ctx = getContext(handle) orelse return;
+    ctx.trace_config = primitives.TraceConfig.from();
+    ctx.trace_config.?.enable_memory = enable_memory;
+    ctx.trace_config.?.disable_memory = !enable_memory;
+    ctx.trace_config.?.disable_stack = disable_stack;
+    ctx.trace_config.?.disable_storage = disable_storage;
+    ctx.trace_config.?.enable_return_data = enable_return_data;
+}
+
+/// Disable opcode tracing for subsequent executions.
+export fn evm_disable_tracing(handle: ?*EvmHandle) void {
+    const ctx = getContext(handle) orelse return;
+    ctx.trace_config = null;
+}
+
+/// Get the byte length of the last execution's EIP-3155 JSONL trace.
+export fn evm_get_trace_json_len(handle: ?*EvmHandle) usize {
+    const ctx = getContext(handle) orelse return 0;
+    return ctx.tracePayload(.opcode).len;
+}
+
+/// Copy JSONL into a caller buffer and return the byte count copied.
+export fn evm_get_trace_json(handle: ?*EvmHandle, buffer: [*]u8, buffer_len: usize) usize {
+    const ctx = getContext(handle) orelse return 0;
+    return copyBytes(ctx.tracePayload(.opcode), buffer, buffer_len);
+}
+
+export fn evm_enable_call_tracer(handle: ?*EvmHandle, only_top_call: bool, with_log: bool) void {
+    const ctx = getContext(handle) orelse return;
+    ctx.call_tracer_options = .{ .only_top_call = only_top_call, .with_log = with_log };
+}
+
+export fn evm_get_call_trace_json_len(handle: ?*EvmHandle) usize {
+    const ctx = getContext(handle) orelse return 0;
+    return ctx.tracePayload(.call).len;
+}
+
+export fn evm_get_call_trace_json(handle: ?*EvmHandle, buffer: [*]u8, buffer_len: usize) usize {
+    const ctx = getContext(handle) orelse return 0;
+    return copyBytes(ctx.tracePayload(.call), buffer, buffer_len);
+}
+
+export fn evm_enable_access_list_tracker(handle: ?*EvmHandle) void {
+    const ctx = getContext(handle) orelse return;
+    ctx.track_access_list = true;
+}
+
+export fn evm_get_access_list_json_len(handle: ?*EvmHandle) usize {
+    const ctx = getContext(handle) orelse return 0;
+    return ctx.tracePayload(.access_list).len;
+}
+
+export fn evm_get_access_list_json(handle: ?*EvmHandle, buffer: [*]u8, buffer_len: usize) usize {
+    const ctx = getContext(handle) orelse return 0;
+    return copyBytes(ctx.tracePayload(.access_list), buffer, buffer_len);
+}
 
 /// Create a new Evm instance with optional hardfork name (null/empty = default from config)
 /// log_level: 0=none, 1=err, 2=warn, 3=info, 4=debug
@@ -163,6 +333,7 @@ export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize, log_level:
 export fn evm_destroy(handle: ?*EvmHandle) void {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+        ctx.clearTracing();
         ctx.evm.deinit();
         allocator.free(ctx.bytecode);
         allocator.free(ctx.calldata);
@@ -390,7 +561,8 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
 
-        if (ctx.bytecode.len == 0) return false;
+        if (ctx.gas < 0) return false;
+        if (ctx.bytecode.len == 0 and ctx.evm.getRawCode(ctx.address).len == 0) return false;
 
         // Build EIP-2930 access list from flat C API format
         var access_list_entries = std.array_list.AlignedManaged(primitives.AccessList.AccessListEntry, null).init(allocator);
@@ -440,18 +612,13 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
             .gas = @intCast(ctx.gas),
         } };
 
-        // Set bytecode, access list, and blob hashes
-        ctx.evm.setBytecode(ctx.bytecode);
+        ctx.prepareExecution();
         ctx.evm.setAccessList(access_list);
-        if (ctx.blob_versioned_hashes) |hashes| {
-            ctx.evm.setBlobVersionedHashes(hashes);
-        }
+        defer ctx.evm.setAccessList(null);
+        ctx.evm.setBlobVersionedHashes(ctx.blob_versioned_hashes orelse &.{});
 
-        // The synchronous call API resolves code by address. pending_bytecode
-        // is consumed only by the async executor, so install the supplied code
-        // here as well or a WASM host receives success without executing it.
-        ctx.evm.code.put(ctx.address, ctx.bytecode) catch return false;
-        const result = ctx.evm.call(call_params);
+        const bytecode = if (ctx.bytecode.len > 0) ctx.bytecode else null;
+        const result = ctx.evm.callWithBytecodeOverride(call_params, bytecode);
 
         ctx.result = result;
         return result.success;
@@ -520,10 +687,6 @@ export fn evm_get_output(handle: ?*EvmHandle, buffer: [*]u8, buffer_len: usize) 
     return 0;
 }
 
-// Custom handlers are now registered via JavaScript import callbacks
-// (js_opcode_callback and js_precompile_callback defined at top of file)
-// No registration functions needed - JavaScript provides the callbacks at WASM instantiation
-
 /// Set storage value for an address
 export fn evm_set_storage(
     handle: ?*EvmHandle,
@@ -551,7 +714,7 @@ export fn evm_set_storage(
             value = (value << 8) | value_bytes[i];
         }
 
-        ctx.evm.storage.storage.put(StorageKey{ .address = address.bytes, .slot = slot }, value) catch return false;
+        ctx.evm.setStoragePrestate(.{ .address = address.bytes, .slot = slot }, value) catch return false;
         return true;
     }
     return false;
@@ -631,10 +794,12 @@ export fn evm_set_code(
         var address: Address = undefined;
         @memcpy(&address.bytes, address_bytes[0..20]);
 
-        const code_slice = if (code_len > 0) code[0..code_len] else &[_]u8{};
-        const code_copy = ctx.evm.allocator.alloc(u8, code_slice.len) catch return false;
-        @memcpy(code_copy, code_slice);
-        ctx.evm.code.put(address, code_copy) catch return false;
+        const arena = ctx.evm.arena.allocator();
+        const code_copy = arena.dupe(u8, code[0..code_len]) catch return false;
+        ctx.evm.code.put(address, code_copy) catch {
+            arena.free(code_copy);
+            return false;
+        };
         return true;
     }
     return false;
@@ -738,7 +903,8 @@ export fn evm_call_ffi(
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
 
-        if (ctx.bytecode.len == 0) {
+        const bytecode = if (ctx.bytecode.len > 0) ctx.bytecode else ctx.evm.get_code(ctx.address);
+        if (bytecode.len == 0 or ctx.gas < 0) {
             request_out.output_type = 255;
             return false;
         }
@@ -790,16 +956,16 @@ export fn evm_call_ffi(
             allocator.free(list);
         };
 
-        // Set bytecode, access list, and blob hashes BEFORE calling
-        ctx.evm.setBytecode(ctx.bytecode);
+        ctx.prepareExecution();
+        ctx.evm.setBytecode(bytecode);
         ctx.evm.setAccessList(access_list);
-        if (ctx.blob_versioned_hashes) |hashes| {
-            ctx.evm.setBlobVersionedHashes(hashes);
-        }
+        defer ctx.evm.setAccessList(null);
+        ctx.evm.setBlobVersionedHashes(ctx.blob_versioned_hashes orelse &.{});
 
         // Start execution with params from ctx
         const params = buildCallParams(ctx);
-        const output = ctx.evm.callOrContinue(.{ .call = params }) catch {
+        const output = ctx.evm.callOrContinue(.{ .call = params }) catch |err| {
+            ctx.result = .{ .success = false, .gas_left = 0, .output = &.{}, .error_info = @errorName(err) };
             request_out.output_type = 255; // Error
             return false;
         };
@@ -875,7 +1041,8 @@ export fn evm_continue_ffi(
             },
         };
 
-        const output = ctx.evm.callOrContinue(input) catch {
+        const output = ctx.evm.callOrContinue(input) catch |err| {
+            ctx.result = .{ .success = false, .gas_left = 0, .output = &.{}, .error_info = @errorName(err) };
             request_out.output_type = 255;
             return false;
         };
@@ -885,23 +1052,21 @@ export fn evm_continue_ffi(
     return false;
 }
 
-/// Get state changes JSON (only when output_type = ReadyToCommit)
+/// Get the full state changes JSON length (only when output_type = ReadyToCommit).
+export fn evm_get_state_changes_len(handle: ?*EvmHandle) usize {
+    const ctx = getContext(handle) orelse return 0;
+    return ctx.evm.pending_state_changes_len;
+}
+
+/// Copy state changes JSON and return the byte count copied.
+/// Use evm_get_state_changes_len to allocate enough space for the entire response.
 export fn evm_get_state_changes(
     handle: ?*EvmHandle,
     buffer: [*]u8,
     buffer_len: usize,
 ) usize {
-    if (handle) |h| {
-        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
-
-        // Read from evm struct
-        const copy_len = @min(ctx.evm.pending_state_changes_len, buffer_len);
-        if (copy_len > 0) {
-            @memcpy(buffer[0..copy_len], ctx.evm.pending_state_changes[0..copy_len]);
-        }
-        return copy_len;
-    }
-    return 0;
+    const ctx = getContext(handle) orelse return 0;
+    return copyBytes(ctx.evm.pending_state_changes, buffer, buffer_len);
 }
 
 /// Enable async storage injection
@@ -911,13 +1076,15 @@ export fn evm_enable_storage_injector(handle: ?*EvmHandle) bool {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
 
         // Create storage injector with arena allocator
-        const injector_ptr = ctx.evm.allocator.create(StorageInjector) catch return false;
-        injector_ptr.* = StorageInjector.init(ctx.evm.arena.allocator()) catch {
-            ctx.evm.allocator.destroy(injector_ptr);
+        if (ctx.evm.pending_storage_injector != null) return true;
+        const arena = ctx.evm.arena.allocator();
+        const injector_ptr = arena.create(StorageInjector) catch return false;
+        injector_ptr.* = StorageInjector.init(arena) catch {
+            arena.destroy(injector_ptr);
             return false;
         };
 
-        ctx.evm.storage.storage_injector = injector_ptr;
+        ctx.evm.pending_storage_injector = injector_ptr;
         return true;
     }
     return false;
@@ -1034,4 +1201,28 @@ export fn evm_get_storage_change(
         }
     }
     return false;
+}
+
+test "destroy releases FFI pre-state, inspectors, and cached JSON" {
+    const testing = std.testing;
+    const handle = evm_create("prague", "prague".len, 0) orelse return error.OutOfMemory;
+    {
+        defer evm_destroy(handle);
+        const address = Address.fromU256(0x100);
+        const zero = [_]u8{0} ** 32;
+        const code = &[_]u8{ 0x5f, 0x54, 0x50, 0x5f, 0x5f, 0xa0, 0x00 };
+        try testing.expect(evm_set_code(handle, &address.bytes, code, code.len));
+        try testing.expect(evm_set_storage(handle, &address.bytes, &zero, &zero));
+        try testing.expect(evm_set_execution_context(handle, 100_000, &ZERO_ADDRESS.bytes, &address.bytes, &zero, &zero, 0));
+        evm_enable_tracing(handle, true, false, false, true);
+        evm_enable_call_tracer(handle, false, true);
+        evm_enable_access_list_tracker(handle);
+        for (0..2) |_| {
+            try testing.expect(evm_execute(handle));
+            try testing.expect(evm_get_trace_json_len(handle) > 0);
+            try testing.expect(evm_get_call_trace_json_len(handle) > 0);
+            try testing.expect(evm_get_access_list_json_len(handle) > 0);
+        }
+    }
+    try testing.expect(!gpa.detectLeaks());
 }

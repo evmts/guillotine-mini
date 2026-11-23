@@ -123,7 +123,8 @@ def generate_test_file(json_path: Path, output_dir: Path, specs_root: Path, repo
         zig_code.append("    const json_content = try std.fs.cwd().readFileAlloc(allocator, json_path, 100 * 1024 * 1024);")
         zig_code.append("    defer allocator.free(json_content);")
         zig_code.append("")
-        zig_code.append("    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_content, .{});")
+        # Match json.load() above when legacy fixtures repeat a key.
+        zig_code.append("    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_content, .{ .duplicate_field_behavior = .use_last });")
         zig_code.append("    defer parsed.deinit();")
         zig_code.append("")
         zig_code.append("    // Get the specific test case")

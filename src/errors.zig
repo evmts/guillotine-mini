@@ -11,6 +11,8 @@ pub const CallError = error{
     CallDepthExceeded,
     InsufficientBalance,
     ContractCollision,
+    NonceOverflow,
+    CodeStoreOutOfGas,
     InvalidBytecode,
     StaticCallViolation,
     InvalidOpcode,

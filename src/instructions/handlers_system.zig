@@ -24,6 +24,13 @@ pub fn Handlers(FrameType: type) type {
             return (bytes + 31) / 32;
         }
 
+        fn memoryRangeEnd(offset: u256, length: u256) u64 {
+            if (length == 0) return 0;
+            const start = std.math.cast(u64, offset) orelse return std.math.maxInt(u64);
+            const size = std.math.cast(u64, length) orelse return std.math.maxInt(u64);
+            return start +| size;
+        }
+
         inline fn wordAlignedSize(bytes: u64) u32 {
             const words = wordCount(bytes);
             return @intCast(words * 32);
@@ -52,7 +59,8 @@ pub fn Handlers(FrameType: type) type {
             // Read init code from memory
             var init_code: []const u8 = &.{};
             var init_code_buf: ?[]u8 = null;
-            defer if (init_code_buf) |buf| frame.allocator.free(buf);
+            const allocator = frame.allocator;
+            defer if (init_code_buf) |buf| allocator.free(buf);
             if (length > 0 and length <= std.math.maxInt(u32)) {
                 const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
 
@@ -67,11 +75,7 @@ pub fn Handlers(FrameType: type) type {
 
                 const code = try frame.allocator.alloc(u8, len);
                 init_code_buf = code;
-                var j: u32 = 0;
-                while (j < len) : (j += 1) {
-                    const addr = try add_u32(off, j);
-                    code[j] = frame.readMemory(addr);
-                }
+                try frame.copyFromMemory(code, off);
                 init_code = code;
             }
 
@@ -88,23 +92,25 @@ pub fn Handlers(FrameType: type) type {
 
             // Perform CREATE
             const result = try evm.inner_create(value, init_code, max_gas, null);
+            const active_frame = evm.getCurrentFrame() orelse frame;
 
             // Update gas
-            const gas_used = max_gas - result.gas_left;
+            const gas_used = max_gas -| result.gas_left;
+            if (active_frame.step_metering) active_frame.step_child_gas_spent = gas_used;
             // Safely cast gas_used - if it exceeds i64::MAX, clamp gas_remaining to 0
             const gas_used_i64 = std.math.cast(i64, gas_used) orelse {
-                frame.gas_remaining = 0;
+                active_frame.gas_remaining = 0;
                 return error.OutOfGas;
             };
-            frame.gas_remaining -= gas_used_i64;
+            active_frame.gas_remaining -= gas_used_i64;
 
             // Set return_data according to CREATE semantics:
             // - On success: return_data is empty
             // - On failure: return_data is the child's output
             if (result.success) {
-                frame.return_data = &[_]u8{};
+                active_frame.return_data = &[_]u8{};
             } else {
-                frame.return_data = result.output;
+                active_frame.return_data = result.output;
             }
 
             // Push address onto stack (0 if failed)
@@ -115,9 +121,9 @@ pub fn Handlers(FrameType: type) type {
                 }
                 break :blk val;
             } else 0;
-            try frame.pushStack(addr_u256);
+            try active_frame.pushStack(addr_u256);
 
-            frame.pc += 1;
+            active_frame.pc += 1;
         }
 
         /// CALL opcode (0xf1) - Message call into an account
@@ -185,16 +191,12 @@ pub fn Handlers(FrameType: type) type {
             // Per Python reference (gas.py:179-192), calculate_gas_extend_memory processes
             // all memory extensions together, updating current_size between iterations
             // This ensures we only charge for the INCREMENTAL expansion, not double-charge
-            const in_end = if (in_length > 0) @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length)) else 0;
-            const out_end = if (out_length > 0) @as(u64, @intCast(out_offset)) + @as(u64, @intCast(out_length)) else 0;
+            const in_end = memoryRangeEnd(in_offset, in_length);
+            const out_end = memoryRangeEnd(out_offset, out_length);
             const max_end = @max(in_end, out_end);
             if (max_end > 0) {
                 const mem_cost = frame.memoryExpansionCost(max_end);
-                gas_cost += mem_cost;
-                // Update memory_size immediately after charging (matches Python behavior)
-                // Python: evm.memory += b"\x00" * extend_memory.expand_by
-                const aligned_size = wordAlignedSize(max_end);
-                if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
+                gas_cost +|= mem_cost;
             }
 
             // Calculate available gas BEFORE charging (per Python execution-specs)
@@ -224,8 +226,10 @@ pub fn Handlers(FrameType: type) type {
             // NOW charge the total cost (extra costs + forwardable gas)
             // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
             // where message_call_gas.cost = gas + extra_gas
-            const total_cost = gas_cost + available_gas_without_stipend;
+            const total_cost = gas_cost +| available_gas_without_stipend;
             try frame.consumeGas(total_cost);
+            const aligned_size = wordAlignedSize(max_end);
+            if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
@@ -241,11 +245,7 @@ pub fn Handlers(FrameType: type) type {
                 if (end_offset >= in_off) {
                     const data = try frame.allocator.alloc(u8, in_len);
                     input_data_buf = data;
-                    var j: u32 = 0;
-                    while (j < in_len) : (j += 1) {
-                        const addr = try add_u32(in_off, j);
-                        data[j] = frame.readMemory(addr);
-                    }
+                    try frame.copyFromMemory(data, in_off);
                     input_data = data;
                 }
                 // else: overflow occurred, use empty input data
@@ -270,11 +270,7 @@ pub fn Handlers(FrameType: type) type {
                 const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
                 const copy_len = @min(out_len_u32, result_len_u32);
 
-                var k: u32 = 0;
-                while (k < copy_len) : (k += 1) {
-                    const addr = try add_u32(out_off, k);
-                    try active_frame.writeMemory(addr, result.output[k]);
-                }
+                try active_frame.writeMemorySlice(out_off, result.output[0..copy_len]);
             }
 
             // Store return data
@@ -288,8 +284,9 @@ pub fn Handlers(FrameType: type) type {
             // Per Python: evm.gas_left += child_evm.gas_left
             // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
             const gas_to_refund = @min(result.gas_left, available_gas);
+            if (active_frame.step_metering) active_frame.step_child_gas_spent = available_gas - gas_to_refund;
             const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
-            active_frame.gas_remaining = @min(active_frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
+            active_frame.gas_remaining = active_frame.gas_remaining +| gas_to_refund_i64;
 
             active_frame.pc += 1;
         }
@@ -335,16 +332,12 @@ pub fn Handlers(FrameType: type) type {
             gas_cost += access_cost;
 
             // Calculate memory expansion cost for BOTH input and output regions together
-            const in_end = if (in_length > 0) @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length)) else 0;
-            const out_end = if (out_length > 0) @as(u64, @intCast(out_offset)) + @as(u64, @intCast(out_length)) else 0;
+            const in_end = memoryRangeEnd(in_offset, in_length);
+            const out_end = memoryRangeEnd(out_offset, out_length);
             const max_end = @max(in_end, out_end);
             if (max_end > 0) {
                 const mem_cost = frame.memoryExpansionCost(max_end);
-                gas_cost += mem_cost;
-                // Update memory_size immediately after charging (matches Python behavior)
-                // Python: evm.memory += b"\x00" * extend_memory.expand_by
-                const aligned_size = wordAlignedSize(max_end);
-                if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
+                gas_cost +|= mem_cost;
             }
 
             // Calculate available gas BEFORE charging (per Python execution-specs)
@@ -371,8 +364,10 @@ pub fn Handlers(FrameType: type) type {
             // NOW charge the total cost (extra costs + forwardable gas)
             // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
             // where message_call_gas.cost = gas + extra_gas
-            const total_cost = gas_cost + available_gas_without_stipend;
+            const total_cost = gas_cost +| available_gas_without_stipend;
             try frame.consumeGas(total_cost);
+            const aligned_size = wordAlignedSize(max_end);
+            if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
@@ -388,11 +383,7 @@ pub fn Handlers(FrameType: type) type {
                 if (end_offset >= in_off) {
                     const data = try frame.allocator.alloc(u8, in_len);
                     input_data_buf = data;
-                    var j: u32 = 0;
-                    while (j < in_len) : (j += 1) {
-                        const addr = try add_u32(in_off, j);
-                        data[j] = frame.readMemory(addr);
-                    }
+                    try frame.copyFromMemory(data, in_off);
                     input_data = data;
                 }
                 // else: overflow occurred, use empty input data
@@ -416,11 +407,7 @@ pub fn Handlers(FrameType: type) type {
                 const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
                 const copy_len = @min(out_len_u32, result_len_u32);
 
-                var k: u32 = 0;
-                while (k < copy_len) : (k += 1) {
-                    const addr = try add_u32(out_off, k);
-                    try active_frame.writeMemory(addr, result.output[k]);
-                }
+                try active_frame.writeMemorySlice(out_off, result.output[0..copy_len]);
             }
 
             // Store return data
@@ -433,8 +420,9 @@ pub fn Handlers(FrameType: type) type {
             // Per Python: evm.gas_left += child_evm.gas_left
             // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
             const gas_to_refund = @min(result.gas_left, available_gas);
+            if (active_frame.step_metering) active_frame.step_child_gas_spent = available_gas - gas_to_refund;
             const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
-            active_frame.gas_remaining = @min(active_frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
+            active_frame.gas_remaining = active_frame.gas_remaining +| gas_to_refund_i64;
 
             active_frame.pc += 1;
         }
@@ -478,16 +466,12 @@ pub fn Handlers(FrameType: type) type {
             gas_cost += access_cost;
 
             // Calculate memory expansion cost for BOTH input and output regions together
-            const in_end = if (in_length > 0) @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length)) else 0;
-            const out_end = if (out_length > 0) @as(u64, @intCast(out_offset)) + @as(u64, @intCast(out_length)) else 0;
+            const in_end = memoryRangeEnd(in_offset, in_length);
+            const out_end = memoryRangeEnd(out_offset, out_length);
             const max_end = @max(in_end, out_end);
             if (max_end > 0) {
                 const mem_cost = frame.memoryExpansionCost(max_end);
-                gas_cost += mem_cost;
-                // Update memory_size immediately after charging (matches Python behavior)
-                // Python: evm.memory += b"\x00" * extend_memory.expand_by
-                const aligned_size = wordAlignedSize(max_end);
-                if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
+                gas_cost +|= mem_cost;
             }
 
             // Calculate available gas BEFORE charging (per Python execution-specs)
@@ -508,8 +492,10 @@ pub fn Handlers(FrameType: type) type {
             // NOW charge the total cost (base cost + forwarded gas)
             // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
             // where message_call_gas.cost = gas + extra_gas
-            const total_cost = gas_cost + available_gas;
+            const total_cost = gas_cost +| available_gas;
             try frame.consumeGas(total_cost);
+            const aligned_size = wordAlignedSize(max_end);
+            if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
@@ -525,11 +511,7 @@ pub fn Handlers(FrameType: type) type {
                 if (end_offset >= in_off) {
                     const data = try frame.allocator.alloc(u8, in_len);
                     input_data_buf = data;
-                    var j: u32 = 0;
-                    while (j < in_len) : (j += 1) {
-                        const addr = try add_u32(in_off, j);
-                        data[j] = frame.readMemory(addr);
-                    }
+                    try frame.copyFromMemory(data, in_off);
                     input_data = data;
                 }
                 // else: overflow occurred, use empty input data
@@ -552,11 +534,7 @@ pub fn Handlers(FrameType: type) type {
                 const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
                 const copy_len = @min(out_len_u32, result_len_u32);
 
-                var k: u32 = 0;
-                while (k < copy_len) : (k += 1) {
-                    const addr = try add_u32(out_off, k);
-                    try active_frame.writeMemory(addr, result.output[k]);
-                }
+                try active_frame.writeMemorySlice(out_off, result.output[0..copy_len]);
             }
 
             // Store return data
@@ -569,8 +547,9 @@ pub fn Handlers(FrameType: type) type {
             // Per Python: evm.gas_left += child_evm.gas_left
             // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
             const gas_to_refund = @min(result.gas_left, available_gas);
+            if (active_frame.step_metering) active_frame.step_child_gas_spent = available_gas - gas_to_refund;
             const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
-            active_frame.gas_remaining = @min(active_frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
+            active_frame.gas_remaining = active_frame.gas_remaining +| gas_to_refund_i64;
 
             active_frame.pc += 1;
         }
@@ -614,16 +593,12 @@ pub fn Handlers(FrameType: type) type {
             call_gas_cost += access_cost;
 
             // Calculate memory expansion cost for BOTH input and output regions together
-            const in_end = if (in_length > 0) @as(u64, @intCast(in_offset)) + @as(u64, @intCast(in_length)) else 0;
-            const out_end = if (out_length > 0) @as(u64, @intCast(out_offset)) + @as(u64, @intCast(out_length)) else 0;
+            const in_end = memoryRangeEnd(in_offset, in_length);
+            const out_end = memoryRangeEnd(out_offset, out_length);
             const max_end = @max(in_end, out_end);
             if (max_end > 0) {
                 const mem_cost = frame.memoryExpansionCost(max_end);
-                call_gas_cost += mem_cost;
-                // Update memory_size immediately after charging (matches Python behavior)
-                // Python: evm.memory += b"\x00" * extend_memory.expand_by
-                const aligned_size = wordAlignedSize(max_end);
-                if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
+                call_gas_cost +|= mem_cost;
             }
 
             // Calculate available gas BEFORE charging (per Python execution-specs)
@@ -644,8 +619,10 @@ pub fn Handlers(FrameType: type) type {
             // NOW charge the total cost (base cost + forwarded gas)
             // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
             // where message_call_gas.cost = gas + extra_gas
-            const total_cost = call_gas_cost + available_gas;
+            const total_cost = call_gas_cost +| available_gas;
             try frame.consumeGas(total_cost);
+            const aligned_size = wordAlignedSize(max_end);
+            if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
@@ -661,11 +638,7 @@ pub fn Handlers(FrameType: type) type {
                 if (end_offset >= in_off) {
                     const data = try frame.allocator.alloc(u8, in_len);
                     input_data_buf = data;
-                    var j: u32 = 0;
-                    while (j < in_len) : (j += 1) {
-                        const addr = try add_u32(in_off, j);
-                        data[j] = frame.readMemory(addr);
-                    }
+                    try frame.copyFromMemory(data, in_off);
                     input_data = data;
                 }
                 // else: overflow occurred, use empty input data
@@ -688,11 +661,7 @@ pub fn Handlers(FrameType: type) type {
                 const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
                 const copy_len = @min(out_len_u32, result_len_u32);
 
-                var k: u32 = 0;
-                while (k < copy_len) : (k += 1) {
-                    const addr = try add_u32(out_off, k);
-                    try active_frame.writeMemory(addr, result.output[k]);
-                }
+                try active_frame.writeMemorySlice(out_off, result.output[0..copy_len]);
             }
 
             // Store return data
@@ -705,8 +674,9 @@ pub fn Handlers(FrameType: type) type {
             // Per Python: evm.gas_left += child_evm.gas_left
             // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
             const gas_to_refund = @min(result.gas_left, available_gas);
+            if (active_frame.step_metering) active_frame.step_child_gas_spent = available_gas - gas_to_refund;
             const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
-            active_frame.gas_remaining = @min(active_frame.gas_remaining + gas_to_refund_i64, std.math.maxInt(i64));
+            active_frame.gas_remaining = active_frame.gas_remaining +| gas_to_refund_i64;
 
             active_frame.pc += 1;
         }
@@ -736,7 +706,8 @@ pub fn Handlers(FrameType: type) type {
             // Read init code from memory
             var init_code: []const u8 = &.{};
             var init_code_buf: ?[]u8 = null;
-            defer if (init_code_buf) |buf| frame.allocator.free(buf);
+            const allocator = frame.allocator;
+            defer if (init_code_buf) |buf| allocator.free(buf);
             if (length > 0 and length <= std.math.maxInt(u32)) {
                 const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
 
@@ -751,11 +722,7 @@ pub fn Handlers(FrameType: type) type {
 
                 const code = try frame.allocator.alloc(u8, len);
                 init_code_buf = code;
-                var j: u32 = 0;
-                while (j < len) : (j += 1) {
-                    const addr = try add_u32(off, j);
-                    code[j] = frame.readMemory(addr);
-                }
+                try frame.copyFromMemory(code, off);
                 init_code = code;
             }
 
@@ -770,23 +737,25 @@ pub fn Handlers(FrameType: type) type {
 
             // Perform CREATE2 with salt
             const result = try evm.inner_create(value, init_code, max_gas, salt);
+            const active_frame = evm.getCurrentFrame() orelse frame;
 
             // Update gas
-            const gas_used = max_gas - result.gas_left;
+            const gas_used = max_gas -| result.gas_left;
+            if (active_frame.step_metering) active_frame.step_child_gas_spent = gas_used;
             // Safely cast gas_used - if it exceeds i64::MAX, clamp gas_remaining to 0
             const gas_used_i64 = std.math.cast(i64, gas_used) orelse {
-                frame.gas_remaining = 0;
+                active_frame.gas_remaining = 0;
                 return error.OutOfGas;
             };
-            frame.gas_remaining -= gas_used_i64;
+            active_frame.gas_remaining -= gas_used_i64;
 
             // Set return_data according to EIP-1014:
             // - On success: return_data is empty
             // - On failure: return_data is the child's output
             if (result.success) {
-                frame.return_data = &[_]u8{};
+                active_frame.return_data = &[_]u8{};
             } else {
-                frame.return_data = result.output;
+                active_frame.return_data = result.output;
             }
 
             // Push address onto stack (0 if failed)
@@ -797,9 +766,9 @@ pub fn Handlers(FrameType: type) type {
                 }
                 break :blk val;
             } else 0;
-            try frame.pushStack(addr_u256);
+            try active_frame.pushStack(addr_u256);
 
-            frame.pc += 1;
+            active_frame.pc += 1;
         }
 
         /// SELFDESTRUCT opcode (0xff) - Halt execution and register account for deletion
@@ -826,17 +795,8 @@ pub fn Handlers(FrameType: type) type {
             // Per Python reference: if beneficiary not in evm.accessed_addresses, add it and charge cold access
             // IMPORTANT: Unlike CALL which always charges an access cost (warm=100 or cold=2600),
             // SELFDESTRUCT only charges if the beneficiary is cold (not already accessed)
-            if (frame.hardfork.isAtLeast(.BERLIN)) {
-                const is_warm = evm_ptr.access_list_manager.is_address_warm(beneficiary);
-                if (!is_warm) {
-                    // Mark as warm and charge cold access cost
-                    // We must mark it warm BEFORE charging to match Python's behavior
-                    // (Python: evm.accessed_addresses.add(beneficiary) then gas_cost += GAS_COLD_ACCOUNT_ACCESS)
-                    _ = try evm_ptr.access_list_manager.warm_addresses.getOrPut(beneficiary);
-                    gas_cost += GasConstants.ColdAccountAccessCost; // +2600
-                }
-                // If already warm: no additional cost (unlike CALL which charges 100 for warm access)
-            }
+            const access_cost = try evm_ptr.accessAddress(beneficiary);
+            if (access_cost == GasConstants.ColdAccountAccessCost) gas_cost += access_cost;
 
             const self_balance = if (evm_ptr.host) |h|
                 h.getBalance(frame.address)
@@ -940,6 +900,15 @@ pub fn Handlers(FrameType: type) type {
                 evm_ptr.gas_refund += refund;
             }
 
+            if (evm_ptr.inspector) |sink| {
+                @branchHint(.unlikely);
+                sink.onSelfDestruct(.{
+                    .frame_id = frame.frame_id,
+                    .address = frame.address,
+                    .beneficiary = beneficiary,
+                    .value = self_balance,
+                });
+            }
             frame.stopped = true;
         }
     };

@@ -98,10 +98,11 @@ pub fn Handlers(FrameType: type) type {
             const b = try frame.popStack();
             const n = try frame.popStack();
             const result = if (n == 0) 0 else blk: {
-                const a_wide = @as(u512, a);
-                const b_wide = @as(u512, b);
-                const n_wide = @as(u512, n);
-                break :blk @as(u256, @truncate((a_wide + b_wide) % n_wide));
+                // Overflow-free u256 modular addition (avoids slow u512 division)
+                const am = a % n;
+                const bm = b % n;
+                const space = n - am;
+                break :blk if (bm >= space) bm - space else am + bm;
             };
             try frame.pushStack(result);
             frame.pc += 1;
@@ -129,17 +130,12 @@ pub fn Handlers(FrameType: type) type {
             const base = try frame.popStack();
             const exponent = try frame.popStack();
 
-            // Calculate dynamic gas cost based on exponent byte length
+            // Calculate dynamic gas cost based on exponent byte length in O(1) via @clz
             // Per EIP-160: GAS_EXP_BYTE * byte_length(exponent)
-            const byte_len = blk: {
-                if (exponent == 0) break :blk 0;
-                var temp_exp = exponent;
-                var len: u64 = 0;
-                while (temp_exp > 0) : (temp_exp >>= 8) {
-                    len += 1;
-                }
-                break :blk len;
-            };
+            const byte_len: u64 = if (exponent == 0)
+                0
+            else
+                (@as(u64, 256 - @clz(exponent)) + 7) >> 3;
             // EIP-160 (Spurious Dragon) raised the EXP per-byte cost from 10 to 50.
             const EXP_BYTE_COST: u64 = if (frame.hardfork.isAtLeast(.SPURIOUS_DRAGON)) 50 else 10;
             const dynamic_gas = EXP_BYTE_COST * byte_len;

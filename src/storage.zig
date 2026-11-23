@@ -24,6 +24,8 @@ pub const Storage = struct {
     original_storage: std.AutoHashMap(StorageSlotKey, u256),
     /// Transient storage (EIP-1153, cleared at transaction boundaries)
     transient: std.AutoHashMap(StorageSlotKey, u256),
+    /// Slots observed by the struct logger during this transaction.
+    trace_slots: std.AutoHashMap(StorageSlotKey, void),
     /// Host interface (optional, for external state backends)
     host: ?host.HostInterface,
     /// Storage injector for async data fetching
@@ -48,6 +50,7 @@ pub const Storage = struct {
             .storage = std.AutoHashMap(StorageSlotKey, u256).init(allocator),
             .original_storage = std.AutoHashMap(StorageSlotKey, u256).init(allocator),
             .transient = std.AutoHashMap(StorageSlotKey, u256).init(allocator),
+            .trace_slots = .init(allocator),
             .host = h,
             .storage_injector = injector,
             .async_data_request = .none,
@@ -60,6 +63,7 @@ pub const Storage = struct {
         self.storage.deinit();
         self.original_storage.deinit();
         self.transient.deinit();
+        self.trace_slots.deinit();
     }
 
     /// Clear injector cache (call at transaction start)
@@ -83,7 +87,7 @@ pub const Storage = struct {
     /// Retrieves the current value from a contract's persistent storage slot.
     ///
     /// Behavior depends on configuration:
-    ///   - With storage injector: Checks cache first, yields with NeedAsyncData if miss
+    ///   - With storage injector: Checks transaction writes, then the cache, yielding on a miss
     ///   - With host interface: Delegates to host.getStorage()
     ///   - Without host: Uses internal HashMap, returns 0 for empty slots
     ///
@@ -96,30 +100,24 @@ pub const Storage = struct {
     /// Errors:
     ///   - NeedAsyncData: When using injector and value not in cache (yields for fetch)
     pub fn get(self: *Storage, address: primitives.Address, slot: u256) !u256 {
+        const injector = self.storage_injector orelse return self.peek(address, slot).?;
         const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
+        if (self.storage.get(key)) |value| return value;
+        if (injector.storage_cache.get(key)) |value| return value;
 
-        // If using storage injector, check cache first
+        log.debug("get_storage: Cache MISS for slot {}, yielding", .{slot});
+        self.async_data_request = .{ .storage = .{ .address = address, .slot = slot } };
+        return errors.CallError.NeedAsyncData;
+    }
+
+    /// Read known state without scheduling a request or updating LRU order.
+    pub fn peek(self: *Storage, address: primitives.Address, slot: u256) ?u256 {
+        const key = StorageSlotKey{ .address = address.bytes, .slot = slot };
         if (self.storage_injector) |injector| {
-            log.debug("get_storage: Using storage injector for slot {}", .{slot});
-            // Check cache first
-            if (injector.storage_cache.get(key)) |value| {
-                log.debug("get_storage: Cache HIT for slot {}, value={}", .{ slot, value });
-                return value; // Cache hit
-            }
-
-            // Cache miss - yield to fetch from async source
-            log.debug("get_storage: Cache MISS for slot {}, yielding", .{slot});
-            self.async_data_request = .{ .storage = .{
-                .address = address,
-                .slot = slot,
-            } };
-            return errors.CallError.NeedAsyncData;
+            if (self.storage.get(key)) |value| return value;
+            return injector.storage_cache.peek(key);
         }
-
-        // No injector - use host or internal HashMap
-        if (self.host) |h| {
-            return h.getStorage(address, slot);
-        }
+        if (self.host) |h| return h.getStorage(address, slot);
         return self.storage.get(key) orelse 0;
     }
 
@@ -144,16 +142,18 @@ pub const Storage = struct {
 
         // Track original value on first write in transaction
         if (!self.original_storage.contains(key)) {
-            const current = if (self.host) |h|
-                h.getStorage(address, slot)
-            else
-                self.storage.get(key) orelse 0;
+            const current = self.peek(address, slot) orelse if (self.host) |h| h.getStorage(address, slot) else 0;
             try self.original_storage.put(key, current);
         }
 
         // Mark dirty if using injector
         if (self.storage_injector) |injector| {
+            try self.storage.ensureUnusedCapacity(1);
             try injector.markStorageDirty(address, slot);
+            // Keep zero writes in the overlay so they shadow cached nonzero values.
+            self.storage.putAssumeCapacity(key, value);
+            if (self.host) |h| h.setStorage(address, slot, value);
+            return;
         }
 
         if (self.host) |h| {
@@ -186,11 +186,7 @@ pub const Storage = struct {
             return original;
         }
         // Otherwise return current value (unchanged in this transaction)
-        // Use host if available
-        if (self.host) |h| {
-            return h.getStorage(address, slot);
-        }
-        return self.storage.get(key) orelse 0;
+        return self.peek(address, slot) orelse if (self.host) |h| h.getStorage(address, slot) else 0;
     }
 
     /// Get transient storage value (EIP-1153)

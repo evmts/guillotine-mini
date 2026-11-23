@@ -1,0 +1,326 @@
+---
+title: Observability, Simulation & RPC
+description: Isolated state-overlay simulation (eth_call, eth_estimateGas, eth_createAccessList, eth_simulateV1), JSON-RPC handlers, live block hooks, indexed trace_filter, time-travel debugger, gas flamegraphs, and EVMC ABI 12 bridge.
+---
+
+# Observability, Simulation & RPC
+
+Beyond core EVM execution and [Tracing & Inspectors](/guides/tracing), Guillotine Mini ships a full execution-client observability suite: an isolated simulation engine, comptime-DI JSON-RPC handlers, block-level live tracing, an indexed trace store, a time-travel debugger, an interactive SVG flamegraph generator, and an EVMC ABI 12 host bridge.
+
+---
+
+## Simulation Engine (`src/simulation.zig`)
+
+Every simulation API runs on a `StateOverlayHost`: reads fall through to an optional base `HostInterface`, writes land only in the overlay, and the base host is never mutated.
+
+### `StateOverlayHost`, `AccountOverride` & `BlockOverride`
+
+`StateOverlayHost` journals every write so `checkpoint()` / `revertTo(mark)` can roll back writes to a checkpoint while preserving earlier calls in the same overlay.
+
+- **`AccountOverride.state`** replaces an account's entire storage map—any slot not listed reads as `0` rather than falling through to the base host.
+- **`AccountOverride.state_diff`** sparsely patches individual slots—unlisted slots still read through to the base host.
+- Passing both `state` and `state_diff` on the same account is rejected atomically with `error.ConflictingStateOverrides` before any override is applied.
+- **`BlockOverride`** selectively overrides `number`, `time`, `gas_limit`, `fee_recipient`, `prev_randao`, `base_fee`, and `blob_base_fee` via `override.apply(base_block)`.
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+const sim = guillotine.simulation;
+const voltaire = @import("voltaire");
+
+pub fn runSimulation(
+    allocator: std.mem.Allocator,
+    base_host: guillotine.HostInterface,
+    block: guillotine.BlockContext,
+    sender: voltaire.Address,
+    contract: voltaire.Address,
+) !void {
+    const req: sim.CallRequest = .{
+        .from = sender,
+        .to = contract,
+        .gas = 1_000_000,
+    };
+
+    // 1. eth_call with sparse stateDiff + block override
+    var call_res = try sim.simulateCall(
+        allocator,
+        base_host,
+        block,
+        .PRAGUE,
+        req,
+        &.{.{
+            .address = contract,
+            .override = .{
+                .state_diff = &.{.{ .slot = 0, .value = 41 }},
+            },
+        }},
+        .{ .number = block.block_number + 1, .base_fee = 1 },
+        null, // optional Inspector
+    );
+    defer call_res.deinit(allocator);
+
+    // 2. eth_estimateGas (binary search with 1.5% tolerance; returns error on revert)
+    const estimated_gas = try sim.estimateGas(
+        allocator,
+        base_host,
+        block,
+        .PRAGUE,
+        req,
+        null,
+        null,
+    );
+    _ = estimated_gas;
+
+    // 3. eth_createAccessList (gas_used reflects the last executed list)
+    var al_res = try sim.createAccessList(
+        allocator,
+        base_host,
+        block,
+        .PRAGUE,
+        req,
+        null,
+        null,
+    );
+    defer al_res.deinit(allocator);
+}
+```
+
+### Simulation entry points
+
+| Function | Backing RPC | Behavior |
+| --- | --- | --- |
+| `simulateCall(...)` | `eth_call` | Runs on a throwaway overlay with optional `StateOverride`, `BlockOverride`, and `Inspector`; decodes `revert_reason` and Geth-style `error_msg` |
+| `estimateGas(...)` / `estimateGasDetailed(...)` | `eth_estimateGas` | Binary search between `minimumGas` (max of intrinsic gas and EIP-7623 calldata floor) and cap with an early cutoff when `(hi - lo) * 1000 / hi < 15`. `estimateGasDetailed` returns `EstimateGasOutcome` (`.gas`, `.reverted` with raw payload + decoded reason, or `.failed`) |
+| `createAccessList(...)` | `eth_createAccessList` | Reruns with `AccessListInspector` up to 10 iterations until the sorted access list stabilizes, returning `{ entries, gas_used, error_msg }`. At the iteration cap, `gas_used` describes the last executed list, and `entries` contains the list observed on that run |
+| `simulateV1(...)` | `eth_simulateV1` | Executes up to `MAX_SIMULATED_BLOCKS` (`256`) sequential blocks (default 12s timestamp step) on one shared `StateOverlayHost`, carrying state across calls and blocks. Failed set-code executions retain authorization changes, the sender nonce increment, and gas settlement |
+| `traceCallJson(...)` | `debug_traceCall` / `debug_traceTransaction` | Executes with any `TracerChoice` (`.struct_logger`, `.call_tracer`, `.flat_call_tracer`, `.prestate_tracer`, `.four_byte_tracer`, `.gas_profiler`, `.coverage`, or `.mux`) and returns serialized JSON |
+| `traceCallParityJson(...)` | `trace_call` | Runs `flatCallTracer` + `prestateTracer(diff_mode = true)` and emits `{"output", "stateDiff", "trace", "vmTrace"}` per `ParityTraceTypes`. `vmTrace` is always `null` |
+
+### Multi-block `simulateV1`
+
+```zig
+const blocks = [_]sim.SimulatedBlockInput{
+    .{ .calls = &.{ call_a, call_b } },
+    .{
+        .block_override = .{ .number = block.block_number + 10 },
+        .state_overrides = &.{.{ .address = contract, .override = .{ .balance = 1_000_000 } }},
+        .calls = &.{ call_c },
+    },
+};
+
+var v1 = try sim.simulateV1(
+    allocator,
+    base_host,
+    block,
+    .PRAGUE,
+    &blocks,
+    .{ .validation = true },
+);
+defer v1.deinit(allocator);
+```
+
+When `validation = true`, `simulateV1` enforces sender nonces and EIP-1559 base fee caps. When `validation = false`, unspecified block base fees default to `0`. Failed calls record `SimulatedCallError` (`.reverted`, `.vm_error`, or `.invalid`). Invalid calls and failed executions of other transaction types roll back to the pre-call checkpoint. When set-code execution reverts or faults, its execution writes roll back and its applied authorizations, sender nonce increment, and gas settlement remain in the overlay for subsequent calls.
+
+`SimulateV1Options` exposes `validation`, `trace_transfers`, and `return_full_transactions`. `CallRequest` includes `dynamic_fee` and `authorization_list` alongside the usual call fields.
+
+- **`authorizationList`** requires signed EIP-7702 tuples with `chainId`, `address`, `nonce`, `yParity` (or `v`), `r`, and `s`. The authority is recovered from the signature. RPC callers cannot provide an `authority` field. An explicitly empty list for a set-code request is rejected.
+- **`traceTransfers`** emits synthetic ETH transfer logs at `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` with the first topic `keccak("Transfer(address,address,uint256)")`. Synthetic transfer logs and contract logs are interleaved in execution order. A reverted frame discards both kinds of logs from itself and its descendants.
+- **`returnFullTransactions`** returns Geth-style `RPCTransaction` objects in the block's `transactions` array. Objects carry type-specific fields, including `accessList` for access-list and later types, `maxFeePerGas` and `maxPriorityFeePerGas` for dynamic-fee types, `maxFeePerBlobGas` and `blobVersionedHashes` for blob transactions, and `authorizationList` for set-code transactions. The synthesized transaction's signature fields are zero. By default, `transactions` contains transaction hashes.
+
+---
+
+## JSON-RPC APIs (`client/rpc/`)
+
+`client/rpc/root.zig` exports three comptime-DI RPC handler namespaces wired directly to `src/simulation.zig` (passed as `comptime Sim: type`), plus zero-allocation namespace routing in `Dispatch`.
+
+### Provider contract
+
+Instantiate any API with a `Provider` type supplying:
+
+- `pub fn resolveBlock(self: *const Provider, tag: BlockTag) ?Sim.BlockState` — required by `SimulationApi`, `DebugApi`, and `TraceApi`. `BlockTag` supports `"latest"`, `"earliest"`, `"pending"`, `"safe"`, `"finalized"`, hex block numbers, 32-byte block hashes, and EIP-1898 objects containing exactly one of `blockNumber` or `blockHash`.
+- `pub fn getTransactionReplay(self: *const Provider, hash: [32]u8) ?Sim.TransactionReplay` — required by `DebugApi.handle_trace_transaction` and `TraceApi.handle_trace_transaction`.
+
+For `trace_block` and `trace_filter`, supply `filterTraces(allocator, query)`, which returns a slice of stored trace entry pointers allocated with the supplied allocator, or `traceStore()`, which returns a pointer (optionally nullable) to a `TraceStore`. `TraceApi` prefers `filterTraces` when both hooks are present. If storage is unavailable, it returns `method_not_found` (`-32601`).
+
+### Supported JSON-RPC methods & routing
+
+| Namespace / Type | Handler / Router | JSON-RPC Methods |
+| --- | --- | --- |
+| `SimulationApi(Sim, Provider)` | `handle_call`, `handle_estimate_gas`, `handle_create_access_list`, `handle_simulate_v1` | `eth_call`, `eth_estimateGas`, `eth_createAccessList`, `eth_simulateV1` |
+| `DebugApi(Sim, Provider)` | `handle_trace_call`, `handle_trace_transaction` | `debug_traceCall`, `debug_traceTransaction` (tracers: struct logger, `callTracer`, `flatCallTracer`, `prestateTracer`, `4byteTracer`, `muxTracer`, `gasProfiler`, `coverageTracer`) |
+| `TraceApi(Sim, Provider)` | `handle_trace_call`, `handle_trace_transaction`, `handle_trace_block`, `handle_trace_filter` | `trace_call` (`"trace"`, `"stateDiff"`, `"vmTrace"` + optional state/block overrides), `trace_transaction`, `trace_block`, `trace_filter` |
+| `Dispatch.resolve_namespace` | Method-name routing (`.eth`, `.debug`, `.trace`, `.engine`) | Routes all methods above plus `debug_traceBlockByNumber`, `debug_traceBlockByHash`, `trace_callMany`, `trace_rawTransaction`, `trace_replayTransaction`, `trace_replayBlockTransactions`, `trace_get` |
+
+`Codec.serve()` wraps every handler with EIP-1474 / execution-apis error translation (`execution_reverted` code `3` with revert hex in `data`, `invalid_input` `-32000` for missing headers/transactions or non-revert VM faults, `nonce_too_low`, `block_gas_limit_reached`, etc.). `trace_block` and `trace_filter` each require exactly one parameter. `trace_block` accepts a block selector and filters by block hash when the selector supplies a hash. `trace_filter` accepts a filter object and takes `after` and `count` as either hex quantities or JSON integers.
+
+---
+
+## Live Block Tracing (`src/live_tracer.zig`) & Trace Store (`src/trace_store.zig`)
+
+### `BlockHooks` & `MuxBlockHooks`
+
+Modeled after Geth's `core/tracing.Hooks`, `BlockHooks` observes chain-level and block-level lifecycle events while optionally attaching a per-transaction `tx_inspector: ?Inspector`:
+
+| Hook | Event struct |
+| --- | --- |
+| `onBlockchainInit` | `ChainInitEvent` (`chain_id`, `hardfork`, `genesis_hash`) |
+| `onGenesisBlock` | `GenesisBlockEvent` (`block_hash`, `allocs`) |
+| `onBlockStart`, `onBlockEnd` | `BlockStartEvent`, `BlockEndEvent` |
+| `onSkippedBlock` | `SkippedBlockEvent` (`number`, `hash`, `reason`) |
+| `onSystemCallStart`, `onSystemCallEnd` | `SystemCallStartEvent`, `SystemCallEndEvent` |
+| `onBlockBalanceChange` | `BlockBalanceChangeEvent` (`address`, `prev`, `new`, `reason: BalanceChangeReason`) |
+| `onStateUpdate` | `StateUpdateEvent` (`block_number`, `block_hash`, `parent_hash`, `accounts`) |
+| `onClose` | Shutdown hook (no payload) |
+
+`MuxBlockHooks.init(&children)` fans out both block hooks and every child's `tx_inspector` in a single pass via `mux.blockHooks()` and `mux.txInspector()`.
+
+### `SupplyTracer`
+
+`SupplyTracer` is a Zig API for live ETH issuance and burn accounting modeled on Geth’s `--vmtrace supply`.
+
+- **Issuance (`IssuanceBreakdown`):** `genesis`, `block_reward`, `uncle_reward`, `withdrawal`.
+- **Burn (`BurnBreakdown`):** `eip1559` (explicit `.fee_burn` balance events or inferred via `gas_used * base_fee` when `options.infer_eip1559_burn = true`), `blob` (tracked automatically from `TxStartEvent.blob_hash_count * GAS_PER_BLOB * blob_base_fee` when `options.track_tx_blob_burn = true`, or via `recordBlobBurn()`), and `misc` (via `recordMiscBurn()`).
+- **Signed 256-bit deltas:** `netSupplySigned()` and per-block `BlockSupplyRecord.delta` use `SignedU256` (`negative`, `magnitude`, `formatHexBuf`).
+- **Serialization:** `writeRecordJson(record, writer)`, `writeJsonlRecord(writer)` (NDJSON across all finalized blocks), and `writeSummaryJson(writer)`.
+
+### Indexed `TraceStore` & `rollbackReorg`
+
+`TraceStore` flattens `CallTracer` trees into owned `StoredTraceEntry` records with secondary `block_index`, `from_index`, and `to_index` hash sets for Parity `trace_filter` queries:
+
+```zig
+var store = guillotine.TraceStore.init(allocator, .{
+    .max_blocks = 256,
+    .max_entries = 65_536,
+    .keep_reverted = true,
+});
+defer store.deinit();
+
+// Index each executed transaction's CallTracer
+try store.recordCallTrace(block_number, block_hash, tx_hash, tx_index, &call_tracer);
+
+// Prune canonical reorgs (removes every block strictly > new_head_block and updates all indexes)
+store.rollbackReorg(new_head_block);
+
+// Indexed query: picks the smallest candidate index, sorts by (block_number, tx_index, trace_address)
+const matches = try store.filter(allocator, .{
+    .from_block = 100,
+    .to_block = 200,
+    .from_address = &.{ sender },
+    .after = 0,
+    .count = 50,
+});
+defer allocator.free(matches);
+
+// Format as a Parity / Erigon trace_filter JSON array
+try guillotine.TraceStore.writeFilterJson(writer, matches);
+```
+
+When `max_blocks` or `max_entries` is exceeded, `TraceStore` automatically evicts the oldest blocks (or oldest entries in the sole remaining block) and cleans up all secondary indexes.
+
+---
+
+## Time-Travel Debugger (`src/debugger.zig`)
+
+`ExecutionRecorder` implements `Inspector` to capture an immutable timeline of `DebugStep`s, `StorageEventRecord`s, and `CallFrameRecord`s. `DebugSession` operates as a zero-cost cursor over that recording:
+
+```zig
+var recorder = guillotine.ExecutionRecorder.init(allocator, .{
+    .max_steps = 50_000,      // optional cap; sets recorder.truncated if exceeded
+    .capture_memory = true,
+    .source_map = null,       // optional SourceMapResolver vtable
+});
+defer recorder.deinit();
+
+vm.setInspector(recorder.inspector());
+_ = vm.call(params);
+
+var session = recorder.session(allocator);
+defer session.deinit();
+
+const bp_id = try session.addBreakpoint(.on_revert);
+if (session.continueUntilBreakpoint()) |_| {
+    _ = session.stepBack(); // rewind one opcode before the REVERT
+    try session.writeCurrentStateSummary(writer);
+}
+session.removeBreakpoint(bp_id);
+```
+
+### Navigation methods
+
+- `stepInto()` / `stepBack()` — move forward or backward by one opcode (entering child frames).
+- `stepOver()` — advance to the next step with `depth <= current.depth`, skipping nested `CALL`/`CREATE` bodies.
+- `stepOut()` — advance until `depth < current.depth`.
+- `jumpToStep(index)` — O(1) seek to any step index.
+- `continueUntilBreakpoint()` / `continueBackUntilBreakpoint()` — scan forward or backward until any active breakpoint matches.
+- `writeCurrentStateSummary(writer)` — prints step index, frame ID, depth, PC, opcode, address/code address, gas/cost/refund, source location, error, top-first stack, memory preview, and return data.
+
+### All 7 `Breakpoint` types
+
+| Variant | Halts when |
+| --- | --- |
+| `.pc = .{ .address = ?Address, .pc = u64 }` | Step reaches `pc` (optionally scoped to `address` matching `code_address` or `address`) |
+| `.opcode = u8` | Step executes opcode byte (e.g. `0x55` for `SSTORE`) |
+| `.call_target = Address` | Execution enters a call frame targeting `Address` (or at its caller step if the frame has no opcodes, such as a precompile) |
+| `.storage_slot = .{ .address = ?Address, .slot = u256 }` | Step triggers a `StorageEventRecord` on `slot` (optionally scoped to `address`) |
+| `.on_revert` | Step executes `REVERT` (`0xfd`) or records `"execution reverted"` |
+| `.on_fault` | Step records any non-null `error_name` |
+| `.depth_at_most = usize` | Step's call `depth` is at most the given threshold |
+
+### `SourceMapResolver`
+
+Pass a `SourceMapResolver` vtable (callback type `*const fn (*anyopaque, Address, u64) ?SourceLocation`) in `ExecutionRecorder.Options.source_map` to attach `{ file_id, offset, length, jump }` (`Jump`: `.in`, `.out`, `.regular`) to every recorded `DebugStep` for Solidity/Vyper/Fe source-level debugging.
+
+---
+
+## Gas Flamegraphs (`src/flamegraph.zig`)
+
+`FlamegraphCollector` implements `Inspector` to aggregate exclusive gas per folded call stack at both frame granularity and per-opcode granularity:
+
+```zig
+var fg = guillotine.FlamegraphCollector.init(allocator, .{
+    .labeler = null,            // optional AddressLabeler vtable
+    .compact_addresses = true,  // format unlabeled addresses as 0x1111..2222
+});
+defer fg.deinit();
+
+vm.setInspector(fg.inspector());
+_ = vm.call(params);
+
+// 1. Collapsed-stack text format for flamegraph.pl / inferno / speedscope
+try fg.writeFoldedStacks(folded_writer, true);
+
+// 2. Self-contained interactive SVG with hover <title> tooltips & category colors
+try fg.writeSvg(svg_writer, "ERC-20 transfer()", true);
+```
+
+- Pass an `AddressLabeler` vtable (`label(ctx, address, selector, buf) -> ?[]const u8`) to resolve addresses and 4-byte selectors into readable names like `Vault:deposit()` (characters such as `;` and whitespace are sanitized automatically).
+- `include_opcodes = false` aggregates exclusive gas per call frame; `include_opcodes = true` appends `;OPNAME` leaves (and precompile frames) using exclusive opcode cost so child-frame gas is never double-counted.
+- `totalGas(include_opcodes)` and `sampleCount(include_opcodes)` report aggregate metrics.
+
+---
+
+## EVMC ABI 12 Adapter (`src/evmc_adapter.zig`)
+
+`src/evmc_adapter.zig` provides exact C-ABI `extern struct` and `enum(c_int)` definitions matching EVMC ABI 12 (`EVMC_ABI_VERSION = 12`): `EvmcAddress`, `EvmcBytes32` (`EvmcUint256be`), `EvmcCallKind`, `EvmcStatusCode`, `EvmcRevision` (`frontier` through `osaka`, plus `experimental = 15`), `EvmcAccessStatus`, `EvmcStorageStatus`, `EvmcMessage`, `EvmcResult`, `EvmcTxContext`, and `EvmcHostInterface`.
+
+`evmc_adapter.fromHardfork` maps forks newer than Osaka, including `.AMSTERDAM`, to `.experimental`. `evmc_adapter.toHardfork(.experimental)` returns the newest fork in Voltaire.
+
+`EvmcHostBridge` adapts any Guillotine Mini `HostInterface` (and optional `Inspector` + custom nested `CallHandler`) into a callable EVMC host:
+
+```zig
+var bridge = guillotine.EvmcHostBridge.init(allocator, host_iface, .{
+    .inspector = call_tracer.inspector(),
+    .tx_context = .{ .block_number = 21_000_000 },
+    .call_handler = myNestedCallHandler,
+    .call_handler_ctx = my_ctx,
+});
+defer bridge.deinit();
+
+try bridge.setBlockHash(20_999_999, prev_hash);
+
+const evmc_host = guillotine.EvmcHostBridge.hostInterface();
+const evmc_ctx = bridge.hostContext();
+// Pass (evmc_host, evmc_ctx) to an EVMC ABI 12 VM or test harness
+```
+
+`EvmcHostBridge` tracks original storage values for EIP-2200 `EvmcStorageStatus` classification (`assigned`, `added`, `deleted`, `modified`, `deleted_added`, `modified_deleted`, `deleted_restored`, `added_deleted`, `modified_restored`), maintains EIP-2929 account/storage warmth (`access_account`, `access_storage`), provides EIP-1153 transient storage (`get_transient_storage`, `set_transient_storage`, `clearTransientStorage()`), records emitted logs, and forwards storage, transient storage, balance, selfdestruct, log, and access events to the attached `Inspector`.

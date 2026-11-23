@@ -32,19 +32,13 @@ pub fn Handlers(FrameType: type) type {
             // Charge base + memory expansion for reading 32 bytes
             const end_bytes: u64 = @as(u64, off) + 32;
             const mem_cost = frame.memoryExpansionCost(end_bytes);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost);
+            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost);
             const aligned_size = wordAlignedSize(end_bytes);
             const aligned_size_u32 = std.math.cast(u32, aligned_size) orelse return error.OutOfBounds;
             if (aligned_size_u32 > frame.memory_size) frame.memory_size = aligned_size_u32;
 
             // Read word from memory
-            var result: u256 = 0;
-            var idx: u32 = 0;
-            while (idx < 32) : (idx += 1) {
-                const addr = try add_u32(off, idx);
-                const byte = frame.readMemory(addr);
-                result = (result << 8) | byte;
-            }
+            const result = try frame.readMemoryWord(off);
             try frame.pushStack(result);
             frame.pc += 1;
         }
@@ -59,7 +53,7 @@ pub fn Handlers(FrameType: type) type {
             // Charge base + memory expansion for writing 32 bytes
             const end_bytes: u64 = @as(u64, off) + 32;
             const mem_cost = frame.memoryExpansionCost(end_bytes);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost);
+            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost);
 
             // Update memory size after charging expansion (spec-compliant)
             const aligned_size = wordAlignedSize(end_bytes);
@@ -67,12 +61,7 @@ pub fn Handlers(FrameType: type) type {
             if (aligned_size_u32 > frame.memory_size) frame.memory_size = aligned_size_u32;
 
             // Write word to memory
-            var idx: u32 = 0;
-            while (idx < 32) : (idx += 1) {
-                const byte = @as(u8, @truncate(value >> @intCast((31 - idx) * 8)));
-                const addr = try add_u32(off, idx);
-                try frame.writeMemory(addr, byte);
-            }
+            try frame.writeMemoryWord(off, value);
             frame.pc += 1;
         }
 
@@ -84,7 +73,7 @@ pub fn Handlers(FrameType: type) type {
             const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
             const end_bytes: u64 = @as(u64, off) + 1;
             const mem_cost = frame.memoryExpansionCost(end_bytes);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost);
+            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost);
 
             // Update memory size after charging expansion
             const aligned_size = wordAlignedSize(end_bytes);
@@ -170,20 +159,8 @@ pub fn Handlers(FrameType: type) type {
                 frame.memory_size = required_size_u32;
             }
 
-            // Copy via temporary buffer to handle overlapping regions
-            const tmp = try frame.allocator.alloc(u8, len_u32);
-            defer frame.allocator.free(tmp);
-
-            var i: u32 = 0;
-            while (i < len_u32) : (i += 1) {
-                const s = try add_u32(src_u32, i);
-                tmp[i] = frame.readMemory(s);
-            }
-            i = 0;
-            while (i < len_u32) : (i += 1) {
-                const d = try add_u32(dest_u32, i);
-                try frame.writeMemory(d, tmp[i]);
-            }
+            // In-place overlap-safe copy with zero heap allocations
+            try frame.copyMemory(dest_u32, src_u32, len_u32);
 
             frame.pc += 1;
         }

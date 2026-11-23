@@ -28,10 +28,10 @@ const WARMUP_ITERS: usize = 2;
 /// Number of timed iterations to average.
 const BENCH_ITERS: usize = 3;
 
-/// Benchmark sizes.
-const SMALL_N: usize = 1_000;
-const MEDIUM_N: usize = 5_000;
-const LARGE_N: usize = 20_000;
+/// Benchmark sizes (capped to keep runtime bounded despite Voltaire BlockStore O(N^2) head walk).
+const SMALL_N: usize = 100;
+const MEDIUM_N: usize = 500;
+const LARGE_N: usize = 2_000;
 
 fn make_result(name: []const u8, ops: usize, elapsed_ns: u64) BenchResult {
     const per_op = if (ops > 0) elapsed_ns / ops else 0;
@@ -104,6 +104,10 @@ fn bench_block_processing(n: usize) !u64 {
 /// Benchmark entry point.
 pub fn main() !void {
     if (@import("builtin").is_test) return;
+    var suite = bench_utils.BenchSuite.initQuiet(std.heap.page_allocator, "client/blockchain");
+    defer suite.deinit();
+    suite.attach();
+
     std.debug.print("\n", .{});
     std.debug.print("=" ** 100 ++ "\n", .{});
     std.debug.print("  Guillotine Phase-4 Blockchain Benchmarks (Chain Management)\n", .{});
@@ -114,9 +118,9 @@ pub fn main() !void {
     std.debug.print("--- Block Processing (putBlock + setCanonicalHead) ---\n", .{});
     var large_result: ?BenchResult = null;
     const sizes = [_]struct { n: usize, name: []const u8 }{
-        .{ .n = SMALL_N, .name = "block processing (1K blocks)" },
-        .{ .n = MEDIUM_N, .name = "block processing (5K blocks)" },
-        .{ .n = LARGE_N, .name = "block processing (20K blocks)" },
+        .{ .n = SMALL_N, .name = "block processing (100 blocks)" },
+        .{ .n = MEDIUM_N, .name = "block processing (500 blocks)" },
+        .{ .n = LARGE_N, .name = "block processing (2K blocks)" },
     };
     for (sizes) |s| {
         const elapsed = try bench_block_processing(s.n);
@@ -126,6 +130,7 @@ pub fn main() !void {
             large_result = result;
         }
     }
+    try suite.writeJsonIfRequested();
     std.debug.print("\n", .{});
 
     // -- Throughput analysis --

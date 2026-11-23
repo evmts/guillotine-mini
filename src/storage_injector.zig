@@ -49,6 +49,11 @@ pub fn LruCache(comptime K: type, comptime V: type, comptime capacity: usize) ty
             self.map.deinit();
         }
 
+        pub fn peek(self: *const Self, key: K) ?V {
+            const node = self.map.get(key) orelse return null;
+            return node.value;
+        }
+
         pub fn get(self: *Self, key: K) ?V {
             if (self.map.get(key)) |node| {
                 self.hits += 1;
@@ -318,7 +323,7 @@ pub const StorageInjector = struct {
             const current = if (is_mock)
                 evm.storage.get(key.*) orelse 0
             else
-                evm.storage.get(primitives.Address{ .bytes = key.address }, key.slot) catch 0;
+                evm.storage.peek(primitives.Address{ .bytes = key.address }, key.slot) orelse original;
 
             // Format: {"address":"0x...","slot":"0x...","originalValue":"0x...","newValue":"0x..."}
             try writer.writeAll("{\"address\":\"0x");
@@ -344,7 +349,10 @@ pub const StorageInjector = struct {
             if (!first_balance) try writer.writeAll(",");
             first_balance = false;
 
-            const balance = if (evm.balances.get(address.*)) |b| b else 0;
+            const balance = if (@hasDecl(EvmType, "get_balance"))
+                evm.get_balance(address.*)
+            else
+                evm.balances.get(address.*) orelse 0;
 
             // Format: {"address":"0x...","balance":"0x..."}
             try writer.writeAll("{\"address\":\"0x");
@@ -365,10 +373,10 @@ pub const StorageInjector = struct {
             if (!first_nonce) try writer.writeAll(",");
             first_nonce = false;
 
-            const nonce = if (@hasField(EvmType, "nonces"))
-                evm.nonces.get(address.*) orelse 0
+            const nonce = if (@hasDecl(EvmType, "getNonce"))
+                evm.getNonce(address.*)
             else
-                evm.getNonce(address.*);
+                evm.nonces.get(address.*) orelse 0;
 
             // Format: {"address":"0x...","nonce":"0x..."}
             try writer.writeAll("{\"address\":\"0x");
@@ -389,7 +397,10 @@ pub const StorageInjector = struct {
             if (!first_code) try writer.writeAll(",");
             first_code = false;
 
-            const code = if (evm.code.get(address.*)) |c| c else &[_]u8{};
+            const code = if (@hasDecl(EvmType, "getRawCode"))
+                evm.getRawCode(address.*)
+            else
+                evm.code.get(address.*) orelse &.{};
 
             // Format: {"address":"0x...","code":"0x..."}
             try writer.writeAll("{\"address\":\"0x");

@@ -1,15 +1,20 @@
 ---
-title: Tracing (EIP-3155)
-description: Capture bounded pre-opcode traces, configure stack/memory/return-data snapshots, export EIP-3155 JSON, and diff against reference clients.
+title: Tracing & Inspectors
+description: Capture EIP-3155 JSONL traces with ring-buffer bounds, attach zero-overhead Inspector hooks with 256-bit OpcodeMask filtering, and run all 6 built-in native tracers.
 ---
 
-# Tracing (EIP-3155)
+# Tracing & Inspectors
 
-Guillotine Mini captures pre-opcode execution traces conforming to [EIP-3155](https://eips.ethereum.org/EIPS/eip-3155) via `Tracer` (`src/trace.zig`). Every entry records the exact `pc`, `op`, `opName`, `gas`, `gasCost`, `stack`, optional `memory` and `returnData`, `depth`, and `refund` immediately before the opcode mutates the frame.
+Guillotine Mini ships a two-layer execution observability stack:
 
-## Capturing a trace
+1. **`Tracer` (`src/trace.zig`)** — pre-opcode [EIP-3155](https://eips.ethereum.org/EIPS/eip-3155) step capture with JSONL streaming, bounded/ring-buffer retention, storage snapshots, accurate `CALL`/`CREATE` and OOG `gasCost` accounting, and trace diffing (`TraceDiff`).
+2. **`Inspector` (`src/inspector.zig`) & Built-in Tracers (`src/tracers.zig`)** — a type-erased 15-hook execution observer with a 256-bit `OpcodeMask`, `MuxInspector` fan-out, `RevertDecoder`, and 6 native tracers (`CallTracer`, `FourByteTracer`, `PrestateTracer`, `AccessListInspector`, `GasProfiler`, `CoverageInspector`).
 
-Attach a `Tracer` with `vm.setTracer(&tracer)` before calling `vm.call()`. `Tracer` uses its own allocator so the captured entries remain valid after `vm.deinit()`.
+Both layers take a `@branchHint(.unlikely)` fast path so uninstrumented execution pays effectively zero overhead.
+
+## EIP-3155 Step Tracing (`Tracer`)
+
+Attach a `Tracer` with `vm.setTracer(&tracer)` before calling `vm.call()`. Every captured `TraceEntry` records the pre-opcode state (`pc`, `op`, `opName`, `gas`, `memSize`, `stack`, optional `memory`, `returnData`, `storage`, `depth`, and `refund`) and then finalizes `gasCost` and any `error_msg` via `finishStep()` after the opcode runs.
 
 ```zig
 const std = @import("std");
@@ -24,14 +29,16 @@ pub fn main() !void {
     var tracer = guillotine.Tracer.init(allocator);
     defer tracer.deinit();
 
-    // Optional: include full memory snapshots and cap retained steps
+    // Configure snapshot detail and bounded ring-buffer retention
     tracer.config.enable_memory = true;
+    tracer.config.enable_return_data = true;
     tracer.max_entries = 10_000;
+    tracer.ring_buffer = true;
     tracer.enable();
 
     const target = voltaire.Address.fromU256(0x123);
     var vm: guillotine.Evm(.{}) = undefined;
-    try vm.init(allocator, null, .CANCUN, null, target, 0, null);
+    try vm.init(allocator, null, .PRAGUE, null, target, 0, null);
     defer vm.deinit();
 
     vm.setTracer(&tracer);
@@ -44,61 +51,264 @@ pub fn main() !void {
         .input = &.{},
         .gas = 100_000,
     } });
-    std.debug.assert(res.success);
 
-    for (tracer.entries.items) |step| {
-        std.debug.print("pc={d} op={s} gas={d} cost={d} stack_depth={d}\n", .{
-            step.pc, step.opName, step.gas, step.gasCost, step.stack.len,
-        });
-    }
+    // Stream standard EIP-3155 JSONL with a trailing TraceSummary line
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try tracer.writeEip3155Jsonl(&out.writer, .{
+        .output = res.output,
+        .gas_used = 100_000 -| res.gas_left,
+        .pass = res.success,
+        .error_msg = guillotine.Evm(.{}).resultErrorName(res),
+    });
 
-    // Export EIP-3155 JSON array to disk
+    // Or write a pretty-printed JSON array to disk
     try tracer.writeToFile("trace.json");
 }
 ```
 
-Run the repository's own native trace regression test to verify this flow end-to-end:
+Run the repository's trace test suite with:
 
 ```sh
 zig build test-trace
 ```
 
-## Bounded traces (`max_entries`)
+### Accurate gasCost, memSize & storage snapshots
 
-For long transactions or RPC `debug_traceTransaction` endpoints where memory must stay bounded, set `tracer.max_entries` before execution:
+- **Real `memSize`:** `TraceEntry.memSize` always records the frame's actual byte length (`frame.memory_size`), even when `enable_memory` is `false` and `memory` bytes are omitted.
+- **Accurate `CALL` / `CREATE` `gasCost`:** Child-frame gas spending is tracked separately (`step_child_gas_spent`) and subtracted so the parent `CALL`/`CREATE` entry's `gasCost` reflects the opcode's own gas cost rather than double-counting child execution.
+- **Attempted OOG gas:** When an opcode runs out of gas, `gasCost` records the attempted gas charge (`step_attempted_gas`) that caused the fault, and `error_msg` records `"out of gas"` (or the formatted fault name).
+- **Storage snapshots:** When `tracer.config.tracksStorage()` is enabled (`disable_storage = false`), touched slots for the active contract address are tracked in `evm.storage.trace_slots` and snapshotted in ascending slot order into `TraceEntry.storage`.
 
-```zig
-tracer.max_entries = 1024;
-```
+### Bounded traces & ring-buffer mode
 
-Once `tracer.entries.items.len` reaches `max_entries`, the tracer stops appending new entries while **EVM execution continues normally to completion**. The default is `std.math.maxInt(usize)` (unbounded).
+Set `tracer.max_entries` to cap retained steps while allowing EVM execution to continue normally to completion:
 
-## Controlling what gets captured (`TraceConfig`)
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `max_entries` | `std.math.maxInt(usize)` | Maximum number of `TraceEntry` records kept in `entries` |
+| `ring_buffer` | `false` | When `false`, stops capturing once full; when `true`, evicts oldest entries (sliding window) |
+| `truncated` | `false` | Set to `true` as soon as any step is skipped or evicted |
+| `dropped_entries` | `0` | Count of steps skipped or evicted |
+| `first_retained_step` | `0` | Monotonic index of `entries.items[0]`; protects `finishStep()` tokens if an outer call's step was evicted during nested execution |
 
-`tracer.config` is a Voltaire `TraceConfig` controlling snapshot overhead:
+### Controlling captured fields (`TraceConfig`)
 
-| Field / Option | Effect |
+`tracer.config` is a Voltaire `TraceConfig`:
+
+| Field | Effect |
 | --- | --- |
-| `enable_memory` | Copy frame memory bytes into `TraceEntry.memory` (default `false`; `memSize` is always recorded) |
-| `disable_stack` | Skip copying the stack slice (`tracksStack()`) |
+| `enable_memory` / `disable_memory` | Copy frame memory bytes into `TraceEntry.memory` (`memSize` is always recorded) |
+| `disable_stack` | Skip copying the operand stack slice (`tracksStack()`) |
+| `disable_storage` | Skip per-step sorted storage slot snapshots (`tracksStorage()`) |
 | `enable_return_data` | Copy current `return_data` buffer into `TraceEntry.returnData` |
 
-## Diffing against a reference trace (`TraceDiff`)
+### JSON & EIP-3155 JSONL output
 
-`trace.TraceDiff.compare()` walks two traces entry-by-entry and stops at the first mismatch in `pc`, `op`, `gas`, `stack_length`, `stack_value`, or `trace_length`:
+- `tracer.writeEip3155Jsonl(writer, summary)` writes one compact JSON object per line followed by an optional `TraceSummary` line (`output`, `gasUsed`, `pass`, optional `error`, optional `stateRoot`).
+- `tracer.writeToFile(path)` writes a pretty-printed JSON array of all entries.
+- `tracer.toJson()` builds an in-memory `std.json.Value` array.
+
+### Diffing traces (`TraceDiff`)
+
+`TraceDiff.compare()` compares two `Tracer` instances entry-by-entry across `pc`, `op`, `gas`, `gasCost`, `depth`, `memSize`, `refund`, `stack_length`, `stack_value`, `returnData`, `error_msg`, and `trace_length`:
 
 ```zig
-const diff = try guillotine.trace.TraceDiff.compare(allocator, &our_tracer, &ref_tracer);
+var diff = try guillotine.TraceDiff.compare(allocator, &our_tracer, &ref_tracer);
+defer diff.deinit(allocator);
 if (diff.divergence_index != null) {
-    try diff.printDiff(std.io.getStdErr().writer());
+    var stderr = std.fs.File.stderr().writerStreaming(&.{});
+    try diff.printDiff(&stderr.interface);
 }
 ```
 
-When `zig build specs` fails a state test, the spec runner runs this exact comparison against the Python `ethereum-spec-evm` and prints the first diverging opcode.
+`our_entry` and `ref_entry` borrow from the original traces; `diff.deinit(allocator)` frees the owned `diff_field` string.
+
+---
+
+## The `Inspector` Architecture (`src/inspector.zig`)
+
+For structured tracing, profiling, access-list discovery, coverage, or debugging without recording every opcode snapshot, attach a read-only `Inspector` via `vm.setInspector(inspector)` (and detach with `vm.clearInspector()`).
+
+```zig
+pub const Inspector = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+    opcode_mask: OpcodeMask = OpcodeMask.ALL,
+    capture_memory: bool = false,
+    // ...
+};
+```
+
+All event slices (`input`, `output`, `stack`, `memory`, `return_data`, `topics`, `data`, `code`) are borrowed for the duration of the callback—copy any bytes you retain. Mutation hooks (`onStorageChange`, `onBalanceChange`, `onNonceChange`, `onCodeChange`, `onSelfDestruct`, `onLog`) fire on every write, including writes inside frames that later revert; stateful tracers roll back using `FrameExitEvent.reverted`.
+
+### All 15 `Inspector.VTable` hooks
+
+| Category | Hook | Event struct |
+| --- | --- | --- |
+| Transaction | `onTxStart`, `onTxEnd` | `TxStartEvent`, `TxEndEvent` |
+| Call frames | `onEnter`, `onExit` | `FrameEnterEvent`, `FrameExitEvent` |
+| Opcodes | `onOpcode`, `onOpcodeEnd`, `onFault` | `OpcodeEvent`, `OpcodeEndEvent` |
+| Logs | `onLog` | `LogEvent` |
+| State mutations | `onStorageChange`, `onTransientStorageChange` | `StorageChangeEvent`, `TransientStorageEvent` |
+| Account mutations | `onBalanceChange`, `onNonceChange`, `onCodeChange`, `onSelfDestruct` | `BalanceChangeEvent`, `NonceChangeEvent`, `CodeChangeEvent`, `SelfDestructEvent` |
+| EIP-2929 warmth | `onAccess` | `AccessEvent` |
+
+### 256-bit `OpcodeMask`
+
+`OpcodeMask` is a 4×`u64` bitset covering all 256 opcodes:
+
+- `OpcodeMask.ALL` — receive `onOpcode`, `onOpcodeEnd`, and `onFault` for every opcode.
+- `OpcodeMask.NONE` — skip per-opcode dispatch completely (used by `CallTracer`, `FourByteTracer`, `PrestateTracer`, and `AccessListInspector`).
+- `OpcodeMask.fromOpcodes(&.{ 0x54, 0x55 })` — subscribe only to specific opcodes (e.g. `SLOAD` and `SSTORE`).
+- `mask.contains(op)` and `mask.unionWith(other)` — bitset query and union helpers.
+
+### Composing inspectors with `MuxInspector`
+
+`MuxInspector` fans a single execution out to multiple child `Inspector`s in slice order. Its exposed `Inspector` computes the union of all children's `opcode_mask`s and OR of `capture_memory`, while dispatching each child with its own mask and memory preference:
+
+```zig
+var call_tracer = guillotine.CallTracer.init(allocator, .{ .with_log = true });
+defer call_tracer.deinit();
+
+var gas_profiler = guillotine.GasProfiler.init(allocator);
+defer gas_profiler.deinit();
+
+const children = [_]guillotine.Inspector{
+    call_tracer.inspector(),
+    gas_profiler.inspector(),
+};
+var mux = guillotine.MuxInspector.init(&children);
+vm.setInspector(mux.inspector());
+```
+
+### Decoding revert payloads (`RevertDecoder`)
+
+`RevertDecoder` decodes standard Solidity revert data:
+
+- `Error(string)` (`0x08c379a0`) — validates ABI offset/length bounds and UTF-8, returning `DecodedRevert{ .reason = ... }`.
+- `Panic(uint256)` (`0x4e487b71`) — decodes `DecodedRevert{ .panic = .{ .code, .description } }` with built-in descriptions for standard panic codes (`0x00`, `0x01`, `0x11`, `0x12`, `0x21`, `0x22`, `0x31`, `0x32`, `0x41`, `0x51`) and preserves unknown codes.
+- `RevertDecoder.formatAlloc(allocator, data)` returns an owned human-readable string (e.g. `"insufficient balance"` or `"panic 0x12: division or modulo by zero"`), or `null` for custom errors.
+- `inspector.formatErrorName(err)` maps Zig `CallError` values to Geth-compatible strings (`"out of gas"`, `"execution reverted"`, `"write protection"`, `"stack limit reached 1024"`, etc.).
+
+---
+
+## Built-in Native Tracers (`src/tracers.zig`)
+
+Every built-in tracer exposes `.inspector()` to plug into `Evm.setInspector()` or `MuxInspector`, and records any internal allocation error in `.err` (surfaced when calling its JSON writer or query methods).
+
+### 1. `CallTracer` (Geth `callTracer` & Parity `flatCallTracer`)
+
+Captures the nested tree of `CallFrame`s (`CALL`, `CALLCODE`, `DELEGATECALL`, `STATICCALL`, `CREATE`, `CREATE2`, and `SELFDESTRUCT`), decoded `revert_reason`, and optional `logs`:
+
+```zig
+var tracer = guillotine.CallTracer.init(allocator, .{
+    .only_top_call = false,
+    .with_log = true,
+});
+defer tracer.deinit();
+vm.setInspector(tracer.inspector());
+// ... run vm.call(...) ...
+
+var geth_out: std.Io.Writer.Allocating = .init(allocator);
+defer geth_out.deinit();
+try tracer.writeGethJson(&geth_out.writer);
+
+var flat_out: std.Io.Writer.Allocating = .init(allocator);
+defer flat_out.deinit();
+try tracer.writeFlatJson(&flat_out.writer);
+```
+
+- `writeGethJson(writer)` produces Geth `callTracer` JSON, omitting logs from reverted subtrees (matching Geth's `clearFailedLogs`), clearing `to` on failed `CREATE`/`CREATE2`, and streaming directly so deep call trees (up to 1024 frames) never hit `std.json.Stringify`'s nesting limit.
+- `writeFlatJson(writer)` produces a Geth `flatCallTracer` / Parity `trace_*` JSON array with `action`, `result` (or Parity-formatted `error`), `subtraces`, `traceAddress`, and `type` (`"call"`, `"create"`, `"suicide"`), omitting precompile frames by default.
+
+### 2. `FourByteTracer` (Geth `4byteTracer`)
+
+Counts `(4-byte selector, calldata_len - 4)` pairs across non-precompile call-family frames (`CALL`, `CALLCODE`, `DELEGATECALL`, `STATICCALL`) using `OpcodeMask.NONE`:
+
+```zig
+var four_byte = guillotine.FourByteTracer.init(allocator);
+defer four_byte.deinit();
+vm.setInspector(four_byte.inspector());
+// After execution:
+const hits = four_byte.getCount(.{ 0xa9, 0x05, 0x9c, 0xbb }, 64);
+try four_byte.writeJson(writer); // e.g. {"0xa9059cbb-64":1}
+```
+
+### 3. `PrestateTracer` (Geth `prestateTracer` & `diffMode`)
+
+Tracks observed pre-state and post-state for every touched account, maintaining an undo log that rolls back post-state writes whenever a nested frame reverts and recording EIP-7702 `0xef0100 || delegate` code designations on delegated calls:
+
+```zig
+var prestate = guillotine.PrestateTracer.init(allocator, .{
+    .diff_mode = true,
+    .disable_code = false,
+    .disable_storage = false,
+});
+defer prestate.deinit();
+vm.setInspector(prestate.inspector());
+// After execution:
+// diff_mode = false -> { "0x...": { balance, nonce, code, storage } }
+// diff_mode = true  -> { "post": { ... }, "pre": { ... } }
+try prestate.writeJson(writer);
+```
+
+Inspect individual accounts in Zig with `prestate.account(address)`.
+
+### 4. `AccessListInspector` (`eth_createAccessList`)
+
+Collects EIP-2929 address and storage-slot accesses via `onAccess`. The inspector retains observations from reverted frames even though the EVM restores its EIP-2929 warmth sets on rollback. The inspector automatically excludes successfully created contracts.
+
+```zig
+var al = guillotine.AccessListInspector.init(allocator, .{
+    .exclude_origin = true,
+    .exclude_target = true,
+    .exclude_precompiles = true,
+    .exclude_coinbase = false,
+});
+defer al.deinit();
+vm.setInspector(al.inspector());
+// After execution:
+const entries = try al.toOwnedEntries(allocator);
+defer guillotine.tracers.freeAccessListEntries(allocator, entries);
+try al.writeJson(writer); // [{"address":"0x...","storageKeys":["0x..."]}]
+```
+
+### 5. `GasProfiler`
+
+Aggregates a 256-entry per-opcode histogram (`OpcodeStats`: `count`, `total_gas`, `memory_expansion_gas`, `fault_count`) alongside per-frame inclusive and exclusive gas (`FrameGasProfile`):
+
+```zig
+var profiler = guillotine.GasProfiler.init(allocator);
+defer profiler.deinit();
+vm.setInspector(profiler.inspector());
+// After execution:
+const top = try profiler.topOpcodes(allocator, 10);
+defer allocator.free(top);
+try profiler.writeJson(writer); // {"opcodes":[...],"frames":[...]}
+```
+
+### 6. `CoverageInspector`
+
+Records per-PC hit counts, intra-frame control-flow edges (`from_pc -> to_pc`), and `JUMPI` branch outcomes (`taken` vs `not_taken`) keyed by `keccak256(code)`:
+
+```zig
+var cov = guillotine.CoverageInspector.init(allocator);
+defer cov.deinit();
+vm.setInspector(cov.inspector());
+// After execution:
+const hash = guillotine.CoverageInspector.codeHash(bytecode);
+const hits = cov.pcHits(hash, 0);
+const edge = cov.edgeHits(hash, 0, 2);
+const branch = cov.jumpiStats(hash, 12); // ?JumpiBranch{ .taken, .not_taken }
+try cov.writeJson(writer);
+```
+
+---
 
 ## Single-stepping a frame
 
-When you need custom per-step hooks (breakpoints, live memory inspection, custom debuggers), step one instruction at a time using `vm.step()` or `Frame.step()`:
+When building a custom loop directly on `Evm` instead of using `ExecutionRecorder` / `DebugSession` (see [Observability, Simulation & RPC](/guides/observability-and-rpc)), step one instruction at a time with `vm.step()`:
 
 ```zig
 while (vm.getCurrentFrame()) |frame| {

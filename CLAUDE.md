@@ -1,6 +1,6 @@
 # Guillotine Mini - EVM Implementation
 
-Minimal, correct, and well-tested Ethereum Virtual Machine (EVM) implementation in Zig, prioritizing specification compliance, clarity, and hardfork support (Berlin through Prague).
+Minimal, correct, and well-tested Ethereum Virtual Machine (EVM) implementation in Zig, prioritizing specification compliance, clarity, and hardfork support (Frontier through Amsterdam in the Voltaire enum, with Osaka as the default).
 
 ## Quick Start
 
@@ -28,17 +28,26 @@ bun scripts/test-subset.ts "pattern"     # Filter test categories
 
 ```
 src/
+├── root.zig              # Public module exports
+├── root_c.zig            # 42-symbol C/WASM ABI (native static lib + WASI reactor)
 ├── evm.zig               # Orchestrator: state, storage, gas refunds, nested calls
+├── evm_config.zig        # Comptime EvmConfig limits & opcode/precompile overrides
 ├── frame.zig             # Bytecode interpreter: stack, memory, PC, per-opcode logic
 ├── host.zig              # Abstract state backend interface
-├── hardfork.zig          # Hardfork detection and feature flags
 ├── opcode.zig            # Opcode definitions and utilities
-├── trace.zig             # EIP-3155 trace generation
+├── trace.zig             # EIP-3155 step tracing, JSONL streaming, ring buffer & TraceDiff
+├── inspector.zig         # 15-hook Inspector vtable, 256-bit OpcodeMask, MuxInspector, RevertDecoder
+├── tracers.zig           # Built-in tracers (CallTracer, FourByteTracer, PrestateTracer, AccessListInspector, GasProfiler, CoverageInspector)
+├── simulation.zig        # StateOverlayHost, state/block overrides, eth_call/estimateGas/createAccessList/simulateV1
+├── live_tracer.zig       # BlockHooks, MuxBlockHooks, SupplyTracer (modeled on Geth’s --vmtrace supply)
+├── trace_store.zig       # Retention-bounded, reorg-aware, indexed Parity trace_filter store
+├── debugger.zig          # Time-travel ExecutionRecorder & DebugSession with 7 breakpoint types
+├── flamegraph.zig        # Call-stack & opcode gas FlamegraphCollector (folded stacks + interactive SVG)
+├── evmc_adapter.zig      # EVMC ABI 12 types and EvmcHostBridge
 └── errors.zig            # Error types
 
 External Dependencies (fetched via zig build):
-├── primitives            # Ethereum types (Address, u256, gas constants, RLP, ABI, etc.)
-│                         # Source: https://github.com/evmts/primitives
+├── voltaire (primitives) # Ethereum types (Address, u256, Hardfork, gas constants, RLP, ABI, etc.)
 ├── crypto                # Cryptographic primitives (keccak256, secp256k1, BLS12-381)
 └── precompiles           # Ethereum precompiled contracts
 ```
@@ -47,10 +56,15 @@ External Dependencies (fetched via zig build):
 
 | Component | Responsibility |
 |-----------|----------------|
-| **Evm** | State management, storage, gas refunds, warm/cold tracking, nested calls |
-| **Frame** | Stack, memory, PC, bytecode interpretation, opcode execution |
-| **Host** | Pluggable state backend (balances, nonces, code, logs, self-destruct) |
-| **Hardfork** | Gas cost adjustments, feature flag guards (`isAtLeast()`, `isBefore()`) |
+| **Evm** (`evm.zig`) | State management, storage, gas refunds, warm/cold tracking, nested calls |
+| **Frame** (`frame.zig`) | Stack, memory, PC, bytecode interpretation, opcode execution |
+| **HostInterface** (`host.zig`) | Pluggable state backend (balances, nonces, code, storage, account lifecycle) |
+| **Hardfork** (`voltaire`) | Gas cost adjustments, feature flag guards (`isAtLeast()`, `isBefore()`, `DEFAULT = .OSAKA`, includes `.AMSTERDAM`) |
+| **Tracer** (`trace.zig`) | EIP-3155 step snapshots, JSONL streaming, ring-buffer bounds, `TraceDiff` |
+| **Inspector & Tracers** (`inspector.zig`, `tracers.zig`) | Read-only 15-hook vtable, `OpcodeMask`, `MuxInspector`, `RevertDecoder`, and 6 native tracers |
+| **Simulation** (`simulation.zig`) | Isolated `StateOverlayHost`, `AccountOverride`/`BlockOverride`, `eth_call`/`estimateGas`/`createAccessList`/`simulateV1` |
+| **Live Tracing & Store** (`live_tracer.zig`, `trace_store.zig`) | `BlockHooks`, `MuxBlockHooks`, `SupplyTracer`, and indexed `TraceStore` with `rollbackReorg` |
+| **Devtools & EVMC** (`debugger.zig`, `flamegraph.zig`, `evmc_adapter.zig`) | Time-travel `ExecutionRecorder` and `DebugSession`, folded/SVG `FlamegraphCollector`, and EVMC ABI 12 `EvmcHostBridge` |
 
 **Allocation strategy**: Arena allocator for transaction-scoped memory (freed at transaction end).
 
@@ -77,7 +91,7 @@ INCLUDE_ENGINE_TESTS=1 zig build specs
 
 ### Test Scope and Filtering
 
-- **Hardfork**: `Cancun`, `Shanghai`, `London`, `Berlin`, `Merge`, `Prague`
+- **Hardfork**: `Cancun`, `Shanghai`, `London`, `Berlin`, `Merge`, `Prague`, `Osaka`
 - **EIP**: `transientStorage`, `push0`, `MCOPY`, `warmcoinbase`
 - **Opcode**: `add`, `mul`, `sstore`, `sload`, `call`, `create2`
 - **Category**: `vmArithmeticTest`, `vmBitwiseLogicOperation`, `vmIOandFlowOperations`
@@ -280,8 +294,8 @@ Tracks historical debugging insights:
 - `inner_call()` - CALL/STATICCALL/DELEGATECALL
 - `inner_create()` - CREATE/CREATE2
 - `accessAddress()`, `accessStorageSlot()` - EIP-2929 tracking
-- `get_storage()`, `set_storage()` - Persistent storage
-- `get_transient_storage()`, `set_transient_storage()` - EIP-1153
+- `vm.storage.get()`, `vm.storage.set()` - Persistent storage
+- `vm.storage.get_transient()`, `vm.storage.set_transient()` - EIP-1153
 
 </details>
 
@@ -289,8 +303,8 @@ Tracks historical debugging insights:
 <summary><b>Frame (src/frame.zig)</b></summary>
 
 **Manages single execution context:**
-- 256-word stack (ArrayList of u256)
-- Expandable memory (byte array)
+- 1,024-word default stack (`std.ArrayList(u256)`)
+- Expandable contiguous memory (`std.ArrayListUnmanaged(u8)`)
 - Program counter (PC) and gas tracking
 - Bytecode interpretation
 
@@ -319,25 +333,29 @@ pub const HostInterface = struct {
         setStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256, value: u256) void,
         getNonce: *const fn (ptr: *anyopaque, address: Address) u64,
         setNonce: *const fn (ptr: *anyopaque, address: Address, nonce: u64) void,
+        accountExists: ?*const fn (ptr: *anyopaque, address: Address) bool = null,
+        accountHasStorage: ?*const fn (ptr: *anyopaque, address: Address) bool = null,
+        deleteAccount: ?*const fn (ptr: *anyopaque, address: Address) void = null,
     };
 };
 ```
 
-**Note:** The host interface is used only for external state backends. Nested calls (CALL, DELEGATECALL, etc.) are handled internally by `Evm.inner_call()` and do not use this interface.
+`Evm.inner_call()` executes nested calls internally. When a host is configured, `HostInterface` provides the external state backend during nested execution as well.
 
 Test implementation: `test/specs/test_host.zig`
 
 </details>
 
 <details>
-<summary><b>Hardfork Support (src/hardfork.zig)</b></summary>
+<summary><b>Hardfork Support (voltaire.Hardfork)</b></summary>
 
 ```zig
-pub const Hardfork = enum(u8) {
-    FRONTIER, HOMESTEAD, TANGERINE, SPURIOUS, BYZANTIUM,
-    CONSTANTINOPLE, ISTANBUL, BERLIN, LONDON, MERGE,
-    SHANGHAI, CANCUN, PRAGUE,
-    pub const DEFAULT = Hardfork.CANCUN;
+pub const Hardfork = enum {
+    FRONTIER, HOMESTEAD, DAO, TANGERINE_WHISTLE, SPURIOUS_DRAGON,
+    BYZANTIUM, CONSTANTINOPLE, PETERSBURG, ISTANBUL, MUIR_GLACIER,
+    BERLIN, LONDON, ARROW_GLACIER, GRAY_GLACIER, MERGE,
+    SHANGHAI, CANCUN, PRAGUE, OSAKA, AMSTERDAM,
+    pub const DEFAULT = Hardfork.OSAKA;
 };
 ```
 
@@ -386,7 +404,7 @@ The primitives library is an external dependency fetched via `zig fetch` from ht
 
 ## Gas Metering
 
-**Location:** `src/primitives/gas_constants.zig`
+**Location:** Voltaire’s `primitives/GasConstants/gas_constants.zig`
 
 - Base costs: per-opcode execution (ADD, MUL, SSTORE)
 - Memory expansion: quadratic cost for growth
@@ -441,7 +459,7 @@ See `src/root_c.zig` for full API.
 ### Adding New Features
 
 1. Implement in `src/frame.zig` (opcodes) or `src/evm.zig` (behavior)
-2. Update gas in `src/primitives/gas_constants.zig` if needed
+2. Update gas in Voltaire’s `primitives/GasConstants/gas_constants.zig` if needed
 3. Add guards: `self.hardfork.isAtLeast(.FORK_NAME)`
 4. Test: run relevant spec tests
 5. Debug: use trace divergence analysis
@@ -465,14 +483,14 @@ See `src/root_c.zig` for full API.
 | Problem Area | Python Reference | Zig Implementation |
 |--------------|------------------|-------------------|
 | Opcode logic | `execution-specs/.../vm/instructions/*.py` | `src/frame.zig` |
-| Gas calculation | `execution-specs/.../vm/gas.py` | `src/primitives/gas_constants.zig` + `src/frame.zig` |
+| Gas calculation | `execution-specs/.../vm/gas.py` | Voltaire’s `primitives/GasConstants/gas_constants.zig` + `src/frame.zig` |
 | Call/Create | `execution-specs/.../vm/instructions/system.py` | `src/evm.zig` (`inner_call`, `inner_create`) |
-| Storage ops | `execution-specs/.../vm/instructions/storage.py` | `src/evm.zig` (get/set storage) |
-| Transient storage | `execution-specs/forks/cancun/.../storage.py` | `src/evm.zig` (get/set transient) |
+| Storage ops | `execution-specs/.../vm/instructions/storage.py` | `vm.storage.get()` and `vm.storage.set()` in `src/storage.zig` |
+| Transient storage | `execution-specs/forks/cancun/.../storage.py` | `vm.storage.get_transient()` and `vm.storage.set_transient()` in `src/storage.zig` |
 | State management | `execution-specs/.../state.py` | `src/evm.zig` (balances, nonces, code) |
-| Hardfork activation | `execution-specs/forks/<hardfork>/` | `src/hardfork.zig` |
-| Warm/cold tracking | `execution-specs/.../vm/__init__.py` | `src/evm.zig` (warm_addresses, warm_storage_slots) |
-| Memory ops | `execution-specs/.../vm/memory.py` | `src/frame.zig` (expandMemory) |
+| Hardfork activation | `execution-specs/forks/<hardfork>/` | Voltaire’s `primitives/Hardfork/hardfork.zig` |
+| Warm/cold tracking | `execution-specs/.../vm/__init__.py` | `vm.access_list_manager` in `src/evm.zig` |
+| Memory ops | `execution-specs/.../vm/memory.py` | `Frame.ensureMemoryBytes()` in `src/frame.zig` |
 | Stack ops | `execution-specs/.../vm/stack.py` | `src/frame.zig` (pushStack, popStack) |
 
 ### Architectural Differences
@@ -483,8 +501,8 @@ See `src/root_c.zig` for full API.
 
 **Zig: Split `Evm` + `Frame`**
 - **Evm** (`src/evm.zig`): State, storage, gas refunds, nested calls
-  - Storage maps: `storage`, `transient_storage`, `original_storage`
-  - Warm/cold tracking: `warm_addresses`, `warm_storage_slots`
+  - Persistent, transient, and original slot state: `vm.storage`
+  - Warm/cold tracking: `vm.access_list_manager`
   - Gas: `gas_refund`
 - **Frame** (`src/frame.zig`): Single call frame execution
   - Stack, memory, PC, gas, bytecode
@@ -627,14 +645,14 @@ Must match exactly between Python and Zig.
 | Cold account access | `GAS_COLD_ACCOUNT_ACCESS` | `ColdAccountAccessCost` | 2600 | Berlin+ |
 | SSTORE set (0->nonzero) | `GAS_STORAGE_SET` | `SstoreSetGas` | 20000 | All |
 | SSTORE update (nonzero->nonzero) | `GAS_STORAGE_UPDATE` | `SstoreResetGas` | 5000 | All |
-| SSTORE clear refund | `GAS_STORAGE_CLEAR_REFUND` | `SstoreClearRefund` | 4800 | London+ |
+| SSTORE clear refund | `GAS_STORAGE_CLEAR_REFUND` | `SstoreRefundGas` | 4800 | London+ |
 | SSTORE stipend check | `GAS_CALL_STIPEND` | `SstoreSentryGas` | 2300 | All |
 | Call value transfer | `GAS_CALL_VALUE` | `CallValueCost` | 9000 | All |
 | Call stipend | `GAS_CALL_STIPEND` | `CallStipend` | 2300 | All |
 
 **Locations:**
 - Python: `execution-specs/src/ethereum/forks/<hardfork>/vm/gas.py`
-- Zig: `src/primitives/gas_constants.zig`
+- Zig: Voltaire’s `primitives/GasConstants/gas_constants.zig`
 
 </details>
 
@@ -699,20 +717,31 @@ Must match exactly between Python and Zig.
 
 | File | Purpose | Key Exports |
 |------|---------|-------------|
-| `src/root.zig` | Main module | Evm, Frame, Host, Hardfork, Tracer |
-| `src/evm.zig` | EVM orchestrator | Evm struct, call(), inner_call(), inner_create() |
+| `src/root.zig` | Main module | Evm, Frame, HostInterface, Hardfork, Tracer, Inspector, tracers, simulation, live_tracer, trace_store, ExecutionRecorder, DebugSession, debugger, flamegraph, evmc_adapter |
+| `src/root_c.zig` | C & WASM FFI | 42 `evm_*` exports (execution, pre-state, tracing, call/access-list tracers, async injection) |
+| `src/evm.zig` | EVM orchestrator | Evm struct, call(), callWithBytecodeOverride(), inner_call(), inner_create(), setInspector() |
+| `src/evm_config.zig` | EVM config | EvmConfig (wired limits & overrides), fromBuildOptions() |
 | `src/frame.zig` | Bytecode interpreter | Frame struct, execute(), step() |
-| `src/host.zig` | Host interface | HostInterface, CallResult, CallType |
-| `src/hardfork.zig` | Hardfork logic | Hardfork enum, isAtLeast(), fromString() |
+| `src/host.zig` | Host interface | HostInterface |
 | `src/opcode.zig` | Opcode utilities | getOpName(), opcode constants |
-| `src/trace.zig` | EIP-3155 tracing | Tracer, TraceEntry |
-| `src/errors.zig` | Error types | CallError enum |
+| `src/trace.zig` | EIP-3155 tracing | Tracer, TraceEntry, TraceSummary, TraceDiff |
+| `src/inspector.zig` | Execution hooks | Inspector, MuxInspector, OpcodeMask, CallType, RevertDecoder, DecodedRevert |
+| `src/tracers.zig` | Built-in tracers | CallTracer, FourByteTracer, PrestateTracer, AccessListInspector, GasProfiler, CoverageInspector |
+| `src/simulation.zig` | Simulation engine | StateOverlayHost, AccountOverride, BlockOverride, CallRequest, simulateCall, estimateGas, createAccessList, simulateV1 |
+| `src/live_tracer.zig` | Live block tracing | BlockHooks, MuxBlockHooks, SupplyTracer |
+| `src/trace_store.zig` | Trace indexing | TraceStore, TraceFilter, rollbackReorg |
+| `src/debugger.zig` | Time-travel debugger | ExecutionRecorder, DebugSession, Breakpoint, SourceMapResolver |
+| `src/flamegraph.zig` | Gas flamegraphs | FlamegraphCollector, AddressLabeler (folded stacks + SVG) |
+| `src/evmc_adapter.zig` | EVMC ABI 12 bridge | EvmcHostBridge, EvmcHostInterface, EvmcMessage, EvmcResult, EvmcRevision |
+| `src/errors.zig` | Error types | CallError error set |
 | `src/primitives/root.zig` | Primitives exports | All primitive types |
 | `build.zig` | Build config | Build targets, dependencies |
 | `test_runner.zig` | Test runner | Test execution, reporting |
 | `test/specs/runner.zig` | Spec test execution | runJsonTest(), trace comparison |
 
 </details>
+
+In EVMC ABI 12, `EvmcRevision.experimental` has value `15`. `evmc_adapter.fromHardfork` maps forks newer than Osaka, including `.AMSTERDAM`, to `.experimental`. `evmc_adapter.toHardfork(.experimental)` returns the newest fork in Voltaire.
 
 ## Contributing
 
@@ -751,7 +780,7 @@ This repo is evolving from an EVM-only library into a full Ethereum execution cl
 | Library | Location | Provides |
 |---|---|---|
 | **Voltaire** | `/Users/williamcory/voltaire/packages/voltaire-zig/` | All primitives, RLP, SSZ, Crypto, Precompiles, JSON-RPC types, JournaledState, Blockchain, StateManager |
-| **Guillotine-Mini** | `src/` (this repo) | EVM engine (frame, opcodes, gas, hardforks Berlin->Prague) |
+| **Guillotine-Mini** | `src/` (this repo) | EVM engine (frame, opcodes, gas, Voltaire hardforks with Osaka as the default) |
 
 ### Source Priority (when in doubt)
 

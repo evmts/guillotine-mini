@@ -1,13 +1,13 @@
 ---
 title: C FFI & Async State Injection
-description: Link libguillotine_mini.a from C, Rust, Go, or Python, and drive external async state backends with evm_call_ffi and evm_continue_ffi.
+description: Link libguillotine_mini.a from C, Rust, Go, or Python, seed pre-state, capture EIP-3155/call/access-list traces, and drive async state backends with evm_call_ffi and evm_continue_ffi.
 ---
 
 import { AsyncProtocolDiagram } from '../../components/Diagrams'
 
 # C FFI & Async State Injection
 
-Guillotine Mini compiles `src/root_c.zig` to both a native static library (`zig build native`) and a WASI WebAssembly reactor (`zig build wasm`). Both expose the exact same 30-symbol `evm_*` C ABI.
+Guillotine Mini compiles `src/root_c.zig` to both a native static library (`zig build native`) and a WASI WebAssembly reactor (`zig build wasm`). Both expose the exact same **42-symbol** `evm_*` C ABI.
 
 ## Build the static library
 
@@ -19,7 +19,7 @@ This writes `zig-out/lib/libguillotine_mini.a` with the EVM, Voltaire primitives
 
 ## Minimal C program
 
-All 256-bit quantities (`value`, `chain_id`, `slot`, `balance`, `base_fee`) cross the ABI as **32-byte big-endian** byte arrays; addresses cross as **20-byte** arrays. Every function accepts a nullable `EvmHandle*` and returns `false` / `0` if passed `NULL`.
+All 256-bit quantities (`value`, `chain_id`, `slot`, `balance`, `base_fee`) cross the ABI as **32-byte big-endian** byte arrays; addresses cross as **20-byte** arrays. Every handle-taking function accepts a nullable `EvmHandle*`. On `NULL`, void functions return immediately, boolean functions return `false`, and numeric functions return `0`. Pass a valid byte pointer for empty calldata and continuation payloads with length `0`.
 
 ```c
 #include <stdbool.h>
@@ -51,12 +51,13 @@ int main(void) {
     uint8_t target[20] = {0};
     target[18] = 0x01; // 0x0000...0100 (outside Prague precompiles)
     uint8_t zero32[32] = {0};
+    const uint8_t empty = 0;
 
     // PUSH1 42; PUSH1 0; MSTORE; PUSH1 32; PUSH1 0; RETURN
     uint8_t code[] = { 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
 
     evm_set_bytecode(vm, code, sizeof(code));
-    evm_set_execution_context(vm, 100000, caller, target, zero32, NULL, 0);
+    evm_set_execution_context(vm, 100000, caller, target, zero32, &empty, 0);
 
     bool ok = evm_execute(vm);
     uint8_t out[32] = {0};
@@ -70,7 +71,44 @@ int main(void) {
 }
 ```
 
-Note that `evm_execute()` automatically installs the bytecode supplied to `evm_set_bytecode()` at `address` before calling `Evm.call()`. You only need `evm_set_code()` when seeding *other* contracts for nested calls.
+## Preserved pre-state lifecycle
+
+You can seed initial account and storage state immediately after `evm_create()`—**before** the first `evm_execute()` or `evm_call_ffi()` call:
+
+- `evm_set_storage()` calls `Evm.setStoragePrestate()`, populating both the live storage cache and `storage_prestate`. Seeded slots are preserved across transaction initialization (including when the async `StorageInjector` is enabled) and are not miscounted as transaction writes.
+- `evm_set_balance()`, `evm_set_code()`, and `evm_set_nonce()` populate `Evm`'s arena-backed state maps allocated in `evm_create()`, which persist across `evm_execute()` calls on the same handle.
+- `evm_execute()` runs `callWithBytecodeOverride()`: if `evm_set_bytecode()` was called with non-empty code, that bytecode overrides the top-level target without mutating `evm.code`; if `evm_set_bytecode()` was not called, `evm_execute()` executes the bytecode seeded at `address` via `evm_set_code()`.
+
+## Tracing, call traces & access lists over FFI
+
+All three observability outputs use a two-step length-then-copy pattern and work identically in both native C and WASM builds:
+
+```c
+// Enable before evm_execute() or evm_call_ffi()
+evm_enable_tracing(vm, /*enable_memory=*/true, /*disable_stack=*/false,
+                   /*disable_storage=*/false, /*enable_return_data=*/true);
+evm_enable_call_tracer(vm, /*only_top_call=*/false, /*with_log=*/true);
+evm_enable_access_list_tracker(vm);
+
+bool ok = evm_execute(vm);
+
+// 1. EIP-3155 JSONL opcode trace (includes trailing TraceSummary line)
+size_t trace_len = evm_get_trace_json_len(vm);
+// allocate buffer of trace_len bytes, then:
+evm_get_trace_json(vm, trace_buf, trace_len);
+
+// 2. Geth callTracer JSON tree
+size_t call_len = evm_get_call_trace_json_len(vm);
+evm_get_call_trace_json(vm, call_buf, call_len);
+
+// 3. EIP-2930 access list JSON array
+size_t al_len = evm_get_access_list_json_len(vm);
+evm_get_access_list_json(vm, al_buf, al_len);
+```
+
+When both `evm_enable_call_tracer` and `evm_enable_access_list_tracker` are active, `src/root_c.zig` automatically fans out events via `MuxInspector`. Call `evm_disable_tracing(vm)` to turn off opcode tracing for subsequent executions.
+
+In WASM builds, JS opcode callbacks (`env.js_opcode_callback`) are **disabled by default** so normal execution does not cross the WASM/JS boundary on every opcode. Call `evm_set_js_opcode_callbacks_enabled(true)` to opt in when installing custom JS opcode handlers.
 
 ## Async state injection (`evm_call_ffi` / `evm_continue_ffi`)
 
@@ -80,7 +118,7 @@ When state lives in an async database, remote JSON-RPC node, or rollup storage l
 
 ### The `AsyncRequest` C struct
 
-Transcribed directly from `src/root_c.zig:664`:
+Transcribed directly from `src/root_c.zig:829`:
 
 ```c
 typedef struct {
@@ -88,10 +126,12 @@ typedef struct {
                                // 3=NEED_CODE, 4=NEED_NONCE, 5=READY_TO_COMMIT, 255=ERROR
     uint8_t  address[20];
     uint8_t  slot[32];         // big-endian u256 (used when output_type == 1)
-    uint32_t json_len;         // valid bytes in json_data (when output_type == 5)
-    uint8_t  json_data[16384]; // inline state-changes JSON
+    uint32_t json_len;         // bytes copied into inline json_data (capped at 16384)
+    uint8_t  json_data[16384]; // inline state-changes JSON preview
 } AsyncRequest;
 ```
+
+When `output_type == 5` (`READY_TO_COMMIT`), the full state-changes JSON is stored in an arena-allocated buffer with no 16 KiB truncation limit. Use `evm_get_state_changes_len(vm)` to query the exact full byte length and `evm_get_state_changes(vm, buf, len)` to copy the complete JSON when it may exceed `sizeof(req.json_data)`.
 
 ### Packed response formats for `evm_continue_ffi`
 
@@ -101,13 +141,14 @@ typedef struct {
 | `2` (`NEED_BALANCE`) | `2` | `address[20] \|\| balance_be[32]` | `52` bytes |
 | `3` (`NEED_CODE`) | `3` | `address[20] \|\| raw_bytecode[...]` | `20 + code_len` bytes |
 | `4` (`NEED_NONCE`) | `4` | `address[20] \|\| nonce_be[8]` | `28` bytes |
-| `5` (`READY_TO_COMMIT`) | `5` | empty (after persisting `json_data[0..json_len]`) | `0` bytes |
+| `5` (`READY_TO_COMMIT`) | `5` | valid dummy byte pointer (after persisting state changes) | `0` bytes |
 
 ### Driving loop skeleton
 
 ```c
 evm_enable_storage_injector(vm);
 
+const uint8_t empty = 0;
 AsyncRequest req = {0};
 bool ok = evm_call_ffi(vm, &req);
 
@@ -119,8 +160,16 @@ while (ok && req.output_type != 0) {
         fetch_storage_from_db(req.address, req.slot, resp + 52);
         ok = evm_continue_ffi(vm, 1, resp, sizeof(resp), &req);
     } else if (req.output_type == 5) {
-        persist_changes_json(req.json_data, req.json_len);
-        ok = evm_continue_ffi(vm, 5, NULL, 0, &req);
+        size_t full_len = evm_get_state_changes_len(vm);
+        if (full_len <= sizeof(req.json_data)) {
+            persist_changes_json(req.json_data, req.json_len);
+        } else {
+            uint8_t *full = malloc(full_len);
+            evm_get_state_changes(vm, full, full_len);
+            persist_changes_json(full, full_len);
+            free(full);
+        }
+        ok = evm_continue_ffi(vm, 5, &empty, 0, &req);
     } else {
         // Handle types 2 (balance), 3 (code), 4 (nonce) similarly
         break;
@@ -129,4 +178,4 @@ while (ok && req.output_type != 0) {
 // When req.output_type == 0, read results with evm_is_success / evm_get_output / evm_get_gas_used
 ```
 
-For the complete list of all 30 exported functions, see the [C & WASM ABI Reference](/reference/c-api).
+For the complete list of all 42 exported functions, see the [C & WASM ABI Reference](/reference/c-api).

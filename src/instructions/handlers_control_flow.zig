@@ -82,11 +82,7 @@ pub fn Handlers(FrameType: type) type {
                 if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 
                 frame.output = try frame.allocator.alloc(u8, len);
-                var idx: u32 = 0;
-                while (idx < len) : (idx += 1) {
-                    const addr = try add_u32(off, idx);
-                    frame.output[idx] = frame.readMemory(addr);
-                }
+                try frame.copyFromMemory(frame.output, off);
             }
 
             frame.stopped = true;
@@ -114,11 +110,7 @@ pub fn Handlers(FrameType: type) type {
                 if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 
                 frame.output = try frame.allocator.alloc(u8, len);
-                var idx: u32 = 0;
-                while (idx < len) : (idx += 1) {
-                    const addr = try add_u32(off, idx);
-                    frame.output[idx] = frame.readMemory(addr);
-                }
+                try frame.copyFromMemory(frame.output, off);
             }
 
             frame.reverted = true;

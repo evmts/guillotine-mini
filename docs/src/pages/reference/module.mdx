@@ -22,12 +22,12 @@ description: Complete public symbol table of src/root.zig (@import("guillotine_m
 
 | Symbol | Definition | Source |
 | --- | --- | --- |
-| `EvmConfig` | Comptime EVM configuration struct | `src/evm_config.zig` |
+| `EvmConfig` | Comptime EVM configuration struct (with `fromBuildOptions()`) | `src/evm_config.zig` |
 | `OpcodeOverride` | `{ opcode: u8, handler: *const anyopaque }` | `src/evm_config.zig` |
 | `PrecompileOverride` | `{ address: Address, execute: ..., context: ?*anyopaque }` | `src/evm_config.zig` |
 | `PrecompileOutput` | `{ output: []const u8, gas_used: u64, success: bool }` | `src/evm_config.zig` |
 
-## Call results, tracing & errors
+## Call results, hardforks, opcodes & errors
 
 | Symbol | Definition | Source |
 | --- | --- | --- |
@@ -36,17 +36,67 @@ description: Complete public symbol table of src/root.zig (@import("guillotine_m
 | `StorageAccess` | `{ address: Address, slot: u256 }` | `src/call_result.zig` |
 | `TraceStep` | Single step record for `ExecutionTrace` | `src/call_result.zig` |
 | `ExecutionTrace` | Owned slice of `TraceStep` | `src/call_result.zig` |
-| `Tracer` | EIP-3155 trace recorder (`init`, `enable`, `writeToFile`) | `src/trace.zig` |
-| `TraceEntry` | Single EIP-3155 step entry | `src/trace.zig` |
 | `CallError` | Error set for execution failures | `src/errors.zig` |
-| `Hardfork` | Re-export of `voltaire.Hardfork` | `src/root.zig` |
+| `Hardfork` | Re-export of `voltaire.Hardfork` (`DEFAULT = .OSAKA`, includes `.AMSTERDAM`) | `src/root.zig` |
 | `ForkTransition` | Re-export of `voltaire.ForkTransition` | `src/root.zig` |
 | `getOpName` | `fn (opcode: u8) []const u8` | `src/opcode.zig` |
 | `Dispatcher` | Instruction dispatcher type | `src/instructions/dispatcher.zig` |
 
+## EIP-3155 tracing & inspectors
+
+| Symbol | Definition | Source |
+| --- | --- | --- |
+| `Tracer` | EIP-3155 step recorder (`writeEip3155Jsonl`, `writeToFile`, ring buffer) | `src/trace.zig` |
+| `TraceEntry` | Single EIP-3155 step snapshot (with optional `storage` and `error_msg`) | `src/trace.zig` |
+| `TraceSummary` | Trailing EIP-3155 JSONL summary (`output`, `gas_used`, `pass`, `error_msg`, `state_root`) | `src/trace.zig` |
+| `TraceDiff` | Step-by-step trace comparator (`compare`, `deinit`, `printDiff`) | `src/trace.zig` |
+| `Inspector` | Type-erased 15-hook execution observer vtable | `src/inspector.zig` |
+| `MuxInspector` | Multi-inspector fan-out preserving child order and masks | `src/inspector.zig` |
+| `OpcodeMask` | 256-bit opcode filter (`ALL`, `NONE`, `fromOpcodes`, `contains`, `unionWith`) | `src/inspector.zig` |
+| `CallType` | `enum { call, callcode, delegatecall, staticcall, create, create2, selfdestruct }` | `src/inspector.zig` |
+| `RevertDecoder` | Solidity `Error(string)` and `Panic(uint256)` ABI decoder | `src/inspector.zig` |
+| `DecodedRevert` | `union(enum) { reason: []const u8, panic: Panic }` | `src/inspector.zig` |
+
+## Built-in native tracers
+
+| Symbol | Definition | Source |
+| --- | --- | --- |
+| `CallTracer` | Geth `callTracer` (`writeGethJson`) and Parity `flatCallTracer` (`writeFlatJson`) | `src/tracers.zig` |
+| `FourByteTracer` | Geth `4byteTracer` selector + calldata-size counter | `src/tracers.zig` |
+| `PrestateTracer` | Geth `prestateTracer` (prestate mode and `diff_mode`) | `src/tracers.zig` |
+| `AccessListInspector` | EIP-2929 access collector for `eth_createAccessList` | `src/tracers.zig` |
+| `GasProfiler` | Per-opcode gas histogram and per-frame inclusive/exclusive gas profile | `src/tracers.zig` |
+| `CoverageInspector` | Per-code-hash PC, edge, and `JUMPI` branch coverage collector | `src/tracers.zig` |
+
+## Simulation engine & live block tracing
+
+| Symbol | Definition | Source |
+| --- | --- | --- |
+| `StateOverlayHost` | Copy-on-write, checkpoint/revert `HostInterface` overlay | `src/simulation.zig` |
+| `AccountOverride` | Geth-style account override (`balance`, `nonce`, `code`, `state`, `state_diff`) | `src/simulation.zig` |
+| `BlockOverride` | Block header field override (`apply(BlockContext)`) | `src/simulation.zig` |
+| `CallRequest` | Transaction-shaped simulation request (`to == null` for CREATE) | `src/simulation.zig` |
+| `BlockHooks` | 10-hook block/chain live tracing vtable + optional `tx_inspector` | `src/live_tracer.zig` |
+| `MuxBlockHooks` | Fan-out compositor for multiple `BlockHooks` and their `tx_inspector`s | `src/live_tracer.zig` |
+| `SupplyTracer` | Zig ETH issuance and burn tracer modeled on Geth’s `--vmtrace supply` | `src/live_tracer.zig` |
+| `TraceStore` | Retention-bounded, reorg-aware, indexed `trace_filter` store | `src/trace_store.zig` |
+| `TraceFilter` | Query filter (`from_block`, `to_block`, `from_address`, `to_address`, `after`, `count`) | `src/trace_store.zig` |
+
+## Debugger, flamegraph & EVMC adapter
+
+| Symbol | Definition | Source |
+| --- | --- | --- |
+| `ExecutionRecorder` | `Inspector` recording immutable step, storage, and call-frame timelines | `src/debugger.zig` |
+| `DebugSession` | Forward/backward time-travel cursor with 7 breakpoint types | `src/debugger.zig` |
+| `Breakpoint` | Tagged union (`pc`, `opcode`, `call_target`, `storage_slot`, `on_revert`, `on_fault`, `depth_at_most`) | `src/debugger.zig` |
+| `FlamegraphCollector` | Call-stack & opcode gas collector (`writeFoldedStacks`, `writeSvg`) | `src/flamegraph.zig` |
+| `EvmcHostBridge` | EVMC ABI 12 `EvmcHostInterface` adapter over `HostInterface` + `Inspector` | `src/evmc_adapter.zig` |
+
+In EVMC ABI 12, `EvmcRevision.experimental` has value `15`. `evmc_adapter.fromHardfork` maps forks newer than Osaka, including `.AMSTERDAM`, to `.experimental`. `evmc_adapter.toHardfork(.experimental)` returns the newest fork in Voltaire.
+
 ## Submodule namespaces
 
-`root.zig` also re-exports the underlying files as namespaces: `evm`, `frame`, `host`, `evm_config`, `call_params`, `call_result`, `errors`, `trace`, `opcode`, `dispatcher`.
+`root.zig` also re-exports every underlying file as a namespace: `evm`, `frame`, `host`, `evm_config`, `call_params`, `call_result`, `errors`, `trace`, `inspector`, `tracers`, `simulation`, `live_tracer`, `trace_store`, `debugger`, `flamegraph`, `evmc_adapter`, `opcode`, `dispatcher`.
 
 ## What is NOT re-exported
 

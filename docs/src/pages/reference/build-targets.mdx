@@ -39,11 +39,39 @@ Transcribed from `build.zig`. Run `zig build --help` for the live list on your c
 | `zig build test-evm-adapter` / `bench-evm` | EVM ↔ WorldState adapter (`client/evm`) |
 | `zig build test-blockchain` / `bench-blockchain` | Chain management (`client/blockchain`) |
 | `zig build test-txpool` / `bench-txpool` | Transaction pool (`client/txpool`) |
-| `zig build test-rpc` | JSON-RPC server (`client/rpc`) |
-| `zig build test-engine` | Consensus Engine API (`client/engine`) |
+| `zig build test-rpc` / `bench-rpc` | JSON-RPC server (`client/rpc`) |
+| `zig build test-engine` / `bench-engine` | Consensus Engine API (`client/engine`) |
 | `zig build test-network` / `bench-network` | devp2p / RLPx (`client/network`) |
-| `zig build test-sync` | Sync (`client/sync`) |
-| `zig build test-runner` | Runner CLI (`client/main.zig`) |
+| `zig build test-sync` / `bench-sync` | Sync (`client/sync`) |
+| `zig build test-runner` / `bench-cli` | Runner CLI (`client/main.zig`, `client/cli.zig`) |
+
+## Core EVM & aggregate benchmarks
+
+Run Zig benchmarks with `-Doptimize=ReleaseFast` for accurate timings. Set `BENCH_JSON_OUT=<path>` to write structured JSON reports.
+
+| Command | Scope |
+| --- | --- |
+| `zig build bench-bytecode` | Bytecode JUMPDEST bitset analysis, lookup & `PUSH` immediate decoding |
+| `zig build bench-storage` | Persistent/transient `Storage` & EIP-2929 `AccessListManager` snapshots |
+| `zig build bench-frame` | `Frame` lifecycle, stack ops, gas metering & contiguous memory R/W |
+| `zig build bench-opcodes` | Per-opcode micro-benchmarks (arithmetic, Osaka `CLZ`, `MCOPY`, `KECCAK256`, `LOG`, etc.) |
+| `zig build bench-evm-core` | End-to-end EVM loops, nested `CALL`, EIP-3155 `Tracer`, `RevertDecoder` & precompiles |
+| `zig build bench-ffi` | C-FFI `evm_create` / `evm_execute` lifecycle & reused-handle throughput |
+| `zig build bench` | Aggregate step running all Core EVM and Zig client benchmarks |
+| `node test/wasm.bench.mjs` | WASI reactor instantiation & execution benchmarks (after `zig build wasm`) |
+| `bun scripts/bench-summary.ts` | Unified summary & baseline diff across all `.bench-results/*.json` and `**/.bench-result.json` |
+
+## Incremental Smithers targets (`WORKSPACE.ts` / `PACKAGE.ts`)
+
+| Command | Action |
+| --- | --- |
+| `smithers-build targets` | List all 98 declared targets across 29 packages |
+| `smithers-build affected test '//...' --include-exclusive --verbose` | Run only tests and benchmarks whose inputs changed |
+| `smithers-build affected test '//:bench_all' --include-exclusive --verbose` | Run only affected benchmarks (Zig, WASM, TypeScript, `client-ts`) |
+| `smithers-build test //:bench_core --verbose` | Run all 7 Core EVM & WASM benchmarks exclusively |
+| `smithers-build test //:bench_client_zig --verbose` | Run all 11 Zig client benchmarks exclusively |
+| `smithers-build test //:bench_ts --verbose` | Run all 13 TypeScript & `client-ts` benchmarks exclusively |
+| `smithers-build run //:bench_summary` | Print aggregated benchmark summary table |
 
 ## Build options (`-D`) & environment variables
 
@@ -52,6 +80,7 @@ Transcribed from `build.zig`. Run `zig build --help` for the live list on your c
 | `-Doptimize=ReleaseFast` / `ReleaseSmall` / `ReleaseSafe` | Standard Zig optimization mode |
 | `-Dnethermind-diff=false` | Skip Nethermind trie differential test during `zig build test` |
 | `-Drefresh-specs=true` | Force regeneration of `execution-specs` fixtures |
+| `BENCH_JSON_OUT="<path>"` | Emit structured JSON benchmark metrics for Smithers `outFiles` / `bench-summary.ts` |
 | `TEST_FILTER="<substring>"` | Filter `zig build specs` tests by name, fork, EIP, or opcode |
 | `TEST_SEQUENTIAL=1` | Run filtered spec tests sequentially for readable divergence logs |
 | `INCLUDE_ENGINE_TESTS=1` | Include `blockchain_test_engine` fixtures in `zig build specs` |

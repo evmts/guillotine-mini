@@ -1,11 +1,9 @@
 const std = @import("std");
 const primitives = @import("voltaire");
 const Address = primitives.Address;
+const EvmConfig = @import("evm_config.zig").EvmConfig;
 
-pub fn CallParams(config: anytype) type {
-    // We can add config-specific customizations here in the future
-    _ = config; // Currently unused but reserved for future enhancements
-
+pub fn CallParams(comptime config: EvmConfig) type {
     return union(enum) {
         /// Regular CALL operation
         call: struct {
@@ -65,9 +63,14 @@ pub fn CallParams(config: anytype) type {
         /// Validate call parameters to ensure they meet EVM requirements.
         /// Checks gas limits and other critical constraints.
         pub fn validate(self: @This()) ValidationError!void {
-            // EIP-3860: Limit init code size to 49152 bytes (2 * max contract size)
-            const MAX_INITCODE_SIZE = 49152;
+            return self.validateForHardfork(config.hardfork);
+        }
+
+        pub fn validateForHardfork(self: @This(), hardfork: primitives.Hardfork) ValidationError!void {
             const MAX_INPUT_SIZE = 1024 * 1024 * 4; // 4MB practical limit for input data
+            if (self.isCreate() and hardfork.isAtLeast(.SHANGHAI) and self.getInput().len > config.max_initcode_size) {
+                return ValidationError.InvalidInitCodeSize;
+            }
 
             switch (self) {
                 .call => |params| {
@@ -88,16 +91,7 @@ pub fn CallParams(config: anytype) type {
                     if (params.input.len > MAX_INPUT_SIZE) return ValidationError.InvalidInputSize;
                     // STATICCALL cannot have value (enforced by not having value field)
                 },
-                .create => |params| {
-                    // Validate init code size (EIP-3860)
-                    if (params.init_code.len > MAX_INITCODE_SIZE) return ValidationError.InvalidInitCodeSize;
-                    // CREATE can have any value, no special validation needed
-                },
-                .create2 => |params| {
-                    // Validate init code size (EIP-3860)
-                    if (params.init_code.len > MAX_INITCODE_SIZE) return ValidationError.InvalidInitCodeSize;
-                    // CREATE2 can have any value, no special validation needed
-                },
+                .create, .create2 => {},
             }
         }
 

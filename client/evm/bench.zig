@@ -78,7 +78,6 @@ fn bench_balance(n: usize) u64 {
             _ = host.getBalance(addr);
         }
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -101,7 +100,6 @@ fn bench_storage(n: usize) u64 {
             _ = host.getStorage(addr, slot);
         }
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -123,7 +121,6 @@ fn bench_nonce(n: usize) u64 {
             _ = host.getNonce(addr);
         }
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -147,7 +144,6 @@ fn bench_code(n: usize) u64 {
             _ = host.getCode(addr);
         }
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -193,7 +189,6 @@ fn bench_mixed(n: usize) u64 {
             }
         }
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -235,7 +230,6 @@ fn bench_checkpoint_revert(depth: usize) u64 {
         }
 
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -312,7 +306,6 @@ fn bench_block_processing() u64 {
         }
 
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -335,7 +328,6 @@ fn bench_vtable_overhead(n: usize) struct { direct_ns: u64, vtable_ns: u64 } {
             state.setBalance(addr, @intCast(i)) catch unreachable;
         }
         direct_total += timer.read();
-        adapter.deinit();
         state.deinit();
     }
 
@@ -356,7 +348,6 @@ fn bench_vtable_overhead(n: usize) struct { direct_ns: u64, vtable_ns: u64 } {
             host.setBalance(addr, @intCast(i));
         }
         vtable_total += timer.read();
-        adapter.deinit();
         state.deinit();
     }
 
@@ -373,6 +364,11 @@ fn bench_vtable_overhead(n: usize) struct { direct_ns: u64, vtable_ns: u64 } {
 /// Benchmark entry point.
 pub fn main() !void {
     if (@import("builtin").is_test) return;
+    var suite = bench_utils.BenchSuite.initQuiet(std.heap.page_allocator, "client/evm");
+    defer suite.deinit();
+    suite.attach();
+    defer suite.writeJsonIfRequested() catch {};
+
     std.debug.print("\n", .{});
     std.debug.print("=" ** 100 ++ "\n", .{});
     std.debug.print("  Guillotine Phase-3 EVM ↔ WorldState Benchmarks (HostAdapter)\n", .{});

@@ -65,41 +65,30 @@ fn runNethermind(allocator: std.mem.Allocator) ![]u8 {
         "scripts/nethermind-diff-trie/NethermindTrieDiff.csproj",
         "--configuration",
         "Release",
+        "--no-launch-profile",
     };
 
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &argv,
+        .max_output_bytes = 1024 * 1024,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
-    child.spawn() catch |err| {
-        if (err == error.FileNotFound) {
-            std.debug.print("dotnet not found; install the .NET SDK to run nethermind diff\\n", .{});
-        }
-        return err;
-    };
-
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(stdout);
-    const stderr = try child.stderr.?.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(stderr);
-
-    const term = child.wait() catch |err| {
-        if (err == error.FileNotFound) {
-            std.debug.print("dotnet not found; install the .NET SDK to run nethermind diff\n", .{});
-        }
-        return err;
-    };
-    switch (term) {
+    switch (result.term) {
         .Exited => |code| if (code != 0) {
-            std.debug.print("Nethermind diff process failed ({d}): {s}\n", .{ code, stderr });
+            std.debug.print("Nethermind diff process failed ({d}):\n{s}{s}\n", .{ code, result.stdout, result.stderr });
             return error.NethermindFailed;
         },
         else => {
-            std.debug.print("Nethermind diff process terminated: {any}\n", .{term});
+            std.debug.print("Nethermind diff process terminated: {any}\n{s}{s}\n", .{ result.term, result.stdout, result.stderr });
             return error.NethermindFailed;
         },
     }
 
-    return allocator.dupe(u8, std.mem.trim(u8, stdout, " \r\n\t"));
+    // dotnet run can write SDK and build messages before the program's output.
+    const output = std.mem.trimEnd(u8, result.stdout, " \r\n\t");
+    const root_start = if (std.mem.lastIndexOfScalar(u8, output, '\n')) |idx| idx + 1 else 0;
+    return allocator.dupe(u8, output[root_start..]);
 }

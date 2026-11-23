@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Guillotine-Mini — Performance Benchmarks, Bottleneck Fixes &amp; Incremental Smithers Graph</title>
+  <style>
+    :root {
+      --bg: #0b0e14;
+      --surface: #121722;
+      --surface-2: #181f2e;
+      --border: #263147;
+      --text: #e6edf7;
+      --muted: #93a3bd;
+      --accent: #5eead4;
+      --accent-2: #60a5fa;
+      --good: #34d399;
+      --warn: #fbbf24;
+      --bad: #f87171;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 36px 24px 80px;
+    }
+    header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 24px;
+      margin-bottom: 28px;
+    }
+    .eyebrow {
+      font-family: var(--mono);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 30px;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+    }
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+      max-width: 820px;
+    }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 14px;
+      margin: 26px 0 34px;
+    }
+    .kpi {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px;
+    }
+    .kpi-label {
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .kpi-val {
+      font-family: var(--mono);
+      font-size: 26px;
+      font-weight: 700;
+      margin-top: 6px;
+      color: var(--accent);
+    }
+    .kpi-sub {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    section {
+      margin-bottom: 38px;
+    }
+    h2 {
+      font-size: 20px;
+      margin: 0 0 14px;
+      letter-spacing: -0.01em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    h2 .tag {
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--accent-2);
+      font-weight: 500;
+    }
+    p { margin: 0 0 12px; color: var(--muted); }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 18px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    th {
+      background: var(--surface-2);
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 11.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    tr:last-child td { border-bottom: none; }
+    .mono { font-family: var(--mono); font-size: 12.5px; }
+    .num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+    .pill {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+    .pill-good { background: rgba(52, 211, 153, 0.14); color: var(--good); border: 1px solid rgba(52, 211, 153, 0.35); }
+    .pill-blue { background: rgba(96, 165, 250, 0.14); color: var(--accent-2); border: 1px solid rgba(96, 165, 250, 0.35); }
+    .pill-warn { background: rgba(251, 191, 36, 0.14); color: var(--warn); border: 1px solid rgba(251, 191, 36, 0.35); }
+    .bar-wrap {
+      width: 140px;
+      height: 8px;
+      background: #1d2638;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-2), var(--good));
+      border-radius: 999px;
+    }
+    pre {
+      margin: 0;
+      padding: 14px 16px;
+      background: #0d111a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      overflow-x: auto;
+      color: #d6e2f5;
+    }
+    code {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      background: var(--surface-2);
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: var(--accent);
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+      gap: 16px;
+    }
+    .box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 20px;
+    }
+    .box h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      color: var(--text);
+    }
+    .box ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 13.5px;
+    }
+    .box li { margin-bottom: 6px; }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .tab-btn {
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .tab-btn.active {
+      background: var(--surface-2);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    footer {
+      margin-top: 40px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+      font-size: 12.5px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="eyebrow">Guillotine-Mini · Performance Engineering &amp; Smithers Incremental Build</div>
+      <h1>Full-Codebase Benchmarks, EVM Bottleneck Fixes &amp; Incremental Smithers Graph</h1>
+      <p class="subtitle">
+        End-to-end performance benchmark coverage across every Zig core EVM module, Zig client subsystem,
+        WASM/WASI reactor, C-FFI bridge, and TypeScript / <code>client-ts</code> module — paired with major
+        EVM hot-path optimizations (up to 4,528× speedup) and surgical incremental execution through Smithers
+        <code>WORKSPACE.ts</code> / <code>PACKAGE.ts</code> with upstream Smithers fixes.
+      </p>
+    </header>
+
+    <div class="kpis">
+      <div class="kpi">
+        <div class="kpi-label">Peak Bottleneck Speedup</div>
+        <div class="kpi-val">4,528×</div>
+        <div class="kpi-sub">AccessListManager snapshot/restore (1.63 ms → 360 ns)</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">EVM Memory Copy (MCOPY 1KB)</div>
+        <div class="kpi-val">579×</div>
+        <div class="kpi-sub">33.6 µs → 58 ns (contiguous buffer, 0 allocs)</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Incremental Targets</div>
+        <div class="kpi-val">98</div>
+        <div class="kpi-sub">Across 29 packages · 31 benchmark suites</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Upstream Smithers Fixes</div>
+        <div class="kpi-val">4</div>
+        <div class="kpi-sub">Filegroup, Suite, cache-hit replay, Effect v3 bootstrap</div>
+      </div>
+    </div>
+
+    <section>
+      <h2>1. Major Bottlenecks Fixed (ReleaseFast Before vs. After) <span class="tag">Core EVM &amp; DB</span></h2>
+      <p>
+        Every measurement below was collected with <code>-Doptimize=ReleaseFast</code> on Apple Silicon macOS
+        (Zig 0.15.2). Benchmarks execute under Smithers <code>exclusive: true</code> to eliminate parallel CPU contention.
+      </p>
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Component &amp; Operation</th>
+              <th>Root Cause Fixed</th>
+              <th class="num">Before</th>
+              <th class="num">After</th>
+              <th class="num">Speedup</th>
+              <th>Gain</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono">AccessListManager snapshot+touch(4)+restore (1024 warm)</td>
+              <td>Cloned both HashMaps on every nested CALL → O(1) length checkpoint + O(k) <code>pop()</code></td>
+              <td class="num">1.63 ms</td>
+              <td class="num">360 ns</td>
+              <td class="num"><span class="pill pill-good">4,528×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:100%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">AccessListManager snapshot+touch(4)+restore (128 warm)</td>
+              <td>Zero-allocation <code>ArrayHashMap</code> length checkpoint</td>
+              <td class="num">349.3 µs</td>
+              <td class="num">483 ns</td>
+              <td class="num"><span class="pill pill-good">723×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:98%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">AccessListManager snapshot+touch(4)+restore (16 warm)</td>
+              <td>Zero-allocation <code>ArrayHashMap</code> length checkpoint</td>
+              <td class="num">49.7 µs</td>
+              <td class="num">292 ns</td>
+              <td class="num"><span class="pill pill-good">170×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:92%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">MCOPY (0x5e, 1KB copy)</td>
+              <td><code>AutoHashMap(u32, u8)</code> per-byte + temp alloc → contiguous <code>ArrayListUnmanaged(u8)</code> in-place copy</td>
+              <td class="num">33.6 µs</td>
+              <td class="num">58 ns</td>
+              <td class="num"><span class="pill pill-good">579×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:97%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">MSTORE (0x52, 32B word)</td>
+              <td>32 HashMap puts → single <code>std.mem.writeInt(u256, ..., .big)</code></td>
+              <td class="num">428 ns</td>
+              <td class="num">12 ns</td>
+              <td class="num"><span class="pill pill-good">35.7×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:82%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">Frame.readMemory 4KB byte-by-byte</td>
+              <td>HashMap lookup per byte → bounds-checked contiguous slice indexing</td>
+              <td class="num">61.7 µs</td>
+              <td class="num">1.9 µs</td>
+              <td class="num"><span class="pill pill-good">32.5×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:80%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">KECCAK256 (0x20, 256B)</td>
+              <td>Temp heap alloc + 256 HashMap reads → zero-copy contiguous memory slice</td>
+              <td class="num">18.5 µs</td>
+              <td class="num">735 ns</td>
+              <td class="num"><span class="pill pill-good">25.2×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:76%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">MLOAD (0x51, 32B word)</td>
+              <td>32 HashMap gets → single <code>std.mem.readInt(u256, ..., .big)</code></td>
+              <td class="num">298 ns</td>
+              <td class="num">13 ns</td>
+              <td class="num"><span class="pill pill-good">22.9×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:74%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">Bytecode.isValidJumpDest (24KB all-JUMPDEST)</td>
+              <td><code>AutoArrayHashMap(u32, void)</code> → 1-bit packed bitset (3 CPU instructions)</td>
+              <td class="num">43 ns</td>
+              <td class="num">2 ns</td>
+              <td class="num"><span class="pill pill-good">21.5×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:72%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">Bytecode.readImmediate PUSH32</td>
+              <td>32-iter byte shift loop → direct big-endian <code>std.mem.readInt(u256)</code></td>
+              <td class="num">51 ns</td>
+              <td class="num">3 ns</td>
+              <td class="num"><span class="pill pill-good">17.0×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:68%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">Bytecode.init (24KB adversarial all-JUMPDEST)</td>
+              <td>24K HashMap insertions → single 3KB packed bitset fill</td>
+              <td class="num">1.58 ms</td>
+              <td class="num">105.8 µs</td>
+              <td class="num"><span class="pill pill-good">14.9×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:66%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">LOG2 (0xa2, 64B data)</td>
+              <td>64 HashMap reads → contiguous <code>copyFromMemory</code></td>
+              <td class="num">577 ns</td>
+              <td class="num">51 ns</td>
+              <td class="num"><span class="pill pill-good">11.3×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:60%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">CALLDATALOAD (0x35)</td>
+              <td>32-iter byte loop → direct <code>std.mem.readInt(u256)</code></td>
+              <td class="num">69 ns</td>
+              <td class="num">11 ns</td>
+              <td class="num"><span class="pill pill-good">6.3×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:52%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">Frame.writeMemory 4KB byte-by-byte</td>
+              <td>HashMap put per byte → contiguous slice write</td>
+              <td class="num">21.7 µs</td>
+              <td class="num">4.0 µs</td>
+              <td class="num"><span class="pill pill-good">5.4×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:48%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">Frame.init + deinit (448B bytecode)</td>
+              <td>32KB stack pre-alloc + heap JUMPDEST map → 2KB initial stack + 512B inline bitset</td>
+              <td class="num">43.1 µs</td>
+              <td class="num">10.6 µs</td>
+              <td class="num"><span class="pill pill-good">4.1×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:42%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">End-to-End: nested CALL loop (100 inner CALLs)</td>
+              <td>O(1) access-list snapshots + inline bitset + contiguous memory</td>
+              <td class="num">363.3 µs</td>
+              <td class="num">89.6 µs</td>
+              <td class="num"><span class="pill pill-good">4.1×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:42%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">End-to-End: MSTORE + KECCAK256(256B) loop (500 iters)</td>
+              <td>Zero-copy Keccak256 + direct word MSTORE</td>
+              <td class="num">1.51 ms</td>
+              <td class="num">459.6 µs</td>
+              <td class="num"><span class="pill pill-good">3.3×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:38%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">C-FFI reused-handle execute + get_output</td>
+              <td>Inline bytecode bitset + contiguous memory + comptime override guard</td>
+              <td class="num">7.8 µs</td>
+              <td class="num">2.3 µs</td>
+              <td class="num"><span class="pill pill-good">3.4×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:38%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">PUSH32 (0x7f)</td>
+              <td>Direct 32-byte big-endian load in <code>Bytecode.readImmediate</code></td>
+              <td class="num">18 ns</td>
+              <td class="num">6 ns</td>
+              <td class="num"><span class="pill pill-good">3.0×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:34%"></div></div></td>
+            </tr>
+            <tr>
+              <td class="mono">WASM evm_execute arithmetic + return 32B</td>
+              <td>Inline bitset + contiguous memory + smaller initial stack</td>
+              <td class="num">17.1 µs</td>
+              <td class="num">13.0 µs</td>
+              <td class="num"><span class="pill pill-good">1.32×</span></td>
+              <td><div class="bar-wrap"><div class="bar-fill" style="width:20%"></div></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="grid-2">
+        <div class="box">
+          <h3>Additional Optimizations Shipped</h3>
+          <ul>
+            <li><strong><code>handlers_arithmetic.zig</code></strong>: Eliminated <code>u512</code> division in <code>ADDMOD</code> via overflow-free modular arithmetic; replaced byte-shift loop in <code>EXP</code> gas cost with O(1) <code>@clz</code>.</li>
+            <li><strong><code>handlers_context.zig</code> &amp; <code>handlers_system.zig</code></strong>: Replaced all per-byte memory copy loops in <code>CALLDATACOPY</code>, <code>CODECOPY</code>, <code>EXTCODECOPY</code>, <code>RETURNDATACOPY</code>, <code>RETURN</code>, <code>REVERT</code>, <code>CREATE</code>/<code>CREATE2</code>, and <code>CALL</code>/<code>CALLCODE</code>/<code>DELEGATECALL</code>/<code>STATICCALL</code> with contiguous <code>@memcpy</code> / <code>@memset</code> helpers.</li>
+            <li><strong><code>client/db/memory.zig</code></strong>: Reuses existing arena key slices via <code>getOrPut</code> on overwrites (eliminating redundant key dupes) and pre-sizes snapshot maps with <code>ensureTotalCapacity</code>.</li>
+            <li><strong>Benchmark Bug Fixes</strong>: Fixed 9 broken <code>adapter.deinit()</code> calls in <code>client/evm/bench.zig</code>, uninitialized stack garbage &amp; DCE in <code>client/db/bench.zig</code>, DCE in <code>client/txpool/bench.zig</code> and <code>client/network/rlpx/bench.zig</code>, NUL-byte padding in <code>client/bench_utils.zig</code>, and 0-key formatting in <code>client/trie/bench.zig</code>.</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h3>External Dependency Bottlenecks Identified (<code>../voltaire</code>)</h3>
+          <ul>
+            <li><strong><code>BlockStore.setCanonicalHead</code> (O(N²))</strong>: Walks back to genesis on every head update and scans the full canonical map in <code>getHeadBlockNumber</code>. Capped <code>client/blockchain/bench.zig</code> to 100 / 500 / 2,000 blocks so benchmarks terminate cleanly while tracking the scaling curve.</li>
+            <li><strong><code>StateManager</code> checkpoint/revert</strong>: Deep-copies the entire state cache on nested checkpoints, capping simulated block throughput in <code>client/evm/bench.zig</code> (~24 MGas/s). Switching to a position-based journal (like <code>client/state/journal.zig</code>) will unlock ~100× higher nested-call throughput.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. Upstream Smithers Improvements <span class="tag">/Users/williamcory/smithers</span></h2>
+      <p>
+        Rather than working around limitations in <code>PACKAGE.ts</code>, four upstream bugs/gaps were fixed
+        directly in <code>@smthrs/build-cli</code> with full regression unit tests.
+      </p>
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Upstream Fix</th>
+              <th>File</th>
+              <th>Why It Matters for Incremental Benchmarks</th>
+              <th>Verification</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>1. Narrow <code>Filegroup</code> ownership</strong> + guard <code>jj diff</code> flags</td>
+              <td class="mono">build-cli/src/Affected.ts</td>
+              <td><code>S.Filegroup</code> no longer claims unrelated sibling files in the same package directory, enabling fine-grained source groups inside <code>src/PACKAGE.ts</code> (e.g. <code>bytecode_srcs</code> vs <code>storage_srcs</code>).</td>
+              <td><span class="pill pill-good">Affected.test.ts 28/28</span></td>
+            </tr>
+            <tr>
+              <td><strong>2. Expand <code>S.Suite</code> in <code>affected</code></strong> &amp; exempt <code>Suite</code>/<code>Alias</code> from <code>uncacheable</code></td>
+              <td class="mono">build-cli/src/Affected.ts</td>
+              <td>Previously <code>S.Suite</code> was marked <code>uncacheable</code> and triggered on every file edit (even docs!), dragging all 31 benchmarks into every run. Now <code>affected</code> expands suites to only affected leaf targets (0 targets on doc edits).</td>
+              <td><span class="pill pill-good">Affected.test.ts 28/28</span></td>
+            </tr>
+            <tr>
+              <td><strong>3. Replay cached stdout/stderr on <code>Shell.Test</code> hits</strong></td>
+              <td class="mono">build-cli/src/internal/PackageRunner.ts</td>
+              <td>Captures redacted stdout/stderr (up to 64 KiB) in the cache entry (including <code>outFiles</code> runs) and replays it on cache hits with <code>--verbose</code> so benchmark tables stay visible even when cached.</td>
+              <td><span class="pill pill-good">ShellTestOutFiles.test.ts 4/4</span></td>
+            </tr>
+            <tr>
+              <td><strong>4. Allow Effect v3 consumer subpackages in bootstrap mode</strong></td>
+              <td class="mono">build-cli/src/internal/DeclarationDependencies.ts</td>
+              <td>Allows a consumer repo using Effect v3 (like <code>client-ts</code>) to declare pure <code>@smthrs/targets</code> <code>PACKAGE.ts</code> files in bootstrap mode while still refusing duplicate Effect v4 installs or direct <code>effect</code> imports.</td>
+              <td><span class="pill pill-good">EffectResolutionContract.test.ts</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>3. Incremental Smithers Coverage Matrix <span class="tag">31 Benchmark Suites · 29 Packages</span></h2>
+      <div class="tabs" id="suite-tabs">
+        <button class="tab-btn active" data-filter="all">All (31)</button>
+        <button class="tab-btn" data-filter="core">Core EVM &amp; WASM (7)</button>
+        <button class="tab-btn" data-filter="client-zig">Zig Client (11)</button>
+        <button class="tab-btn" data-filter="ts">TypeScript &amp; client-ts (13)</button>
+      </div>
+      <div class="card">
+        <table id="suite-table">
+          <thead>
+            <tr>
+              <th>Smithers Label</th>
+              <th>Layer</th>
+              <th>What It Benchmarks</th>
+              <th>JSON Artifact (<code>outFiles</code>)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr data-cat="core"><td class="mono">//:bench_bytecode</td><td><span class="pill pill-blue">Core Zig</span></td><td>JUMPDEST bitset analysis (256B–24KB + adversarial), <code>isValidJumpDest</code>, <code>readImmediate</code> (PUSH1–32)</td><td class="mono">.bench-results/core-bytecode.json</td></tr>
+            <tr data-cat="core"><td class="mono">//:bench_storage</td><td><span class="pill pill-blue">Core Zig</span></td><td>Persistent &amp; transient <code>Storage</code>, EIP-2929 warm/cold slots, <code>AccessListManager</code> snapshot/restore</td><td class="mono">.bench-results/core-storage.json</td></tr>
+            <tr data-cat="core"><td class="mono">//:bench_frame</td><td><span class="pill pill-blue">Core Zig</span></td><td><code>Frame.init</code>/<code>deinit</code>, stack push/peek/pop, <code>consumeGas</code>, <code>memoryExpansionCost</code>, 4KB memory R/W</td><td class="mono">.bench-results/core-frame.json</td></tr>
+            <tr data-cat="core"><td class="mono">//:bench_opcodes</td><td><span class="pill pill-blue">Core Zig</span></td><td>28 EVM opcodes incl. arithmetic, Osaka <code>CLZ</code> (EIP-7939), stack, memory, <code>MCOPY</code>, <code>KECCAK256</code>, storage, <code>LOG2</code></td><td class="mono">.bench-results/core-opcodes.json</td></tr>
+            <tr data-cat="core"><td class="mono">//:bench_evm_core</td><td><span class="pill pill-blue">Core Zig</span></td><td>End-to-end loops, MSTORE+KECCAK, storage+LOG0, 100× nested CALL, EIP-3155 Tracer, RevertDecoder, IDENTITY/SHA256/P256VERIFY</td><td class="mono">.bench-results/core-evm.json</td></tr>
+            <tr data-cat="core"><td class="mono">//:bench_ffi</td><td><span class="pill pill-blue">Core Zig</span></td><td>C-FFI <code>evm_create</code> + <code>set_bytecode</code> + <code>execute</code> + <code>destroy</code> &amp; reused-handle throughput</td><td class="mono">.bench-results/core-ffi.json</td></tr>
+            <tr data-cat="core"><td class="mono">//:bench_wasm</td><td><span class="pill pill-blue">WASM/WASI</span></td><td>WASI reactor instantiation, arithmetic execution + 32B return, 500-iteration EVM tight loop</td><td class="mono">.bench-results/wasm.json</td></tr>
+
+            <tr data-cat="client-zig"><td class="mono">//client/db:bench</td><td><span class="pill pill-good">Client Zig</span></td><td><code>MemoryDatabase</code> put/get/random/contains/delete/overwrite, 80/20 mixed, WriteBatch, vtable overhead, block sim</td><td class="mono">client/db/.bench-result.json</td></tr>
+            <tr data-cat="client-zig"><td class="mono">//client/trie:bench</td><td><span class="pill pill-good">Client Zig</span></td><td>MPT root hash (10–10K keys, small/account/large values), secure keccak256 trie, block state root sim</td><td class="mono">client/trie/.bench-result.json</td></tr>
+            <tr data-cat="client-zig"><td class="mono">//client/state:bench</td><td><span class="pill pill-good">Client Zig</span></td><td>World-state journal append (1K–1M), O(1) snapshot, fast/slow restore, nested CALL depths up to 1024</td><td class="mono">client/state/.bench-result.json</td></tr>
+            <tr data-cat="client-zig"><td class="mono">//client/evm:bench</td><td><span class="pill pill-good">Client Zig</span></td><td><code>HostAdapter</code> vtable bridge for balance/storage/nonce/code, mixed workload, checkpoint/revert</td><td class="mono">client/evm/.bench-result.json</td></tr>
+            <tr data-cat="client-zig"><td class="mono">//client/blockchain:bench</td><td><span class="pill pill-good">Client Zig</span></td><td>Chain <code>putBlock</code> + <code>setCanonicalHead</code> scaling (100 / 500 / 2K blocks)</td><td class="mono">client/blockchain/.bench-result.json</td></tr>
+            <tr data-cat="client-zig"><td class="mono">//client/txpool:bench</td><td><span class="pill pill-good">Client Zig</span></td><td>Tx admission <code>fits_size_limits</code> (Legacy/1559/4844/7702), fee comparator &amp; 50K tuple sort</td><td class="mono">client/txpool/.bench-result.json</td></tr>
+            <tr data-cat="client-zig"><td class="mono">//client/network:bench</td><td><span class="pill pill-good">Client Zig</span></td><td>RLPx 24-bit frame size encode/decode, 16-byte padding alignment</td><td class="mono">client/network/.bench-result.json</td></tr>
+            <tr data-cat="client-zig"><td class="mono">//client/rpc:bench</td><td><span class="pill pill-good">Client Zig</span></td><td>JSON-RPC envelope ID extraction, namespace dispatch, response formatting, <code>eth_chainId</code></td><td class="mono">client/rpc/.bench-result.json</td></tr>
+            <tr data-cat="client-zig"><td class="mono">//client/engine:bench</td><td><span class="pill pill-good">Client Zig</span></td><td>Engine API method detection, capabilities validation, JSON-RPC dispatch</td><td class="mono">client/engine/.bench-result.json</td></tr>
+            <tr data-cat="client-zig"><td class="mono">//client/sync:bench</td><td><span class="pill pill-good">Client Zig</span></td><td>Sync peer limits, status exchange, header request planning</td><td class="mono">client/sync/.bench-result.json</td></tr>
+            <tr data-cat="client-zig"><td class="mono">//:bench_cli</td><td><span class="pill pill-good">Client Zig</span></td><td>CLI argument parser &amp; network ID resolution</td><td class="mono">.bench-results/client-cli.json</td></tr>
+
+            <tr data-cat="ts"><td class="mono">//src/utils:bench</td><td><span class="pill pill-warn">TypeScript</span></td><td>256-bit BigInt arithmetic/bitwise &amp; TS EVM memory helpers</td><td class="mono">src/utils/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//ts/exex:bench</td><td><span class="pill pill-warn">TypeScript</span></td><td><code>ExExManager</code> single &amp; 4-subscriber async notification fan-out</td><td class="mono">ts/exex/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//client-ts/db:bench</td><td><span class="pill pill-warn">client-ts</span></td><td>Effect <code>Db</code> put/get/writeBatch/scopedWriteBatch + <code>DbIterator</code></td><td class="mono">client-ts/db/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//client-ts/state:bench</td><td><span class="pill pill-warn">client-ts</span></td><td><code>WorldState</code>, <code>Journal</code>, and <code>TransientStorage</code></td><td class="mono">client-ts/state/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//client-ts/trie:bench</td><td><span class="pill pill-warn">client-ts</span></td><td><code>Trie</code>, <code>NodeLoader</code>, and <code>NodeStorage</code></td><td class="mono">client-ts/trie/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//client-ts/evm:bench</td><td><span class="pill pill-warn">client-ts</span></td><td><code>TransactionProcessor</code> execution pipeline</td><td class="mono">client-ts/evm/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//client-ts/blockchain:bench</td><td><span class="pill pill-warn">client-ts</span></td><td><code>Blockchain</code> &amp; <code>BlockProcessing</code></td><td class="mono">client-ts/blockchain/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//client-ts/engine:bench</td><td><span class="pill pill-warn">client-ts</span></td><td><code>EngineCapabilities</code> exchange validation</td><td class="mono">client-ts/engine/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//client-ts/network:bench</td><td><span class="pill pill-warn">client-ts</span></td><td><code>RlpxSnappyLengthValidator</code> &amp; <code>RlpxHelloCapabilityNegotiator</code></td><td class="mono">client-ts/network/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//client-ts/rpc:bench</td><td><span class="pill pill-warn">client-ts</span></td><td><code>JsonRpcProcessor</code> single &amp; 10-item batch decode/dispatch/encode</td><td class="mono">client-ts/rpc/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//client-ts/runner:bench</td><td><span class="pill pill-warn">client-ts</span></td><td><code>RunnerConfigLive</code> CLI + env resolution &amp; Effect Schema decode</td><td class="mono">client-ts/runner/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//client-ts/sync:bench</td><td><span class="pill pill-warn">client-ts</span></td><td><code>FullSyncPeerRequestLimits</code> &amp; header/body/receipt batch planning</td><td class="mono">client-ts/sync/.bench-result.json</td></tr>
+            <tr data-cat="ts"><td class="mono">//client-ts/txpool:bench</td><td><span class="pill pill-warn">client-ts</span></td><td><code>compareFeeMarketPriority</code> &amp; 10K tuple sort</td><td class="mono">client-ts/txpool/.bench-result.json</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>4. Verified Surgical Incremental Selection <span class="tag">smithers-build affected</span></h2>
+      <p>
+        Verified via <code>smithers-build affected test '//...' --include-exclusive --list --files &lt;path&gt;</code>
+        — every file edit triggers <strong>only</strong> the exact benchmarks and tests whose transitive dependency
+        graph includes that file, with <code>conservative: false</code> across the board.
+      </p>
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>Changed File</th>
+              <th>Selected Benchmarks &amp; Tests</th>
+              <th>Skipped</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono">client/trie/hash.zig</td>
+              <td class="mono">//client/trie:bench, //client/trie:test</td>
+              <td>All other 30 benchmark suites &amp; tests</td>
+            </tr>
+            <tr>
+              <td class="mono">client/rpc/dispatch.zig</td>
+              <td class="mono">//client/rpc:bench, //client/rpc:test</td>
+              <td>All other 30 benchmark suites &amp; tests</td>
+            </tr>
+            <tr>
+              <td class="mono">src/bytecode.zig</td>
+              <td class="mono">//:bench_bytecode, bench_frame, bench_opcodes, bench_evm_core, bench_ffi, bench_wasm, //client/evm:bench (+ core tests)</td>
+              <td><code>//:bench_storage</code>, all non-EVM <code>client/*</code>, all <code>client-ts/*</code></td>
+            </tr>
+            <tr>
+              <td class="mono">src/storage.zig</td>
+              <td class="mono">//:bench_storage, bench_frame, bench_opcodes, bench_evm_core, bench_ffi, bench_wasm, //client/evm:bench (+ core tests)</td>
+              <td><code>//:bench_bytecode</code>, all non-EVM <code>client/*</code>, all <code>client-ts/*</code></td>
+            </tr>
+            <tr>
+              <td class="mono">src/root_c.zig</td>
+              <td class="mono">//:bench_ffi, //:bench_wasm, //:test_wasm</td>
+              <td>All core Zig EVM, client Zig, and TypeScript benchmarks</td>
+            </tr>
+            <tr>
+              <td class="mono">client-ts/db/Db.ts</td>
+              <td class="mono">//client-ts/{db,trie,evm,blockchain}:{bench,test}</td>
+              <td>All Zig benchmarks &amp; unrelated <code>client-ts/*</code> modules</td>
+            </tr>
+            <tr>
+              <td class="mono">client-ts/txpool/TxPoolSorter.ts</td>
+              <td class="mono">//client-ts/txpool:bench, //client-ts/txpool:test</td>
+              <td>All other 30 benchmark suites &amp; tests</td>
+            </tr>
+            <tr>
+              <td class="mono">docs/src/pages/index.mdx</td>
+              <td><span class="pill pill-good">0 targets selected</span></td>
+              <td>100% of benchmarks and tests skipped</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>5. Daily Developer Commands <span class="tag">Workflow</span></h2>
+      <pre># Run ONLY tests + benchmarks affected by your current jj/git diff (replays cached output on hits!)
+smithers-build affected test '//...' --include-exclusive --verbose
+
+# Run ONLY affected benchmarks (without non-benchmark unit tests)
+smithers-build affected test '//:bench_all' --include-exclusive --verbose
+
+# Run a single module's benchmark (cached across runs; replays table on cache hit with --verbose)
+smithers-build test //:bench_opcodes --verbose
+smithers-build test //client/rpc:bench --verbose
+smithers-build test //client-ts/txpool:bench --verbose
+
+# View unified summary across all collected JSON benchmark artifacts (or diff against a saved baseline)
+smithers-build run //:bench_summary
+bun scripts/bench-summary.ts --save /tmp/baseline.json
+bun scripts/bench-summary.ts --baseline /tmp/baseline.json</pre>
+    </section>
+
+    <footer>
+      <span>Guillotine-Mini Performance Engineering Report</span>
+      <span>Zig 0.15.2 · Bun 1.4.1 · Node 26 · Smithers Build CLI</span>
+    </footer>
+  </div>
+  <script>
+    const buttons = document.querySelectorAll("#suite-tabs .tab-btn");
+    const rows = document.querySelectorAll("#suite-table tbody tr");
+    buttons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        buttons.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        const filter = btn.dataset.filter;
+        rows.forEach((row) => {
+          row.style.display = filter === "all" || row.dataset.cat === filter ? "" : "none";
+        });
+      });
+    });
+  </script>
+</body>
+</html>

@@ -22,19 +22,19 @@ const StorageKeyContext = struct {
     }
 };
 
-/// Manages warm/cold access state for EIP-2929
+/// Manages warm/cold access state for EIP-2929.
+/// Both maps are insertion-ordered `ArrayHashMap`s so nested-call snapshots are
+/// O(1) zero-allocation length checkpoints and reverts simply pop newly warmed entries.
 pub const AccessListManager = struct {
     allocator: Allocator,
-    // Address uses AutoHashMap (20-byte array, auto-hash is sufficient).
-    warm_addresses: std.AutoHashMap(Address, void),
-    // StorageKey uses ArrayHashMap with a custom context (address + slot).
+    warm_addresses: std.AutoArrayHashMap(Address, void),
     warm_storage_slots: std.ArrayHashMap(StorageKey, void, StorageKeyContext, false),
 
     /// Initialize empty access list manager
     pub fn init(allocator: Allocator) AccessListManager {
         return .{
             .allocator = allocator,
-            .warm_addresses = std.AutoHashMap(Address, void).init(allocator),
+            .warm_addresses = std.AutoArrayHashMap(Address, void).init(allocator),
             .warm_storage_slots = std.ArrayHashMap(StorageKey, void, StorageKeyContext, false).init(allocator),
         };
     }
@@ -118,62 +118,33 @@ pub const AccessListManager = struct {
         self.warm_storage_slots.clearRetainingCapacity();
     }
 
-    /// Create snapshot for nested call revert handling.
-    /// On successful call completion, discard the snapshot without restoring.
+    /// Create O(1) zero-allocation snapshot for nested call revert handling.
+    /// Warm sets only grow during a call frame and are truncated back on revert.
     pub fn snapshot(self: *const AccessListManager) !AccessListSnapshot {
-        var addr_snapshot = std.AutoHashMap(Address, void).init(self.allocator);
-        errdefer addr_snapshot.deinit();
-        var addr_it = self.warm_addresses.iterator();
-        while (addr_it.next()) |entry| {
-            try addr_snapshot.put(entry.key_ptr.*, {});
-        }
-
-        var slot_snapshot = std.ArrayHashMap(StorageKey, void, StorageKeyContext, false).init(self.allocator);
-        errdefer slot_snapshot.deinit();
-        var slot_it = self.warm_storage_slots.iterator();
-        while (slot_it.next()) |entry| {
-            _ = try slot_snapshot.put(entry.key_ptr.*, {});
-        }
-
         return .{
-            .addresses = addr_snapshot,
-            .slots = slot_snapshot,
+            .addresses_len = self.warm_addresses.count(),
+            .slots_len = self.warm_storage_slots.count(),
         };
     }
 
-    /// Restore from snapshot (for nested call reverts).
+    /// Restore from snapshot in O(k) time with zero allocations (k = newly warmed entries).
     pub fn restore(self: *AccessListManager, snap: AccessListSnapshot) !void {
-        var new_addresses = std.AutoHashMap(Address, void).init(self.allocator);
-        errdefer new_addresses.deinit();
-        var addr_it = snap.addresses.iterator();
-        while (addr_it.next()) |entry| {
-            try new_addresses.put(entry.key_ptr.*, {});
+        while (self.warm_addresses.count() > snap.addresses_len) {
+            _ = self.warm_addresses.pop();
         }
-
-        var new_slots = std.ArrayHashMap(StorageKey, void, StorageKeyContext, false).init(self.allocator);
-        errdefer new_slots.deinit();
-        var slot_it = snap.slots.iterator();
-        while (slot_it.next()) |entry| {
-            _ = try new_slots.put(entry.key_ptr.*, {});
+        while (self.warm_storage_slots.count() > snap.slots_len) {
+            _ = self.warm_storage_slots.pop();
         }
-
-        self.warm_addresses.deinit();
-        self.warm_storage_slots.deinit();
-        self.warm_addresses = new_addresses;
-        self.warm_storage_slots = new_slots;
     }
 };
 
-/// Snapshot of warm sets for nested call revert handling.
+/// O(1) checkpoint of warm sets for nested call revert handling.
 pub const AccessListSnapshot = struct {
-    addresses: std.AutoHashMap(Address, void),
-    slots: std.ArrayHashMap(StorageKey, void, StorageKeyContext, false),
+    addresses_len: usize,
+    slots_len: usize,
 
-    /// Release snapshot resources.
-    pub fn deinit(self: *AccessListSnapshot) void {
-        self.addresses.deinit();
-        self.slots.deinit();
-    }
+    /// Release snapshot resources (no-op; kept for API compatibility).
+    pub fn deinit(_: *AccessListSnapshot) void {}
 };
 
 test "AccessListManager: init creates empty warm sets" {
@@ -302,4 +273,25 @@ test "AccessListManager: snapshot and restore" {
     try manager.restore(snap);
     try std.testing.expect(manager.is_address_warm(addr1));
     try std.testing.expect(!manager.is_address_warm(addr2));
+
+    // Nested snapshot + revert + re-warm test
+    const addr3 = Address{ .bytes = [_]u8{8} ** 20 };
+    const snap1 = try manager.snapshot();
+    _ = try manager.access_address(addr2);
+    _ = try manager.access_storage_slot(addr2, 99);
+    const snap2 = try manager.snapshot();
+    _ = try manager.access_address(addr3);
+    _ = try manager.access_storage_slot(addr3, 100);
+    try manager.restore(snap2);
+    try std.testing.expect(manager.is_address_warm(addr2));
+    try std.testing.expect(manager.is_storage_slot_warm(addr2, 99));
+    try std.testing.expect(!manager.is_address_warm(addr3));
+    try std.testing.expect(!manager.is_storage_slot_warm(addr3, 100));
+    // Re-warming addr3 after revert must charge cold cost
+    try std.testing.expectEqual(gas_constants.ColdAccountAccessCost, try manager.access_address(addr3));
+    try manager.restore(snap1);
+    try std.testing.expect(manager.is_address_warm(addr1));
+    try std.testing.expect(!manager.is_address_warm(addr2));
+    try std.testing.expect(!manager.is_address_warm(addr3));
+    try std.testing.expect(!manager.is_storage_slot_warm(addr2, 99));
 }

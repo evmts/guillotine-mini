@@ -111,10 +111,30 @@ Call `evm_destroy(handle)` when finished with an instance. See the complete
 ```mermaid
 flowchart TB
   C["Caller · vm.call(CallParams) / root_c.zig"] --> E["Evm(config) · src/evm.zig\nStorage · AccessList · Snapshots · Refunds · Arena"]
-  E --> F["Frame(config) · src/frame.zig\n1024-slot Stack · Sparse Memory · PC · JUMPDEST Bitmap"]
+  E --> F["Frame(config) · src/frame.zig\n1024-slot Stack · Contiguous Memory · PC · JUMPDEST Bitmap"]
   E -. "optional vtable" .-> H["HostInterface · src/host.zig\nExternal Balances · Code · Nonces · Storage"]
   F --> V["Voltaire · primitives, crypto (BN254, BLS12-381, KZG), precompiles"]
   E --> V
+```
+
+## Benchmarks (Incremental via Smithers)
+
+Performance benchmarks cover every Zig core EVM module, Zig client subsystem, WASI WASM reactor, C-FFI bridge, and TypeScript / `client-ts` package. Each module declares fine-grained `PACKAGE.ts` targets so Smithers only re-runs benchmarks whose dependencies changed and replays cached output on hits:
+
+```bash
+# Run only benchmarks affected by your current changes (with live output & cache-hit replay)
+smithers-build affected test '//:bench_all' --include-exclusive --verbose
+
+# Run a single module benchmark
+smithers-build test //:bench_opcodes --verbose
+smithers-build test //client/rpc:bench --verbose
+smithers-build test //client-ts/txpool:bench --verbose
+
+# View unified summary across all collected JSON benchmark reports
+smithers-build run //:bench_summary
+
+# Or run Zig benchmarks directly
+zig build bench -Doptimize=ReleaseFast
 ```
 
 ## Docs

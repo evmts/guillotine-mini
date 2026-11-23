@@ -12,6 +12,10 @@ zig-out/
 target/
 Cargo.lock
 
+# Nethermind trie differential
+/scripts/nethermind-diff-trie/bin/
+/scripts/nethermind-diff-trie/obj/
+
 # Bun
 node_modules/
 .bun/
@@ -20,9 +24,12 @@ bun.lockb
 test/specs/generated/
 worktrees/
 
-# Smithers workflow DB files
+# Smithers workflow DB files and incremental build/bench caches
 *.db
 .smithers/
+.flows/
+.bench-results/
+**/.bench-result.json
 
 # Zig extra caches
 .zig-cache-global/

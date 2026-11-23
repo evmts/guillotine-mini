@@ -3,44 +3,67 @@
 /// including jump destination analysis and bytecode traversal.
 const std = @import("std");
 
-/// Represents analyzed bytecode with pre-validated jump destinations
+/// Represents analyzed bytecode with pre-validated jump destinations stored in a packed bitset.
+/// Contracts up to 512 bytes use inline storage with zero heap allocations.
 pub const Bytecode = struct {
+    const INLINE_WORDS = 8; // 8 * 64 = 512 bytes inline
+
     /// Raw bytecode bytes
     code: []const u8,
 
-    /// Pre-analyzed valid JUMPDEST positions
-    valid_jumpdests: std.AutoArrayHashMap(u32, void),
+    /// Allocator used when `heap_bits != null`
+    allocator: std.mem.Allocator,
+
+    /// Inline bitset for contracts <= 512 bytes (zero heap allocations)
+    inline_bits: [INLINE_WORDS]u64 = .{0} ** INLINE_WORDS,
+
+    /// Heap-allocated bitset for contracts > 256 bytes (1 bit per code byte)
+    heap_bits: ?[]u64 = null,
 
     /// Initialize bytecode with jump destination analysis
     pub fn init(allocator: std.mem.Allocator, code: []const u8) !Bytecode {
-        var valid_jumpdests = std.AutoArrayHashMap(u32, void).init(allocator);
-        errdefer valid_jumpdests.deinit();
-
-        try analyzeJumpDests(code, &valid_jumpdests);
-
-        return Bytecode{
+        var self = Bytecode{
             .code = code,
-            .valid_jumpdests = valid_jumpdests,
+            .allocator = allocator,
         };
+
+        const word_count = (code.len + 63) >> 6;
+        if (word_count > INLINE_WORDS) {
+            const bits = try allocator.alloc(u64, word_count);
+            @memset(bits, 0);
+            self.heap_bits = bits;
+            analyzeJumpDestsBitset(code, bits);
+        } else if (word_count > 0) {
+            analyzeJumpDestsBitset(code, self.inline_bits[0..word_count]);
+        }
+
+        return self;
     }
 
     /// Clean up resources
     pub fn deinit(self: *Bytecode) void {
-        self.valid_jumpdests.deinit();
+        if (self.heap_bits) |bits| {
+            self.allocator.free(bits);
+            self.heap_bits = null;
+        }
     }
 
-    /// Check if a position is a valid JUMPDEST
-    pub fn isValidJumpDest(self: *const Bytecode, pc: u32) bool {
-        return self.valid_jumpdests.contains(pc);
+    /// Check if a position is a valid JUMPDEST in O(1) with zero hashing
+    pub inline fn isValidJumpDest(self: *const Bytecode, pc: u32) bool {
+        if (pc >= self.code.len) return false;
+        const words: []const u64 = self.heap_bits orelse &self.inline_bits;
+        const word_idx: usize = @intCast(pc >> 6);
+        const bit_idx: u6 = @truncate(pc);
+        return ((words[word_idx] >> bit_idx) & 1) != 0;
     }
 
     /// Get bytecode length
-    pub fn len(self: *const Bytecode) usize {
+    pub inline fn len(self: *const Bytecode) usize {
         return self.code.len;
     }
 
     /// Get opcode at position
-    pub fn getOpcode(self: *const Bytecode, pc: u32) ?u8 {
+    pub inline fn getOpcode(self: *const Bytecode, pc: u32) ?u8 {
         if (pc >= self.code.len) {
             return null;
         }
@@ -49,7 +72,7 @@ pub const Bytecode = struct {
 
     /// Read immediate data for PUSH operations
     /// Returns the N bytes following the current PC (for PUSHN instructions)
-    pub fn readImmediate(self: *const Bytecode, pc: u32, size: u8) ?u256 {
+    pub inline fn readImmediate(self: *const Bytecode, pc: u32, size: u8) ?u256 {
         const pc_usize: usize = @intCast(pc);
 
         // A PUSHn whose immediate runs past the end of code is valid: the missing trailing
@@ -59,42 +82,52 @@ pub const Bytecode = struct {
             return null;
         }
 
-        var result: u256 = 0;
-        var i: u8 = 0;
-        while (i < size) : (i += 1) {
-            const idx: usize = pc_usize + 1 + @as(usize, i);
-            const byte: u8 = if (idx < self.code.len) self.code[idx] else 0; // zero-pad truncated PUSH
-            result = (result << 8) | byte;
+        const start: usize = pc_usize + 1;
+        const n: usize = @intCast(size);
+        if (start + n <= self.code.len) {
+            // Fast path: full immediate lies within bytecode bounds
+            return switch (size) {
+                0 => 0,
+                1 => self.code[start],
+                2 => std.mem.readInt(u16, self.code[start..][0..2], .big),
+                3 => std.mem.readInt(u24, self.code[start..][0..3], .big),
+                4 => std.mem.readInt(u32, self.code[start..][0..4], .big),
+                8 => std.mem.readInt(u64, self.code[start..][0..8], .big),
+                16 => std.mem.readInt(u128, self.code[start..][0..16], .big),
+                20 => std.mem.readInt(u160, self.code[start..][0..20], .big),
+                32 => std.mem.readInt(u256, self.code[start..][0..32], .big),
+                else => blk: {
+                    var buf: [32]u8 = [_]u8{0} ** 32;
+                    @memcpy(buf[32 - n .. 32], self.code[start .. start + n]);
+                    break :blk std.mem.readInt(u256, &buf, .big);
+                },
+            };
         }
-        return result;
+
+        // Truncated PUSH at end of bytecode: right-pad missing trailing bytes with zeros
+        var buf: [32]u8 = [_]u8{0} ** 32;
+        const avail = self.code.len - start;
+        if (avail > 0) {
+            const copy_len = @min(avail, n);
+            @memcpy(buf[32 - n .. 32 - n + copy_len], self.code[start .. start + copy_len]);
+        }
+        return std.mem.readInt(u256, &buf, .big);
     }
 };
 
-/// Analyze bytecode to identify valid JUMPDEST locations
-/// This must skip over PUSH instruction immediate data to avoid
-/// treating data bytes as instructions
-fn analyzeJumpDests(code: []const u8, valid_jumpdests: *std.AutoArrayHashMap(u32, void)) !void {
-    var pc: u32 = 0;
+/// Analyze bytecode into a packed bitset of valid JUMPDEST positions.
+fn analyzeJumpDestsBitset(code: []const u8, bits: []u64) void {
+    var pc: usize = 0;
+    const code_len = code.len;
 
-    while (pc < code.len) {
+    while (pc < code_len) {
         const opcode = code[pc];
-
-        // Check if this is a JUMPDEST (0x5b)
         if (opcode == 0x5b) {
-            try valid_jumpdests.put(pc, {});
+            bits[pc >> 6] |= (@as(u64, 1) << @as(u6, @truncate(pc)));
             pc += 1;
         } else if (opcode >= 0x60 and opcode <= 0x7f) {
-            // PUSH1 (0x60) through PUSH32 (0x7f)
-            // Calculate number of bytes to push: opcode - 0x5f
-            // e.g., PUSH1 (0x60) = 0x60 - 0x5f = 1 byte
-            //       PUSH32 (0x7f) = 0x7f - 0x5f = 32 bytes
-            const push_size = opcode - 0x5f;
-
-            // Skip the PUSH opcode itself and all its immediate data bytes
-            // This prevents treating immediate data as opcodes
-            pc += 1 + push_size;
+            pc += 1 + @as(usize, opcode - 0x5f);
         } else {
-            // All other opcodes are single byte
             pc += 1;
         }
     }
@@ -102,14 +135,12 @@ fn analyzeJumpDests(code: []const u8, valid_jumpdests: *std.AutoArrayHashMap(u32
 
 test "analyzeJumpDests: simple JUMPDEST" {
     const code = [_]u8{ 0x5b, 0x00, 0x5b }; // JUMPDEST, STOP, JUMPDEST
-    var valid_jumpdests = std.AutoArrayHashMap(u32, void).init(std.testing.allocator);
-    defer valid_jumpdests.deinit();
+    var bc = try Bytecode.init(std.testing.allocator, &code);
+    defer bc.deinit();
 
-    try analyzeJumpDests(&code, &valid_jumpdests);
-
-    try std.testing.expect(valid_jumpdests.contains(0));
-    try std.testing.expect(valid_jumpdests.contains(2));
-    try std.testing.expect(!valid_jumpdests.contains(1));
+    try std.testing.expect(bc.isValidJumpDest(0));
+    try std.testing.expect(bc.isValidJumpDest(2));
+    try std.testing.expect(!bc.isValidJumpDest(1));
 }
 
 test "analyzeJumpDests: PUSH data containing JUMPDEST opcode" {
@@ -117,16 +148,14 @@ test "analyzeJumpDests: PUSH data containing JUMPDEST opcode" {
         0x60, 0x5b, // PUSH1 0x5b (pushes JUMPDEST opcode as data)
         0x5b, // JUMPDEST (actual valid jump destination)
     };
-    var valid_jumpdests = std.AutoArrayHashMap(u32, void).init(std.testing.allocator);
-    defer valid_jumpdests.deinit();
-
-    try analyzeJumpDests(&code, &valid_jumpdests);
+    var bc = try Bytecode.init(std.testing.allocator, &code);
+    defer bc.deinit();
 
     // Only position 2 should be valid (the actual JUMPDEST)
     // Position 1 (the 0x5b in PUSH data) should NOT be valid
-    try std.testing.expect(!valid_jumpdests.contains(0));
-    try std.testing.expect(!valid_jumpdests.contains(1));
-    try std.testing.expect(valid_jumpdests.contains(2));
+    try std.testing.expect(!bc.isValidJumpDest(0));
+    try std.testing.expect(!bc.isValidJumpDest(1));
+    try std.testing.expect(bc.isValidJumpDest(2));
 }
 
 test "analyzeJumpDests: PUSH32 with embedded JUMPDEST bytes" {
@@ -138,17 +167,15 @@ test "analyzeJumpDests: PUSH32 with embedded JUMPDEST bytes" {
     }
     code[33] = 0x5b; // Actual JUMPDEST after PUSH32
 
-    var valid_jumpdests = std.AutoArrayHashMap(u32, void).init(std.testing.allocator);
-    defer valid_jumpdests.deinit();
-
-    try analyzeJumpDests(&code, &valid_jumpdests);
+    var bc = try Bytecode.init(std.testing.allocator, &code);
+    defer bc.deinit();
 
     // Only position 33 should be valid
-    try std.testing.expect(!valid_jumpdests.contains(0));
+    try std.testing.expect(!bc.isValidJumpDest(0));
     for (1..33) |i| {
-        try std.testing.expect(!valid_jumpdests.contains(@intCast(i)));
+        try std.testing.expect(!bc.isValidJumpDest(@intCast(i)));
     }
-    try std.testing.expect(valid_jumpdests.contains(33));
+    try std.testing.expect(bc.isValidJumpDest(33));
 }
 
 test "Bytecode: initialization and queries" {

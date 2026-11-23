@@ -66,10 +66,7 @@ pub fn Handlers(FrameType: type) type {
             if (length_u32 > 0) {
                 const alloc = evm.arena.allocator();
                 const buf = try alloc.alloc(u8, length_u32);
-                var idx: u32 = 0;
-                while (idx < length_u32) : (idx += 1) {
-                    buf[idx] = frame.readMemory(off_u32 + idx);
-                }
+                try frame.copyFromMemory(buf, off_u32);
                 data_slice = buf;
             }
 
@@ -92,6 +89,17 @@ pub fn Handlers(FrameType: type) type {
                 .data = data_slice,
             };
             try evm.logs.append(evm.arena.allocator(), log_entry);
+            if (evm.inspector) |sink| {
+                @branchHint(.unlikely);
+                var topics: [4][32]u8 = undefined;
+                for (topics_slice, 0..) |topic, index| std.mem.writeInt(u256, &topics[index], topic, .big);
+                sink.onLog(.{
+                    .frame_id = frame.frame_id,
+                    .address = frame.address,
+                    .topics = topics[0..topics_len],
+                    .data = data_slice,
+                });
+            }
 
             frame.pc += 1;
         }

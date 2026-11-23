@@ -7,16 +7,16 @@ import { HardforkTimeline } from '../../components/InteractiveDiagrams'
 
 # Hardforks & EIPs
 
-Guillotine Mini implements Ethereum execution rules from **Frontier** through **Osaka**, using `Hardfork` and `ForkTransition` re-exported from Voltaire.
+Guillotine Mini implements Ethereum execution rules from **Frontier** through **Osaka**, using `Hardfork` and `ForkTransition` re-exported from Voltaire. The Voltaire enum also includes `.AMSTERDAM`.
 
 <HardforkTimeline />
 
 ## Selecting a hardfork
 
-Always pass the hardfork explicitly as the third argument to `vm.init()`:
+Pass a hardfork as the third argument to `vm.init()` to override the configured default.
 
 ```zig
-var vm: Evm = undefined;
+var vm: Evm(.{}) = undefined;
 try vm.init(
     allocator,
     host,
@@ -29,15 +29,7 @@ try vm.init(
 defer vm.deinit();
 ```
 
-:::warning[Passing `null` ignores `EvmConfig.hardfork`]
-In `src/evm.zig:150`, `vm.init()` writes:
-
-```zig
-.hardfork = hardfork orelse Hardfork.DEFAULT,
-```
-
-`Hardfork.DEFAULT` is currently **`.PRAGUE`**. Passing `null` selects `.PRAGUE` even if `EvmConfig.hardfork` was set to `.BERLIN` or `.CANCUN`. Pass the desired fork explicitly and verify with `vm.getActiveFork()`.
-:::
+Passing `null` selects `config.hardfork`. In `Evm(.{})`, that field defaults to Voltaire’s `Hardfork.DEFAULT` (`.OSAKA`). Check the active fork with `vm.getActiveFork()`.
 
 ## Comparing forks in custom handlers
 
@@ -88,4 +80,4 @@ When `fork_transition` is `null` (the default), `getActiveFork()` returns `vm.ha
 
 ## Hardfork string parsing (C / WASM API)
 
-`evm_create(name, len, log_level)` parses `Hardfork.fromString()` case-insensitively (e.g., `"cancun"`, `"CANCUN"`, `"prague"`, `"osaka"`). Passing `len = 0` selects `Hardfork.DEFAULT` (`.PRAGUE`).
+`evm_create(name, len, log_level)` parses `Hardfork.fromString()` case-insensitively (e.g., `"cancun"`, `"CANCUN"`, `"prague"`, `"osaka"`, `"amsterdam"`). An empty or unrecognized name selects the configured default (`.OSAKA` in the C wrapper).

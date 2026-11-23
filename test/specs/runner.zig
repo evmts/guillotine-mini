@@ -191,6 +191,19 @@ pub fn runJsonTestWithPathAndName(allocator: std.mem.Allocator, test_case: std.j
         return error.SkipZigTest;
     }
 
+    if (test_case.object.get("expect")) |expectations| {
+        if (test_case.object.get("transaction")) |transaction| {
+            if (transaction == .object and expectations == .array) {
+                const data = transaction.object.get("data") orelse .null;
+                const gas = transaction.object.get("gasLimit") orelse .null;
+                const value = transaction.object.get("value") orelse .null;
+                if (data == .array and gas == .array and value == .array) {
+                    return runStaticStateTest(allocator, test_case, expectations, data.array.items, gas.array.items, value.array.items);
+                }
+            }
+        }
+    }
+
     // Check if test has multiple hardforks in post section
     const post = test_case.object.get("post");
     if (post) |p| {
@@ -200,7 +213,7 @@ pub fn runJsonTestWithPathAndName(allocator: std.mem.Allocator, test_case: std.j
             defer hardforks_to_test.deinit(allocator);
 
             // Check for each hardfork in order
-            inline for (&[_][]const u8{ "Cancun", "Prague", "Shanghai", "Paris", "Merge", "London", "Berlin" }) |fork_name| {
+            inline for (&[_][]const u8{ "Osaka", "Prague", "Cancun", "Shanghai", "Paris", "Merge", "London", "Berlin" }) |fork_name| {
                 if (p.object.get(fork_name)) |_| {
                     if (Hardfork.fromString(fork_name)) |hf| {
                         try hardforks_to_test.append(allocator, hf);
@@ -232,11 +245,218 @@ pub fn runJsonTestWithPathAndName(allocator: std.mem.Allocator, test_case: std.j
     };
 }
 
+fn matchesFixtureFork(fork: Hardfork, constraints: []const u8) !bool {
+    var rest = std.mem.trim(u8, constraints, " \t");
+    if (rest.len == 0) return error.InvalidFixtureFork;
+    while (rest.len != 0) {
+        const op_end = std.mem.indexOfNone(u8, rest, "<>=") orelse return error.InvalidFixtureFork;
+        const op = rest[0..op_end];
+        rest = rest[op_end..];
+        const fork_end = std.mem.indexOfAny(u8, rest, "<>=") orelse rest.len;
+        const label = std.mem.trim(u8, rest[0..fork_end], " \t");
+        const bound = Hardfork.fromString(label) orelse return error.InvalidFixtureFork;
+        const order = std.math.order(@intFromEnum(fork), @intFromEnum(bound));
+        const matches = if (std.mem.eql(u8, op, ">="))
+            order != .lt
+        else if (std.mem.eql(u8, op, "<="))
+            order != .gt
+        else if (std.mem.eql(u8, op, ">"))
+            order == .gt
+        else if (std.mem.eql(u8, op, "<"))
+            order == .lt
+        else if (op.len == 0 or std.mem.eql(u8, op, "="))
+            order == .eq
+        else
+            return error.InvalidFixtureFork;
+        if (!matches) return false;
+        rest = rest[fork_end..];
+    }
+    return true;
+}
+
+fn matchesFixtureIndex(selector: std.json.Value, index: usize, value: std.json.Value) !bool {
+    return switch (selector) {
+        .integer => |n| n == -1 or (n >= 0 and @as(u64, @intCast(n)) == index),
+        .array => |choices| for (choices.items) |choice| {
+            if (try matchesFixtureIndex(choice, index, value)) break true;
+        } else false,
+        .string => |label| blk: {
+            if (!std.mem.startsWith(u8, label, ":label ")) return error.InvalidFixtureIndex;
+            if (value != .string or !std.mem.startsWith(u8, value.string, label)) break :blk false;
+            break :blk value.string.len == label.len or std.ascii.isWhitespace(value.string[label.len]);
+        },
+        else => error.InvalidFixtureIndex,
+    };
+}
+
+fn runStaticStateTest(
+    allocator: std.mem.Allocator,
+    test_case: std.json.Value,
+    expectations: std.json.Value,
+    data: []const std.json.Value,
+    gas: []const std.json.Value,
+    value: []const std.json.Value,
+) !void {
+    var fixture = try test_case.object.cloneWithAllocator(allocator);
+    defer fixture.deinit();
+    var tx = try test_case.object.get("transaction").?.object.cloneWithAllocator(allocator);
+    defer tx.deinit();
+    var sender_hex: [42]u8 = undefined;
+    if (!tx.contains("sender")) {
+        if (tx.get("secretKey")) |key| {
+            sender_hex = (try fixtureSenderFromSecretKey(key.string)).toHex();
+            try tx.put("sender", .{ .string = &sender_hex });
+        }
+    }
+    var selected_expectation = std.json.Array.init(allocator);
+    defer selected_expectation.deinit();
+    try selected_expectation.append(.null);
+
+    var covered = false;
+    for (expectations.array.items) |expectation| {
+        selected_expectation.items[0] = expectation;
+        fixture.getPtr("expect").?.* = .{ .array = selected_expectation };
+        const network = expectation.object.get("network") orelse return error.MissingFixtureFork;
+        const indexes = expectation.object.get("indexes");
+        const all = std.json.Value{ .integer = -1 };
+        const data_index = if (indexes) |idx| idx.object.get("data") orelse all else all;
+        const gas_index = if (indexes) |idx| idx.object.get("gas") orelse all else all;
+        const value_index = if (indexes) |idx| idx.object.get("value") orelse all else all;
+
+        for (std.enums.values(Hardfork)) |fork| {
+            const applies = if (network == .array) blk: {
+                for (network.array.items) |range| {
+                    if (try matchesFixtureFork(fork, range.string)) break :blk true;
+                }
+                break :blk false;
+            } else try matchesFixtureFork(fork, network.string);
+            if (!applies) continue;
+
+            for (data, 0..) |d, di| {
+                if (!try matchesFixtureIndex(data_index, di, d)) continue;
+                tx.getPtr("data").?.* = d;
+                for (gas, 0..) |g, gi| {
+                    if (!try matchesFixtureIndex(gas_index, gi, g)) continue;
+                    tx.getPtr("gasLimit").?.* = g;
+                    for (value, 0..) |v, vi| {
+                        if (!try matchesFixtureIndex(value_index, vi, v)) continue;
+                        tx.getPtr("value").?.* = v;
+                        fixture.getPtr("transaction").?.* = .{ .object = tx };
+                        runJsonTestImplForFork(allocator, .{ .object = fixture }, null, fork) catch |err| {
+                            std.debug.print("State fixture variant {s} d{d}g{d}v{d}: {s}\n", .{ @tagName(fork), di, gi, vi, @errorName(err) });
+                            return err;
+                        };
+                        covered = true;
+                    }
+                }
+            }
+        }
+    }
+    if (!covered) return error.NoFixtureVariants;
+}
+
+fn staticTransactionException(test_case: std.json.Value, fork: Hardfork) !?[]const u8 {
+    const expectations = test_case.object.get("expect") orelse return null;
+    if (expectations != .array or expectations.array.items.len == 0) return null;
+    const exceptions = expectations.array.items[0].object.get("expectException") orelse return null;
+    var entries = exceptions.object.iterator();
+    while (entries.next()) |entry| {
+        if (try matchesFixtureFork(fork, entry.key_ptr.*)) return entry.value_ptr.string;
+    }
+    return null;
+}
+
+test "static fixture fork and transaction selectors" {
+    try testing.expect(try matchesFixtureFork(.CANCUN, ">=Cancun<Osaka"));
+    try testing.expect(try matchesFixtureFork(.PRAGUE, ">=Cancun<Osaka"));
+    try testing.expect(!try matchesFixtureFork(.OSAKA, ">=Cancun<Osaka"));
+    try testing.expect(!try matchesFixtureFork(.CANCUN, "Prague"));
+
+    try testing.expect(try matchesFixtureIndex(.{ .integer = -1 }, 2, .null));
+    try testing.expect(!try matchesFixtureIndex(.{ .integer = 0 }, 2, .null));
+    try testing.expect(try matchesFixtureIndex(.{ .string = ":label second" }, 2, .{ .string = ":label second :raw 0xff" }));
+    try testing.expect(!try matchesFixtureIndex(.{ .string = ":label second" }, 2, .{ .string = ":label secondary :raw 0xff" }));
+}
+
 // Helper to run test with a specific hardfork (for multi-fork tests)
 fn runJsonTestImplForFork(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?*trace.Tracer, forced_hardfork: Hardfork) !void {
     // Just call runJsonTestImpl with modified extractHardfork behavior
     // We'll modify runJsonTestImpl to accept an optional forced hardfork parameter
     try runJsonTestImplWithOptionalFork(allocator, test_case, tracer, forced_hardfork);
+}
+
+fn traceNumber(comptime T: type, value: std.json.Value) !T {
+    return switch (value) {
+        .integer => |number| std.math.cast(T, number) orelse error.InvalidTraceNumber,
+        .string => |number| std.fmt.parseInt(T, number, 0),
+        .number_string => |number| std.fmt.parseInt(T, number, 10),
+        else => error.InvalidTraceNumber,
+    };
+}
+
+fn traceHexBytes(allocator: std.mem.Allocator, value: std.json.Value) ![]const u8 {
+    if (value != .string) return error.InvalidTraceBytes;
+    const hex = if (std.mem.startsWith(u8, value.string, "0x")) value.string[2..] else value.string;
+    if (hex.len % 2 != 0) return error.InvalidTraceBytes;
+    const bytes = try allocator.alloc(u8, hex.len / 2);
+    errdefer allocator.free(bytes);
+    return std.fmt.hexToBytes(bytes, hex);
+}
+
+fn parseReferenceTraceStep(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !trace.TraceEntry {
+    var entry: trace.TraceEntry = .{
+        .pc = try traceNumber(u64, obj.get("pc") orelse return error.MissingTraceField),
+        .op = try traceNumber(u8, obj.get("op") orelse return error.MissingTraceField),
+        .gas = try traceNumber(u64, obj.get("gas") orelse return error.MissingTraceField),
+        .gasCost = try traceNumber(u64, obj.get("gasCost") orelse return error.MissingTraceField),
+        .memSize = try traceNumber(usize, obj.get("memSize") orelse return error.MissingTraceField),
+        .depth = try traceNumber(usize, obj.get("depth") orelse return error.MissingTraceField),
+        .refund = try traceNumber(i64, obj.get("refund") orelse .{ .integer = 0 }),
+        .memory = null,
+        .stack = &.{},
+        .returnData = &.{},
+        .opName = "",
+    };
+    errdefer entry.deinit(allocator);
+
+    if (obj.get("stack")) |value| {
+        if (value != .array) return error.InvalidTraceStack;
+        const stack = try allocator.alloc(u256, value.array.items.len);
+        entry.stack = stack;
+        for (stack, value.array.items) |*item, number| item.* = try traceNumber(u256, number);
+    }
+    if (obj.get("returnData")) |value| {
+        if (value != .null) entry.returnData = try traceHexBytes(allocator, value);
+    }
+    if (obj.get("opName")) |value| {
+        if (value == .string) {
+            entry.opName = try allocator.dupe(u8, value.string);
+            entry.op_name_owned = true;
+        }
+    }
+    if (obj.get("error")) |value| {
+        if (value == .string) {
+            entry.error_msg = try allocator.dupe(u8, value.string);
+            entry.error_msg_owned = true;
+        }
+    }
+    return entry;
+}
+
+test "reference trace parser preserves stack, return data and faults" {
+    const allocator = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"pc":3,"op":253,"gas":"0xa","gasCost":0,"memSize":32,"depth":2,"refund":0,
+        \\"stack":["0x20","0x0"],"returnData":"0x002a","error":"execution reverted"}
+    , .{});
+    defer parsed.deinit();
+
+    const entry = try parseReferenceTraceStep(allocator, parsed.value.object);
+    defer entry.deinit(allocator);
+    try std.testing.expectEqual(@as(u64, 10), entry.gas);
+    try std.testing.expectEqualSlices(u256, &.{ 32, 0 }, entry.stack);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 42 }, entry.returnData.?);
+    try std.testing.expectEqualStrings("execution reverted", entry.error_msg.?);
 }
 
 fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.Value, opt_test_file_path: ?[]const u8, opt_test_name: ?[]const u8) !void {
@@ -245,6 +465,9 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
     // Re-run with trace capture
     var tracer = trace.Tracer.init(allocator);
     defer tracer.deinit();
+    tracer.config.enable_return_data = true;
+    tracer.config.disable_memory = true;
+    tracer.config.disable_storage = true;
     tracer.enable();
 
     // Capture our trace (ignore errors since we're already in error state)
@@ -327,42 +550,15 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
         defer parsed.deinit();
 
-        // Extract trace entry fields from JSON
-        const obj = parsed.value.object;
-        const entry = trace.TraceEntry{
-            .pc = @intCast(obj.get("pc").?.integer),
-            .op = @intCast(obj.get("op").?.integer),
-            .gas = blk: {
-                const gas_val = obj.get("gas").?;
-                if (gas_val == .string) {
-                    break :blk try std.fmt.parseInt(u64, gas_val.string, 0);
-                } else {
-                    break :blk @intCast(gas_val.integer);
-                }
-            },
-            .gasCost = blk: {
-                const cost_val = obj.get("gasCost").?;
-                if (cost_val == .string) {
-                    break :blk try std.fmt.parseInt(u64, cost_val.string, 0);
-                } else {
-                    break :blk @intCast(cost_val.integer);
-                }
-            },
-            .memory = null,
-            .memSize = @intCast(obj.get("memSize").?.integer),
-            .stack = &.{},
-            .returnData = null,
-            .depth = @intCast(obj.get("depth").?.integer),
-            .refund = @intCast(obj.get("refund").?.integer),
-            .opName = try allocator.dupe(u8, obj.get("opName").?.string),
-        };
-
-        // Zig 0.15 ArrayList API requires an allocator parameter for append
+        // Summary records do not have a program counter.
+        if (parsed.value != .object or !parsed.value.object.contains("pc")) continue;
+        const entry = try parseReferenceTraceStep(allocator, parsed.value.object);
+        errdefer entry.deinit(allocator);
         try ref_tracer.entries.append(allocator, entry);
     }
 
-    // Compare traces and print diff
-    const diff = try trace.TraceDiff.compare(allocator, &tracer, &ref_tracer);
+    var diff = try trace.TraceDiff.compare(allocator, &tracer, &ref_tracer);
+    defer diff.deinit(allocator);
 
     std.debug.print("\n", .{});
 
@@ -466,7 +662,7 @@ fn extractHardfork(test_case: std.json.Value) ?Hardfork {
         if (post == .object) {
             // Try common hardfork names (in reverse chronological order, preferring older forks for multi-fork tests)
             // Include common aliases
-            inline for (&[_][]const u8{ "Cancun", "Prague", "Shanghai", "Paris", "Merge", "London", "Berlin", "Istanbul", "ConstantinopleFix", "Constantinople", "Byzantium", "Homestead" }) |fork_name| {
+            inline for (&[_][]const u8{ "Osaka", "Prague", "Cancun", "Shanghai", "Paris", "Merge", "London", "Berlin", "Istanbul", "ConstantinopleFix", "Constantinople", "Byzantium", "Homestead" }) |fork_name| {
                 if (post.object.get(fork_name)) |_| {
                     if (Hardfork.fromString(fork_name)) |hf| {
                         return hf;
@@ -880,34 +1076,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     if (code == .string) {
                         const code_str = code.string;
                         if (!std.mem.eql(u8, code_str, "") and !std.mem.eql(u8, code_str, "0x")) {
-                            // Check if this is assembly code that needs compilation
-                            if (std.mem.startsWith(u8, code_str, ":yul ") or
-                                std.mem.startsWith(u8, code_str, "(asm ") or
-                                std.mem.startsWith(u8, code_str, ":asm ") or
-                                std.mem.startsWith(u8, code_str, "{"))
-                            {
-                                // Compile assembly to bytecode
-                                const compiled_bytes = try assembler.compileAssembly(allocator, code_str);
-                                defer allocator.free(compiled_bytes);
-
-                                try test_host.setCode(address, compiled_bytes);
-                            } else {
-                                // Handle :raw format or direct hex
-                                var hex_str = code_str;
-                                if (std.mem.startsWith(u8, code_str, ":raw ")) {
-                                    hex_str = std.mem.trim(u8, code_str[5..], " \t\n\r");
-                                }
-
-                                // Parse hex and handle placeholders
-                                const hex_data = try parseHexData(allocator, hex_str);
-                                defer allocator.free(hex_data);
-
-                                if (hex_data.len > 2) {
-                                    const code_bytes = try primitives.Hex.hexToBytes(allocator, hex_data);
-                                    defer allocator.free(code_bytes);
-                                    try test_host.setCode(address, code_bytes);
-                                }
-                            }
+                            const code_bytes = try parseFixtureBytecode(allocator, code_str);
+                            defer allocator.free(code_bytes);
+                            try test_host.setCode(address, code_bytes);
                         }
                     }
                 }
@@ -1380,14 +1551,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Parse transaction data
             const tx_data = if (tx.object.get("data")) |data| blk: {
                 const data_str = if (data == .array) data.array.items[0].string else data.string;
-                const hex = try parseHexData(allocator, data_str);
-                defer allocator.free(hex);
-                if (hex.len > 2) {
-                    const bytes = try primitives.Hex.hexToBytes(allocator, hex);
-                    break :blk bytes;
-                } else {
-                    break :blk try allocator.alloc(u8, 0);
-                }
+                break :blk try parseFixtureBytecode(allocator, data_str);
             } else try allocator.alloc(u8, 0);
             defer allocator.free(tx_data);
 
@@ -1466,50 +1630,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             var sender: Address = primitives.ZERO_ADDRESS;
             if (tx.object.get("sender")) |s| {
                 sender = try parseAddress(s.string);
-            } else if (tx.object.get("secretKey") != null) {
-                // Heuristic: if sender is not explicitly provided, try to find a pre-state account
-                // whose nonce matches the transaction nonce. This aligns with how fixtures select senders.
-                const tx_nonce: u64 = if (tx.object.get("nonce")) |n|
-                    try parseIntFromJson(n)
-                else
-                    0;
-
-                var chosen: ?Address = null;
-                if (test_case.object.get("pre")) |pre| {
-                    if (pre == .object) {
-                        var it = pre.object.iterator();
-                        // Track best candidate by having sufficient balance for upfront gas + value
-                        while (it.next()) |kv| {
-                            const addr = try parseAddress(kv.key_ptr.*);
-                            const acct = kv.value_ptr.*;
-                            const acct_nonce: u64 = if (acct.object.get("nonce")) |n|
-                                try parseIntFromJson(n)
-                            else
-                                0;
-                            if (acct_nonce != tx_nonce) continue;
-                            // Check affordability if balance is provided
-                            const acct_balance: u256 = if (acct.object.get("balance")) |b|
-                                if (b.string.len == 0) 0 else try std.fmt.parseInt(u256, b.string, 0)
-                            else
-                                0;
-                            // Use max_fee_per_gas for affordability check (not effective price)
-                            const upfront_gas_cost = @as(u256, gas_limit) * max_fee_per_gas_for_validation;
-                            if (acct_balance >= (upfront_gas_cost + value)) {
-                                chosen = addr;
-                                break; // good match
-                            } else if (chosen == null) {
-                                // Fallback to first nonce-matching account if none affordable
-                                chosen = addr;
-                            }
-                        }
-                    }
-                }
-                if (chosen) |addr| {
-                    sender = addr;
-                } else {
-                    // Fallback to legacy default test key address
-                    sender = try Address.fromHex("0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b");
-                }
+            } else if (tx.object.get("secretKey")) |key| {
+                sender = try fixtureSenderFromSecretKey(key.string);
             }
 
             // Set per-tx origin and gas_price on the EVM instance
@@ -1801,7 +1923,11 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // this is charged during EVM execution, not as part of intrinsic cost.
 
             // Ensure we have enough gas for intrinsic cost
+            const static_exception = try staticTransactionException(test_case, evm_instance.hardfork);
             if (gas_limit < intrinsic_gas) {
+                if (static_exception) |expected| {
+                    if (std.mem.eql(u8, expected, "TransactionException.INTRINSIC_GAS_TOO_LOW")) continue;
+                }
                 // Transaction is invalid - check if test expects this
                 if (test_case.object.get("post")) |post| {
                     const fork_data = if (hardfork) |hf| switch (hf) {
@@ -1833,6 +1959,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 // If we get here, the test doesn't expect this exception, so fail
                 return error.IntrinsicGasTooLow;
             }
+            if (static_exception != null) return error.ExpectedStaticTransactionException;
 
             // Calculate execution gas (gas available after intrinsic cost)
             const execution_gas = gas_limit - intrinsic_gas;
@@ -2445,6 +2572,19 @@ fn parseFixedHexBytes(comptime N: usize, allocator: std.mem.Allocator, value: st
     return out;
 }
 
+fn fixtureSenderFromSecretKey(key: []const u8) !Address {
+    const tagged = std.mem.startsWith(u8, key, "<") and std.mem.endsWith(u8, key, ">");
+    const key_hex = if (tagged) blk: {
+        const start = std.mem.lastIndexOf(u8, key, "0x") orelse return error.InvalidFixtureSecretKey;
+        break :blk key[start .. key.len - 1];
+    } else key;
+    const digits = if (std.mem.startsWith(u8, key_hex, "0x")) key_hex[2..] else key_hex;
+    const secret = try std.fmt.parseInt(u256, digits, 16);
+    var key_bytes: [32]u8 = undefined;
+    std.mem.writeInt(u256, &key_bytes, secret, .big);
+    return (try primitives.PublicKey.fromPrivateKey(key_bytes)).toAddress();
+}
+
 fn parseAddress(addr: []const u8) !Address {
     var buf: [42]u8 = undefined;
     var clean_addr = addr;
@@ -2496,6 +2636,24 @@ fn parseAddress(addr: []const u8) !Address {
     }
 
     return try Address.fromHex(final_addr);
+}
+
+fn parseFixtureBytecode(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    var code = std.mem.trim(u8, source, " \t\r\n");
+    if (std.mem.startsWith(u8, code, ":label ")) {
+        var fields = std.mem.tokenizeAny(u8, code, " \t\r\n");
+        _ = fields.next();
+        _ = fields.next() orelse return error.InvalidFixtureLabel;
+        code = fields.rest();
+    }
+    if (std.mem.startsWith(u8, code, "{") or std.mem.startsWith(u8, code, "(asm ") or
+        std.mem.startsWith(u8, code, ":asm ") or std.mem.startsWith(u8, code, ":yul "))
+    {
+        return assembler.compileAssembly(allocator, code);
+    }
+    const hex = try parseHexData(allocator, code);
+    defer allocator.free(hex);
+    return primitives.Hex.hexToBytes(allocator, hex);
 }
 
 fn parseHexData(allocator: std.mem.Allocator, data: []const u8) ![]u8 {

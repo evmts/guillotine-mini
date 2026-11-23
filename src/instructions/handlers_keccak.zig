@@ -56,15 +56,8 @@ pub fn Handlers(FrameType: type) type {
                 const aligned_size = wordAlignedSize(end_addr);
                 if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 
-                // Read data from memory
-                var data = try frame.allocator.alloc(u8, size_u32);
-                defer frame.allocator.free(data);
-
-                var i: u32 = 0;
-                while (i < size_u32) : (i += 1) {
-                    const addr = try add_u32(offset_u32, i);
-                    data[i] = frame.readMemory(addr);
-                }
+                // Zero-copy slice directly from contiguous EVM memory
+                const data = try frame.readMemorySlice(offset_u32, size_u32);
 
                 // Compute Keccak-256 hash using std library
                 var hash_bytes: [32]u8 = undefined;

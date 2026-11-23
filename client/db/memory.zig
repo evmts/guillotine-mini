@@ -139,11 +139,13 @@ pub const MemoryDatabase = struct {
         self.writes_count += 1;
         if (value) |val| {
             const alloc = self.arena.allocator();
-            // Copy key and value into arena
-            const owned_key = alloc.dupe(u8, key) catch return error.OutOfMemory;
             const owned_val = alloc.dupe(u8, val) catch return error.OutOfMemory;
-            // Insert (overwrites any existing entry; old key/value stay in arena)
-            self.map.put(alloc, owned_key, owned_val) catch return error.OutOfMemory;
+            // Reuse existing arena key slice on overwrites to avoid redundant allocations
+            const gop = self.map.getOrPut(alloc, key) catch return error.OutOfMemory;
+            if (!gop.found_existing) {
+                gop.key_ptr.* = alloc.dupe(u8, key) catch return error.OutOfMemory;
+            }
+            gop.value_ptr.* = owned_val;
         } else {
             // put(key, null) behaves as delete (Nethermind pattern)
             _ = self.map.remove(key);
@@ -294,12 +296,14 @@ pub const MemoryDatabase = struct {
         var clone = MemoryDatabase.init(allocator, source.name);
         errdefer clone.deinit();
 
+        const alloc = clone.arena.allocator();
+        clone.map.ensureTotalCapacity(alloc, @intCast(source.map.count())) catch return error.OutOfMemory;
+
         var it = source.map.iterator();
         while (it.next()) |entry| {
-            const alloc = clone.arena.allocator();
             const owned_key = alloc.dupe(u8, entry.key_ptr.*) catch return error.OutOfMemory;
             const owned_val = alloc.dupe(u8, entry.value_ptr.*) catch return error.OutOfMemory;
-            clone.map.put(alloc, owned_key, owned_val) catch return error.OutOfMemory;
+            clone.map.putAssumeCapacityNoClobber(owned_key, owned_val);
         }
 
         return clone;
