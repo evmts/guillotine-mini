@@ -48,7 +48,9 @@ pub fn Frame(comptime config: EvmConfig) type {
         const SystemHandlers = handlers_system.Handlers(Self);
 
         stack: std.ArrayList(u256),
-        memory: std.AutoHashMap(u32, u8),
+        /// Backing bytes for EVM memory. May be shorter than `memory_size`;
+        /// bytes past `memory.items.len` read as zero.
+        memory: std.ArrayList(u8),
         memory_size: u32,
         pc: u32,
         gas_remaining: i64,
@@ -105,16 +107,13 @@ pub fn Frame(comptime config: EvmConfig) type {
             try stack.ensureTotalCapacity(allocator, 1024);
             errdefer stack.deinit(allocator);
 
-            var memory_map = std.AutoHashMap(u32, u8).init(allocator);
-            errdefer memory_map.deinit();
-
             // Analyze bytecode to identify valid jump destinations
             var bytecode = try Bytecode.init(allocator, bytecode_raw);
             errdefer bytecode.deinit();
 
             return Self{
                 .stack = stack,
-                .memory = memory_map,
+                .memory = .empty,
                 .memory_size = 0,
                 .pc = 0,
                 .gas_remaining = gas,
@@ -144,7 +143,7 @@ pub fn Frame(comptime config: EvmConfig) type {
                 self.allocator.free(self.output);
             }
             self.stack.deinit(self.allocator);
-            self.memory.deinit();
+            self.memory.deinit(self.allocator);
             self.bytecode.deinit();
         }
 
@@ -197,7 +196,8 @@ pub fn Frame(comptime config: EvmConfig) type {
 
         /// Read byte from memory
         pub fn readMemory(self: *Self, offset: u32) u8 {
-            return self.memory.get(offset) orelse 0;
+            if (offset >= self.memory.items.len) return 0;
+            return self.memory.items[offset];
         }
 
         /// Safe add helper for u32 indices
@@ -207,10 +207,16 @@ pub fn Frame(comptime config: EvmConfig) type {
 
         /// Write byte to memory
         pub fn writeMemory(self: *Self, offset: u32, value: u8) EvmError!void {
-            try self.memory.put(offset, value);
             // EVM memory expands to word-aligned (32-byte) boundaries
             const end_offset: u64 = @as(u64, offset) + 1;
-            const word_aligned_size = wordAlignedSize(end_offset);
+            const word_aligned_size = std.math.cast(u32, wordCount(end_offset) * 32) orelse return error.OutOfBounds;
+            if (offset >= self.memory.items.len) {
+                // Grow the backing buffer to the word boundary and zero-fill the gap.
+                const old_len = self.memory.items.len;
+                try self.memory.resize(self.allocator, word_aligned_size);
+                @memset(self.memory.items[old_len..], 0);
+            }
+            self.memory.items[offset] = value;
             if (word_aligned_size > self.memory_size) self.memory_size = word_aligned_size;
         }
 
@@ -242,16 +248,11 @@ pub fn Frame(comptime config: EvmConfig) type {
 
             if (end_bytes <= current_size) return 0;
 
-            // Cap memory size to prevent gas calculation overflow
-            // Max reasonable memory is 16MB (0x1000000 bytes) which is ~500k words
-            // At that size, gas cost would be ~125 billion, far exceeding any reasonable gas limit
-            const max_memory: u64 = 0x1000000;
-            // Return a large value that won't overflow when added to other gas costs
-            // but will still trigger OutOfGas
-            if (end_bytes > max_memory) return std.math.maxInt(u64);
-
+            // No artificial size cap: compute the exact Ethereum cost and return
+            // maxInt(u64) only when the math genuinely overflows u64. consumeGas
+            // rejects anything above maxInt(i64) as OutOfGas.
             const current_words = wordCount(current_size);
-            const new_words = wordCount(end_bytes);
+            const new_words = (std.math.add(u64, end_bytes, 31) catch return std.math.maxInt(u64)) / 32;
 
             // Check for overflow in word * word calculation using saturating multiplication
             // If overflow would occur, return max gas to trigger OutOfGas
@@ -488,14 +489,13 @@ pub fn Frame(comptime config: EvmConfig) type {
         }
 
         /// Get memory contents as a slice (for tracing)
-        fn getMemorySlice(self: *Self, allocator: std.mem.Allocator) ![]u8 {
+        pub fn getMemorySlice(self: *Self, allocator: std.mem.Allocator) ![]u8 {
             if (self.memory_size == 0) return &[_]u8{};
 
             const mem_slice = try allocator.alloc(u8, self.memory_size);
-            var i: u32 = 0;
-            while (i < self.memory_size) : (i += 1) {
-                mem_slice[i] = self.readMemory(i);
-            }
+            const copy_len = @min(self.memory.items.len, self.memory_size);
+            @memcpy(mem_slice[0..copy_len], self.memory.items[0..copy_len]);
+            @memset(mem_slice[copy_len..], 0);
             return mem_slice;
         }
 
@@ -537,14 +537,20 @@ pub fn Frame(comptime config: EvmConfig) type {
 
         /// Main execution loop
         pub fn execute(self: *Self) EvmError!void {
-            var iteration_count: u64 = 0;
-            const max_iterations: u64 = 10_000_000; // Prevent infinite loops (reasonable limit ~10M ops)
-            while (!self.stopped and !self.reverted and self.pc < self.bytecode.len()) {
-                iteration_count += 1;
-                if (iteration_count > max_iterations) {
-                    return error.ExecutionTimeout;
+            // config.loop_quota bounds opcode steps per frame; null means unlimited.
+            if (config.loop_quota) |max_iterations| {
+                var iteration_count: u64 = 0;
+                while (!self.stopped and !self.reverted and self.pc < self.bytecode.len()) {
+                    iteration_count += 1;
+                    if (iteration_count > max_iterations) {
+                        return error.ExecutionTimeout;
+                    }
+                    try self.step();
                 }
-                try self.step();
+            } else {
+                while (!self.stopped and !self.reverted and self.pc < self.bytecode.len()) {
+                    try self.step();
+                }
             }
         }
     };
