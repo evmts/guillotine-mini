@@ -1,18 +1,12 @@
 <div align="center">
   <h1>
-    Minimal, spec-compliant EVM in Zig.
+    Minimal EVM in Zig.
     <br/>
     <br/>
   </h1>
   <sup>
     <a href="https://github.com/evmts/guillotine-mini">
-       <img src="https://img.shields.io/badge/zig-0.15.1+-orange.svg" alt="zig version" />
-    </a>
-    <a href="https://github.com/evmts/guillotine-mini/actions">
-      <img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="build status" />
-    </a>
-    <a href="https://github.com/evmts/guillotine-mini">
-      <img src="https://img.shields.io/badge/tests-all%20hardforks%20passing-brightgreen.svg" alt="tests" />
+       <img src="https://img.shields.io/badge/zig-0.15.2-orange.svg" alt="zig version" />
     </a>
   </sup>
 </div>
@@ -21,59 +15,63 @@
 
 ## Requirements
 
-- Zig 0.15.1+
-- Cargo (for Rust crypto deps)
-- Python 3.8+ (optional, test generation)
+- Zig 0.15.2, the version used in CI
+- Rust and Cargo for Voltaire's crypto libraries
+- Python 3 and uv to generate execution-spec fixtures
 
-## Install
+## Build from source
 
-**Use as a Zig dependency (recommended)**
+Guillotine-mini uses a sibling `../voltaire` checkout. Check out the revision in
+[native-dependencies.json](native-dependencies.json). These commands use `jq`
+to read the pin.
 
 ```bash
-zig fetch --save https://github.com/evmts/guillotine-mini/archive/main.tar.gz
+git clone https://github.com/evmts/guillotine-mini.git
+git clone https://github.com/evmts/voltaire.git
+git -C voltaire checkout "$(jq -r '.voltaire.revision' guillotine-mini/native-dependencies.json)"
+git -C voltaire submodule update --init --recursive
+cd guillotine-mini
+zig build
+zig build native
 ```
+
+To use the Zig module in another project, add the Guillotine-mini checkout to
+that project's `build.zig.zon` as a local path dependency named
+`guillotine_mini`. Import its `guillotine_mini` module in `build.zig`.
 
 ```zig
 const guillotine_dep = b.dependency("guillotine_mini", .{
     .target = target,
     .optimize = optimize,
 });
-const guillotine_mod = guillotine_dep.module("guillotine_mini");
-exe.root_module.addImport("guillotine_mini", guillotine_mod);
-
-const primitives_dep = b.dependency("guillotine_primitives", .{
-    .target = target,
-    .optimize = optimize,
-});
-exe.linkLibrary(primitives_dep.artifact("blst"));
-exe.linkLibrary(primitives_dep.artifact("keccak-asm"));
-exe.linkLibrary(primitives_dep.artifact("sha3-asm"));
-exe.linkLibrary(primitives_dep.artifact("crypto_wrappers"));
+exe.root_module.addImport("guillotine_mini", guillotine_dep.module("guillotine_mini"));
 ```
 
-**Build from source**
+## Tests
+
+Initialize the ethereum-tests submodule for the trie fixtures used by the unit suite.
 
 ```bash
-git clone https://github.com/evmts/guillotine-mini.git --recurse-submodules
-cd guillotine-mini
-zig build
+git submodule update --init --recursive ethereum-tests
+zig build unit
 ```
 
-> The primitives library is fetched automatically during build. Downstream consumers must link the crypto artifacts from `guillotine_primitives` (see snippet above).
-
-## Quick Start
+Initialize the execution-specs submodule to generate and run the state and
+blockchain fixtures.
 
 ```bash
-zig build
-zig build test
+git submodule update --init --recursive execution-specs
 zig build specs
-zig build wasm
-zig build test-wasm
-```
-
-```bash
+zig build specs-blockchain
 TEST_FILTER="push0" zig build specs
 ```
+
+Run `zig build test -Dnethermind-diff=false` for the combined native suite.
+The Nethermind trie comparison requires a separate `nethermind/` checkout and
+the .NET 8 SDK.
+
+The spec runner has hardfork targets from Frontier through Osaka. Osaka
+implementation and fixture coverage are partial.
 
 ## WebAssembly
 
@@ -110,19 +108,16 @@ Call `evm_destroy(handle)` when finished with an instance. See the complete
 
 - `CLAUDE.md` — project guide for devs and AI assistants
 - `CONTRIBUTING.md` — setup and contribution workflow
-- `src/precompiles/CLAUDE.md` — precompile docs
 
 ## Highlights
 
-- Full hardfork support (Frontier → Osaka)
 - 20+ EIPs implemented
 - EIP-3155 tracing
 - WASM target with linked crypto precompiles (WASI Preview 1)
-- 100% ethereum/tests coverage
 
 ## More
 
-- Primitives library: https://github.com/evmts/primitives
+- [Voltaire primitives and crypto](https://github.com/evmts/voltaire)
 - Guillotine (full client): https://github.com/evmts/guillotine
 
 ## License
