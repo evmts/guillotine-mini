@@ -1,0 +1,211 @@
+---
+title: Getting Started
+description: Build Guillotine Mini, execute your first EVM bytecode in Zig, trace every unit of gas, and learn the three contracts that catch newcomers off guard.
+---
+
+import { MentalModel, WatchOut, DumbQuestions, StackTraceStrip } from '../components/HeadFirst'
+
+# Getting Started
+
+In five minutes you will compile Guillotine Mini, run real EVM bytecode from Zig, watch 18 units of gas disappear one opcode at a time, and trigger your first controlled failure.
+
+## Prerequisites
+
+| Tool | Version | Why it is required |
+| --- | --- | --- |
+| **Zig** | `0.15.1+` (`0.15.2` tested) | Compiles the EVM, tests, native archive, and WASI module |
+| **Rust / Cargo** | Stable + `wasm32-unknown-unknown` (for WASM) | Builds Voltaire's Rust crypto static libraries (`blst`, BN254, KZG) |
+| **Adjacent `../voltaire` checkout** | Pinned in `native-dependencies.json` | `build.zig.zon` resolves `voltaire` as a sibling path dependency |
+| **Node.js** | `22+` (optional) | Runs `zig build test-wasm` and `examples/wasm.mjs` |
+| **Python 3 + `uv`** | Optional | Generates `execution-specs` fixtures for `zig build specs` |
+
+<WatchOut title="Cargo is not optional">
+Even though Guillotine Mini is written in Zig, Voltaire links Rust cryptographic archives (`blst`, BN254, KZG) during `zig build`. Make sure `cargo` is on your `PATH`. For WebAssembly builds, install the WASM target once:
+
+```sh
+rustup target add wasm32-unknown-unknown
+```
+</WatchOut>
+
+## Build from source
+
+Clone the repository alongside `voltaire` at the revision recorded in `native-dependencies.json`:
+
+```sh
+git clone https://github.com/evmts/guillotine-mini.git
+cd guillotine-mini
+zig build
+zig build test-trace
+```
+
+If `zig build test-trace` exits `0`, your compiler, linker, and Voltaire crypto libraries all work.
+
+## Wire it into a Zig project
+
+In `build.zig.zon`, declare `guillotine_mini` (and `voltaire` if you construct `Address` or `ZERO_ADDRESS` directly):
+
+```zig
+.dependencies = .{
+    .guillotine_mini = .{ .path = "../guillotine-mini" },
+    .voltaire = .{ .path = "../voltaire" },
+},
+```
+
+In `build.zig`, import the module and link Voltaire's crypto artifacts:
+
+```zig
+const guillotine_dep = b.dependency("guillotine_mini", .{
+    .target = target,
+    .optimize = optimize,
+});
+const voltaire_dep = b.dependency("voltaire", .{
+    .target = target,
+    .optimize = optimize,
+});
+
+exe.root_module.addImport("guillotine_mini", guillotine_dep.module("guillotine_mini"));
+exe.root_module.addImport("voltaire", voltaire_dep.module("primitives"));
+```
+
+## Your first execution
+
+Our first contract returns the 32-byte word `42` (`0x2a`). In EVM assembly, that takes six instructions — ten bytes of raw bytecode:
+
+```text
+00  PUSH1 0x2a   # put 42 on the stack
+02  PUSH1 0x00   # memory offset 0
+04  MSTORE       # write 32-byte big-endian 42 at memory[0..32]
+05  PUSH1 0x20   # return length = 32 bytes
+07  PUSH1 0x00   # return offset = 0
+09  RETURN       # halt and return memory[0..32]
+```
+
+Here is a complete, runnable `src/main.zig`:
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+const voltaire = @import("voltaire");
+
+pub fn main() !void {
+    const Evm = guillotine.Evm(.{});
+
+    var vm: Evm = undefined;
+    try vm.init(
+        std.heap.page_allocator,
+        null, // host: null uses the EVM's internal maps
+        .CANCUN, // hardfork: always pass explicitly
+        null, // block context: null uses chain_id = 1 and zeroed fields
+        voltaire.ZERO_ADDRESS, // tx.origin
+        0, // tx.gasprice
+        null, // log level: null keeps default (.none)
+    );
+    defer vm.deinit();
+
+    const target = voltaire.Address.fromU256(0x42);
+    const bytecode = [_]u8{
+        0x60, 0x2a, // PUSH1 42
+        0x60, 0x00, // PUSH1 0
+        0x52,       // MSTORE
+        0x60, 0x20, // PUSH1 32
+        0x60, 0x00, // PUSH1 0
+        0xf3,       // RETURN
+    };
+    try vm.code.put(target, &bytecode);
+
+    const result = vm.call(.{ .call = .{
+        .caller = voltaire.ZERO_ADDRESS,
+        .to = target,
+        .value = 0,
+        .input = &.{},
+        .gas = 100_000,
+    } });
+
+    std.debug.print("success={} gas_left={} output_len={}\n", .{
+        result.success, result.gas_left, result.output.len,
+    });
+    if (result.output.len == 32) {
+        const word = std.mem.readInt(u256, result.output[0..32], .big);
+        std.debug.print("word={d} (0x{x})\n", .{ word, word });
+    }
+}
+```
+
+Output:
+
+```text
+success=true gas_left=99982 output_len=32
+word=42 (0x2a)
+```
+
+## Where did those 18 gas go?
+
+Watch the stack and gas meter move across every instruction:
+
+<StackTraceStrip
+  steps={[
+    { pc: '00', op: 'PUSH1 0x2a', gas: '-3 gas', stack: ['0x2a'], note: 'Push 42 onto the stack.' },
+    { pc: '02', op: 'PUSH1 0x00', gas: '-3 gas', stack: ['0x00', '0x2a'], note: 'Offset 0 is now on top.' },
+    { pc: '04', op: 'MSTORE', gas: '-6 gas', stack: [], note: '3 base + 3 to expand memory from 0 → 32 bytes.' },
+    { pc: '05', op: 'PUSH1 0x20', gas: '-3 gas', stack: ['0x20'], note: 'Return length = 32 bytes.' },
+    { pc: '07', op: 'PUSH1 0x00', gas: '-3 gas', stack: ['0x00', '0x20'], note: 'Return offset = 0.' },
+    { pc: '09', op: 'RETURN', gas: '-0 gas', stack: [], note: 'Memory already 32B; returns 0x00..002a.' },
+  ]}
+/>
+
+`3 + 3 + (3 + 3) + 3 + 3 + 0 = 18` gas. `100,000 - 18 = 99,982`.
+
+## Now break it on purpose
+
+Good docs show the failure path too. Change `.gas = 100_000` to `.gas = 10`:
+
+- `PUSH1 0x2a` (3 gas) → 7 left
+- `PUSH1 0x00` (3 gas) → 4 left
+- `MSTORE` needs **6 gas** (3 base + 3 memory expansion) → **OutOfGas!**
+
+Now `result` comes back with:
+
+```text
+result.success    == false
+result.gas_left   == 0
+result.output.len == 0
+result.error_info == "OutOfGas"
+```
+
+Compare that with replacing `0xf3` (`RETURN`) with `0xfd` (`REVERT`) at `.gas = 100_000`:
+
+```text
+result.success    == false
+result.gas_left   == 99982      // unspent gas is refunded on REVERT!
+result.output.len == 32         // revert payload is preserved
+result.error_info == null       // REVERT is a clean halt, not a CallError
+```
+
+<MentalModel title="Three contracts to remember from day one">
+1. **`Evm(config)` returns a type, not a value.** Two configs (`Evm(.{})` and `Evm(.{ .stack_size = 512 })`) are distinct Zig types.
+2. **Initialize in place.** Always write `var vm: Evm = undefined; try vm.init(...)`. `Evm` holds an arena and internal maps initialized in place.
+3. **`hardfork = null` means `Hardfork.DEFAULT` (`.PRAGUE`), not `config.hardfork`.** Pass `.CANCUN`, `.PRAGUE`, `.OSAKA`, etc. explicitly to `vm.init()` so there is never any ambiguity.
+</MentalModel>
+
+<DumbQuestions
+  items={[
+    {
+      q: 'Why did we import both guillotine_mini and voltaire?',
+      a: 'Guillotine Mini keeps its root surface minimal (src/root.zig). Primitive value types like Address and ZERO_ADDRESS live in Voltaire and are passed straight in without wrapper types.',
+    },
+    {
+      q: 'Where did intrinsic gas (21,000) go?',
+      a: 'vm.call() operates on execution gas — the gas left after the caller deducts 21,000 base tx gas + calldata gas. That is why our 100,000 gas call returned 99,982 instead of 78,982.',
+    },
+    {
+      q: 'Do I have to free result.output?',
+      a: 'No — result slices are allocated inside vm.arena and vanish when vm.deinit() runs. If you need a result to outlive the EVM, call result.toOwnedResult(your_allocator) and later result.deinit(your_allocator).',
+    },
+  ]}
+/>
+
+## Next steps
+
+- **[Tutorial 1: Your First Contract Call](/tutorials/first-call)** — read calldata, emit `LOG1` events, and decode `REVERT` payloads.
+- **[Tutorial 4: Running in WebAssembly](/tutorials/webassembly)** — run this exact bytecode from Node 22+ via WASI.
+- **[Opcode & Gas Explorer](/opcode-explorer)** — step through `602a60005260206000f3` interactively in your browser.

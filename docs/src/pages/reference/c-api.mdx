@@ -1,0 +1,152 @@
+---
+title: C & WASM ABI
+description: Complete signature reference for all 30 exported evm_* symbols in src/root_c.zig, AsyncRequest layout, and WASM env imports.
+---
+
+# C & WASM ABI
+
+Both `zig build native` (`zig-out/lib/libguillotine_mini.a`) and `zig build wasm` (`zig-out/bin/guillotine_mini.wasm`) export the same 30 symbols from `src/root_c.zig`.
+
+## Calling conventions
+
+- **Handles:** Every function except `evm_alloc`, `evm_free`, and `evm_create` takes a nullable `EvmHandle*` and returns `false` / `0` on `NULL`.
+- **Byte order:** Addresses are 20 raw bytes. All `u256` values (`value`, `slot`, `balance`, `chain_id`, `difficulty`, `prevrandao`, `base_fee`, `blob_base_fee`) are **32-byte big-endian** arrays.
+- **`usize` width:** `8` bytes on 64-bit native targets; `4` bytes (little-endian `u32`) on `wasm32-wasi`.
+- **WASM reactor startup:** Call `_initialize()` once (via `WASI.initialize(instance)` in Node 22+) before calling any `evm_*` export.
+- **Buffer ownership:** All input setters copy bytes into internal storage. Re-read `exports.memory.buffer` after every `evm_alloc` or `evm_execute` because linear memory may grow.
+
+## Memory management (WASM & FFI buffers)
+
+```c
+uint8_t *evm_alloc(size_t len);
+void     evm_free(uint8_t *ptr, size_t len);
+```
+
+`evm_alloc(0)` returns `NULL`. `evm_free(NULL, len)` is a no-op.
+
+## Lifecycle
+
+```c
+EvmHandle *evm_create(const char *hardfork_name, size_t hardfork_len, uint8_t log_level);
+void       evm_destroy(EvmHandle *handle);
+```
+
+- `hardfork_name` is parsed case-insensitively (`"frontier"`, `"cancun"`, `"prague"`, `"osaka"`, …). `hardfork_len == 0` selects `Hardfork.DEFAULT` (`.PRAGUE`).
+- `log_level`: `0` = none, `1` = err, `2` = warn, `3` = info, `4` = debug.
+
+## Execution setup & run
+
+```c
+bool evm_set_bytecode(EvmHandle *h, const uint8_t *bytecode, size_t bytecode_len);
+
+bool evm_set_execution_context(
+    EvmHandle *h,
+    int64_t gas,
+    const uint8_t caller[20],
+    const uint8_t address[20],
+    const uint8_t value[32],
+    const uint8_t *calldata,
+    size_t calldata_len
+);
+
+void evm_set_blockchain_context(
+    EvmHandle *h,
+    const uint8_t chain_id[32],
+    uint64_t block_number,
+    uint64_t block_timestamp,
+    const uint8_t block_difficulty[32],
+    const uint8_t block_prevrandao[32],
+    const uint8_t block_coinbase[20],
+    uint64_t block_gas_limit,
+    const uint8_t block_base_fee[32],
+    const uint8_t blob_base_fee[32]
+);
+
+bool evm_set_access_list_addresses(EvmHandle *h, const uint8_t *addresses, size_t count);
+bool evm_set_access_list_storage_keys(
+    EvmHandle *h,
+    const uint8_t *addresses, // count * 20 packed bytes
+    const uint8_t *slots,     // count * 32 packed big-endian bytes
+    size_t count
+);
+bool evm_set_blob_hashes(EvmHandle *h, const uint8_t *hashes, size_t count);
+
+bool evm_execute(EvmHandle *h);
+```
+
+`evm_execute()` automatically installs the bytecode from `evm_set_bytecode()` at `address`, runs `Evm.call()`, stores the `CallResult`, and returns `result.success`.
+
+## Result inspection
+
+```c
+bool    evm_is_success(EvmHandle *h);
+int64_t evm_get_gas_remaining(EvmHandle *h);
+int64_t evm_get_gas_used(EvmHandle *h);
+uint64_t evm_get_gas_refund(EvmHandle *h);
+
+size_t  evm_get_output_len(EvmHandle *h);
+size_t  evm_get_output(EvmHandle *h, uint8_t *buffer, size_t buffer_len);
+
+size_t  evm_get_log_count(EvmHandle *h);
+bool    evm_get_log(
+    EvmHandle *h,
+    size_t index,
+    uint8_t address_out[20],
+    size_t *topics_count_out,
+    uint8_t topics_out[128],  // up to 4 * 32-byte big-endian topics
+    size_t *data_len_out,
+    uint8_t *data_out,
+    size_t data_max_len
+);
+
+size_t  evm_get_storage_change_count(EvmHandle *h);
+bool    evm_get_storage_change(
+    EvmHandle *h,
+    size_t index,
+    uint8_t address_out[20],
+    uint8_t slot_out[32],
+    uint8_t value_out[32]
+);
+```
+
+## Direct account & storage state
+
+```c
+bool evm_set_storage(EvmHandle *h, const uint8_t addr[20], const uint8_t slot[32], const uint8_t value[32]);
+bool evm_get_storage(EvmHandle *h, const uint8_t addr[20], const uint8_t slot[32], uint8_t value_out[32]);
+bool evm_set_balance(EvmHandle *h, const uint8_t addr[20], const uint8_t balance[32]);
+bool evm_set_code(EvmHandle *h, const uint8_t addr[20], const uint8_t *code, size_t code_len);
+bool evm_set_nonce(EvmHandle *h, const uint8_t addr[20], uint64_t nonce);
+```
+
+## Async state-injection protocol
+
+```c
+typedef struct {
+    uint8_t  output_type;      // 0=result, 1=storage, 2=balance, 3=code, 4=nonce, 5=ready_to_commit, 255=error
+    uint8_t  address[20];
+    uint8_t  slot[32];
+    uint32_t json_len;
+    uint8_t  json_data[16384];
+} AsyncRequest;
+
+bool   evm_enable_storage_injector(EvmHandle *h);
+bool   evm_call_ffi(EvmHandle *h, AsyncRequest *request_out);
+bool   evm_continue_ffi(
+    EvmHandle *h,
+    uint8_t continue_type,     // 1=storage(84B), 2=balance(52B), 3=code(20+N), 4=nonce(28B), 5=after_commit(0B)
+    const uint8_t *data_ptr,
+    size_t data_len,
+    AsyncRequest *request_out
+);
+size_t evm_get_state_changes(EvmHandle *h, uint8_t *buffer, size_t buffer_len);
+```
+
+## WASM host imports (`env`)
+
+`guillotine_mini.wasm` imports `wasi_snapshot_preview1` plus two functions from `env`:
+
+| Import | Return `0` | Return non-zero |
+| --- | --- | --- |
+| `env.js_opcode_callback(opcode, frame_ptr)` | Run built-in Zig opcode handler | Handler consumed the opcode |
+| `env.js_precompile_callback(addr_ptr, in_ptr, in_len, gas_limit, out_len_ptr, out_ptr_ptr, gas_used_ptr)` | Run built-in Zig/Rust precompile | JS handled the precompile |

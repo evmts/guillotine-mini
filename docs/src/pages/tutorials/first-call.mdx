@@ -1,0 +1,202 @@
+---
+title: "Tutorial 1: Your First Contract Call"
+description: Pass ABI-encoded calldata into a contract, emit a LOG1 event, read back output, and distinguish REVERT from execution errors.
+---
+
+import {
+  MentalModel,
+  WatchOut,
+  DumbQuestions,
+  TraceExercise,
+  StackTraceStrip,
+} from '../../components/HeadFirst'
+
+# 1. Your First Contract Call
+
+In [Getting Started](/getting-started), we returned a hard-coded `42`. Real contracts take **calldata**, emit **logs**, and sometimes **revert** with an error payload.
+
+In this tutorial, you will build a 19-byte contract that:
+1. Reads two 32-byte integers `a` and `b` from calldata.
+2. Adds them (`a + b`).
+3. Emits a `LOG1` event carrying the sum.
+4. Returns the sum as a 32-byte word.
+
+Then we will deliberately trigger a `REVERT` and an `OutOfGas` error so you can see the exact difference inside `CallResult`.
+
+## Design the bytecode before touching Zig
+
+<MentalModel title="How the EVM sees calldata, memory, and logs">
+Think of a `Frame` as three separate workspaces:
+- **Calldata** is a read-only byte slice passed in by the caller (`CALLDATALOAD` reads 32 bytes at a time, zero-padding past the end).
+- **Memory** is scratchpad RAM for this call only (`MSTORE` writes a 32-byte word so `LOG1` and `RETURN` can slice bytes out of it).
+- **Logs** are append-only receipts stored on `Evm.logs` — kept on `RETURN`, discarded on `REVERT`.
+</MentalModel>
+
+Here is our 19-byte adder contract:
+
+```text
+PC   Opcode        Stack after (top on left)         What happens
+───────────────────────────────────────────────────────────────────────────
+00   PUSH1 0x00    [0]                               offset 0
+02   CALLDATALOAD  [a]                               read calldata[0..32]
+03   PUSH1 0x20    [32, a]                           offset 32
+05   CALLDATALOAD  [b, a]                            read calldata[32..64]
+06   ADD           [a+b]                             wrapping 256-bit add
+07   DUP1          [a+b, a+b]                        keep a copy for later? no, store once
+08   PUSH1 0x00    [0, a+b, a+b]                     memory offset 0
+0a   MSTORE        [a+b]                             memory[0..32] = a + b
+0b   POP           []                                clean stack (or reuse as topic!)
+```
+
+Wait — look at PC `07` and `0b`! Why throw away the extra copy on the stack when `LOG1` wants a **topic**? If we push a topic tag (say `0xdead`), we can drop `DUP1`/`POP` and save 2 bytes and 5 gas!
+
+Even cleaner — 17 bytes total:
+
+```text
+00  PUSH1 0x00    # calldata offset 0
+02  CALLDATALOAD  # stack: [a]
+03  PUSH1 0x20    # calldata offset 32
+05  CALLDATALOAD  # stack: [b, a]
+06  ADD           # stack: [sum]
+07  PUSH1 0x00    # memory offset 0
+09  MSTORE        # memory[0..32] = sum; stack: []
+0a  PUSH2 0xdead  # topic0 = 0xdead (event tag)
+0d  PUSH1 0x20    # log data length = 32 bytes
+0f  PUSH1 0x00    # log data offset = 0
+11  LOG1          # emit log(topic0=0xdead, data=memory[0..32])
+12  PUSH1 0x20    # return length = 32
+14  PUSH1 0x00    # return offset = 0
+16  RETURN        # return memory[0..32]
+```
+
+Watch the stack evolve when we pass `a = 17` and `b = 25`:
+
+<StackTraceStrip
+  steps={[
+    { pc: '02', op: 'CALLDATALOAD', gas: '-3 gas', stack: ['17'], note: 'Reads calldata[0..32].' },
+    { pc: '05', op: 'CALLDATALOAD', gas: '-3 gas', stack: ['25', '17'], note: 'Reads calldata[32..64].' },
+    { pc: '06', op: 'ADD', gas: '-3 gas', stack: ['42'], note: 'Pops 25 and 17, pushes 42.' },
+    { pc: '09', op: 'MSTORE', gas: '-6 gas', stack: [], note: 'Writes 42 to mem[0..32] (+3 mem expansion).' },
+    { pc: '11', op: 'LOG1', gas: '-1006 gas', stack: [], note: '375 base + 375 topic + 32×8 data bytes.' },
+    { pc: '16', op: 'RETURN', gas: '-0 gas', stack: [], note: 'Returns 32-byte word 42.' },
+  ]}
+/>
+
+## Run it in Zig
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+const voltaire = @import("voltaire");
+
+pub fn main() !void {
+    const Evm = guillotine.Evm(.{});
+    var vm: Evm = undefined;
+    try vm.init(
+        std.heap.page_allocator,
+        null,
+        .CANCUN,
+        null,
+        voltaire.ZERO_ADDRESS,
+        0,
+        null,
+    );
+    defer vm.deinit();
+
+    const target = voltaire.Address.fromU256(0x100);
+    const bytecode = [_]u8{
+        0x60, 0x00,       // PUSH1 0
+        0x35,             // CALLDATALOAD
+        0x60, 0x20,       // PUSH1 32
+        0x35,             // CALLDATALOAD
+        0x01,             // ADD
+        0x60, 0x00,       // PUSH1 0
+        0x52,             // MSTORE
+        0x61, 0xde, 0xad, // PUSH2 0xdead (topic0)
+        0x60, 0x20,       // PUSH1 32 (log size)
+        0x60, 0x00,       // PUSH1 0  (log offset)
+        0xa1,             // LOG1
+        0x60, 0x20,       // PUSH1 32 (return size)
+        0x60, 0x00,       // PUSH1 0  (return offset)
+        0xf3,             // RETURN
+    };
+    try vm.code.put(target, &bytecode);
+
+    // Pack two big-endian 32-byte words: a = 17, b = 25
+    var input: [64]u8 = undefined;
+    std.mem.writeInt(u256, input[0..32], 17, .big);
+    std.mem.writeInt(u256, input[32..64], 25, .big);
+
+    const result = vm.call(.{ .call = .{
+        .caller = voltaire.ZERO_ADDRESS,
+        .to = target,
+        .value = 0,
+        .input = &input,
+        .gas = 100_000,
+    } });
+
+    std.debug.assert(result.success);
+    const sum = std.mem.readInt(u256, result.output[0..32], .big);
+    std.debug.print("sum={d}, logs={d}, gas_used={d}\n", .{
+        sum,
+        result.logs.len,
+        result.gasConsumed(100_000),
+    });
+    std.debug.print("log[0].topic0=0x{x}\n", .{result.logs[0].topics[0]});
+}
+```
+
+<TraceExercise
+  title="Trace It Yourself: What happens if you pass only 32 bytes of calldata?"
+  prompt={
+    <p>
+      Suppose we pass <code>input[0..32]</code> (just <code>a = 17</code>, no <code>b</code>) instead of 64 bytes.
+      Does <code>CALLDATALOAD</code> at offset 32 fail with <code>OutOfBounds</code>, or does the contract succeed?
+    </p>
+  }
+  answer={
+    <p>
+      <strong>It succeeds and returns 17!</strong> Per the Ethereum specification, <code>CALLDATALOAD</code> never
+      reverts on out-of-range offsets — any byte past <code>calldata.len</code> reads as <code>0x00</code>.
+      So <code>b</code> becomes <code>0</code>, and <code>17 + 0 = 17</code>.
+    </p>
+  }
+/>
+
+## Now compare `REVERT` vs `CallError`
+
+Swap the final opcode `0xf3` (`RETURN`) for `0xfd` (`REVERT`) and run again. Look at what changes in `CallResult`:
+
+| Field | `RETURN` (`0xf3`) | `REVERT` (`0xfd`) | `OutOfGas` / `InvalidJump` |
+| --- | --- | --- | --- |
+| `result.success` | `true` | `false` | `false` |
+| `result.gas_left` | unspent gas | **unspent gas** | `0` (all gas burned) |
+| `result.output` | return bytes (`42`) | **revert payload (`42`)** | empty (`&.{}`) |
+| `result.logs` | 1 log (`0xdead`) | **empty** (logs rolled back!) | empty |
+| `result.error_info` | `null` | `null` | error name (e.g. `"OutOfGas"`) |
+
+<WatchOut title="Do not keep pointers to result.output after vm.deinit()">
+`result.output`, `result.logs`, and `result.error_info` are allocated inside `vm.arena`. If you return a `CallResult` from a helper function that calls `defer vm.deinit()`, clone it first:
+
+```zig
+var owned = try result.toOwnedResult(caller_allocator);
+defer owned.deinit(caller_allocator);
+```
+</WatchOut>
+
+<DumbQuestions
+  items={[
+    {
+      q: 'Why did LOG1 cost 1,006 gas?',
+      a: 'LOGn costs 375 (base) + 375 × n (topics) + 8 × data_bytes. For LOG1 with 32 bytes of data: 375 + 375 + 256 = 1,006 gas.',
+    },
+    {
+      q: 'Can I call this contract with .staticcall instead of .call?',
+      a: 'Try it! LOG1 modifies transaction receipts, which violates static mode — in .staticcall, LOG1 fails with WriteProtection (or StaticCallViolation) and burns gas. Remove LOG1 and .staticcall succeeds.',
+    },
+  ]}
+/>
+
+## Next
+
+In **[Tutorial 2: State, Storage & Snapshots](/tutorials/state-and-snapshots)**, we add persistent storage (`SSTORE`/`SLOAD`), uncover why `vm.balances.put()` can mysteriously disappear, and watch copy-on-write snapshots undo a reverted nested call.

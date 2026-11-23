@@ -1,0 +1,53 @@
+---
+title: Module Exports
+description: Complete public symbol table of src/root.zig (@import("guillotine_mini")).
+---
+
+# Module Exports
+
+`@import("guillotine_mini")` resolves to `src/root.zig`. Every `pub const` exported from that file is listed below.
+
+## Core types
+
+| Symbol | Definition | Source |
+| --- | --- | --- |
+| `Evm` | `fn (comptime config: EvmConfig) type` | `src/evm.zig` |
+| `Frame` | `fn (comptime config: EvmConfig) type` | `src/frame.zig` |
+| `BlockContext` | `struct` — chain ID, block header fields, recent `block_hashes` | `src/evm.zig` |
+| `StorageKey` | Alias of `voltaire.State.StorageKey` (`address`, `slot`) | `src/evm.zig` |
+| `StorageSlotKey` | Backwards-compatibility alias of `StorageKey` | `src/evm.zig` |
+| `HostInterface` | Type-erased external state vtable | `src/host.zig` |
+
+## Configuration & overrides
+
+| Symbol | Definition | Source |
+| --- | --- | --- |
+| `EvmConfig` | Comptime EVM configuration struct | `src/evm_config.zig` |
+| `OpcodeOverride` | `{ opcode: u8, handler: *const anyopaque }` | `src/evm_config.zig` |
+| `PrecompileOverride` | `{ address: Address, execute: ..., context: ?*anyopaque }` | `src/evm_config.zig` |
+| `PrecompileOutput` | `{ output: []const u8, gas_used: u64, success: bool }` | `src/evm_config.zig` |
+
+## Call results, tracing & errors
+
+| Symbol | Definition | Source |
+| --- | --- | --- |
+| `Log` | Re-export of `voltaire.logs.Log` | `src/root.zig` |
+| `SelfDestructRecord` | `{ contract: Address, beneficiary: Address }` | `src/call_result.zig` |
+| `StorageAccess` | `{ address: Address, slot: u256 }` | `src/call_result.zig` |
+| `TraceStep` | Single step record for `ExecutionTrace` | `src/call_result.zig` |
+| `ExecutionTrace` | Owned slice of `TraceStep` | `src/call_result.zig` |
+| `Tracer` | EIP-3155 trace recorder (`init`, `enable`, `writeToFile`) | `src/trace.zig` |
+| `TraceEntry` | Single EIP-3155 step entry | `src/trace.zig` |
+| `CallError` | Error set for execution failures | `src/errors.zig` |
+| `Hardfork` | Re-export of `voltaire.Hardfork` | `src/root.zig` |
+| `ForkTransition` | Re-export of `voltaire.ForkTransition` | `src/root.zig` |
+| `getOpName` | `fn (opcode: u8) []const u8` | `src/opcode.zig` |
+| `Dispatcher` | Instruction dispatcher type | `src/instructions/dispatcher.zig` |
+
+## Submodule namespaces
+
+`root.zig` also re-exports the underlying files as namespaces: `evm`, `frame`, `host`, `evm_config`, `call_params`, `call_result`, `errors`, `trace`, `opcode`, `dispatcher`.
+
+## What is NOT re-exported
+
+Primitive value types — `Address`, `ZERO_ADDRESS`, `GasConstants`, `AccessList`, `TraceConfig` — belong to `@import("voltaire")` (`voltaire_dep.module("primitives")`). Import `voltaire` directly when constructing addresses or access lists.

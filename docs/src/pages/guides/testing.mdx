@@ -1,0 +1,95 @@
+---
+title: Building & Testing
+description: Run unit tests, native trace checks, WASI WASM crypto regressions, and ethereum/tests execution-specs suites.
+---
+
+# Building & Testing
+
+Guillotine Mini separates fast native checks from the full `ethereum/tests` and `execution-spec-tests` validation suites so day-to-day iteration stays under a second.
+
+## Dependency layout
+
+`build.zig.zon` resolves `voltaire` (and its alias `guillotine_primitives`) from the sibling checkout `../voltaire`, pinned to the exact commit recorded in `native-dependencies.json`:
+
+```sh
+# Layout expected on disk:
+parent/
+├── guillotine-mini/
+└── voltaire/          # checked out at native-dependencies.json revision
+```
+
+## Fast checks (no submodules required)
+
+```sh
+zig build                 # Compile the EVM module and artifacts
+zig build test-trace      # Deterministic EIP-3155 native trace regression
+zig build native          # Static archive zig-out/lib/libguillotine_mini.a
+zig build wasm            # WASI Preview 1 reactor zig-out/bin/guillotine_mini.wasm
+zig build test-wasm       # Node 22+ WASM execution, revert, log, SHA256, BN254, BLS12-381 tests
+```
+
+## Unit tests
+
+```sh
+zig build unit            # Core EVM + client module unit tests
+zig build test            # Unit tests + default suite
+```
+
+Note on `zig build unit`: the core EVM tests in `src/` pass without external fixtures. Six tests in `client/trie/fixtures.zig` and `client/main.zig` read JSON fixtures from the optional `ethereum-tests/` submodule and will report `FileNotFound` unless that submodule is initialized.
+
+## Ethereum specification tests (`execution-specs`)
+
+### One-time fixture setup
+
+```sh
+git submodule update --init execution-specs
+uv --version              # uv manages the Python virtualenv for fixture generation
+```
+
+### Running spec suites
+
+```sh
+# Run all GeneralStateTests
+zig build specs
+
+# Run blockchain tests
+zig build specs-blockchain
+
+# Include consensus-layer Engine API tests (off by default)
+INCLUDE_ENGINE_TESTS=1 zig build specs
+
+# Filter by fork, EIP, opcode, or test name
+TEST_FILTER="push0" zig build specs
+TEST_FILTER="transientStorage" zig build specs
+TEST_FILTER="Osaka" zig build specs
+
+# Interactive watch runner
+zig build test-watch
+```
+
+### Granular per-fork and per-EIP targets
+
+`build.zig` generates dedicated steps for every major hardfork and EIP slice (for example `specs-frontier-*`, `specs-berlin-*`, `specs-shanghai-push0`, `specs-cancun-tstore-basic`, `specs-cancun-mcopy`, `specs-prague-bls-pairing`, `specs-prague-setcode-calls`, `specs-osaka-modexp-variable-gas`). List all active targets with:
+
+```sh
+zig build --help
+```
+
+## Debugging a spec divergence
+
+When a spec test fails, the runner automatically:
+1. Captures an EIP-3155 trace from Guillotine Mini.
+2. Captures a reference trace from Python `ethereum-spec-evm`.
+3. Runs `TraceDiff.compare()` and prints the first step where `pc`, `op`, `gas`, or `stack` diverged.
+
+To isolate a single failing test with full diagnostic output:
+
+```sh
+TEST_SEQUENTIAL=1 TEST_FILTER="exact_test_name" zig build specs
+```
+
+Or use the TypeScript isolation helper in `scripts/`:
+
+```sh
+bun scripts/isolate-test.ts "exact_test_name"
+```

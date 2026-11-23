@@ -1,0 +1,101 @@
+---
+title: Configuring & Extending
+description: Customize EVM limits at compile time with EvmConfig, override opcodes, and inject custom precompiles.
+---
+
+# Configuring & Extending
+
+`guillotine.Evm(config)` takes a compile-time `EvmConfig` struct and returns a specialized EVM type. Defaults match Ethereum mainnet limits; override them when modeling L2 chains, running fuzzers, or prototyping new EIPs.
+
+## Adjusting limits
+
+```zig
+const guillotine = @import("guillotine_mini");
+
+const CustomEvm = guillotine.Evm(.{
+    .stack_size = 1024,
+    .max_bytecode_size = 49_152,   // 48 KB instead of 24 KB
+    .max_initcode_size = 98_304,   // 96 KB instead of 48 KB
+    .block_gas_limit = 60_000_000,
+    .memory_limit = 0x1_FF_FFFF,   // ~32 MB
+    .max_call_depth = 1024,
+    .loop_quota = null,            // disable safety step cap even in Debug builds
+});
+```
+
+Two different `EvmConfig` values produce two distinct Zig types (`Evm(cfg_a) != Evm(cfg_b)`). Share a single `pub const AppEvm = guillotine.Evm(app_config);` alias across your codebase.
+
+## Adding a custom precompile
+
+Use `precompile_overrides` to add a precompile at a new address or replace a built-in precompile. Overrides are checked before built-in precompiles during both `CALL`/`STATICCALL` dispatch and top-level calls.
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+const voltaire = @import("voltaire");
+
+fn reverseBytes(
+    ctx: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    input: []const u8,
+    gas_limit: u64,
+) anyerror!guillotine.PrecompileOutput {
+    _ = ctx;
+    const cost: u64 = 100 + input.len * 10;
+    if (cost > gas_limit) {
+        return .{ .output = &.{}, .gas_used = gas_limit, .success = false };
+    }
+
+    const out = try allocator.alloc(u8, input.len);
+    for (input, 0..) |b, i| {
+        out[input.len - 1 - i] = b;
+    }
+    return .{ .output = out, .gas_used = cost, .success = true };
+}
+
+const MyEvm = guillotine.Evm(.{
+    .precompile_overrides = &.{
+        .{
+            .address = voltaire.Address.fromU256(0x1000),
+            .execute = reverseBytes,
+            .context = null,
+        },
+    },
+});
+```
+
+Allocate `output` from the `allocator` parameter (which is `vm.arena.allocator()`). It is freed automatically when `vm.deinit()` runs.
+
+## Overriding an opcode
+
+`opcode_overrides` lets you replace any opcode `0x00`–`0xFF` (including unassigned opcodes for EIP prototyping). Because `OpcodeOverride.handler` is type-erased as `*const anyopaque`, the function must match the exact signature `fn (*FrameType) FrameType.EvmError!void` for the `Frame` type produced by that config:
+
+```zig
+const config = guillotine.EvmConfig{
+    .opcode_overrides = &.{
+        .{
+            .opcode = 0xef,
+            .handler = @ptrCast(&customHandler),
+        },
+    },
+};
+```
+
+Inside `executeOpcode` (`src/frame.zig:385`), dispatch priority is:
+
+1. WASM `js_opcode_callback` (when running in WebAssembly and the JS callback returns non-zero)
+2. `config.opcode_overrides` (linear scan; keep the override list small)
+3. Built-in opcode `switch`
+
+## Loop quota safety guard
+
+`EvmConfig.loop_quota` bounds the maximum instructions executed per `Frame.execute()` call:
+
+- **`Debug` and `ReleaseSafe` default:** `1_000_000` steps — catches infinite loops during development instead of hanging.
+- **`ReleaseFast` and `ReleaseSmall` default:** `null` (disabled — relies solely on EVM gas metering).
+
+Set `.loop_quota = null` explicitly in debug tests that intentionally run long compute loops (such as large `MODEXP` or stress tests).
+
+## System contract flags
+
+Four boolean flags control system-contract hooks (`enable_beacon_roots`, `enable_historical_block_hashes`, `enable_validator_deposits`, `enable_validator_withdrawals`). All four default to `true`. Set them to `false` when running isolated EVM execution without block-level system contract state updates.

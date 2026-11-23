@@ -1,0 +1,91 @@
+---
+title: Hardforks & EIPs
+description: Select hardforks from Frontier through Osaka, handle runtime ForkTransition upgrades, and understand Hardfork.DEFAULT.
+---
+
+import { HardforkTimeline } from '../../components/InteractiveDiagrams'
+
+# Hardforks & EIPs
+
+Guillotine Mini implements Ethereum execution rules from **Frontier** through **Osaka**, using `Hardfork` and `ForkTransition` re-exported from Voltaire.
+
+<HardforkTimeline />
+
+## Selecting a hardfork
+
+Always pass the hardfork explicitly as the third argument to `vm.init()`:
+
+```zig
+var vm: Evm = undefined;
+try vm.init(
+    allocator,
+    host,
+    .OSAKA, // explicit fork
+    block_ctx,
+    origin,
+    gas_price,
+    null,
+);
+defer vm.deinit();
+```
+
+:::warning[Passing `null` ignores `EvmConfig.hardfork`]
+In `src/evm.zig:150`, `vm.init()` writes:
+
+```zig
+.hardfork = hardfork orelse Hardfork.DEFAULT,
+```
+
+`Hardfork.DEFAULT` is currently **`.PRAGUE`**. Passing `null` selects `.PRAGUE` even if `EvmConfig.hardfork` was set to `.BERLIN` or `.CANCUN`. Pass the desired fork explicitly and verify with `vm.getActiveFork()`.
+:::
+
+## Comparing forks in custom handlers
+
+`Hardfork` provides total ordering helpers:
+
+```zig
+const fork = vm.getActiveFork();
+
+if (fork.isAtLeast(.SHANGHAI)) {
+    // PUSH0 (0x5f) and warm coinbase (EIP-3651) are active
+}
+if (fork.isBefore(.BERLIN)) {
+    // No EIP-2929 warm/cold distinction
+}
+```
+
+Available comparison methods: `isAtLeast`, `isBefore`, `isAfter`, `isEqual`, `gte`, `lt`, `compare`, `toInt`.
+
+## Runtime fork transitions
+
+For multi-block tests or chain simulations that cross an upgrade boundary, assign `vm.fork_transition`:
+
+```zig
+vm.fork_transition = guillotine.ForkTransition.fromString("ShanghaiToCancunAtTime15000");
+
+// Evaluates against vm.block_context.block_number / block_timestamp
+const active = vm.getActiveFork();
+```
+
+When `fork_transition` is `null` (the default), `getActiveFork()` returns `vm.hardfork`.
+
+## Precompile activation by fork
+
+| Address | Name | Active from |
+| --- | --- | --- |
+| `0x01` | `ECRECOVER` | Frontier |
+| `0x02` | `SHA256` | Frontier |
+| `0x03` | `RIPEMD160` | Frontier |
+| `0x04` | `IDENTITY` | Frontier |
+| `0x05` | `MODEXP` | Byzantium (repriced Berlin EIP-2565, Osaka EIP-7823/7883) |
+| `0x06` | `ECADD` (BN254) | Byzantium (repriced Istanbul) |
+| `0x07` | `ECMUL` (BN254) | Byzantium (repriced Istanbul) |
+| `0x08` | `ECPAIRING` (BN254) | Byzantium (repriced Istanbul) |
+| `0x09` | `BLAKE2F` | Istanbul |
+| `0x0A` | `POINT_EVALUATION` (KZG) | Cancun (EIP-4844) |
+| `0x0B`–`0x13` | `BLS12-381` suite | Prague (EIP-2537; pre-warmed `0x01`–`0x13`) |
+| `0x0100` | `P256VERIFY` | Osaka (EIP-7951; pre-warmed at tx start) |
+
+## Hardfork string parsing (C / WASM API)
+
+`evm_create(name, len, log_level)` parses `Hardfork.fromString()` case-insensitively (e.g., `"cancun"`, `"CANCUN"`, `"prague"`, `"osaka"`). Passing `len = 0` selects `Hardfork.DEFAULT` (`.PRAGUE`).

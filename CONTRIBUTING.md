@@ -30,6 +30,10 @@ cd scripts && bun install && cd -
 # Build library + modules
 zig build
 
+# Run unit tests and trace regression
+zig build unit
+zig build test-trace
+
 # Run all tests (unit + spec tests)
 zig build test
 
@@ -39,10 +43,16 @@ zig build specs
 # Interactive runner
 zig build test-watch
 
+# Build native static library for C FFI
+zig build native
+
 # Build and exercise the WASM artifact (Node 22+ for tests)
 rustup target add wasm32-unknown-unknown
 zig build wasm
 zig build test-wasm
+
+# Build the documentation site (Vocs)
+cd docs && npm ci && npm run build && cd -
 ```
 
 ## Running Spec Subsets (fast iteration)

@@ -1,0 +1,26 @@
+---
+title: Opcode & Gas Explorer
+description: Step through EVM bytecode one instruction at a time and watch the stack, memory, storage, and gas move.
+---
+
+import { OpcodeStepper } from '../components/OpcodeStepper'
+
+# Opcode & Gas Explorer
+
+Guillotine Mini's interpreter loops over one opcode at a time: decode, check stack bounds, charge gas, mutate the frame. This explorer runs that same loop in your browser so you can watch every byte and every gas unit move.
+
+Pick a preset or paste your own hex bytecode, then click **Step**. The highlighted row is the current program counter (`PC`); the right pane shows the live frame state.
+
+<OpcodeStepper />
+
+## What this explorer models
+
+- **256-bit stack, word-aligned memory, and slot storage** — memory expands in 32-byte words and storage tracks warm/cold slots.
+- **Dynamic gas** — quadratic memory expansion ($3w + \lfloor w^2/512 \rfloor$), per-byte `EXP` surcharges, and EIP-2929 cold/warm `SLOAD` and `SSTORE`.
+- **Real `JUMPDEST` analysis** — `0x5b` bytes inside `PUSH` immediates are rejected as jump targets, matching `src/bytecode.zig`.
+
+## What it omits
+
+This widget is a visual reading aid, not a consensus engine. It covers arithmetic, comparison, bitwise, stack, memory, storage, jumps, and halting opcodes — it does not execute `KECCAK256`, environment/block opcodes, nested `CALL`/`CREATE`, precompiles, or gas refunds.
+
+To run full consensus execution over the same bytecode, see [Tutorial 1: Your First Contract Call](/tutorials/first-call) or [Tutorial 4: Running in WebAssembly](/tutorials/webassembly).

@@ -1,0 +1,103 @@
+---
+title: Calls, Delegatecall & Create
+description: All six CallParams variants, the 63/64 gas forwarding rule, CREATE/CREATE2 address derivation, and EIP-6780 SELFDESTRUCT.
+---
+
+import { CallLifecycleDiagram } from '../../components/Diagrams'
+
+# Calls, Delegatecall & Create
+
+`Evm.call()` accepts a 6-variant tagged union (`Evm.CallParams`) covering every Ethereum message call and contract creation mode.
+
+<CallLifecycleDiagram />
+
+## The six call shapes
+
+| Variant | Code executed from | Storage & `ADDRESS` | `CALLER` (`msg.sender`) | `VALUE` (`msg.value`) | State writes |
+| --- | --- | --- | --- | --- | --- |
+| `.call` | `to` | `to` | `caller` | `value` | Allowed |
+| `.callcode` | `to` | `caller` | `caller` | `value` | Allowed |
+| `.delegatecall` | `to` | parent frame | parent's `caller` | parent's `value` | Allowed |
+| `.staticcall` | `to` | `to` | `caller` | `0` (no `value` field) | Forbidden |
+| `.create` | `init_code` | new address | `caller` | `value` | Allowed |
+| `.create2` | `init_code` | new address | `caller` | `value` | Allowed |
+
+### Regular call vs static call
+
+```zig
+// State-changing call
+const res = vm.call(.{ .call = .{
+    .caller = alice,
+    .to = contract,
+    .value = 0,
+    .input = calldata,
+    .gas = 200_000,
+} });
+
+// Read-only call (SSTORE, TSTORE, LOG0-4, CREATE, CREATE2, SELFDESTRUCT, value-bearing CALL all fail)
+const view = vm.call(.{ .staticcall = .{
+    .caller = alice,
+    .to = contract,
+    .input = calldata,
+    .gas = 50_000,
+} });
+```
+
+## Contract creation (`CREATE` and `CREATE2`)
+
+Pass initialization bytecode in `init_code`. The EVM executes `init_code` as a frame, validates the returned runtime bytes, charges the code-deposit fee (`200 * runtime.len` gas), installs the runtime code at the derived address, and sets `result.created_address`.
+
+```zig
+// Init code that deploys 1 byte of runtime code (0x00 = STOP):
+// PUSH1 0x00  PUSH1 0x00  MSTORE8  PUSH1 0x01  PUSH1 0x00  RETURN
+const init_code = [_]u8{ 0x60, 0x00, 0x60, 0x00, 0x53, 0x60, 0x01, 0x60, 0x00, 0xf3 };
+
+// CREATE: address = keccak256(rlp([caller, nonce]))[12..]
+const created = vm.call(.{ .create = .{
+    .caller = alice,
+    .value = 0,
+    .init_code = &init_code,
+    .gas = 200_000,
+} });
+
+// CREATE2: address = keccak256(0xff ++ caller ++ salt ++ keccak256(init_code))[12..]
+const created2 = vm.call(.{ .create2 = .{
+    .caller = alice,
+    .value = 0,
+    .init_code = &init_code,
+    .salt = 0x1234,
+    .gas = 200_000,
+} });
+```
+
+You can precompute either address without executing bytecode:
+
+```zig
+const addr1 = try vm.computeCreateAddress(alice, nonce);
+const addr2 = try vm.computeCreate2Address(alice, salt, &init_code);
+```
+
+### Creation rules enforced by fork
+
+| Rule | Fork | Limit / Effect |
+| --- | --- | --- |
+| Max initcode length (EIP-3860) | Shanghai+ | `49,152` bytes (48 KB); `+2` gas per 32-byte word (`+6`/word extra for `CREATE2` keccak) |
+| Max deployed runtime code (EIP-170) | Spurious Dragon+ | `24,576` bytes (24 KB) |
+| Banned `0xEF` prefix (EIP-3541) | London+ | Runtime code starting with `0xEF` fails creation and consumes gas |
+| Collision check (EIP-684 / EIP-7610) | All | Fails if target address already has non-zero nonce, code, or storage |
+| Code deposit out-of-gas (EIP-2) | Homestead+ | Entire creation fails instead of deploying empty code |
+
+## Nested call mechanics (`inner_call`)
+
+When bytecode executes `CALL`, `CALLCODE`, `DELEGATECALL`, or `STATICCALL`, `Frame` delegates to `Evm.inner_call()`:
+
+1. **Depth limit:** Call depth starts at `0` for the top-level frame and fails softly (pushes `0` on the caller stack, returns forwarded gas) once depth exceeds `config.max_call_depth` (`1024`).
+2. **63/64 rule (EIP-150, Tangerine Whistle+):** A nested call receives at most `available - available / 64` of the caller's remaining gas. At least 1/64 stays with the caller.
+3. **2,300 gas stipend:** Value-bearing `CALL` adds a 2,300 gas stipend to the callee on top of forwarded gas so simple fallback receivers can run.
+4. **Copy-on-write rollback:** Before entering the child frame, `Evm` pushes snapshots for storage, balances, nonces, code, warm access sets, and log length. On `REVERT` or error, all of them unwind; on `STOP`/`RETURN`, snapshots commit into the parent frame.
+5. **EIP-7702 delegation (Prague+):** If the target account's code is the 23-byte delegation designator `0xEF0100 || delegate_address`, `vm.get_code()` resolves and executes the delegate's bytecode while preserving the target account's address and storage.
+
+## `SELFDESTRUCT` and EIP-6780
+
+- **Pre-Cancun:** Transfers remaining balance to the beneficiary and schedules the contract for deletion at the end of the transaction. Pre-London, grants a `24,000` gas refund (removed in London by EIP-3529).
+- **Cancun+ (EIP-6780):** Always transfers the contract's balance to the beneficiary, but **only deletes code, nonce, and storage if the contract was created in the same transaction** (`created_accounts.contains(address)`). If the contract targets itself as beneficiary in a later transaction, its balance is preserved; if created in the same transaction and self-targeting, its balance is burned.

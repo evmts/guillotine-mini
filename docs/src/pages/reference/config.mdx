@@ -1,0 +1,96 @@
+---
+title: EvmConfig & HostInterface
+description: Every field and default of EvmConfig, override structs, and HostInterface.VTable.
+---
+
+# `EvmConfig` & `HostInterface`
+
+## `EvmConfig`
+
+Defined in `src/evm_config.zig`. Passed at compile time to `Evm(config)` and `Frame(config)`.
+
+| Field | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `hardfork` | `Hardfork` | `Hardfork.DEFAULT` (`.PRAGUE`) | Compile-time default fork (overridden by `vm.init()` hardfork arg; passing `null` to `init()` uses `Hardfork.DEFAULT`) |
+| `stack_size` | `u12` | `1024` | Maximum operand stack depth |
+| `max_bytecode_size` | `u32` | `24576` | EIP-170 runtime bytecode limit (24 KB) |
+| `max_initcode_size` | `u32` | `49152` | EIP-3860 initcode limit (48 KB) |
+| `block_gas_limit` | `u64` | `30_000_000` | Default `BlockContext.block_gas_limit` |
+| `memory_initial_capacity` | `usize` | `4096` | Initial memory sizing hint |
+| `memory_limit` | `u64` | `0xFFFFFF` (~16.7 MB) | Maximum addressable memory per frame |
+| `max_call_depth` | `u16` | `1024` | Maximum nested call depth |
+| `opcode_overrides` | `[]const OpcodeOverride` | `&.{}` | Custom native opcode handlers |
+| `precompile_overrides` | `[]const PrecompileOverride` | `&.{}` | Custom or replaced precompiles |
+| `loop_quota` | `?u32` | `1_000_000` (Debug/ReleaseSafe), `null` (ReleaseFast/Small) | Maximum opcodes per `Frame.execute()` before safety failure |
+| `enable_beacon_roots` | `bool` | `true` | EIP-4788 system contract update flag |
+| `enable_historical_block_hashes` | `bool` | `true` | EIP-2935 system contract update flag |
+| `enable_validator_deposits` | `bool` | `true` | EIP-6110 deposit system contract flag |
+| `enable_validator_withdrawals` | `bool` | `true` | EIP-7002 withdrawal system contract flag |
+
+### Override structs
+
+```zig
+pub const OpcodeOverride = struct {
+    opcode: u8,
+    handler: *const anyopaque, // *const fn (*FrameType) EvmError!void
+};
+
+pub const PrecompileOverride = struct {
+    address: Address,
+    execute: *const fn (
+        ctx: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        input: []const u8,
+        gas_limit: u64,
+    ) anyerror!PrecompileOutput,
+    context: ?*anyopaque = null,
+};
+
+pub const PrecompileOutput = struct {
+    output: []const u8,
+    gas_used: u64,
+    success: bool,
+};
+```
+
+---
+
+## `HostInterface`
+
+Defined in `src/host.zig`. Type-erased vtable for external state storage.
+
+```zig
+pub const HostInterface = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        // Required (8)
+        getBalance: *const fn (ptr: *anyopaque, address: Address) u256,
+        setBalance: *const fn (ptr: *anyopaque, address: Address, balance: u256) void,
+        getCode:    *const fn (ptr: *anyopaque, address: Address) []const u8,
+        setCode:    *const fn (ptr: *anyopaque, address: Address, code: []const u8) void,
+        getStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256) u256,
+        setStorage: *const fn (ptr: *anyopaque, address: Address, slot: u256, value: u256) void,
+        getNonce:   *const fn (ptr: *anyopaque, address: Address) u64,
+        setNonce:   *const fn (ptr: *anyopaque, address: Address, nonce: u64) void,
+
+        // Optional (3) — defaults provided by wrapper methods when null
+        accountExists:     ?*const fn (ptr: *anyopaque, address: Address) bool = null,
+        accountHasStorage: ?*const fn (ptr: *anyopaque, address: Address) bool = null,
+        deleteAccount:     ?*const fn (ptr: *anyopaque, address: Address) void = null,
+    };
+};
+```
+
+### Fallback behavior when optional pointers are `null`
+
+| Method | Fallback when `null` |
+| --- | --- |
+| `accountExists(addr)` | `getBalance(addr) != 0 or getNonce(addr) != 0 or getCode(addr).len != 0` |
+| `accountHasStorage(addr)` | `false` |
+| `deleteAccount(addr)` | Sets balance to `0`, code to `&.{}`, nonce to `0` |
+
+### Ownership rule for `setCode`
+
+The `code` slice passed to `setCode` may reside in `vm.arena`. Implementations whose lifetime exceeds `vm.deinit()` must duplicate the slice.

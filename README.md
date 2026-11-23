@@ -106,24 +106,37 @@ views after allocations or EVM calls because WebAssembly memory may grow.
 Call `evm_destroy(handle)` when finished with an instance. See the complete
 [Node example](examples/wasm.mjs) and [execution regression tests](test/wasm.test.mjs).
 
+## Architecture
+
+```mermaid
+flowchart TB
+  C["Caller · vm.call(CallParams) / root_c.zig"] --> E["Evm(config) · src/evm.zig\nStorage · AccessList · Snapshots · Refunds · Arena"]
+  E --> F["Frame(config) · src/frame.zig\n1024-slot Stack · Sparse Memory · PC · JUMPDEST Bitmap"]
+  E -. "optional vtable" .-> H["HostInterface · src/host.zig\nExternal Balances · Code · Nonces · Storage"]
+  F --> V["Voltaire · primitives, crypto (BN254, BLS12-381, KZG), precompiles"]
+  E --> V
+```
+
 ## Docs
 
+- **Documentation site (`docs/`):** [mini.tevm.sh](https://mini.tevm.sh) — architecture, Head First–style tutorials, interactive opcode stepper, and K&R API reference (`cd docs && npm ci && npm run dev`)
+- `CONTRIBUTING.md` — setup, test suites, and contribution workflow
+- `NATIVE_RELEASE.md` — native ZEVM embedding notes
 - `CLAUDE.md` — project guide for devs and AI assistants
-- `CONTRIBUTING.md` — setup and contribution workflow
-- `src/precompiles/CLAUDE.md` — precompile docs
 
 ## Highlights
 
 - Full hardfork support (Frontier → Osaka)
-- 20+ EIPs implemented
-- EIP-3155 tracing
-- WASM target with linked crypto precompiles (WASI Preview 1)
-- 100% ethereum/tests coverage
+- 20+ EIPs implemented (EIP-1153, EIP-2537, EIP-4844, EIP-6780, EIP-7702, EIP-7939 `CLZ`, EIP-7951 `P256VERIFY`)
+- Bounded EIP-3155 tracing (`Tracer.max_entries`) and `TraceDiff`
+- WASI Preview 1 WASM reactor with linked crypto precompiles (`zig build wasm`)
+- Flat C ABI static archive (`zig build native`)
 
 ## More
 
-- Primitives library: https://github.com/evmts/primitives
+- Voltaire (primitives & crypto): https://github.com/evmts/voltaire
 - Guillotine (full client): https://github.com/evmts/guillotine
+- Tevm (TypeScript tooling): https://tevm.sh
 
 ## License
 

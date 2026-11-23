@@ -1,0 +1,41 @@
+---
+title: The Tevm Stack
+description: Where Guillotine Mini sits relative to Voltaire, Guillotine, Tevm, and ZEVM.
+---
+
+import { TevmStackDiagram } from '../components/Diagrams'
+
+# The Tevm Stack
+
+Guillotine Mini is one layer in a small family of Ethereum libraries built around shared Zig primitives.
+
+<TevmStackDiagram />
+
+## Layer by layer
+
+- **[Voltaire](https://voltaire.tevm.sh)** — Ethereum primitives and cryptography in Zig: `Address`, `Hardfork`, `GasConstants`, `AccessList`, `Log`, RLP, Keccak256, secp256k1, BN254, BLS12-381, KZG, and precompiles. Guillotine Mini imports Voltaire directly rather than duplicating value types.
+- **Guillotine Mini (this project)** — The readable, spec-first EVM engine. Give it bytecode, state, and a `BlockContext`; it returns gas, output, logs, state changes, and optional EIP-3155 traces. It does not parse blocks, verify transaction signatures, or speak devp2p.
+- **[Guillotine](https://guillotine.tevm.sh)** — The full Ethereum execution client built on top of this engine (database, Merkle Patricia Trie, world state journal, block processor, txpool, JSON-RPC, Engine API, devp2p, sync). In-progress client modules live in `client/` and `client-ts/`.
+- **[Tevm](https://tevm.sh)** — TypeScript Ethereum tooling (in-process EVM for Node and browsers, Solidity bundler, viem/ethers bindings). Consumes Guillotine Mini via the C ABI and WASI WebAssembly reactor.
+- **[ZEVM](https://zevm.tevm.sh)** — A performance-oriented sibling EVM in Zig. Guillotine Mini prioritizes clarity and direct correspondence to `execution-specs`; ZEVM prioritizes throughput and embeds Guillotine Mini directly as a trace oracle.
+
+## Which tool should I use?
+
+| Goal | Use |
+| --- | --- |
+| Embed a readable, spec-first EVM in Zig | **Guillotine Mini** |
+| Run EVM bytecode from Node 22+ with zero npm dependencies | **Guillotine Mini** (`zig build wasm`) |
+| Drive an EVM from C, Rust, Go, or Python | **Guillotine Mini** (`zig build native`) |
+| Full TypeScript DX (viem/ethers, Solidity imports) | **Tevm** |
+| Use Ethereum types, RLP, or crypto primitives in Zig | **Voltaire** |
+| Run a full execution client (blocks, RPC, Engine API) | **Guillotine** |
+| Optimize for maximum execution throughput | **ZEVM** |
+
+## Authoritative specifications
+
+When documentation, intuition, and the Yellow Paper disagree, Guillotine Mini follows this order:
+
+1. [`ethereum/execution-specs`](https://github.com/ethereum/execution-specs) and the [EIPs](https://eips.ethereum.org) — EVM execution and state-transition truth
+2. [`ethereum/tests`](https://github.com/ethereum/tests) and [`execution-spec-tests`](https://github.com/ethereum/execution-spec-tests) — conformance fixtures
+3. [`ethereum/execution-apis`](https://github.com/ethereum/execution-apis) — JSON-RPC and Engine API
+4. [`ethereum/devp2p`](https://github.com/ethereum/devp2p) — networking wire formats

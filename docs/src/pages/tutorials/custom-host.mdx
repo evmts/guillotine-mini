@@ -1,0 +1,231 @@
+---
+title: "Tutorial 3: Building a Custom Host"
+description: Implement HostInterface.VTable in Zig, run a multi-contract CALL with ETH transfer, and watch a nested REVERT roll back state automatically.
+---
+
+import {
+  MentalModel,
+  WatchOut,
+  DumbQuestions,
+  TraceExercise,
+} from '../../components/HeadFirst'
+
+# 3. Building a Custom Host
+
+In [Tutorial 2](/tutorials/state-and-snapshots), you hit the limit of `host = null`: internal maps reset at the start of every `vm.call()`, so you cannot pre-fund accounts, keep storage across transactions, or call from Contract A into Contract B.
+
+The solution is **`HostInterface`** (`src/host.zig`) — a tiny type-erased vtable (`ptr` + `*const VTable`) that connects Guillotine Mini to whatever state store you want: a HashMap, SQLite, RocksDB, a Merkle Patricia Trie, or an RPC fork cache.
+
+In this tutorial, you will build a complete `MemoryHost`, fund Alice with 10 ETH, deploy Contract A and Contract B, and watch Contract A call Contract B with value — first succeeding, then reverting!
+
+<MentalModel title="What HostInterface does — and does NOT do">
+`HostInterface` is **purely a state key-value backend**: balances, code, nonces, storage, plus three optional hooks (`accountExists`, `accountHasStorage`, `deleteAccount`).
+
+It does **not** handle nested calls (`CALL`, `DELEGATECALL`, `CREATE`). `Evm.inner_call()` and `Evm.inner_create()` handle all call orchestration, gas forwarding, and snapshot rollbacks automatically — and replay the restored values back through your host's `setBalance` / `setStorage` / `setCode` / `setNonce` on revert!
+</MentalModel>
+
+## Step 1: Implement `MemoryHost`
+
+Only **8 vtable functions** are required; the 3 optional pointers default to sensible fallbacks when left `null`:
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+const voltaire = @import("voltaire");
+const Address = voltaire.Address;
+const StorageKey = guillotine.StorageKey;
+
+pub const MemoryHost = struct {
+    allocator: std.mem.Allocator,
+    balances: std.AutoHashMap(Address, u256),
+    nonces: std.AutoHashMap(Address, u64),
+    code: std.AutoHashMap(Address, []const u8),
+    storage: std.AutoHashMap(StorageKey, u256),
+
+    pub fn init(allocator: std.mem.Allocator) MemoryHost {
+        return .{
+            .allocator = allocator,
+            .balances = std.AutoHashMap(Address, u256).init(allocator),
+            .nonces = std.AutoHashMap(Address, u64).init(allocator),
+            .code = std.AutoHashMap(Address, []const u8).init(allocator),
+            .storage = std.AutoHashMap(StorageKey, u256).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *MemoryHost) void {
+        self.balances.deinit();
+        self.nonces.deinit();
+        self.code.deinit();
+        self.storage.deinit();
+    }
+
+    pub fn hostInterface(self: *MemoryHost) guillotine.HostInterface {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    const vtable = guillotine.HostInterface.VTable{
+        .getBalance = getBalance,
+        .setBalance = setBalance,
+        .getCode = getCode,
+        .setCode = setCode,
+        .getStorage = getStorage,
+        .setStorage = setStorage,
+        .getNonce = getNonce,
+        .setNonce = setNonce,
+        // Optional hooks: accountExists, accountHasStorage, deleteAccount
+    };
+
+    fn fromPtr(ptr: *anyopaque) *MemoryHost {
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    fn getBalance(ptr: *anyopaque, addr: Address) u256 {
+        return fromPtr(ptr).balances.get(addr) orelse 0;
+    }
+    fn setBalance(ptr: *anyopaque, addr: Address, bal: u256) void {
+        fromPtr(ptr).balances.put(addr, bal) catch @panic("oom");
+    }
+    fn getCode(ptr: *anyopaque, addr: Address) []const u8 {
+        return fromPtr(ptr).code.get(addr) orelse &.{};
+    }
+    fn setCode(ptr: *anyopaque, addr: Address, bytes: []const u8) void {
+        const self = fromPtr(ptr);
+        const owned = self.allocator.dupe(u8, bytes) catch @panic("oom");
+        self.code.put(addr, owned) catch @panic("oom");
+    }
+    fn getStorage(ptr: *anyopaque, addr: Address, slot: u256) u256 {
+        return fromPtr(ptr).storage.get(.{ .address = addr.bytes, .slot = slot }) orelse 0;
+    }
+    fn setStorage(ptr: *anyopaque, addr: Address, slot: u256, val: u256) void {
+        fromPtr(ptr).storage.put(.{ .address = addr.bytes, .slot = slot }, val) catch @panic("oom");
+    }
+    fn getNonce(ptr: *anyopaque, addr: Address) u64 {
+        return fromPtr(ptr).nonces.get(addr) orelse 0;
+    }
+    fn setNonce(ptr: *anyopaque, addr: Address, nonce: u64) void {
+        fromPtr(ptr).nonces.put(addr, nonce) catch @panic("oom");
+    }
+};
+```
+
+<WatchOut title="Always copy code bytes in setCode!">
+When a contract deploys bytecode via `CREATE` or `CREATE2`, the `bytes` slice passed to `setCode` lives inside `vm.arena`. If your host stores the slice pointer without duplicating it (`self.allocator.dupe(u8, bytes)`), it becomes a dangling pointer the moment `vm.deinit()` runs!
+</WatchOut>
+
+## Step 2: Contract A calls Contract B with 1 ETH
+
+Now let's wire up two contracts:
+- **Contract B (`0x200`):** Stores `0x77` in slot `0` and returns `42`.
+- **Contract A (`0x100`):** Calls Contract B, forwarding `1 wei` and copying B's 32-byte return value into memory, then returns it.
+
+```zig
+var host = MemoryHost.init(allocator);
+defer host.deinit();
+
+const alice = Address.fromU256(0xa11ce);
+const addr_a = Address.fromU256(0x100);
+const addr_b = Address.fromU256(0x200);
+
+// Fund Alice and Contract A
+try host.balances.put(alice, 10_000);
+try host.balances.put(addr_a, 500);
+
+// Contract B: SSTORE(0, 0x77); RETURN 42
+const code_b = [_]u8{
+    0x60, 0x77, 0x60, 0x00, 0x55,       // SSTORE(slot 0, 0x77)
+    0x60, 0x2a, 0x60, 0x00, 0x52,       // MSTORE(0, 42)
+    0x60, 0x20, 0x60, 0x00, 0xf3,       // RETURN(0, 32)
+};
+try host.code.put(addr_b, &code_b);
+
+// Contract A: CALL(gas=50_000, to=0x200, value=100, in=0..0, out=0..32) then RETURN(0, 32)
+const code_a = [_]u8{
+    0x60, 0x20,       // retSize = 32
+    0x60, 0x00,       // retOffset = 0
+    0x60, 0x00,       // argsSize = 0
+    0x60, 0x00,       // argsOffset = 0
+    0x60, 0x64,       // value = 100 wei
+    0x61, 0x02, 0x00, // to = 0x0200 (Contract B)
+    0x61, 0xc3, 0x50, // gas = 50,000
+    0xf1,             // CALL (pushes 1 on success, 0 on revert)
+    0x50,             // POP call status
+    0x60, 0x20,       // return length = 32
+    0x60, 0x00,       // return offset = 0
+    0xf3,             // RETURN
+};
+try host.code.put(addr_a, &code_a);
+
+const Evm = guillotine.Evm(.{});
+var vm: Evm = undefined;
+try vm.init(allocator, host.hostInterface(), .CANCUN, null, alice, 0, null);
+defer vm.deinit();
+
+const res = vm.call(.{ .call = .{
+    .caller = alice,
+    .to = addr_a,
+    .value = 1_000,
+    .input = &.{},
+    .gas = 200_000,
+} });
+```
+
+After `vm.call()` returns, inspect `host` directly:
+
+| Account / Slot | Before `call()` | After `call()` | Why |
+| --- | --- | --- | --- |
+| `alice` balance | `10,000` | `9,000` | Sent 1,000 wei to Contract A |
+| `addr_a` balance | `500` | `1,400` | `+1,000` from Alice, `-100` to Contract B |
+| `addr_b` balance | `0` | `100` | Received 100 wei from Contract A |
+| `addr_b` slot `0` | `0` | `0x77` | Committed `SSTORE` |
+| `res.output` | — | `42` | Forwarded from B → A → caller |
+
+## Step 3: Now make Contract B revert!
+
+Change the last byte of `code_b` from `0xf3` (`RETURN`) to `0xfd` (`REVERT`) and run the exact same call.
+
+- Contract B still ran `SSTORE(0, 0x77)` and received `100 wei` from A.
+- Then `REVERT` fired. `Evm.inner_call()` restored the balance and storage snapshots back through your `MemoryHost`.
+- Contract A received `0` on its stack from `CALL`, ignored it (via `POP`), and returned cleanly!
+
+Now check `host`:
+- `alice` balance: **`9,000`** (Contract A succeeded!)
+- `addr_a` balance: **`1,500`** (the 100 wei sent to B was rolled back!)
+- `addr_b` balance: **`0`**
+- `addr_b` slot `0`: **`0`** (B's `SSTORE` was rolled back!)
+
+<TraceExercise
+  title="Trace It Yourself: When do you need the 3 optional vtable pointers?"
+  prompt={
+    <p>
+      In <code>MemoryHost</code> above, we left <code>accountExists</code>, <code>accountHasStorage</code>, and{' '}
+      <code>deleteAccount</code> as <code>null</code>. Name one EVM edge case where leaving <code>accountExists = null</code>{' '}
+      produces the wrong result on a pre-Spurious-Dragon fork!
+    </p>
+  }
+  answer={
+    <p>
+      Before Spurious Dragon (EIP-161), empty accounts (<code>balance == 0, nonce == 0, code.len == 0</code>) could exist in the
+      state trie. The default fallback in <code>src/host.zig</code> treats an account as existing iff{' '}
+      <code>balance != 0 or nonce != 0 or code.len != 0</code> — which is right for Spurious Dragon onward, but cannot distinguish
+      an empty existing account from a non-existent account on Frontier/Homestead. Similarly, implementing{' '}
+      <code>accountHasStorage</code> matters for EIP-7610 create-collision checks on accounts that have storage but zero nonce and empty code.
+    </p>
+  }
+/>
+
+<DumbQuestions
+  items={[
+    {
+      q: 'What if my storage lives behind an async database or HTTP RPC — can HostInterface return a Promise?',
+      a: 'Zig vtable functions are synchronous. For async backends (Postgres, JSON-RPC, Cloudflare Workers), use the yield/resume async storage injector protocol instead — see C FFI & Async State Injection.',
+    },
+    {
+      q: 'Why does the vtable take *anyopaque instead of a generic comptime Host type?',
+      a: 'Type erasure keeps Evm(config) from monomorphizing a whole new EVM binary for every host implementation (test hosts, DB hosts, fork hosts).',
+    },
+  ]}
+/>
+
+## Next
+
+Want to drive Guillotine Mini from JavaScript or TypeScript without writing a line of Zig? Jump to **[Tutorial 4: Running in WebAssembly](/tutorials/webassembly)**.

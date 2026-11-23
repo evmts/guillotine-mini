@@ -1,0 +1,223 @@
+---
+title: "Tutorial 4: Running in WebAssembly"
+description: Build the WASI Preview 1 WASM reactor with linked crypto precompiles, run EVM bytecode from Node 22+, and plug in custom JS precompiles.
+---
+
+import { WasmBoundaryDiagram } from '../../components/Diagrams'
+import {
+  MentalModel,
+  WatchOut,
+  DumbQuestions,
+  TraceExercise,
+} from '../../components/HeadFirst'
+
+# 4. Running in WebAssembly
+
+You do not need a native Zig binary to run Guillotine Mini. `zig build wasm` compiles the entire EVM — **including Voltaire's Rust crypto precompiles (SHA256, BN254 pairing, BLS12-381, KZG)** — into a single **WASI Preview 1 reactor** (`zig-out/bin/guillotine_mini.wasm`) that runs in Node 22+ with zero npm dependencies.
+
+<WasmBoundaryDiagram />
+
+## Step 1: Build and test the WASM reactor
+
+Install the Rust WASM target once, build the module, and run the built-in Node regression suite:
+
+```sh
+rustup target add wasm32-unknown-unknown
+zig build wasm
+zig build test-wasm
+node examples/wasm.mjs
+```
+
+Expected output from `node examples/wasm.mjs`:
+
+```text
+Output: 0x000000000000000000000000000000000000000000000000000000000000002a
+Gas used: 18
+```
+
+## Step 2: Understand the reactor handshake
+
+<MentalModel title="Why a WASI reactor — and why WASI.initialize(instance)?">
+A WASI **command** exports `_start()`, runs `main()`, and exits. A WASI **reactor** exports `_initialize()` instead: you initialize it once, and then call its exported C ABI functions (`evm_create`, `evm_execute`, `evm_destroy`, …) as many times as you like.
+
+On Node 22+, `wasi.initialize(instance)` calls `_initialize()` for you. In a browser or Cloudflare Worker, supply a WASI Preview 1 shim and call `instance.exports._initialize()` once before calling any `evm_*` export.
+</MentalModel>
+
+Every WASM instance expects exactly two non-WASI imports under `env`:
+- `js_opcode_callback` — return `0` to use the built-in Zig opcode handler.
+- `js_precompile_callback` — return `0` to use the built-in Zig/Rust precompile.
+
+No JavaScript crypto callbacks are required.
+
+## Step 3: Walk through a complete Node 22+ host
+
+This is the real pattern from [`examples/wasm.mjs`](https://github.com/evmts/guillotine-mini/blob/main/examples/wasm.mjs):
+
+```js
+import { readFile } from 'node:fs/promises'
+import { WASI } from 'node:wasi'
+
+const bytes = await readFile('./zig-out/bin/guillotine_mini.wasm')
+const wasi = new WASI({ version: 'preview1' })
+
+const { instance } = await WebAssembly.instantiate(bytes, {
+  wasi_snapshot_preview1: wasi.wasiImport,
+  env: {
+    js_opcode_callback: () => 0,
+    js_precompile_callback: () => 0,
+  },
+})
+
+// Initialize the WASI reactor once
+wasi.initialize(instance)
+const api = instance.exports
+
+// Track host transfer allocations so finally{} frees everything cleanly
+const buffers = []
+function alloc(data) {
+  const ptr = api.evm_alloc(data.length)
+  if (!ptr) throw new Error('WASM allocation failed')
+  // IMPORTANT: construct a fresh Uint8Array view after every evm_alloc!
+  new Uint8Array(api.memory.buffer, ptr, data.length).set(data)
+  buffers.push([ptr, data.length])
+  return ptr
+}
+
+let handle = 0
+try {
+  const fork = new TextEncoder().encode('prague')
+  handle = api.evm_create(alloc(fork), fork.length, 0)
+  if (!handle) throw new Error('evm_create failed')
+
+  // Address 0x0100 (outside precompile range on Prague)
+  const addressBytes = new Uint8Array(20)
+  addressBytes[18] = 1
+  const address = alloc(addressBytes)
+  const zero32 = alloc(new Uint8Array(32))
+
+  // PUSH1 42; PUSH1 0; MSTORE; PUSH1 32; PUSH1 0; RETURN
+  const code = Uint8Array.from([0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3])
+  if (!api.evm_set_bytecode(handle, alloc(code), code.length)) {
+    throw new Error('evm_set_bytecode failed')
+  }
+  if (!api.evm_set_execution_context(handle, 100_000n, address, address, zero32, zero32, 0)) {
+    throw new Error('evm_set_execution_context failed')
+  }
+
+  const ok = api.evm_execute(handle) === 1
+  const len = api.evm_get_output_len(handle)
+  const outPtr = len ? alloc(new Uint8Array(len)) : 0
+  api.evm_get_output(handle, outPtr, len)
+
+  const output = new Uint8Array(api.memory.buffer, outPtr, len)
+  console.log({ ok, gasUsed: api.evm_get_gas_used(handle), word: output[31] })
+} finally {
+  api.evm_destroy(handle)
+  for (const [ptr, len] of buffers.reverse()) api.evm_free(ptr, len)
+}
+```
+
+<WatchOut title="The detached ArrayBuffer trap">
+Never cache `const mem = new Uint8Array(api.memory.buffer)` at startup and reuse it across calls! Any `evm_alloc()` or `evm_execute()` can call `memory.grow`, which **detaches** the previous `ArrayBuffer` and silently makes cached views length `0` or throws a `TypeError`.
+
+Always construct `new Uint8Array(api.memory.buffer, ptr, len)` **after** the allocation or execution call returns.
+</WatchOut>
+
+## Step 4: Call a linked crypto precompile (SHA256 / BN254 / BLS12-381)
+
+Because the crypto libraries are linked directly into `guillotine_mini.wasm`, calling precompile `0x02` (SHA256), `0x08` (BN254 pairing), or `0x0b`–`0x11` (BLS12-381) works identically to native Zig.
+
+For example, this 24-byte bytecode copies calldata to memory, `STATICCALL`s precompile `0x02` (SHA256), and returns its 32-byte digest (adapted from `test/wasm.test.mjs`):
+
+```js
+// CALLDATACOPY(0, 0, calldatasize)
+// STATICCALL(gas=gas, to=0x02, in=0..calldatasize, out=0..32)
+// RETURN(0, 32)
+const callSha256 = Buffer.from(
+  '3660006000376020600036600060025afa60206000f3',
+  'hex',
+)
+const input = new TextEncoder().encode('abc')
+
+api.evm_set_bytecode(handle, alloc(callSha256), callSha256.length)
+api.evm_set_execution_context(
+  handle,
+  100_000n,
+  address,
+  address,
+  zero32,
+  alloc(input),
+  input.length,
+)
+api.evm_execute(handle)
+// Output == SHA256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+```
+
+## Step 5: Inspecting storage changes and logs
+
+After `evm_execute(handle)`, you can read storage slots, storage change counts, gas refunds, and emitted logs without leaving the C ABI:
+
+```js
+// Read slot 0 of `address`
+const slotOut = alloc(new Uint8Array(32))
+api.evm_get_storage(handle, address, zero32, slotOut)
+const value = new Uint8Array(api.memory.buffer, slotOut, 32)
+
+// Read emitted logs
+const logCount = api.evm_get_log_count(handle)
+for (let i = 0; i < logCount; i++) {
+  const logAddr = alloc(new Uint8Array(20))
+  const topicsCount = alloc(new Uint8Array(4)) // usize = u32 on wasm32
+  const topics = alloc(new Uint8Array(4 * 32))
+  const dataLen = alloc(new Uint8Array(4))
+  const data = alloc(new Uint8Array(1024))
+
+  if (api.evm_get_log(handle, i, logAddr, topicsCount, topics, dataLen, data, 1024)) {
+    const view = new DataView(api.memory.buffer)
+    const nTopics = view.getUint32(topicsCount, true)
+    const nBytes = view.getUint32(dataLen, true)
+    console.log(`Log #${i}: ${nTopics} topic(s), ${nBytes} byte(s)`)
+  }
+}
+```
+
+<TraceExercise
+  title="Trace It Yourself: Why did examples/wasm.mjs put addressBytes[18] = 1 (0x0100)?"
+  prompt={
+    <p>
+      Look at line 29 of <code>examples/wasm.mjs</code>: it sets <code>addressBytes[18] = 1</code>, giving address{' '}
+      <code>0x0000...0100</code>. Why did it pick <code>0x0100</code> on <code>"prague"</code> — and what would change
+      if you changed the fork string to <code>"osaka"</code>?
+    </p>
+  }
+  answer={
+    <p>
+      On <strong>Prague</strong>, precompiles occupy <code>0x01</code>–<code>0x13</code>, so <code>0x0100</code> is a normal
+      contract address. On <strong>Osaka</strong>, <code>0x0100</code> becomes the <strong>P256VERIFY</strong> precompile (EIP-7951)!
+      If you execute custom bytecode at <code>0x0100</code> on Osaka, pick an address above <code>0x0100</code> (for example{' '}
+      <code>0x1000</code>) instead.
+    </p>
+  }
+/>
+
+<DumbQuestions
+  items={[
+    {
+      q: 'Why is the gas argument to evm_set_execution_context a BigInt (100_000n) in JavaScript?',
+      a: 'In src/root_c.zig, gas has type i64 (and block_number/block_timestamp/block_gas_limit have type u64). WebAssembly maps 64-bit integers to JavaScript BigInt.',
+    },
+    {
+      q: 'Why did evm_get_log allocate 4-byte buffers for topicsCount and dataLen?',
+      a: 'Both parameters are *usize in Zig. On wasm32-wasi, usize is 32 bits (4 bytes, little-endian). On 64-bit native FFI, usize is 8 bytes.',
+    },
+    {
+      q: 'Can I free transfer buffers right after calling evm_set_bytecode?',
+      a: 'Yes! Input setters (evm_set_bytecode, evm_set_execution_context, evm_set_access_list_*) copy bytes into the EVM handle, so the host can call evm_free immediately after the setter returns.',
+    },
+  ]}
+/>
+
+## Next
+
+- **[C & WASM ABI Reference](/reference/c-api)** — every signature of all 30 exported `evm_*` functions.
+- **[C FFI & Async State Injection](/guides/c-ffi)** — fetch cold storage/balances asynchronously from RPC or a database using `evm_call_ffi` and `evm_continue_ffi`.

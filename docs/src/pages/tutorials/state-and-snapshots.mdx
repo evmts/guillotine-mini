@@ -1,0 +1,176 @@
+---
+title: "Tutorial 2: State, Storage & Snapshots"
+description: Understand the three storage maps, EIP-2929 cold/warm gas, EIP-1153 transient storage, and why internal maps reset at transaction start.
+---
+
+import { StateSnapshotDiagram } from '../../components/Diagrams'
+import { GasCostVisual } from '../../components/InteractiveDiagrams'
+import {
+  MentalModel,
+  WatchOut,
+  DumbQuestions,
+  TraceExercise,
+} from '../../components/HeadFirst'
+
+# 2. State, Storage & Snapshots
+
+Imagine you write a test to verify that Alice has 10 ETH before calling a contract:
+
+```zig
+try vm.balances.put(alice, 10_000_000_000_000_000_000);
+_ = vm.call(.{ .call = .{
+    .caller = alice,
+    .to = contract,
+    .value = 0,
+    .input = &.{},
+    .gas = 100_000,
+} });
+std.debug.print("Alice balance: {d}\n", .{vm.get_balance(alice)});
+```
+
+You run it, expecting `10000000000000000000`. Instead, it prints:
+
+```text
+Alice balance: 0
+```
+
+**Wait — what just happened?!** Where did Alice's 10 ETH go?!
+
+## The `initTransactionState()` mystery solved
+
+Open `src/evm.zig` lines 714–719 and the puzzle clicks immediately:
+
+```zig
+const bytecode = if (params.isCreate()) &[_]u8{} else self.get_code(address);
+...
+self.initTransactionState(blob_versioned_hashes) catch ...
+```
+
+Inside `initTransactionState()` (lines 227–231):
+
+```zig
+self.storage = Storage.init(arena_allocator, self.host, self.pending_storage_injector);
+self.balances.clearRetainingCapacity();
+self.nonces.clearRetainingCapacity();
+self.code.clearRetainingCapacity();
+```
+
+`vm.call()` starts every transaction with a clean slate for its internal maps! The **only** pre-seeded map entry that survives is `vm.code.get(target)`, because `call()` reads `self.get_code(address)` five lines *before* resetting the maps.
+
+<WatchOut title="Internal maps vs HostInterface">
+With `host = null`:
+- `vm.code.put(target, code)` works for a single contract because `call()` reads it before `initTransactionState()`.
+- Pre-seeding `vm.balances`, `vm.nonces`, or a *second* contract in `vm.code` gets wiped at the start of `vm.call()`.
+- Touching `vm.storage` before calling `vm.call()` or `vm.initTransactionState()` panics (`vm.storage` starts `undefined`).
+
+Whenever you need pre-funded accounts, pre-existing storage, or Contract A calling Contract B, pass a [`HostInterface`](/tutorials/custom-host). `initTransactionState()` never clears your host.
+</WatchOut>
+
+## Three storage maps, one revert model
+
+Once a transaction is running, `src/storage.zig` keeps **three** distinct maps. Each exists for a specific Ethereum rule:
+
+<StateSnapshotDiagram />
+
+1. **`storage` (persistent):** Holds the live slot values modified by `SSTORE`. Restored on frame revert; survives when a transaction commits (if backed by a host, writes pass through to `host.setStorage()`).
+2. **`original_storage`:** Records each slot's value at the start of the transaction on first write. Never overwritten mid-transaction — `SSTORE` needs `(original, current, new)` to compute EIP-2200 / EIP-3529 gas costs and refunds accurately.
+3. **`transient` (EIP-1153, Cancun+):** Driven by `TLOAD` (`0x5c`) and `TSTORE` (`0x5d`). Always costs **100 gas** (never cold), **does revert** if the frame reverts, and is wiped unconditionally at the end of the transaction.
+
+## Why did the first `SLOAD` cost 2,100 gas and the second only 100?
+
+Click through the three tabs below to see the exact Berlin → Osaka gas rules enforced by `AccessListManager` and `handlers_storage.zig`:
+
+<GasCostVisual />
+
+<MentalModel title="Warm sets are per-transaction, and they revert too">
+At transaction start (`preWarmTransaction`), the EVM pre-warms:
+- `tx.origin` and the call target `to`
+- `block.coinbase` (Shanghai+, EIP-3651)
+- Active precompiles: `0x01`–`0x09` (Berlin), `0x01`–`0x0A` (Cancun), `0x01`–`0x13` (Prague), plus `0x0100` `P256VERIFY` (Osaka)
+- Any addresses and storage slots supplied via `vm.setAccessList(...)` (EIP-2930)
+
+If a nested call warms a new address or storage slot and then **reverts**, `AccessListManager.restore()` makes that address or slot **cold again** for the parent frame!
+</MentalModel>
+
+## Reading storage and refunds after a call
+
+Let's execute a contract that writes `42` to slot `0`, reads it back, and clears it to `0` — then inspect `vm.storage` and `result.refund_counter`:
+
+```zig
+const bytecode = [_]u8{
+    // SSTORE(slot=0, value=42) -> 20,000 + 2,100 cold = 22,100 gas
+    0x60, 0x2a, // PUSH1 42
+    0x60, 0x00, // PUSH1 0
+    0x55,       // SSTORE
+
+    // SLOAD(slot=0) -> warm! 100 gas
+    0x60, 0x00, // PUSH1 0
+    0x54,       // SLOAD
+
+    // Return the loaded value
+    0x60, 0x00, // PUSH1 0
+    0x52,       // MSTORE
+    0x60, 0x20, // PUSH1 32
+    0x60, 0x00, // PUSH1 0
+    0xf3,       // RETURN
+};
+try vm.code.put(target, &bytecode);
+
+const result = vm.call(.{ .call = .{
+    .caller = voltaire.ZERO_ADDRESS,
+    .to = target,
+    .value = 0,
+    .input = &.{},
+    .gas = 100_000,
+} });
+
+const stored = try vm.storage.get(target, 0); // 42
+```
+
+Notice that `vm.storage` stays readable *after* `vm.call()` returns (only `transient` storage and warm sets are cleared at end-of-tx), right up until the next `vm.call()` or `vm.deinit()`.
+
+<TraceExercise
+  title="Trace It Yourself: SSTORE 0 → 42 → 0 in the same transaction"
+  prompt={
+    <p>
+      Slot 0 starts at <code>0</code> before the transaction. A contract runs <code>SSTORE(0, 42)</code> and then immediately
+      runs <code>SSTORE(0, 0)</code> in the same transaction on Cancun. Does it earn the 4,800 clear refund, or a different refund?
+    </p>
+  }
+  answer={
+    <p>
+      It earns <strong>19,900 gas</strong> back into <code>refund_counter</code> (not 4,800)! Because <code>original == 0</code>,
+      restoring a freshly-written dirty slot back to its original zero value refunds <code>20,000 - 100 = 19,900</code>
+      under EIP-2200/3529 — still subject to the 1/5 transaction-level cap applied by the caller.
+    </p>
+  }
+/>
+
+## Snapshotting setters (for code running inside a frame)
+
+If you write custom opcode handlers or precompiles that modify balances, nonces, or code mid-execution, never mutate `vm.balances` directly — use the copy-on-write helpers so nested reverts undo your write cleanly:
+
+```zig
+try vm.setBalanceWithSnapshot(addr, new_balance);
+try vm.setNonceWithSnapshot(addr, new_nonce);
+try vm.setCodeWithSnapshot(addr, new_code);
+```
+
+Each helper records the pre-write value into **every** active snapshot on `balance_snapshot_stack` / `nonce_snapshot_stack` / `code_snapshot_stack` before applying the update.
+
+<DumbQuestions
+  items={[
+    {
+      q: 'Does EIP-1153 transient storage survive a revert inside the same transaction?',
+      a: 'No! That is one of the most common EVM misconceptions. TSTORE is reverted when its frame reverts, just like SSTORE. The difference is that committed TSTORE writes disappear automatically at the end of the transaction instead of persisting to world state.',
+    },
+    {
+      q: 'Why does CallResult.refund_counter sometimes exceed gas_used / 5?',
+      a: 'vm.call() reports the raw accumulated refund counter. Per Ethereum block accounting, the caller applies the fork cap (gas_used / 5 from London onward, gas_used / 2 earlier) after adding intrinsic gas.',
+    },
+  ]}
+/>
+
+## Next
+
+Ready to fund Alice's account, deploy two contracts, and watch a reverted sub-call roll back balances across a real backend? Head to **[Tutorial 3: Building a Custom Host](/tutorials/custom-host)**.

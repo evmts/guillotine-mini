@@ -1,0 +1,71 @@
+---
+title: Errors
+description: Complete CallError and CallParams.ValidationError sets from src/errors.zig and src/call_params.zig.
+---
+
+# Errors
+
+## `CallError`
+
+Defined in `src/errors.zig`. When `Frame.execute()` returns any of these errors during `vm.call()`, `CallResult` reports `success = false`, `gas_left = 0`, `output = &.{}`, and `error_info = @errorName(err)`.
+
+### Execution & gas
+
+| Error | Cause |
+| --- | --- |
+| `OutOfGas` | Remaining gas is less than the opcode, memory expansion, or access cost |
+| `ExecutionTimeout` | `EvmConfig.loop_quota` step limit reached |
+| `RevertExecution` | Explicit `REVERT` execution signal |
+| `StaticCallViolation` | State-modifying opcode attempted inside `STATICCALL` |
+| `WriteProtection` | Write attempted in a read-only / static context |
+
+### Stack, jump & bytecode
+
+| Error | Cause |
+| --- | --- |
+| `StackUnderflow` | Opcode pops more items than currently on the stack |
+| `StackOverflow` | Push would exceed `1024` stack items |
+| `InvalidOpcode` | Undefined opcode byte or opcode inactive on the active hardfork (e.g., `PUSH0` pre-Shanghai, `CLZ` pre-Osaka) |
+| `InvalidJump` | `JUMP` / `JUMPI` target is out of range or invalid |
+| `InvalidJumpDestination` | Jump target does not point to a valid `JUMPDEST` (`0x5b`) outside `PUSH` data |
+| `MissingJumpDestMetadata` | Bytecode jump destination table unavailable |
+| `InvalidBytecode` | Malformed bytecode or EIP-3541 `0xEF` prefix rejection |
+| `BytecodeTooLarge` | Deployed runtime code exceeds `max_bytecode_size` (24,576 bytes, EIP-170) |
+| `InitcodeTooLarge` | Initcode exceeds `max_initcode_size` (49,152 bytes, EIP-3860) |
+| `CreateInitCodeSizeLimit` | `CREATE` / `CREATE2` initcode exceeds EIP-3860 limit |
+| `CreateContractSizeLimit` | Deployed contract exceeds EIP-170 limit |
+| `InvalidPush` | Invalid `PUSH` instruction size |
+| `TruncatedPush` | Incomplete `PUSH` immediate |
+| `OutOfBounds` | Bytecode or slice offset out of range |
+
+### Calls, accounts & precompiles
+
+| Error | Cause |
+| --- | --- |
+| `CallDepthExceeded` | Nested call depth exceeds `max_call_depth` (`1024`) |
+| `InsufficientBalance` | Value transfer exceeds caller balance |
+| `ContractCollision` | `CREATE` / `CREATE2` target already has non-zero nonce, code, or storage |
+| `ContractNotFound` | Target contract not found |
+| `AccountNotFound` | Account lookup failed |
+| `PrecompileError` | Built-in or overridden precompile returned an error |
+
+### Memory, storage & runtime
+
+| Error | Cause |
+| --- | --- |
+| `MemoryError` | Memory offset exceeds `memory_limit` (`0xFFFFFF`) or overflow |
+| `StorageError` | Storage operation failed |
+| `OutOfMemory` | Backing Zig `Allocator` returned `OutOfMemory` |
+| `AllocationError` | Internal buffer allocation failed |
+| `NoSpaceLeft` | Fixed-capacity output/writer buffer full |
+| `NeedAsyncData` | Async `StorageInjector` cache miss; caught by `AsyncExecutor` to yield to the host |
+
+### Parameter validation (also in `CallParams.ValidationError`)
+
+| Error | Cause |
+| --- | --- |
+| `GasZeroError` | Reserved validation error |
+| `InvalidInputSize` | Call `input.len > 4 MiB` |
+| `InvalidInitCodeSize` | Create `init_code.len > 49,152` bytes |
+| `InvalidCreateValue` | Reserved create value validation error |
+| `InvalidStaticCallValue` | Reserved static call value validation error |

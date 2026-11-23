@@ -1,0 +1,57 @@
+---
+title: Build Targets
+description: All zig build steps, options, and environment variables defined in build.zig.
+---
+
+# Build Targets
+
+Transcribed from `build.zig`. Run `zig build --help` for the live list on your checkout.
+
+## Core EVM, native & WASM
+
+| Command | Output / Action |
+| --- | --- |
+| `zig build` | Builds the default native artifacts and modules |
+| `zig build native` | Builds `zig-out/lib/libguillotine_mini.a` (static C ABI archive) |
+| `zig build wasm` | Builds `zig-out/bin/guillotine_mini.wasm` (`wasm32-wasi`, `ReleaseSmall`, reactor) |
+| `zig build test-wasm` | Runs `node test/wasm.test.mjs` against the built WASM artifact (Node 22+) |
+| `zig build test-trace` | Runs `test_trace.zig` deterministic EIP-3155 native trace regression |
+| `zig build unit` | Runs unit tests (EVM + client modules) |
+| `zig build test` | Runs unit tests and default test suite |
+
+## Ethereum specification suites
+
+| Command | Action |
+| --- | --- |
+| `zig build specs` | Runs `execution-specs` GeneralStateTests |
+| `zig build specs-blockchain` | Runs `execution-specs` BlockchainTests |
+| `zig build test-watch` | Interactive spec watch runner (`interactive_test_runner.zig`) |
+| `zig build specs-<fork>` | Runs state tests for one fork (`frontier`, `homestead`, `byzantium`, `constantinople`, `istanbul`, `berlin`, `london`, `merge`, `shanghai`, `cancun`, `prague`, `osaka`) |
+| `zig build specs-<fork>-<slice>` | Runs a granular EIP or opcode slice (e.g., `specs-shanghai-push0`, `specs-cancun-tstore-basic`, `specs-prague-bls-pairing`, `specs-osaka-modexp-variable-gas`) |
+
+## Client module tests & benchmarks (in-repo Guillotine work)
+
+| Command | Subsystem |
+| --- | --- |
+| `zig build test-db` / `bench-db` | Database abstraction (`client/db`) |
+| `zig build test-trie` / `bench-trie` / `nethermind-diff` | Merkle Patricia Trie (`client/trie`) |
+| `zig build test-state` / `bench-state` | World state & journal (`client/state`) |
+| `zig build test-evm-adapter` / `bench-evm` | EVM ↔ WorldState adapter (`client/evm`) |
+| `zig build test-blockchain` / `bench-blockchain` | Chain management (`client/blockchain`) |
+| `zig build test-txpool` / `bench-txpool` | Transaction pool (`client/txpool`) |
+| `zig build test-rpc` | JSON-RPC server (`client/rpc`) |
+| `zig build test-engine` | Consensus Engine API (`client/engine`) |
+| `zig build test-network` / `bench-network` | devp2p / RLPx (`client/network`) |
+| `zig build test-sync` | Sync (`client/sync`) |
+| `zig build test-runner` | Runner CLI (`client/main.zig`) |
+
+## Build options (`-D`) & environment variables
+
+| Flag / Env var | Effect |
+| --- | --- |
+| `-Doptimize=ReleaseFast` / `ReleaseSmall` / `ReleaseSafe` | Standard Zig optimization mode |
+| `-Dnethermind-diff=false` | Skip Nethermind trie differential test during `zig build test` |
+| `-Drefresh-specs=true` | Force regeneration of `execution-specs` fixtures |
+| `TEST_FILTER="<substring>"` | Filter `zig build specs` tests by name, fork, EIP, or opcode |
+| `TEST_SEQUENTIAL=1` | Run filtered spec tests sequentially for readable divergence logs |
+| `INCLUDE_ENGINE_TESTS=1` | Include `blockchain_test_engine` fixtures in `zig build specs` |

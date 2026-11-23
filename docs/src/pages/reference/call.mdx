@@ -1,0 +1,126 @@
+---
+title: CallParams & CallResult
+description: Exact tagged-union variants, validation limits, result fields, and memory ownership rules.
+---
+
+# `CallParams` & `CallResult`
+
+## `CallParams`
+
+Defined in `src/call_params.zig`, exposed as `Evm.CallParams`.
+
+```zig
+pub union(enum) {
+    call: struct {
+        caller: Address,
+        to: Address,
+        value: u256,
+        input: []const u8,
+        gas: u64,
+    },
+    callcode: struct {
+        caller: Address,
+        to: Address,
+        value: u256,
+        input: []const u8,
+        gas: u64,
+    },
+    delegatecall: struct {
+        caller: Address,
+        to: Address,
+        input: []const u8,
+        gas: u64,
+    },
+    staticcall: struct {
+        caller: Address,
+        to: Address,
+        input: []const u8,
+        gas: u64,
+    },
+    create: struct {
+        caller: Address,
+        value: u256,
+        init_code: []const u8,
+        gas: u64,
+    },
+    create2: struct {
+        caller: Address,
+        value: u256,
+        init_code: []const u8,
+        salt: u256,
+        gas: u64,
+    },
+}
+```
+
+### Methods & validation
+
+| Method | Signature | Behavior |
+| --- | --- | --- |
+| `validate` | `fn (self) ValidationError!void` | Enforces `input.len ≤ 4 MiB` (`InvalidInputSize`) and `init_code.len ≤ 49,152` (`InvalidInitCodeSize`, EIP-3860). |
+| `getGas` / `setGas` | `u64` / `void` | Reads or updates the gas field on any variant. |
+| `getCaller` | `Address` | Returns `caller`. |
+| `get_to` | `?Address` | Returns `to` for call variants; `null` for `.create` / `.create2`. |
+| `getInput` | `[]const u8` | Returns `input` or `init_code`. |
+| `hasValue` | `bool` | `true` when `value > 0` (always `false` for `.delegatecall` and `.staticcall`). |
+| `isReadOnly` | `bool` | `true` for `.staticcall`. |
+| `isCreate` | `bool` | `true` for `.create` and `.create2`. |
+| `clone` / `deinit` | `allocator` | Deep-copies and frees the `input` / `init_code` slice. |
+
+---
+
+## `CallResult`
+
+Defined in `src/call_result.zig`, exposed as `Evm.CallResult`.
+
+```zig
+pub struct {
+    success: bool,
+    gas_left: u64,
+    output: []const u8,
+    refund_counter: u64 = 0,
+    logs: []const Log = &.{},
+    selfdestructs: []const SelfDestructRecord = &.{},
+    accessed_addresses: []const Address = &.{},
+    accessed_storage: []const StorageAccess = &.{},
+    trace: ?ExecutionTrace = null,
+    error_info: ?[]const u8 = null,
+    created_address: ?Address = null,
+}
+```
+
+### Field semantics
+
+| Field | Value on `RETURN` / `STOP` | Value on `REVERT` | Value on `CallError` |
+| --- | --- | --- | --- |
+| `success` | `true` | `false` | `false` |
+| `gas_left` | Unspent execution gas | Unspent execution gas | `0` |
+| `output` | Return bytes | Revert payload | `&.{}` |
+| `refund_counter` | Raw refund accumulator | `0` | `0` |
+| `logs` | Emitted logs | `&.{}` | `&.{}` |
+| `error_info` | `null` | `null` | `@errorName(err)` (e.g. `"OutOfGas"`) |
+| `created_address` | Deployed address (for `create`/`create2`) | `null` | `null` |
+
+### Helpers & ownership
+
+| Method | Semantics |
+| --- | --- |
+| `isSuccess() bool` / `isFailure() bool` | Predicate wrappers around `success`. |
+| `hasOutput() bool` | `output.len > 0`. |
+| `gasConsumed(original_gas: u64) u64` | `original_gas - gas_left` (clamped to `0` if `gas_left > original_gas`). |
+| `toOwnedResult(allocator) !CallResult` | Deep-copies every slice (`output`, `logs`, `selfdestructs`, `accessed_*`, `error_info`, `trace`) into `allocator` so the result outlives `vm.deinit()`. |
+| `deinit(allocator) void` | Frees all memory allocated by `toOwnedResult()` and resets `self.* = undefined`. Never call on an uncloned result returned directly by `vm.call()`. |
+
+### Supporting structs
+
+```zig
+pub const SelfDestructRecord = struct {
+    contract: Address,
+    beneficiary: Address,
+};
+
+pub const StorageAccess = struct {
+    address: Address,
+    slot: u256,
+};
+```

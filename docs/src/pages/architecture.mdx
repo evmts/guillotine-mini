@@ -1,0 +1,85 @@
+---
+title: Architecture
+description: How Guillotine Mini splits transaction orchestration (Evm), bytecode interpretation (Frame), and external state (HostInterface).
+---
+
+import { EvmArchitectureDiagram, CallLifecycleDiagram } from '../components/Diagrams'
+
+# Architecture
+
+Guillotine Mini is structured around three boundaries: **`Evm`** orchestrates transaction state and nested calls, **`Frame`** executes bytecode for one call context, and **`HostInterface`** connects to external state when you do not want ephemeral in-memory maps.
+
+<EvmArchitectureDiagram />
+
+## The `Evm` / `Frame` split
+
+The Python `execution-specs` store stack, memory, program counter, storage, and call state on a single object. Guillotine Mini separates per-transaction state from per-call execution state so each module fits in one file and can be tested independently.
+
+| Component | Source | Owns | Does not own |
+| --- | --- | --- | --- |
+| **`Evm(config)`** | `src/evm.zig` | `Storage` (persistent, original, transient), `AccessListManager`, `balances`, `nonces`, `code`, copy-on-write snapshot stacks, `gas_refund`, `logs`, `frames`, `tracer`, `arena` | Stack, memory, PC, opcode decoding |
+| **`Frame(config)`** | `src/frame.zig` | Operand stack (`≤ config.stack_size`), byte-addressed `memory`, `pc`, `gas_remaining`, `Bytecode` (`JUMPDEST` bitmap), `output`, `return_data`, `is_static` | Cross-frame storage, account balances, snapshots |
+| **`HostInterface`** | `src/host.zig` | External account/storage persistence via an 11-pointer vtable | EVM semantics or nested call dispatch |
+
+Inside a frame, opcodes that touch account state or spawn sub-calls (`SLOAD`, `SSTORE`, `BALANCE`, `CALL`, `CREATE`, `SELFDESTRUCT`) call back into the parent EVM via `frame.getEvm()`. Because `Evm.frames` is a dynamic `ArrayList`, frames never hold raw pointers to sibling frames across nested calls — `evm.zig` always indexes `self.frames.items[self.frames.items.len - 1]` after a nested call returns.
+
+## Memory and arena ownership
+
+`Evm` embeds a `std.heap.ArenaAllocator` backed by the allocator passed to `init()`. Every transaction-scoped allocation — frame stacks, memory buffers, bytecode analysis, log slices, snapshots, and `CallResult` outputs — comes from that arena.
+
+- **No per-frame leak risk.** An execution error (`OutOfGas`, `StackUnderflow`, `InvalidJump`) returns immediately; `deinit()` frees the entire arena in one call.
+- **Borrowed results by default.** Slices inside a `CallResult` returned by `vm.call()` point into `vm.arena`. Call `result.toOwnedResult(allocator)` before `vm.deinit()` if the result must outlive the EVM.
+- **Standalone tracer memory.** `Tracer` takes its own allocator so traces survive after `vm.deinit()`.
+
+## Exact lifecycle of `vm.call()`
+
+`Evm.call()` is the single entry point for all six `CallParams` shapes (`call`, `callcode`, `delegatecall`, `staticcall`, `create`, `create2`).
+
+<CallLifecycleDiagram />
+
+Five implementation details in `src/evm.zig` are worth knowing before you write host code:
+
+1. **Intrinsic gas is the caller's job.** `vm.call()` assumes the gas passed in `params` is already net of the 21,000 transaction base fee, calldata cost (including EIP-7623 floor), access list fees, and create fees.
+2. **Target bytecode is fetched before `initTransactionState()`.** Line 714 calls `self.get_code(address)` before line 719 clears `balances`, `nonces`, `code`, and recreates `storage`. That is why seeding `vm.code.put(target, code)` works for a single contract without a host, while seeding other contracts or balances requires a `HostInterface`.
+3. **Top-level value transfer happens only with a host.** In `vm.call()`, value is moved from `caller` to `address` when `value > 0 and self.host != null` (and reversed if the top-level call reverts or errors).
+4. **Refunds are returned, not auto-applied.** `CallResult.refund_counter` reports the raw refund counter; the caller applies the fork-dependent cap (`gas_used / 5` from London onward, `gas_used / 2` earlier) after settling coinbase fees.
+5. **End-of-tx cleanup runs in spec order.** Warm sets clear, transient storage (EIP-1153) clears, then accounts marked by `SELFDESTRUCT` (EIP-6780) and touched empty accounts (EIP-161) are removed.
+
+## Bytecode analysis and dispatch
+
+`src/bytecode.zig` scans contract bytecode once when a `Frame` starts:
+
+- It builds a `JUMPDEST` bitmap by skipping over `PUSH1`..`PUSH32` immediate bytes, so `0x5b` bytes inside push data are never accepted by `JUMP` or `JUMPI`.
+- Truncated `PUSH` immediates at the end of bytecode are zero-padded on the right per the Ethereum specification.
+- `Frame.execute()` runs a tight fetch-decode-dispatch loop (`src/instructions/dispatcher.zig`) over category handler files (`handlers_arithmetic.zig`, `handlers_storage.zig`, `handlers_system.zig`, etc.).
+- In `Debug` and `ReleaseSafe` builds, `EvmConfig.loop_quota` defaults to `1_000_000` steps to catch runaway loops early; in `ReleaseFast` / `ReleaseSmall` it defaults to `null` (unlimited).
+
+## C ABI and WebAssembly surface
+
+Both `zig build native` (static library `libguillotine_mini.a`) and `zig build wasm` (WASI Preview 1 reactor `guillotine_mini.wasm`) compile the same entry file: **`src/root_c.zig`**.
+
+- An opaque `*EvmHandle` wraps an `ExecutionContext` (the `Evm`, staged bytecode/calldata, access lists, blob hashes, and last `CallResult`).
+- Every exported function accepts a nullable handle and returns a safe zero/false sentinel on `null`.
+- On `wasm32-wasi`, `evm_alloc` and `evm_free` manage host transfer buffers in linear memory, and the two `env` imports (`js_opcode_callback`, `js_precompile_callback`) let hosts intercept any opcode or precompile without recompiling Zig.
+
+## Source layout
+
+```text
+src/
+├── root.zig                 # Public Zig module exports
+├── evm.zig                  # Evm(config): state, call(), inner_call(), inner_create()
+├── frame.zig                # Frame(config): stack, memory, PC, execute(), step()
+├── bytecode.zig             # JUMPDEST bitmap & PUSH immediate reader
+├── storage.zig              # Persistent, original, and EIP-1153 transient storage
+├── access_list_manager.zig  # EIP-2929 warm/cold tracking + EIP-2930 pre-warming
+├── host.zig                 # HostInterface vtable
+├── call_params.zig          # 6-variant CallParams union & validation
+├── call_result.zig          # CallResult, logs, selfdestructs, owned cloning
+├── evm_config.zig           # Comptime EvmConfig, OpcodeOverride, PrecompileOverride
+├── errors.zig               # CallError error set
+├── trace.zig                # EIP-3155 Tracer, TraceEntry, TraceDiff
+├── async_executor.zig       # Yield/resume state-injection state machine
+├── storage_injector.zig     # Async cache & state-change JSON serializer
+├── root_c.zig               # Exported C & WASM ABI (30 evm_* symbols)
+└── instructions/            # Opcode handlers grouped by category
+```

@@ -1,0 +1,111 @@
+---
+title: Tracing (EIP-3155)
+description: Capture bounded pre-opcode traces, configure stack/memory/return-data snapshots, export EIP-3155 JSON, and diff against reference clients.
+---
+
+# Tracing (EIP-3155)
+
+Guillotine Mini captures pre-opcode execution traces conforming to [EIP-3155](https://eips.ethereum.org/EIPS/eip-3155) via `Tracer` (`src/trace.zig`). Every entry records the exact `pc`, `op`, `opName`, `gas`, `gasCost`, `stack`, optional `memory` and `returnData`, `depth`, and `refund` immediately before the opcode mutates the frame.
+
+## Capturing a trace
+
+Attach a `Tracer` with `vm.setTracer(&tracer)` before calling `vm.call()`. `Tracer` uses its own allocator so the captured entries remain valid after `vm.deinit()`.
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+const voltaire = @import("voltaire");
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer std.debug.assert(gpa.deinit() == .ok);
+    const allocator = gpa.allocator();
+
+    var tracer = guillotine.Tracer.init(allocator);
+    defer tracer.deinit();
+
+    // Optional: include full memory snapshots and cap retained steps
+    tracer.config.enable_memory = true;
+    tracer.max_entries = 10_000;
+    tracer.enable();
+
+    const target = voltaire.Address.fromU256(0x123);
+    var vm: guillotine.Evm(.{}) = undefined;
+    try vm.init(allocator, null, .CANCUN, null, target, 0, null);
+    defer vm.deinit();
+
+    vm.setTracer(&tracer);
+    try vm.code.put(target, &.{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 });
+
+    const res = vm.call(.{ .call = .{
+        .caller = target,
+        .to = target,
+        .value = 0,
+        .input = &.{},
+        .gas = 100_000,
+    } });
+    std.debug.assert(res.success);
+
+    for (tracer.entries.items) |step| {
+        std.debug.print("pc={d} op={s} gas={d} cost={d} stack_depth={d}\n", .{
+            step.pc, step.opName, step.gas, step.gasCost, step.stack.len,
+        });
+    }
+
+    // Export EIP-3155 JSON array to disk
+    try tracer.writeToFile("trace.json");
+}
+```
+
+Run the repository's own native trace regression test to verify this flow end-to-end:
+
+```sh
+zig build test-trace
+```
+
+## Bounded traces (`max_entries`)
+
+For long transactions or RPC `debug_traceTransaction` endpoints where memory must stay bounded, set `tracer.max_entries` before execution:
+
+```zig
+tracer.max_entries = 1024;
+```
+
+Once `tracer.entries.items.len` reaches `max_entries`, the tracer stops appending new entries while **EVM execution continues normally to completion**. The default is `std.math.maxInt(usize)` (unbounded).
+
+## Controlling what gets captured (`TraceConfig`)
+
+`tracer.config` is a Voltaire `TraceConfig` controlling snapshot overhead:
+
+| Field / Option | Effect |
+| --- | --- |
+| `enable_memory` | Copy frame memory bytes into `TraceEntry.memory` (default `false`; `memSize` is always recorded) |
+| `disable_stack` | Skip copying the stack slice (`tracksStack()`) |
+| `enable_return_data` | Copy current `return_data` buffer into `TraceEntry.returnData` |
+
+## Diffing against a reference trace (`TraceDiff`)
+
+`trace.TraceDiff.compare()` walks two traces entry-by-entry and stops at the first mismatch in `pc`, `op`, `gas`, `stack_length`, `stack_value`, or `trace_length`:
+
+```zig
+const diff = try guillotine.trace.TraceDiff.compare(allocator, &our_tracer, &ref_tracer);
+if (diff.divergence_index != null) {
+    try diff.printDiff(std.io.getStdErr().writer());
+}
+```
+
+When `zig build specs` fails a state test, the spec runner runs this exact comparison against the Python `ethereum-spec-evm` and prints the first diverging opcode.
+
+## Single-stepping a frame
+
+When you need custom per-step hooks (breakpoints, live memory inspection, custom debuggers), step one instruction at a time using `vm.step()` or `Frame.step()`:
+
+```zig
+while (vm.getCurrentFrame()) |frame| {
+    if (frame.stopped or frame.reverted) break;
+    const pc = vm.getPC();
+    const op = frame.getCurrentOpcode() orelse break;
+    std.debug.print("0x{x:0>4}: {s}\n", .{ pc, guillotine.getOpName(op) });
+    try vm.step();
+}
+```

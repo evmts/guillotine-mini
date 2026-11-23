@@ -1,0 +1,132 @@
+---
+title: C FFI & Async State Injection
+description: Link libguillotine_mini.a from C, Rust, Go, or Python, and drive external async state backends with evm_call_ffi and evm_continue_ffi.
+---
+
+import { AsyncProtocolDiagram } from '../../components/Diagrams'
+
+# C FFI & Async State Injection
+
+Guillotine Mini compiles `src/root_c.zig` to both a native static library (`zig build native`) and a WASI WebAssembly reactor (`zig build wasm`). Both expose the exact same 30-symbol `evm_*` C ABI.
+
+## Build the static library
+
+```sh
+zig build native -Doptimize=ReleaseFast
+```
+
+This writes `zig-out/lib/libguillotine_mini.a` with the EVM, Voltaire primitives, `blst`, BN254, and `c-kzg-4844` linked inside.
+
+## Minimal C program
+
+All 256-bit quantities (`value`, `chain_id`, `slot`, `balance`, `base_fee`) cross the ABI as **32-byte big-endian** byte arrays; addresses cross as **20-byte** arrays. Every function accepts a nullable `EvmHandle*` and returns `false` / `0` if passed `NULL`.
+
+```c
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+typedef struct EvmHandle EvmHandle;
+
+extern EvmHandle *evm_create(const char *hardfork, size_t hardfork_len, uint8_t log_level);
+extern void       evm_destroy(EvmHandle *handle);
+extern bool       evm_set_bytecode(EvmHandle *handle, const uint8_t *code, size_t len);
+extern bool       evm_set_execution_context(
+    EvmHandle *handle, int64_t gas,
+    const uint8_t caller[20], const uint8_t address[20],
+    const uint8_t value[32], const uint8_t *calldata, size_t calldata_len);
+extern bool       evm_execute(EvmHandle *handle);
+extern int64_t    evm_get_gas_used(EvmHandle *handle);
+extern size_t     evm_get_output_len(EvmHandle *handle);
+extern size_t     evm_get_output(EvmHandle *handle, uint8_t *buf, size_t buf_len);
+
+int main(void) {
+    const char *fork = "PRAGUE";
+    EvmHandle *vm = evm_create(fork, strlen(fork), 0);
+    if (!vm) return 1;
+
+    uint8_t caller[20] = {0};
+    uint8_t target[20] = {0};
+    target[18] = 0x01; // 0x0000...0100 (outside Prague precompiles)
+    uint8_t zero32[32] = {0};
+
+    // PUSH1 42; PUSH1 0; MSTORE; PUSH1 32; PUSH1 0; RETURN
+    uint8_t code[] = { 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+
+    evm_set_bytecode(vm, code, sizeof(code));
+    evm_set_execution_context(vm, 100000, caller, target, zero32, NULL, 0);
+
+    bool ok = evm_execute(vm);
+    uint8_t out[32] = {0};
+    size_t len = evm_get_output(vm, out, sizeof(out));
+
+    printf("ok=%d gas_used=%lld output_len=%zu last_byte=%u\n",
+           ok, (long long)evm_get_gas_used(vm), len, len ? out[len - 1] : 0);
+
+    evm_destroy(vm);
+    return ok ? 0 : 1;
+}
+```
+
+Note that `evm_execute()` automatically installs the bytecode supplied to `evm_set_bytecode()` at `address` before calling `Evm.call()`. You only need `evm_set_code()` when seeding *other* contracts for nested calls.
+
+## Async state injection (`evm_call_ffi` / `evm_continue_ffi`)
+
+When state lives in an async database, remote JSON-RPC node, or rollup storage layer, pre-loading every slot is wasteful or impossible. Instead, enable the storage injector and drive the yield/resume loop:
+
+<AsyncProtocolDiagram />
+
+### The `AsyncRequest` C struct
+
+Transcribed directly from `src/root_c.zig:664`:
+
+```c
+typedef struct {
+    uint8_t  output_type;      // 0=RESULT, 1=NEED_STORAGE, 2=NEED_BALANCE,
+                               // 3=NEED_CODE, 4=NEED_NONCE, 5=READY_TO_COMMIT, 255=ERROR
+    uint8_t  address[20];
+    uint8_t  slot[32];         // big-endian u256 (used when output_type == 1)
+    uint32_t json_len;         // valid bytes in json_data (when output_type == 5)
+    uint8_t  json_data[16384]; // inline state-changes JSON
+} AsyncRequest;
+```
+
+### Packed response formats for `evm_continue_ffi`
+
+| `output_type` yielded | `continue_type` to send | `data_ptr` layout | Length |
+| --- | --- | --- | --- |
+| `1` (`NEED_STORAGE`) | `1` | `address[20] \|\| slot_be[32] \|\| value_be[32]` | `84` bytes |
+| `2` (`NEED_BALANCE`) | `2` | `address[20] \|\| balance_be[32]` | `52` bytes |
+| `3` (`NEED_CODE`) | `3` | `address[20] \|\| raw_bytecode[...]` | `20 + code_len` bytes |
+| `4` (`NEED_NONCE`) | `4` | `address[20] \|\| nonce_be[8]` | `28` bytes |
+| `5` (`READY_TO_COMMIT`) | `5` | empty (after persisting `json_data[0..json_len]`) | `0` bytes |
+
+### Driving loop skeleton
+
+```c
+evm_enable_storage_injector(vm);
+
+AsyncRequest req = {0};
+bool ok = evm_call_ffi(vm, &req);
+
+while (ok && req.output_type != 0) {
+    if (req.output_type == 1) {
+        uint8_t resp[84];
+        memcpy(resp,      req.address, 20);
+        memcpy(resp + 20, req.slot,    32);
+        fetch_storage_from_db(req.address, req.slot, resp + 52);
+        ok = evm_continue_ffi(vm, 1, resp, sizeof(resp), &req);
+    } else if (req.output_type == 5) {
+        persist_changes_json(req.json_data, req.json_len);
+        ok = evm_continue_ffi(vm, 5, NULL, 0, &req);
+    } else {
+        // Handle types 2 (balance), 3 (code), 4 (nonce) similarly
+        break;
+    }
+}
+// When req.output_type == 0, read results with evm_is_success / evm_get_output / evm_get_gas_used
+```
+
+For the complete list of all 30 exported functions, see the [C & WASM ABI Reference](/reference/c-api).

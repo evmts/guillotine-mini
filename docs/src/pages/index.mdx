@@ -1,0 +1,139 @@
+---
+layout: landing
+title: Guillotine Mini — A minimal, readable EVM in Zig
+description: Spec-first Ethereum Virtual Machine in Zig. Frontier through Osaka, native C ABI, and a WASI Preview 1 WebAssembly reactor with linked crypto.
+---
+
+import { EvmArchitectureDiagram } from '../components/Diagrams'
+
+<div className="tevm-hero">
+  <span className="tevm-hero-eyebrow">guillotine · mini</span>
+
+  <h1>A readable EVM,<br /><span className="tevm-hero-accent">written in Zig</span></h1>
+
+  <div className="tevm-hero-sub">
+    One <span className="tevm-hero-code">Evm</span> type, one{' '}
+    <span className="tevm-hero-code">call()</span> entry point, hardforks from Frontier through Osaka,
+    EIP-3155 tracing, a flat C ABI, and a WASI Preview 1 WebAssembly reactor with linked crypto precompiles.
+  </div>
+
+  <div className="tevm-hero-actions">
+    <a className="tevm-button tevm-button--primary" href="/getting-started">Get started →</a>
+    <a className="tevm-button" href="/opcode-explorer">Step through bytecode</a>
+    <a className="tevm-button" href="/architecture">Architecture</a>
+    <a className="tevm-button" href="https://github.com/evmts/guillotine-mini">GitHub</a>
+  </div>
+
+  <div className="tevm-install">
+    <div className="tevm-install-code">
+      <span className="tevm-prompt">$</span>
+      <span>
+        zig build <span className="tevm-flag">test-trace</span> &amp;&amp; zig build{' '}
+        <span className="tevm-flag">wasm</span> &amp;&amp; zig build <span className="tevm-flag">test-wasm</span>
+      </span>
+    </div>
+  </div>
+</div>
+
+```zig
+const std = @import("std");
+const guillotine = @import("guillotine_mini");
+const voltaire = @import("voltaire");
+
+pub fn main() !void {
+    const Evm = guillotine.Evm(.{});
+    var vm: Evm = undefined;
+    try vm.init(std.heap.page_allocator, null, .CANCUN, null, voltaire.ZERO_ADDRESS, 0, null);
+    defer vm.deinit();
+
+    // PUSH1 0x2a  PUSH1 0x00  MSTORE  PUSH1 0x20  PUSH1 0x00  RETURN
+    const target = voltaire.Address.fromU256(0x42);
+    try vm.code.put(target, &.{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xF3 });
+
+    const result = vm.call(.{ .call = .{
+        .caller = voltaire.ZERO_ADDRESS,
+        .to = target,
+        .value = 0,
+        .input = &.{},
+        .gas = 100_000,
+    } });
+    // result.success == true, result.gas_left == 99_982 (18 gas used), output == 32-byte word 0x2a
+}
+```
+
+## Why Guillotine Mini exists
+
+Production EVMs optimize for block throughput: bytecode is fused into superinstructions, gas is hoisted across basic blocks, and the correspondence to the specification disappears. That is the right trade for a mainnet node and the wrong trade when you need to verify what the Ethereum specification actually requires.
+
+Guillotine Mini takes the opposite side:
+
+- **Spec-first.** The Python [`execution-specs`](https://github.com/ethereum/execution-specs) are the authority. Gas is charged in the same order, in the same place.
+- **Small enough to read in an afternoon.** State orchestration lives in `src/evm.zig`; the bytecode loop lives in `src/frame.zig`; external state crosses an 11-pointer vtable in `src/host.zig`.
+- **Three delivery surfaces.** Use it as a Zig module, link `libguillotine_mini.a` over C FFI, or instantiate `guillotine_mini.wasm` (a WASI Preview 1 reactor with BN254, BLS12-381, SHA256, and KZG compiled in).
+- **Zero hidden ownership.** Transaction-scoped allocations live in an arena owned by `Evm` and are released together in `deinit()`.
+
+<EvmArchitectureDiagram />
+
+## Choose your path
+
+<div className="tevm-features">
+  <div className="tevm-feature">
+    <h3><a href="/getting-started">Getting Started</a></h3>
+    <p>Wire up Zig 0.15.2 + Voltaire, execute your first bytecode, and account for every unit of gas.</p>
+  </div>
+  <div className="tevm-feature">
+    <h3><a href="/tutorials/first-call">Hands-On Tutorials</a></h3>
+    <p>Visual walkthroughs for contract calls, snapshots, custom hosts, and WebAssembly — complete with puzzles and traces.</p>
+  </div>
+  <div className="tevm-feature">
+    <h3><a href="/tutorials/webassembly">WebAssembly (WASI)</a></h3>
+    <p>Run the EVM and linked crypto precompiles from Node 22+ with zero npm dependencies.</p>
+  </div>
+  <div className="tevm-feature">
+    <h3><a href="/guides/c-ffi">C ABI &amp; Async FFI</a></h3>
+    <p>Embed <code>libguillotine_mini.a</code> from C, Rust, Go, or Python — including yield/resume external state injection.</p>
+  </div>
+  <div className="tevm-feature">
+    <h3><a href="/guides/tracing">EIP-3155 Tracing</a></h3>
+    <p>Capture bounded opcode traces, export JSON, and diff step-by-step against Python <code>execution-specs</code>.</p>
+  </div>
+  <div className="tevm-feature">
+    <h3><a href="/reference/evm">API Reference</a></h3>
+    <p>Exact signatures, defaults, error sets, and build targets transcribed directly from <code>src/*.zig</code>.</p>
+  </div>
+</div>
+
+## What it is not
+
+Guillotine Mini is an execution engine, not a full node. Block headers, transaction signatures, the mempool, JSON-RPC, and devp2p live one layer up in [Guillotine](/stack). Public APIs are pre-1.0 and may shift between revisions.
+
+## Current status
+
+- **Native Zig (`0.15.2`):** `zig build`, `zig build native`, and `zig build test-trace` pass cleanly. Core EVM unit tests pass; the 6 client/trie fixture tests in `zig build unit` require the optional `ethereum-tests` submodule.
+- **WebAssembly (`wasm32-wasi`):** `zig build wasm` builds `zig-out/bin/guillotine_mini.wasm` (WASI Preview 1 reactor with linked Rust crypto), and `zig build test-wasm` verifies execution, reverts, logs, SHA256, BN254 pairing, and BLS12-381 precompiles on Node 22+.
+- **Hardforks:** Frontier through Osaka, including EIP-1153 transient storage, EIP-4844 blobs, EIP-6780 `SELFDESTRUCT`, EIP-7702 set-code delegation, BLS12-381 (`0x01`–`0x13`), Osaka `CLZ` (`0x1E`), and `P256VERIFY` (`0x0100`).
+
+## Part of the Tevm family
+
+<div className="tevm-sites">
+  <a className="tevm-site-card" href="https://tevm.sh">
+    <span className="tevm-site-card-name">Tevm</span>
+    <span className="tevm-site-card-host">tevm.sh</span>
+  </a>
+  <a className="tevm-site-card" href="https://voltaire.tevm.sh">
+    <span className="tevm-site-card-name">Voltaire</span>
+    <span className="tevm-site-card-host">voltaire.tevm.sh</span>
+  </a>
+  <a className="tevm-site-card" href="https://guillotine.tevm.sh">
+    <span className="tevm-site-card-name">Guillotine</span>
+    <span className="tevm-site-card-host">guillotine.tevm.sh</span>
+  </a>
+  <a className="tevm-site-card" data-current="true" href="https://mini.tevm.sh">
+    <span className="tevm-site-card-name">Guillotine Mini</span>
+    <span className="tevm-site-card-host">mini.tevm.sh</span>
+  </a>
+  <a className="tevm-site-card" href="https://zevm.tevm.sh">
+    <span className="tevm-site-card-name">ZEVM</span>
+    <span className="tevm-site-card-host">zevm.tevm.sh</span>
+  </a>
+</div>
