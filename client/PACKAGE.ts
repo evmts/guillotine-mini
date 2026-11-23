@@ -6,7 +6,7 @@ const bench_utils = S.Filegroup({
 })
 
 const cli_srcs = S.Filegroup({
-  srcs: [S.file("cli.zig"), S.file("cli_bench.zig"), S.file("main.zig"), S.file("root.zig")],
+  srcs: [S.file("cli.zig"), S.file("cli_bench.zig"), S.file("config.zig"), S.file("main.zig")],
 })
 
 const docs_srcs = S.Filegroup({
