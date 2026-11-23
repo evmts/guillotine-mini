@@ -184,7 +184,7 @@ result.error_info == null       // REVERT is a clean halt, not a CallError
 <MentalModel title="Three contracts to remember from day one">
 1. **`Evm(config)` returns a type, not a value.** Two configs (`Evm(.{})` and `Evm(.{ .stack_size = 512 })`) are distinct Zig types.
 2. **Initialize in place.** Always write `var vm: Evm = undefined; try vm.init(...)`. `Evm` holds an arena and internal maps initialized in place.
-3. **`hardfork = null` means `Hardfork.DEFAULT` (`.PRAGUE`), not `config.hardfork`.** Pass `.CANCUN`, `.PRAGUE`, `.OSAKA`, etc. explicitly to `vm.init()` so there is never any ambiguity.
+3. **`hardfork = null` selects `config.hardfork`.** The default config uses Voltaire’s `Hardfork.DEFAULT` (`.OSAKA`). Pass a fork explicitly to override the config for a single instance.
 </MentalModel>
 
 <DumbQuestions

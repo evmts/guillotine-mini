@@ -1,3 +1,5 @@
+const inspector_mod = @import("inspector.zig");
+const trace = @import("trace.zig");
 /// Frame implementation for tracing
 /// This mirrors the architecture of frame/frame.zig but simplified for validation
 const std = @import("std");
@@ -30,6 +32,7 @@ const handlers_system = @import("instructions/handlers_system.zig");
 pub fn Frame(comptime config: EvmConfig) type {
     return struct {
         const Self = @This();
+        const max_memory_size = @min(config.memory_limit, std.math.maxInt(u32)) & ~@as(u64, 31);
         pub const EvmType = evm_mod.Evm(config);
         pub const EvmError = @import("errors.zig").CallError;
 
@@ -48,8 +51,9 @@ pub fn Frame(comptime config: EvmConfig) type {
         const SystemHandlers = handlers_system.Handlers(Self);
 
         stack: std.ArrayList(u256),
-        memory: std.AutoHashMap(u32, u8),
+        memory: std.ArrayListUnmanaged(u8),
         memory_size: u32,
+        iterations: u32 = 0,
         pc: u32,
         gas_remaining: i64,
         bytecode: Bytecode,
@@ -67,6 +71,13 @@ pub fn Frame(comptime config: EvmConfig) type {
         call_depth: u32,
         hardfork: Hardfork,
         is_static: bool,
+        frame_id: u64 = 0,
+        parent_frame_id: ?u64 = null,
+        code_address: Address,
+        step_metering: bool = false,
+        step_child_gas_spent: u64 = 0,
+        step_attempted_gas: u64 = 0,
+        step_memory_expansion_gas: u64 = 0,
 
         /// Initialize a new frame for bytecode execution
         ///
@@ -102,11 +113,10 @@ pub fn Frame(comptime config: EvmConfig) type {
             is_static: bool,
         ) !Self {
             var stack = std.ArrayList(u256){};
-            try stack.ensureTotalCapacity(allocator, 1024);
+            try stack.ensureTotalCapacity(allocator, @min(config.stack_size, 64));
             errdefer stack.deinit(allocator);
 
-            var memory_map = std.AutoHashMap(u32, u8).init(allocator);
-            errdefer memory_map.deinit();
+            const memory_buf: std.ArrayListUnmanaged(u8) = .{};
 
             // Analyze bytecode to identify valid jump destinations
             var bytecode = try Bytecode.init(allocator, bytecode_raw);
@@ -114,13 +124,14 @@ pub fn Frame(comptime config: EvmConfig) type {
 
             return Self{
                 .stack = stack,
-                .memory = memory_map,
+                .memory = memory_buf,
                 .memory_size = 0,
                 .pc = 0,
                 .gas_remaining = gas,
                 .bytecode = bytecode,
                 .caller = caller,
                 .address = address,
+                .code_address = address,
                 .value = value,
                 .calldata = calldata,
                 .output = &[_]u8{},
@@ -144,7 +155,7 @@ pub fn Frame(comptime config: EvmConfig) type {
                 self.allocator.free(self.output);
             }
             self.stack.deinit(self.allocator);
-            self.memory.deinit();
+            self.memory.deinit(self.allocator);
             self.bytecode.deinit();
         }
 
@@ -161,7 +172,7 @@ pub fn Frame(comptime config: EvmConfig) type {
 
         /// Push value onto stack
         pub fn pushStack(self: *Self, value: u256) EvmError!void {
-            if (self.stack.items.len >= 1024) {
+            if (self.stack.items.len >= config.stack_size) {
                 return error.StackOverflow;
             }
             try self.stack.append(self.allocator, value);
@@ -195,9 +206,26 @@ pub fn Frame(comptime config: EvmConfig) type {
             return @intCast(words * 32);
         }
 
+        /// Ensure contiguous memory backing covers `[0, end)` with zero-initialized new bytes.
+        pub inline fn ensureMemoryBytes(self: *Self, end: u32) EvmError!void {
+            const end_usize: usize = @intCast(end);
+            if (end_usize <= self.memory.items.len) return;
+            return self.growMemoryBytes(end_usize);
+        }
+
+        fn growMemoryBytes(self: *Self, end_usize: usize) EvmError!void {
+            @branchHint(.cold);
+            if (end_usize > max_memory_size) return error.OutOfGas;
+            const old_len = self.memory.items.len;
+            const aligned_len = (end_usize + 31) & ~@as(usize, 31);
+            try self.memory.resize(self.allocator, aligned_len);
+            @memset(self.memory.items[old_len..aligned_len], 0);
+        }
+
         /// Read byte from memory
-        pub fn readMemory(self: *Self, offset: u32) u8 {
-            return self.memory.get(offset) orelse 0;
+        pub inline fn readMemory(self: *const Self, offset: u32) u8 {
+            const idx: usize = @intCast(offset);
+            return if (idx < self.memory.items.len) self.memory.items[idx] else 0;
         }
 
         /// Safe add helper for u32 indices
@@ -206,11 +234,109 @@ pub fn Frame(comptime config: EvmConfig) type {
         }
 
         /// Write byte to memory
-        pub fn writeMemory(self: *Self, offset: u32, value: u8) EvmError!void {
-            try self.memory.put(offset, value);
+        pub inline fn writeMemory(self: *Self, offset: u32, value: u8) EvmError!void {
+            const end_u32 = try add_u32(offset, 1);
+            try self.ensureMemoryBytes(end_u32);
+            self.memory.items[offset] = value;
             // EVM memory expands to word-aligned (32-byte) boundaries
-            const end_offset: u64 = @as(u64, offset) + 1;
-            const word_aligned_size = wordAlignedSize(end_offset);
+            const word_aligned_size = wordAlignedSize(@as(u64, end_u32));
+            if (word_aligned_size > self.memory_size) self.memory_size = word_aligned_size;
+        }
+
+        /// Read a big-endian 32-byte word from memory (zero-padded past backing len)
+        pub inline fn readMemoryWord(self: *const Self, offset: u32) EvmError!u256 {
+            const end = try add_u32(offset, 32);
+            const off_usize: usize = @intCast(offset);
+            const end_usize: usize = @intCast(end);
+            if (end_usize <= self.memory.items.len) {
+                return std.mem.readInt(u256, self.memory.items[off_usize..][0..32], .big);
+            }
+            var buf: [32]u8 = [_]u8{0} ** 32;
+            if (off_usize < self.memory.items.len) {
+                const avail = self.memory.items.len - off_usize;
+                @memcpy(buf[0..avail], self.memory.items[off_usize..][0..avail]);
+            }
+            return std.mem.readInt(u256, &buf, .big);
+        }
+
+        /// Write a big-endian 32-byte word to memory
+        pub inline fn writeMemoryWord(self: *Self, offset: u32, value: u256) EvmError!void {
+            const end = try add_u32(offset, 32);
+            try self.ensureMemoryBytes(end);
+            std.mem.writeInt(u256, self.memory.items[@intCast(offset)..][0..32], value, .big);
+            const word_aligned_size = wordAlignedSize(@as(u64, end));
+            if (word_aligned_size > self.memory_size) self.memory_size = word_aligned_size;
+        }
+
+        /// Return a zero-copy slice of memory `[offset, offset + len)` (growing zero-filled backing if needed)
+        pub inline fn readMemorySlice(self: *Self, offset: u32, len: u32) EvmError![]const u8 {
+            if (len == 0) return &[_]u8{};
+            const end = try add_u32(offset, len);
+            try self.ensureMemoryBytes(end);
+            return self.memory.items[@intCast(offset)..@intCast(end)];
+        }
+
+        /// Copy `dest.len` bytes from memory starting at `offset`, zero-padding past backing length
+        pub inline fn copyFromMemory(self: *const Self, dest: []u8, offset: u32) EvmError!void {
+            if (dest.len == 0) return;
+            _ = try add_u32(offset, @intCast(dest.len));
+            const off_usize: usize = @intCast(offset);
+            if (off_usize >= self.memory.items.len) {
+                @memset(dest, 0);
+                return;
+            }
+            const avail = @min(dest.len, self.memory.items.len - off_usize);
+            @memcpy(dest[0..avail], self.memory.items[off_usize .. off_usize + avail]);
+            if (avail < dest.len) {
+                @memset(dest[avail..], 0);
+            }
+        }
+
+        /// Write a contiguous byte slice to memory at `offset`
+        pub inline fn writeMemorySlice(self: *Self, offset: u32, data: []const u8) EvmError!void {
+            if (data.len == 0) return;
+            const end = try add_u32(offset, @intCast(data.len));
+            try self.ensureMemoryBytes(end);
+            @memcpy(self.memory.items[@intCast(offset)..@intCast(end)], data);
+            const word_aligned_size = wordAlignedSize(@as(u64, end));
+            if (word_aligned_size > self.memory_size) self.memory_size = word_aligned_size;
+        }
+
+        /// Copy `len` bytes from `src[src_off..]` into memory at `dest_off`, zero-padding beyond `src.len`
+        pub inline fn writeMemoryZeroPadded(self: *Self, dest_off: u32, src: []const u8, src_off: u64, len: u32) EvmError!void {
+            if (len == 0) return;
+            const end = try add_u32(dest_off, len);
+            try self.ensureMemoryBytes(end);
+            const dst = self.memory.items[@intCast(dest_off)..@intCast(end)];
+            if (src_off < src.len) {
+                const start: usize = @intCast(src_off);
+                const avail = @min(@as(usize, @intCast(len)), src.len - start);
+                @memcpy(dst[0..avail], src[start .. start + avail]);
+                if (avail < dst.len) {
+                    @memset(dst[avail..], 0);
+                }
+            } else {
+                @memset(dst, 0);
+            }
+            const word_aligned_size = wordAlignedSize(@as(u64, end));
+            if (word_aligned_size > self.memory_size) self.memory_size = word_aligned_size;
+        }
+
+        /// Copy `len` bytes within memory (handles overlapping regions with zero heap allocations)
+        pub inline fn copyMemory(self: *Self, dest: u32, src: u32, len: u32) EvmError!void {
+            if (len == 0) return;
+            const dest_end = try add_u32(dest, len);
+            const src_end = try add_u32(src, len);
+            const max_end = @max(dest_end, src_end);
+            try self.ensureMemoryBytes(max_end);
+            const dst_slice = self.memory.items[@intCast(dest)..@intCast(dest_end)];
+            const src_slice = self.memory.items[@intCast(src)..@intCast(src_end)];
+            if (dest <= src) {
+                std.mem.copyForwards(u8, dst_slice, src_slice);
+            } else {
+                std.mem.copyBackwards(u8, dst_slice, src_slice);
+            }
+            const word_aligned_size = wordAlignedSize(@as(u64, max_end));
             if (word_aligned_size > self.memory_size) self.memory_size = word_aligned_size;
         }
 
@@ -227,6 +353,10 @@ pub fn Frame(comptime config: EvmConfig) type {
         /// ----------------------------------- GAS ---------------------------------- ///
         /// Consume gas
         pub fn consumeGas(self: *Self, amount: u64) EvmError!void {
+            if (self.step_metering) {
+                @branchHint(.unlikely);
+                self.step_attempted_gas +|= amount;
+            }
             // Check if amount is too large to fit in i64 or exceeds remaining gas
             if (amount > std.math.maxInt(i64) or self.gas_remaining < @as(i64, @intCast(amount))) {
                 self.gas_remaining = 0;
@@ -237,18 +367,22 @@ pub fn Frame(comptime config: EvmConfig) type {
 
         /// Calculate memory expansion cost
         /// The total memory cost for n words is: 3n + n²/512, where a word is 32 bytes.
-        pub fn memoryExpansionCost(self: *const Self, end_bytes: u64) u64 {
+        pub fn memoryExpansionCost(self: *Self, end_bytes: u64) u64 {
+            const cost = self.calculateMemoryExpansionCost(end_bytes);
+            if (self.step_metering) {
+                @branchHint(.unlikely);
+                self.step_memory_expansion_gas +|= cost;
+            }
+            return cost;
+        }
+
+        fn calculateMemoryExpansionCost(self: *const Self, end_bytes: u64) u64 {
             const current_size = @as(u64, self.memory_size);
 
             if (end_bytes <= current_size) return 0;
 
-            // Cap memory size to prevent gas calculation overflow
-            // Max reasonable memory is 16MB (0x1000000 bytes) which is ~500k words
-            // At that size, gas cost would be ~125 billion, far exceeding any reasonable gas limit
-            const max_memory: u64 = 0x1000000;
-            // Return a large value that won't overflow when added to other gas costs
-            // but will still trigger OutOfGas
-            if (end_bytes > max_memory) return std.math.maxInt(u64);
+            // Callers combine this sentinel with other costs using saturating addition.
+            if (end_bytes > max_memory_size) return std.math.maxInt(u64);
 
             const current_words = wordCount(current_size);
             const new_words = wordCount(end_bytes);
@@ -377,7 +511,7 @@ pub fn Frame(comptime config: EvmConfig) type {
         /// Errors:
         ///   - OutOfGas: If insufficient gas for operation
         ///   - StackUnderflow: If stack has insufficient items
-        ///   - StackOverflow: If stack exceeds 1024 items
+        ///   - StackOverflow: If stack exceeds the configured size
         ///   - InvalidJumpDestination: If JUMP/JUMPI targets invalid location
         ///   - StaticCallViolation: If state-modifying op in static context
         ///   - InvalidOpcode: If opcode is not recognized
@@ -385,18 +519,20 @@ pub fn Frame(comptime config: EvmConfig) type {
         pub fn executeOpcode(self: *Self, opcode: u8) EvmError!void {
             // Check for JavaScript custom opcode handler first
             const root_c = @import("root_c.zig");
-            if (root_c.tryCallJsOpcodeHandler(opcode, @intFromPtr(self))) {
+            if (root_c.jsOpcodeCallbacksEnabled() and root_c.tryCallJsOpcodeHandler(opcode, @intFromPtr(self))) {
                 // JavaScript handler executed successfully
                 return;
             }
 
             // Check for config-based opcode override (native Zig handlers)
-            const evm = self.getEvm();
-            if (evm.getOpcodeOverride(opcode)) |handler_ptr| {
-                // Cast the handler to the correct function type
-                // Handler signature: fn(*Frame) FrameError!void
-                const handler: *const fn (*Self) EvmError!void = @ptrCast(@alignCast(handler_ptr));
-                return handler(self);
+            if (comptime config.opcode_overrides.len > 0) {
+                const evm = self.getEvm();
+                if (evm.getOpcodeOverride(opcode)) |handler_ptr| {
+                    // Cast the handler to the correct function type
+                    // Handler signature: fn(*Frame) FrameError!void
+                    const handler: *const fn (*Self) EvmError!void = @ptrCast(@alignCast(handler_ptr));
+                    return handler(self);
+                }
             }
 
             // Default opcode handling
@@ -493,9 +629,12 @@ pub fn Frame(comptime config: EvmConfig) type {
             if (self.memory_size == 0) return &[_]u8{};
 
             const mem_slice = try allocator.alloc(u8, self.memory_size);
-            var i: u32 = 0;
-            while (i < self.memory_size) : (i += 1) {
-                mem_slice[i] = self.readMemory(i);
+            const copy_len = @min(mem_slice.len, self.memory.items.len);
+            if (copy_len > 0) {
+                @memcpy(mem_slice[0..copy_len], self.memory.items[0..copy_len]);
+            }
+            if (copy_len < mem_slice.len) {
+                @memset(mem_slice[copy_len..], 0);
             }
             return mem_slice;
         }
@@ -507,45 +646,130 @@ pub fn Frame(comptime config: EvmConfig) type {
             }
             const opcode = self.getCurrentOpcode() orelse return;
 
-            // Capture trace before executing opcode
             const evm = self.getEvm();
-            if (evm.tracer) |tracer| {
-                if (!tracer.enabled or tracer.entries.items.len >= tracer.max_entries) {
-                    try self.executeOpcode(opcode);
-                    return;
-                }
-                const frame_index = evm.frames.items.len - 1;
-                const trace_allocator = self.allocator;
-                const gas_before = @as(u64, @intCast(@max(self.gas_remaining, 0)));
-                const mem_slice: ?[]const u8 = if (tracer.config.tracksMemory()) try self.getMemorySlice(self.allocator) else null;
-                defer if (mem_slice) |memory| trace_allocator.free(memory);
-                const entry_index = tracer.entries.items.len;
-                // Capture before execution: nested calls may reallocate frames,
-                // and RPC stack/memory snapshots describe the entering opcode.
-                try tracer.captureState(@as(u64, self.pc), opcode, gas_before, 0, mem_slice, self.stack.items, self.return_data, evm.frames.items.len, @as(i64, @intCast(evm.gas_refund)), opcode_utils.getOpName(opcode));
-                const execution_result = self.executeOpcode(opcode);
-                const gas_after = @as(u64, @intCast(@max(evm.frames.items[frame_index].gas_remaining, 0)));
-                tracer.entries.items[entry_index].gasCost = gas_before -| gas_after;
-                if (execution_result) |_| {} else |err| {
-                    tracer.entries.items[entry_index].error_msg = try tracer.allocator.dupe(u8, @errorName(err));
-                }
-                try execution_result;
-                return;
+            const tracer = evm.tracer;
+            const observer = evm.inspector;
+            if (observer == null and (tracer == null or !tracer.?.enabled)) {
+                return self.executeOpcode(opcode);
+            } else {
+                @branchHint(.unlikely);
+                return self.stepObserved(evm, tracer, observer, opcode);
             }
+        }
 
-            try self.executeOpcode(opcode);
+        fn stepObserved(self: *Self, evm: *EvmType, tracer: ?*trace.Tracer, observer: ?inspector_mod.Inspector, opcode: u8) EvmError!void {
+            const sink = if (observer) |candidate|
+                if (candidate.opcode_mask.contains(opcode)) candidate else null
+            else
+                null;
+            if (sink == null and tracer == null) return self.executeOpcode(opcode);
+
+            const capture = if (tracer) |active| active.willCapture() else false;
+            const emit_opcode = if (sink) |active| active.vtable.onOpcode != null else false;
+            const capture_memory = (capture and tracer.?.config.tracksMemory()) or
+                (emit_opcode and sink.?.capture_memory);
+            const allocator = self.allocator;
+            const memory = if (capture_memory) try self.getMemorySlice(allocator) else null;
+            defer if (memory) |bytes| allocator.free(bytes);
+
+            const event: inspector_mod.OpcodeEvent = .{
+                .frame_id = self.frame_id,
+                .pc = self.pc,
+                .op = opcode,
+                .op_name = opcode_utils.getOpName(opcode),
+                .gas = @intCast(@max(self.gas_remaining, 0)),
+                .memory_size = self.memory_size,
+                .memory = memory,
+                .stack = self.stack.items,
+                .return_data = self.return_data,
+                .depth = @max(1, evm.frames.items.len),
+                .refund = @intCast(@min(evm.gas_refund, std.math.maxInt(i64))),
+                .address = self.address,
+                .code_address = self.code_address,
+            };
+            var token: ?usize = null;
+            if (tracer) |active| {
+                const storage = if (capture and active.config.tracksStorage()) try self.traceStorage(evm) else null;
+                defer if (storage) |slots| allocator.free(slots);
+                token = try active.capture(.{
+                    .pc = event.pc,
+                    .op = opcode,
+                    .opName = event.op_name,
+                    .gas = event.gas,
+                    .gasCost = 0,
+                    .memory = event.memory,
+                    .memSize = event.memory_size,
+                    .stack = event.stack,
+                    .returnData = event.return_data,
+                    .depth = event.depth,
+                    .refund = event.refund,
+                    .storage = storage,
+                }, false);
+            }
+            if (emit_opcode) {
+                @branchHint(.unlikely);
+                sink.?.onOpcode(event);
+            }
+            self.step_metering = true;
+            self.step_attempted_gas = 0;
+            self.step_child_gas_spent = 0;
+            self.step_memory_expansion_gas = 0;
+            const result = self.executeOpcode(opcode);
+            self.step_metering = false;
+
+            const gas_after: u64 = @intCast(@max(self.gas_remaining, 0));
+            // CALL debits forwarded gas via consumeGas and later credits the unused
+            // portion. CREATE's execution and deposit costs are child-only charges.
+            const gas_cost = if (self.step_attempted_gas != 0)
+                self.step_attempted_gas
+            else
+                event.gas -| (gas_after +| self.step_child_gas_spent);
+            const fault: ?[]const u8 = if (result) |_|
+                if (self.reverted) inspector_mod.formatErrorName(error.RevertExecution) else null
+            else |err| if (err == error.NeedAsyncData) null else inspector_mod.formatErrorName(err);
+            if (token) |step_token| tracer.?.finishStep(step_token, gas_cost, fault);
+            if (sink) |active| {
+                @branchHint(.unlikely);
+                const end: inspector_mod.OpcodeEndEvent = .{
+                    .frame_id = event.frame_id,
+                    .pc = event.pc,
+                    .op = opcode,
+                    .gas_cost = gas_cost,
+                    .gas_after = gas_after,
+                    .memory_expansion_gas = self.step_memory_expansion_gas,
+                    .error_name = fault,
+                };
+                active.onOpcodeEnd(end);
+                if (fault != null) active.onFault(end);
+            }
+            return result;
+        }
+
+        fn traceStorage(self: *Self, evm: *EvmType) EvmError![]trace.StorageEntry {
+            var snapshot: std.ArrayList(trace.StorageEntry) = .{};
+            defer snapshot.deinit(self.allocator);
+            var slots = evm.storage.trace_slots.keyIterator();
+            while (slots.next()) |key| {
+                if (!std.mem.eql(u8, &key.address, &self.address.bytes)) continue;
+                const value = evm.storage.peek(self.address, key.slot) orelse continue;
+                try snapshot.append(self.allocator, .{ .slot = key.slot, .value = value });
+            }
+            std.mem.sort(trace.StorageEntry, snapshot.items, {}, struct {
+                fn lessThan(_: void, first: trace.StorageEntry, second: trace.StorageEntry) bool {
+                    return first.slot < second.slot;
+                }
+            }.lessThan);
+            return snapshot.toOwnedSlice(self.allocator);
         }
 
         /// Main execution loop
         pub fn execute(self: *Self) EvmError!void {
-            var iteration_count: u64 = 0;
-            const max_iterations: u64 = 10_000_000; // Prevent infinite loops (reasonable limit ~10M ops)
             while (!self.stopped and !self.reverted and self.pc < self.bytecode.len()) {
-                iteration_count += 1;
-                if (iteration_count > max_iterations) {
-                    return error.ExecutionTimeout;
+                if (config.loop_quota) |quota| {
+                    if (self.iterations == quota) return error.ExecutionTimeout;
                 }
                 try self.step();
+                if (config.loop_quota != null) self.iterations += 1;
             }
         }
     };

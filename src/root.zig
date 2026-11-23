@@ -47,6 +47,51 @@ pub const CallError = errors.CallError;
 pub const trace = @import("trace.zig");
 pub const Tracer = trace.Tracer;
 pub const TraceEntry = trace.TraceEntry;
+pub const TraceSummary = trace.TraceSummary;
+pub const TraceDiff = trace.TraceDiff;
+
+pub const inspector = @import("inspector.zig");
+pub const Inspector = inspector.Inspector;
+pub const MuxInspector = inspector.MuxInspector;
+pub const OpcodeMask = inspector.OpcodeMask;
+pub const CallType = inspector.CallType;
+pub const RevertDecoder = inspector.RevertDecoder;
+pub const DecodedRevert = inspector.DecodedRevert;
+
+// Built-in native tracers and profilers
+pub const tracers = @import("tracers.zig");
+pub const CallTracer = tracers.CallTracer;
+pub const FourByteTracer = tracers.FourByteTracer;
+pub const PrestateTracer = tracers.PrestateTracer;
+pub const AccessListInspector = tracers.AccessListInspector;
+pub const GasProfiler = tracers.GasProfiler;
+pub const CoverageInspector = tracers.CoverageInspector;
+
+// Simulation engine, state & block overrides, eth_simulateV1
+pub const simulation = @import("simulation.zig");
+pub const StateOverlayHost = simulation.StateOverlayHost;
+pub const AccountOverride = simulation.AccountOverride;
+pub const BlockOverride = simulation.BlockOverride;
+pub const CallRequest = simulation.CallRequest;
+
+// Live block-level tracing & indexed trace store (trace_filter)
+pub const live_tracer = @import("live_tracer.zig");
+pub const BlockHooks = live_tracer.BlockHooks;
+pub const MuxBlockHooks = live_tracer.MuxBlockHooks;
+pub const SupplyTracer = live_tracer.SupplyTracer;
+pub const trace_store = @import("trace_store.zig");
+pub const TraceStore = trace_store.TraceStore;
+pub const TraceFilter = trace_store.TraceFilter;
+
+// Interactive time-travel debugger, flamegraph profiler & EVMC adapter
+pub const debugger = @import("debugger.zig");
+pub const ExecutionRecorder = debugger.ExecutionRecorder;
+pub const DebugSession = debugger.DebugSession;
+pub const Breakpoint = debugger.Breakpoint;
+pub const flamegraph = @import("flamegraph.zig");
+pub const FlamegraphCollector = flamegraph.FlamegraphCollector;
+pub const evmc_adapter = @import("evmc_adapter.zig");
+pub const EvmcHostBridge = evmc_adapter.EvmcHostBridge;
 
 // Export opcode utilities
 pub const opcode = @import("opcode.zig");
@@ -59,6 +104,19 @@ pub const Dispatcher = dispatcher.Dispatcher;
 test {
     std.testing.refAllDecls(@This());
     _ = @import("evm_test.zig");
+    _ = @import("inspector.zig");
+    _ = @import("trace.zig");
+    _ = @import("tracers.zig");
+    _ = @import("tracers_test.zig");
+    _ = @import("simulation.zig");
+    _ = @import("live_tracer.zig");
+    _ = @import("trace_store.zig");
+    _ = @import("live_tracer_test.zig");
+    _ = @import("debugger.zig");
+    _ = @import("flamegraph.zig");
+    _ = @import("evmc_adapter.zig");
+    _ = @import("devtools_test.zig");
+    _ = @import("oom_safety_test.zig");
     _ = @import("instructions/handlers_stack_test.zig");
     _ = @import("instructions/handlers_arithmetic_test.zig");
     _ = @import("instructions/handlers_comparison_test.zig");

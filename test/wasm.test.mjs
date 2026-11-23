@@ -7,11 +7,11 @@ import { WASI } from 'node:wasi'
 const bytes = await readFile(process.argv[2] ?? new URL('../zig-out/bin/guillotine_mini.wasm', import.meta.url))
 const module = await WebAssembly.compile(bytes)
 
-async function fixture() {
+async function fixture(js_opcode_callback = () => 0) {
   const wasi = new WASI({ version: 'preview1' })
   const instance = await WebAssembly.instantiate(module, {
     wasi_snapshot_preview1: wasi.wasiImport,
-    env: { js_opcode_callback: () => 0, js_precompile_callback: () => 0 },
+    env: { js_opcode_callback, js_precompile_callback: () => 0 },
   })
   wasi.initialize(instance)
   const api = instance.exports
@@ -33,11 +33,16 @@ async function fixture() {
   const zero = alloc(32)
   const caller = alloc(20)
   api.evm_set_blockchain_context(handle, zero, 1n, 1_720_000_000n, zero, zero, caller, 30_000_000n, zero, zero)
-  function execute(code, { input = new Uint8Array(), gas = 1_000_000n } = {}) {
-    const bytecode = typeof code === 'string' ? Buffer.from(code, 'hex') : code
-    assert.equal(api.evm_set_bytecode(handle, alloc(bytecode), bytecode.length), 1)
+  function configure(code, { input = new Uint8Array(), gas = 1_000_000n } = {}) {
+    if (code != null) {
+      const bytecode = typeof code === 'string' ? Buffer.from(code, 'hex') : code
+      assert.equal(api.evm_set_bytecode(handle, alloc(bytecode), bytecode.length), 1)
+    }
     const inputPtr = input.length ? alloc(input) : zero
     assert.equal(api.evm_set_execution_context(handle, gas, caller, address, zero, inputPtr, input.length), 1)
+  }
+  function execute(code, options) {
+    configure(code, options)
     const success = api.evm_execute(handle) === 1
     const length = api.evm_get_output_len(handle)
     const outputPtr = length ? alloc(length) : zero
@@ -45,18 +50,35 @@ async function fixture() {
     const output = Buffer.from(new Uint8Array(api.memory.buffer, outputPtr, length))
     return { success, output, gasUsed: api.evm_get_gas_used(handle) }
   }
+  function readJsonText(kind) {
+    const length = api[`evm_get_${kind}_len`](handle)
+    assert.ok(length > 0)
+    const ptr = alloc(length)
+    assert.equal(api[`evm_get_${kind}`](handle, ptr, length), length)
+    return Buffer.from(new Uint8Array(api.memory.buffer, ptr, length)).toString('utf8')
+  }
   function close() {
     api.evm_destroy(handle)
     for (const [ptr, len] of allocations.reverse()) api.evm_free(ptr, len)
   }
-  return { api, alloc, handle, address, zero, execute, close }
+  return { api, alloc, handle, address, zero, configure, execute, readJsonText, close }
 }
 
 test('WASI reactor contains crypto implementations and exports its complete C API', () => {
   const exports = new Set(WebAssembly.Module.exports(module).map(({ name }) => name))
-  for (const name of ['memory', '_initialize', 'evm_alloc', 'evm_free', 'evm_create', 'evm_destroy', 'evm_execute',
-    'evm_set_nonce', 'evm_get_log_count', 'evm_get_log', 'evm_get_gas_refund', 'evm_get_storage_change_count',
-    'evm_get_storage_change', 'evm_call_ffi', 'evm_continue_ffi', 'evm_get_state_changes']) assert.ok(exports.has(name), name)
+  assert.deepEqual(new Set([...exports].filter(name => name.startsWith('evm_'))), new Set([
+    'evm_alloc', 'evm_free', 'evm_create', 'evm_destroy', 'evm_set_bytecode', 'evm_set_execution_context',
+    'evm_set_blockchain_context', 'evm_execute', 'evm_get_gas_remaining', 'evm_get_gas_used', 'evm_is_success',
+    'evm_get_output_len', 'evm_get_output', 'evm_set_storage', 'evm_get_storage', 'evm_set_balance', 'evm_set_code',
+    'evm_set_access_list_addresses', 'evm_set_access_list_storage_keys', 'evm_set_blob_hashes', 'evm_set_nonce',
+    'evm_call_ffi', 'evm_continue_ffi', 'evm_get_state_changes', 'evm_get_state_changes_len',
+    'evm_enable_storage_injector', 'evm_get_log_count', 'evm_get_log', 'evm_get_gas_refund',
+    'evm_get_storage_change_count', 'evm_get_storage_change', 'evm_set_js_opcode_callbacks_enabled',
+    'evm_enable_tracing', 'evm_disable_tracing', 'evm_get_trace_json_len', 'evm_get_trace_json',
+    'evm_enable_call_tracer', 'evm_get_call_trace_json_len', 'evm_get_call_trace_json',
+    'evm_enable_access_list_tracker', 'evm_get_access_list_json_len', 'evm_get_access_list_json',
+  ]))
+  assert.ok(exports.has('memory') && exports.has('_initialize'))
   assert.equal(exports.has('_start'), false)
   assert.equal(exports.has('main'), false)
   assert.deepEqual(WebAssembly.Module.imports(module).filter(({ module }) => module !== 'wasi_snapshot_preview1')
@@ -72,6 +94,136 @@ test('executes arithmetic bytecode and returns output and gas', async () => {
     assert.equal(result.gasUsed, 18n)
     assert.equal(f.api.evm_is_success(f.handle), 1)
     assert.equal(f.api.evm_get_gas_remaining(f.handle), 1_000_000n - result.gasUsed)
+  } finally { f.close() }
+})
+
+test('uses storage, balance, nonce, and code set before the first execution', async () => {
+  const f = await fixture()
+  try {
+    const value = f.alloc(Buffer.from('00'.repeat(31) + '2a', 'hex'))
+    assert.equal(f.api.evm_set_storage(f.handle, f.address, f.zero, value), 1)
+    assert.equal(f.api.evm_set_balance(f.handle, f.address, value), 1)
+    const nonceAccount = f.alloc(Buffer.from('00'.repeat(18) + '0201', 'hex'))
+    assert.equal(f.api.evm_set_nonce(f.handle, nonceAccount, 1n), 1)
+
+    // SLOAD(0), SELFBALANCE, EXTCODEHASH(nonceAccount), return three words.
+    const code = Buffer.from('5f545f52476020526102013f60405260605ff3', 'hex')
+    const codePtr = f.alloc(code)
+    assert.equal(f.api.evm_set_code(f.handle, f.address, codePtr, code.length), 1)
+    new Uint8Array(f.api.memory.buffer, codePtr, code.length).fill(0)
+    for (let i = 0; i < 2; i++) {
+      const result = f.execute(null)
+      assert.equal(result.success, true)
+      assert.equal(result.output.toString('hex'), ('00'.repeat(31) + '2a').repeat(2)
+        + 'c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470')
+    }
+  } finally { f.close() }
+})
+
+test('invokes the JavaScript opcode callback only while enabled', async () => {
+  const seen = []
+  const f = await fixture(opcode => { seen.push(opcode); return 0 })
+  try {
+    f.execute('5f5000')
+    assert.deepEqual(seen, [])
+    f.api.evm_set_js_opcode_callbacks_enabled(1)
+    assert.equal(f.execute('5f5000').success, true)
+    assert.deepEqual(seen, [0x5f, 0x50, 0x00])
+    f.api.evm_set_js_opcode_callbacks_enabled(0)
+    f.execute('5f5000')
+    assert.equal(seen.length, 3)
+  } finally { f.close() }
+})
+
+test('pulls EIP-3155 opcode JSONL with capture options and a transaction summary', async () => {
+  const f = await fixture()
+  try {
+    assert.equal(f.api.evm_get_trace_json_len(f.handle), 0)
+    f.api.evm_enable_tracing(f.handle, 1, 1, 0, 1)
+    const value = '00'.repeat(31) + '2a'
+    assert.equal(f.api.evm_set_storage(f.handle, f.address, f.zero, f.alloc(Buffer.from(value, 'hex'))), 1)
+    const result = f.execute('5f545f5260205ff3')
+    assert.equal(result.success, true)
+    const lines = f.readJsonText('trace_json').trim().split('\n').map(line => JSON.parse(line))
+    const summary = lines.pop()
+    assert.deepEqual(lines.map(step => step.op), [0x5f, 0x54, 0x5f, 0x52, 0x60, 0x5f, 0xf3])
+    assert.deepEqual(lines[3].stack, [])
+    assert.equal(lines[4].memory, '0x' + value)
+    assert.equal(lines[4].storage['0x0'], '0x2a')
+    assert.equal(lines[4].returnData, '0x')
+    assert.equal(summary.output, '0x' + value)
+    assert.equal(BigInt(summary.gasUsed), result.gasUsed)
+    f.api.evm_disable_tracing(f.handle)
+    f.execute('00')
+    assert.equal(f.api.evm_get_trace_json_len(f.handle), 0)
+  } finally { f.close() }
+})
+
+test('collects a Geth call trace and EIP-2930 access list in the same execution', async () => {
+  const f = await fixture()
+  try {
+    f.api.evm_enable_call_tracer(f.handle, 0, 1)
+    f.api.evm_enable_access_list_tracker(f.handle)
+    const calleeBytes = Buffer.from('00'.repeat(18) + '0200', 'hex')
+    const callee = '0x' + calleeBytes.toString('hex')
+    const code = Buffer.from('600154505f5fa000', 'hex') // SLOAD(1), POP, LOG0, STOP.
+    assert.equal(f.api.evm_set_code(f.handle, f.alloc(calleeBytes), f.alloc(code), code.length), 1)
+    const parentCode = '5f5f5f5f5f61020061fffff15000'
+    assert.equal(f.execute(parentCode).success, true)
+    const calls = JSON.parse(f.readJsonText('call_trace_json'))
+    assert.equal(calls.type, 'CALL')
+    assert.equal(calls.calls.length, 1)
+    assert.equal(calls.calls[0].type, 'CALL')
+    assert.equal(calls.calls[0].to, callee)
+    assert.equal(calls.calls[0].logs[0].address, callee)
+    assert.deepEqual(JSON.parse(f.readJsonText('access_list_json')), [
+      { address: callee, storageKeys: ['0x' + '00'.repeat(31) + '01'] },
+    ])
+
+    f.api.evm_enable_call_tracer(f.handle, 1, 0)
+    assert.equal(f.execute(parentCode).success, true)
+    assert.equal(JSON.parse(f.readJsonText('call_trace_json')).calls, undefined)
+    assert.equal(f.execute('00').success, true)
+    assert.deepEqual(JSON.parse(f.readJsonText('access_list_json')), [])
+  } finally { f.close() }
+})
+
+test('retrieves the full async state dump beyond the inline buffer', async () => {
+  const f = await fixture()
+  try {
+    const slots = 180
+    const slot = f.alloc(32)
+    const value = f.alloc(Buffer.from('00'.repeat(31) + '01', 'hex'))
+    let code = ''
+    for (let i = 0; i < slots; i++) {
+      new Uint8Array(f.api.memory.buffer, slot, 32)[31] = i
+      assert.equal(f.api.evm_set_storage(f.handle, f.address, slot, value), 1)
+      code += `600260${i.toString(16).padStart(2, '0')}55`
+    }
+    assert.equal(f.api.evm_enable_storage_injector(f.handle), 1)
+    f.api.evm_enable_tracing(f.handle, 0, 1, 1, 0)
+    f.api.evm_enable_call_tracer(f.handle, 0, 0)
+    f.api.evm_enable_access_list_tracker(f.handle)
+    f.configure(code + '00')
+    const request = f.alloc(60 + 16384)
+    assert.equal(f.api.evm_call_ffi(f.handle, request), 1)
+    assert.equal(new Uint8Array(f.api.memory.buffer, request, 1)[0], 5)
+    assert.ok(f.api.evm_get_state_changes_len(f.handle) > 16384)
+    const fullDump = f.readJsonText('state_changes')
+    const prefix = f.alloc(16)
+    assert.equal(f.api.evm_get_state_changes(f.handle, prefix, 16), 16)
+    assert.equal(Buffer.from(new Uint8Array(f.api.memory.buffer, prefix, 16)).toString(), fullDump.slice(0, 16))
+    const { storage } = JSON.parse(fullDump)
+    assert.equal(storage.length, slots)
+    assert.equal(storage[0].originalValue, '0x1')
+    assert.equal(storage[0].newValue, '0x2')
+
+    assert.equal(f.api.evm_continue_ffi(f.handle, 5, f.zero, 0, request), 1)
+    assert.equal(new Uint8Array(f.api.memory.buffer, request, 1)[0], 0)
+    assert.equal(f.api.evm_get_state_changes_len(f.handle), 0)
+    assert.equal(JSON.parse(f.readJsonText('call_trace_json')).type, 'CALL')
+    assert.equal(JSON.parse(f.readJsonText('access_list_json'))[0].storageKeys.length, slots)
+    assert.equal(f.readJsonText('trace_json').trim().split('\n').length, slots * 3 + 2)
   } finally { f.close() }
 })
 

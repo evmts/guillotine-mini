@@ -1,15 +1,16 @@
 ---
 title: C & WASM ABI
-description: Complete signature reference for all 30 exported evm_* symbols in src/root_c.zig, AsyncRequest layout, and WASM env imports.
+description: Complete signature reference for all 42 exported evm_* symbols in src/root_c.zig, AsyncRequest layout, tracing exports, and WASM env imports.
 ---
 
 # C & WASM ABI
 
-Both `zig build native` (`zig-out/lib/libguillotine_mini.a`) and `zig build wasm` (`zig-out/bin/guillotine_mini.wasm`) export the same 30 symbols from `src/root_c.zig`.
+Both `zig build native` (`zig-out/lib/libguillotine_mini.a`) and `zig build wasm` (`zig-out/bin/guillotine_mini.wasm`) export the same **42 symbols** from `src/root_c.zig`.
 
 ## Calling conventions
 
-- **Handles:** Every function except `evm_alloc`, `evm_free`, and `evm_create` takes a nullable `EvmHandle*` and returns `false` / `0` on `NULL`.
+- **Handles:** Every function except `evm_alloc`, `evm_free`, `evm_create`, and `evm_set_js_opcode_callbacks_enabled` takes a nullable `EvmHandle*`. On `NULL`, void functions return immediately, boolean functions return `false`, and numeric functions return `0`.
+- **Empty buffers:** Pass a valid byte pointer with length `0` for empty calldata or continuation data.
 - **Byte order:** Addresses are 20 raw bytes. All `u256` values (`value`, `slot`, `balance`, `chain_id`, `difficulty`, `prevrandao`, `base_fee`, `blob_base_fee`) are **32-byte big-endian** arrays.
 - **`usize` width:** `8` bytes on 64-bit native targets; `4` bytes (little-endian `u32`) on `wasm32-wasi`.
 - **WASM reactor startup:** Call `_initialize()` once (via `WASI.initialize(instance)` in Node 22+) before calling any `evm_*` export.
@@ -31,7 +32,7 @@ EvmHandle *evm_create(const char *hardfork_name, size_t hardfork_len, uint8_t lo
 void       evm_destroy(EvmHandle *handle);
 ```
 
-- `hardfork_name` is parsed case-insensitively (`"frontier"`, `"cancun"`, `"prague"`, `"osaka"`, …). `hardfork_len == 0` selects `Hardfork.DEFAULT` (`.PRAGUE`).
+- `hardfork_name` is parsed case-insensitively (`"frontier"`, `"cancun"`, `"prague"`, `"osaka"`, `"amsterdam"`, …). An empty or unrecognized name selects the configured default. The C wrapper uses `Evm(.{})`, whose `Hardfork.DEFAULT` is `.OSAKA`.
 - `log_level`: `0` = none, `1` = err, `2` = warn, `3` = info, `4` = debug.
 
 ## Execution setup & run
@@ -74,21 +75,52 @@ bool evm_set_blob_hashes(EvmHandle *h, const uint8_t *hashes, size_t count);
 bool evm_execute(EvmHandle *h);
 ```
 
-`evm_execute()` automatically installs the bytecode from `evm_set_bytecode()` at `address`, runs `Evm.call()`, stores the `CallResult`, and returns `result.success`.
+`evm_execute()` runs `Evm.callWithBytecodeOverride()`: if `evm_set_bytecode()` set non-empty bytecode, it overrides the top-level target's code without mutating `evm.code`; otherwise it executes the code already stored at `address` via `evm_set_code()`. Returns `result.success`.
+
+## Tracing, call tracer & access list tracker
+
+```c
+// EIP-3155 JSONL opcode trace (includes trailing TraceSummary line)
+void   evm_enable_tracing(
+    EvmHandle *h,
+    bool enable_memory,
+    bool disable_stack,
+    bool disable_storage,
+    bool enable_return_data
+);
+void   evm_disable_tracing(EvmHandle *h);
+size_t evm_get_trace_json_len(EvmHandle *h);
+size_t evm_get_trace_json(EvmHandle *h, uint8_t *buffer, size_t buffer_len);
+
+// Geth callTracer JSON tree
+void   evm_enable_call_tracer(EvmHandle *h, bool only_top_call, bool with_log);
+size_t evm_get_call_trace_json_len(EvmHandle *h);
+size_t evm_get_call_trace_json(EvmHandle *h, uint8_t *buffer, size_t buffer_len);
+
+// EIP-2930 access list JSON array
+void   evm_enable_access_list_tracker(EvmHandle *h);
+size_t evm_get_access_list_json_len(EvmHandle *h);
+size_t evm_get_access_list_json(EvmHandle *h, uint8_t *buffer, size_t buffer_len);
+```
+
+- Configuration applies to subsequent `evm_execute()` and `evm_call_ffi()` calls.
+- When both `evm_enable_call_tracer` and `evm_enable_access_list_tracker` are enabled, events are fanned out through `MuxInspector`.
+- Serialized JSON payloads are lazily computed and cached per execution, then freed on the next execution or `evm_destroy()`.
+- `evm_get_*_json()` copies `min(payload_len, buffer_len)` bytes and returns the number of bytes copied.
 
 ## Result inspection
 
 ```c
-bool    evm_is_success(EvmHandle *h);
-int64_t evm_get_gas_remaining(EvmHandle *h);
-int64_t evm_get_gas_used(EvmHandle *h);
+bool     evm_is_success(EvmHandle *h);
+int64_t  evm_get_gas_remaining(EvmHandle *h);
+int64_t  evm_get_gas_used(EvmHandle *h);
 uint64_t evm_get_gas_refund(EvmHandle *h);
 
-size_t  evm_get_output_len(EvmHandle *h);
-size_t  evm_get_output(EvmHandle *h, uint8_t *buffer, size_t buffer_len);
+size_t   evm_get_output_len(EvmHandle *h);
+size_t   evm_get_output(EvmHandle *h, uint8_t *buffer, size_t buffer_len);
 
-size_t  evm_get_log_count(EvmHandle *h);
-bool    evm_get_log(
+size_t   evm_get_log_count(EvmHandle *h);
+bool     evm_get_log(
     EvmHandle *h,
     size_t index,
     uint8_t address_out[20],
@@ -99,8 +131,8 @@ bool    evm_get_log(
     size_t data_max_len
 );
 
-size_t  evm_get_storage_change_count(EvmHandle *h);
-bool    evm_get_storage_change(
+size_t   evm_get_storage_change_count(EvmHandle *h);
+bool     evm_get_storage_change(
     EvmHandle *h,
     size_t index,
     uint8_t address_out[20],
@@ -119,6 +151,8 @@ bool evm_set_code(EvmHandle *h, const uint8_t addr[20], const uint8_t *code, siz
 bool evm_set_nonce(EvmHandle *h, const uint8_t addr[20], uint64_t nonce);
 ```
 
+All four setters may be called **before** the first `evm_execute()` or `evm_call_ffi()`. `evm_set_storage()` records the slot via `Evm.setStoragePrestate()` so seeded values survive `initTransactionState()` (including with `StorageInjector` enabled) without being misreported as writes; `evm_set_balance()`, `evm_set_code()`, and `evm_set_nonce()` persist in the `Evm`'s arena-backed state maps across calls.
+
 ## Async state-injection protocol
 
 ```c
@@ -126,7 +160,7 @@ typedef struct {
     uint8_t  output_type;      // 0=result, 1=storage, 2=balance, 3=code, 4=nonce, 5=ready_to_commit, 255=error
     uint8_t  address[20];
     uint8_t  slot[32];
-    uint32_t json_len;
+    uint32_t json_len;         // inline bytes copied into json_data (up to 16384)
     uint8_t  json_data[16384];
 } AsyncRequest;
 
@@ -139,10 +173,17 @@ bool   evm_continue_ffi(
     size_t data_len,
     AsyncRequest *request_out
 );
+size_t evm_get_state_changes_len(EvmHandle *h);
 size_t evm_get_state_changes(EvmHandle *h, uint8_t *buffer, size_t buffer_len);
 ```
 
-## WASM host imports (`env`)
+`evm_get_state_changes_len()` returns the exact byte length of the full arena-allocated state-changes JSON when `output_type == 5`, allowing callers to fetch payloads larger than the 16,384-byte inline `AsyncRequest.json_data` buffer via `evm_get_state_changes()`.
+
+## WASM host imports (`env`) & callback toggle
+
+```c
+void evm_set_js_opcode_callbacks_enabled(bool enabled);
+```
 
 `guillotine_mini.wasm` imports `wasi_snapshot_preview1` plus two functions from `env`:
 
@@ -150,3 +191,5 @@ size_t evm_get_state_changes(EvmHandle *h, uint8_t *buffer, size_t buffer_len);
 | --- | --- | --- |
 | `env.js_opcode_callback(opcode, frame_ptr)` | Run built-in Zig opcode handler | Handler consumed the opcode |
 | `env.js_precompile_callback(addr_ptr, in_ptr, in_len, gas_limit, out_len_ptr, out_ptr_ptr, gas_used_ptr)` | Run built-in Zig/Rust precompile | JS handled the precompile |
+
+`js_opcode_callback` dispatch is **opt-in** and defaults to `false` to avoid per-opcode WASM/JS boundary overhead; call `evm_set_js_opcode_callbacks_enabled(true)` to enable it for the WASM instance (no-op on native builds).

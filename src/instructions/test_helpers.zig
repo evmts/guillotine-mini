@@ -272,13 +272,13 @@ pub const TestHelper = struct {
 
     /// Write bytes to memory at offset
     pub fn writeMemory(self: *Self, offset: u32, data: []const u8) !void {
-        for (data, 0..) |byte, i| {
-            try self.frame.memory.put(@intCast(offset + i), byte);
-        }
-        // Update memory size if needed
-        const new_size = offset + @as(u32, @intCast(data.len));
-        if (new_size > self.frame.memory_size) {
-            self.frame.memory_size = new_size;
+        if (data.len > 0) {
+            const end = offset + @as(u32, @intCast(data.len));
+            try self.frame.ensureMemoryBytes(end);
+            @memcpy(self.frame.memory.items[offset..end], data);
+            if (end > self.frame.memory_size) {
+                self.frame.memory_size = end;
+            }
         }
     }
 
@@ -286,7 +286,7 @@ pub const TestHelper = struct {
     pub fn readMemory(self: *Self, offset: u32, length: u32) ![]u8 {
         const result = try self.allocator.alloc(u8, length);
         for (0..length) |i| {
-            result[i] = self.frame.memory.get(@intCast(offset + i)) orelse 0;
+            result[i] = self.frame.readMemory(@intCast(offset + i));
         }
         return result;
     }
@@ -405,7 +405,7 @@ pub const TestHelper = struct {
 
     /// Assert memory byte at offset
     pub fn assertMemoryByte(self: *Self, offset: u32, expected: u8) !void {
-        const actual = self.frame.memory.get(offset) orelse 0;
+        const actual = self.frame.readMemory(offset);
         try testing.expectEqual(expected, actual);
     }
 

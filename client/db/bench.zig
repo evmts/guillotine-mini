@@ -16,8 +16,10 @@
 const std = @import("std");
 const adapter = @import("adapter.zig");
 const memory = @import("memory.zig");
+const bench = @import("bench_utils");
 const WriteBatch = adapter.WriteBatch;
 const MemoryDatabase = memory.MemoryDatabase;
+const BenchResult = bench.BenchResult;
 
 /// Number of iterations for each benchmark tier.
 const SMALL_N: usize = 1_000;
@@ -55,70 +57,13 @@ fn generate_value(buf: *[VALUE_SIZE]u8, index: usize) void {
     }
 }
 
-/// Format nanoseconds into a human-readable string.
-fn format_ns(ns: u64) ![32]u8 {
-    var buf: [32]u8 = undefined;
-    if (ns < 1_000) {
-        _ = try std.fmt.bufPrint(&buf, "{d} ns", .{ns});
-    } else if (ns < 1_000_000) {
-        _ = try std.fmt.bufPrint(&buf, "{d:.1} us", .{@as(f64, @floatFromInt(ns)) / 1_000.0});
-    } else if (ns < 1_000_000_000) {
-        _ = try std.fmt.bufPrint(&buf, "{d:.2} ms", .{@as(f64, @floatFromInt(ns)) / 1_000_000.0});
-    } else {
-        _ = try std.fmt.bufPrint(&buf, "{d:.3} s", .{@as(f64, @floatFromInt(ns)) / 1_000_000_000.0});
-    }
-    return buf;
-}
-
-fn format_ops_per_sec(ops: usize, elapsed_ns: u64) ![32]u8 {
-    var buf: [32]u8 = undefined;
-    if (elapsed_ns == 0) {
-        _ = try std.fmt.bufPrint(&buf, "inf ops/s", .{});
-        return buf;
-    }
-    const ops_per_sec = @as(f64, @floatFromInt(ops)) / (@as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0);
-    if (ops_per_sec >= 1_000_000) {
-        _ = try std.fmt.bufPrint(&buf, "{d:.2} M ops/s", .{ops_per_sec / 1_000_000.0});
-    } else if (ops_per_sec >= 1_000) {
-        _ = try std.fmt.bufPrint(&buf, "{d:.1} K ops/s", .{ops_per_sec / 1_000.0});
-    } else {
-        _ = try std.fmt.bufPrint(&buf, "{d:.0} ops/s", .{ops_per_sec});
-    }
-    return buf;
-}
-
-const BenchResult = struct {
-    name: []const u8,
-    ops: usize,
-    elapsed_ns: u64,
-    per_op_ns: u64,
-    ops_per_sec: f64,
-};
-
 fn run_bench(name: []const u8, n: usize, func: anytype) !BenchResult {
     const elapsed = try func(n);
-    const per_op = if (n > 0) elapsed / n else 0;
-    const ops_sec = if (elapsed > 0) @as(f64, @floatFromInt(n)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0) else 0;
-    return .{
-        .name = name,
-        .ops = n,
-        .elapsed_ns = elapsed,
-        .per_op_ns = per_op,
-        .ops_per_sec = ops_sec,
-    };
+    return bench.make_result(name, n, elapsed);
 }
 
 fn print_result(r: BenchResult) !void {
-    const total_str = try format_ns(r.elapsed_ns);
-    const per_op_str = try format_ns(r.per_op_ns);
-    const ops_str = try format_ops_per_sec(r.ops, r.elapsed_ns);
-    std.debug.print("  {s:<45} {d:>8} ops  total={s}  per-op={s}  {s}\n", .{
-        r.name,
-        r.ops,
-        &total_str,
-        &per_op_str,
-        &ops_str,
-    });
+    bench.print_result(r);
 }
 
 // ============================================================================
@@ -312,10 +257,15 @@ fn bench_vtable_overhead(n: usize) !u64 {
     const iface = db.database();
 
     var timer = try std.time.Timer.start();
+    var sink: usize = 0;
     for (0..n) |i| {
         generate_key(&key_buf, i % 1000);
-        _ = try iface.get(&key_buf);
+        if (try iface.get(&key_buf)) |v| {
+            sink +%= v.bytes.len;
+            v.release();
+        }
     }
+    std.mem.doNotOptimizeAway(sink);
     return timer.read();
 }
 
@@ -334,10 +284,15 @@ fn bench_direct_calls(n: usize) !u64 {
     }
 
     var timer = try std.time.Timer.start();
+    var sink: usize = 0;
     for (0..n) |i| {
         generate_key(&key_buf, i % 1000);
-        _ = db.get(&key_buf);
+        if (db.get(&key_buf)) |v| {
+            sink +%= v.bytes.len;
+            v.release();
+        }
     }
+    std.mem.doNotOptimizeAway(sink);
     return timer.read();
 }
 
@@ -412,6 +367,11 @@ fn bench_block_processing(n: usize) !u64 {
 
 /// Entry point for DB abstraction layer benchmarks.
 pub fn main() !void {
+    var suite = bench.BenchSuite.initQuiet(std.heap.page_allocator, "client/db");
+    defer suite.deinit();
+    suite.attach();
+    defer suite.writeJsonIfRequested() catch {};
+
     std.debug.print("\n", .{});
     std.debug.print("=" ** 100 ++ "\n", .{});
     std.debug.print("  Guillotine Phase-0-DB Benchmarks (MemoryDatabase)\n", .{});

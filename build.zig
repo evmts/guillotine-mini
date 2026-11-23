@@ -32,6 +32,16 @@ pub fn build(b: *std.Build) void {
     const crypto_mod = primitives_dep.module("crypto");
     const precompiles_mod = primitives_dep.module("precompiles");
     const blockchain_mod = primitives_dep.module("blockchain");
+    const evm_options = b.addOptions();
+    evm_options.addOption(?[]const u8, "hardfork", b.option([]const u8, "hardfork", "Default EVM hardfork"));
+    evm_options.addOption(?u16, "max_call_depth", b.option(u16, "max-call-depth", "EVM message call depth limit"));
+    evm_options.addOption(?u12, "stack_size", b.option(u12, "stack-size", "EVM stack size limit"));
+    evm_options.addOption(?u32, "max_bytecode_size", b.option(u32, "max-bytecode-size", "EVM deployed bytecode size limit"));
+    evm_options.addOption(?u32, "max_initcode_size", b.option(u32, "max-initcode-size", "EVM initcode size limit"));
+    evm_options.addOption(?u64, "block_gas_limit", b.option(u64, "block-gas-limit", "Default EVM block gas limit"));
+    evm_options.addOption(?usize, "memory_initial_capacity", b.option(usize, "memory-initial-capacity", "EVM initial memory capacity"));
+    evm_options.addOption(?u64, "memory_limit", b.option(u64, "memory-limit", "EVM memory size limit"));
+    const evm_options_mod = evm_options.createModule();
     const jsonrpc_mod = b.addModule("jsonrpc", .{
         .root_source_file = primitives_dep.path("packages/voltaire-zig/src/jsonrpc/root.zig"),
         .target = target,
@@ -61,6 +71,7 @@ pub fn build(b: *std.Build) void {
         // which requires us to specify a target.
         .target = target,
         .imports = &.{
+            .{ .name = "build_options", .module = evm_options_mod },
             .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "crypto", .module = crypto_mod },
@@ -107,6 +118,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "build_options", .module = evm_options_mod },
             .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
             .{ .name = "crypto", .module = crypto_mod },
@@ -300,6 +312,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "jsonrpc", .module = jsonrpc_mod },
+            .{ .name = "evm", .module = evm_mod },
         },
     });
 
@@ -478,6 +491,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
             .{ .name = "voltaire", .module = primitives_mod },
         },
     });
@@ -497,6 +511,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
             .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
         },
@@ -532,6 +547,178 @@ pub fn build(b: *std.Build) void {
     bench_txpool_step.dependOn(&run_client_txpool_bench.step);
     const install_client_txpool_bench = b.addInstallArtifact(client_txpool_bench, .{});
     bench_txpool_step.dependOn(&install_client_txpool_bench.step);
+
+    // Core EVM benchmarks (bytecode, frame, opcodes, storage, execution, c-ffi)
+    const bench_bytecode_mod = b.addModule("bench_bytecode", .{
+        .root_source_file = b.path("src/bench_bytecode.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+        },
+    });
+    const bench_bytecode_exe = b.addExecutable(.{ .name = "bench_bytecode", .root_module = bench_bytecode_mod });
+    const run_bench_bytecode = b.addRunArtifact(bench_bytecode_exe);
+    const bench_bytecode_step = b.step("bench-bytecode", "Run EVM bytecode analysis & JUMPDEST benchmarks");
+    bench_bytecode_step.dependOn(&run_bench_bytecode.step);
+
+    const bench_frame_mod = b.addModule("bench_frame", .{
+        .root_source_file = b.path("src/bench_frame.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+            .{ .name = "evm", .module = evm_mod },
+        },
+    });
+    const bench_frame_exe = b.addExecutable(.{ .name = "bench_frame", .root_module = bench_frame_mod });
+    const run_bench_frame = b.addRunArtifact(bench_frame_exe);
+    const bench_frame_step = b.step("bench-frame", "Run EVM frame, stack, memory & gas benchmarks");
+    bench_frame_step.dependOn(&run_bench_frame.step);
+
+    const bench_opcodes_mod = b.addModule("bench_opcodes", .{
+        .root_source_file = b.path("src/bench_opcodes.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+            .{ .name = "evm", .module = evm_mod },
+        },
+    });
+    const bench_opcodes_exe = b.addExecutable(.{ .name = "bench_opcodes", .root_module = bench_opcodes_mod });
+    const run_bench_opcodes = b.addRunArtifact(bench_opcodes_exe);
+    const bench_opcodes_step = b.step("bench-opcodes", "Run EVM opcode micro-benchmarks");
+    bench_opcodes_step.dependOn(&run_bench_opcodes.step);
+
+    const bench_storage_mod = b.addModule("bench_storage", .{
+        .root_source_file = b.path("src/bench_storage.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "precompiles", .module = precompiles_mod },
+        },
+    });
+    const bench_storage_exe = b.addExecutable(.{ .name = "bench_storage", .root_module = bench_storage_mod });
+    const run_bench_storage = b.addRunArtifact(bench_storage_exe);
+    const bench_storage_step = b.step("bench-storage", "Run EVM storage & EIP-2929 access list benchmarks");
+    bench_storage_step.dependOn(&run_bench_storage.step);
+
+    const bench_evm_core_mod = b.addModule("bench_evm_core", .{
+        .root_source_file = b.path("src/bench_evm.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+            .{ .name = "evm", .module = evm_mod },
+        },
+    });
+    const bench_evm_core_exe = b.addExecutable(.{ .name = "bench_evm_core", .root_module = bench_evm_core_mod });
+    const run_bench_evm_core = b.addRunArtifact(bench_evm_core_exe);
+    const bench_evm_core_step = b.step("bench-evm-core", "Run end-to-end EVM contract, precompile & tracer benchmarks");
+    bench_evm_core_step.dependOn(&run_bench_evm_core.step);
+
+    const bench_ffi_mod = b.addModule("bench_ffi", .{
+        .root_source_file = b.path("src/bench_ffi.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "precompiles", .module = precompiles_mod },
+        },
+    });
+    const bench_ffi_exe = b.addExecutable(.{ .name = "bench_ffi", .root_module = bench_ffi_mod });
+    const run_bench_ffi = b.addRunArtifact(bench_ffi_exe);
+    const bench_ffi_step = b.step("bench-ffi", "Run C-FFI / WASM bridge benchmarks");
+    bench_ffi_step.dependOn(&run_bench_ffi.step);
+
+    // Client RPC, Engine, Sync & CLI benchmarks
+    const client_rpc_bench_mod = b.addModule("client_rpc_bench", .{
+        .root_source_file = b.path("client/rpc/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "jsonrpc", .module = jsonrpc_mod },
+        },
+    });
+    const client_rpc_bench = b.addExecutable(.{ .name = "bench_rpc", .root_module = client_rpc_bench_mod });
+    const run_client_rpc_bench = b.addRunArtifact(client_rpc_bench);
+    const bench_rpc_step = b.step("bench-rpc", "Run JSON-RPC parser, dispatcher & formatter benchmarks");
+    bench_rpc_step.dependOn(&run_client_rpc_bench.step);
+
+    const client_engine_bench_mod = b.addModule("client_engine_bench", .{
+        .root_source_file = b.path("client/engine/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "jsonrpc", .module = jsonrpc_mod },
+        },
+    });
+    const client_engine_bench = b.addExecutable(.{ .name = "bench_engine", .root_module = client_engine_bench_mod });
+    const run_client_engine_bench = b.addRunArtifact(client_engine_bench);
+    const bench_engine_step = b.step("bench-engine", "Run Engine API method validation & dispatch benchmarks");
+    bench_engine_step.dependOn(&run_client_engine_bench.step);
+
+    const client_sync_bench_mod = b.addModule("client_sync_bench", .{
+        .root_source_file = b.path("client/sync/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+        },
+    });
+    const client_sync_bench = b.addExecutable(.{ .name = "bench_sync", .root_module = client_sync_bench_mod });
+    const run_client_sync_bench = b.addRunArtifact(client_sync_bench);
+    const bench_sync_step = b.step("bench-sync", "Run sync mode, status & headers request benchmarks");
+    bench_sync_step.dependOn(&run_client_sync_bench.step);
+
+    const client_cli_bench_mod = b.addModule("client_cli_bench", .{
+        .root_source_file = b.path("client/cli_bench.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "bench_utils", .module = bench_utils_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+        },
+    });
+    const client_cli_bench = b.addExecutable(.{ .name = "bench_cli", .root_module = client_cli_bench_mod });
+    const run_client_cli_bench = b.addRunArtifact(client_cli_bench);
+    const bench_cli_step = b.step("bench-cli", "Run CLI argument parsing benchmarks");
+    bench_cli_step.dependOn(&run_client_cli_bench.step);
+
+    // Aggregate Zig benchmark step
+    const bench_all_step = b.step("bench", "Run all Zig benchmarks (core EVM + client)");
+    bench_all_step.dependOn(&run_bench_bytecode.step);
+    bench_all_step.dependOn(&run_bench_frame.step);
+    bench_all_step.dependOn(&run_bench_opcodes.step);
+    bench_all_step.dependOn(&run_bench_storage.step);
+    bench_all_step.dependOn(&run_bench_evm_core.step);
+    bench_all_step.dependOn(&run_bench_ffi.step);
+    bench_all_step.dependOn(&run_client_db_bench.step);
+    bench_all_step.dependOn(&run_client_trie_bench.step);
+    bench_all_step.dependOn(&run_client_state_bench.step);
+    bench_all_step.dependOn(&run_client_evm_bench.step);
+    bench_all_step.dependOn(&run_client_blockchain_bench.step);
+    bench_all_step.dependOn(&run_client_txpool_bench.step);
+    bench_all_step.dependOn(&run_client_network_bench.step);
+    bench_all_step.dependOn(&run_client_rpc_bench.step);
+    bench_all_step.dependOn(&run_client_engine_bench.step);
+    bench_all_step.dependOn(&run_client_sync_bench.step);
+    bench_all_step.dependOn(&run_client_cli_bench.step);
 
     // Add execution-specs tests
     // Build option to force refreshing the generated Python fixtures
@@ -937,6 +1124,7 @@ pub fn build(b: *std.Build) void {
         .target = wasm_target,
         .optimize = .ReleaseSmall,
         .imports = &.{
+            .{ .name = "build_options", .module = evm_options_mod },
             .{ .name = "voltaire", .module = wasm_primitives_mod },
             .{ .name = "crypto", .module = wasm_crypto_mod },
             .{ .name = "precompiles", .module = wasm_precompiles_mod },
@@ -977,6 +1165,7 @@ pub fn build(b: *std.Build) void {
         "evm_call_ffi",
         "evm_continue_ffi",
         "evm_get_state_changes",
+        "evm_get_state_changes_len",
         "evm_enable_storage_injector",
         "evm_set_nonce",
         "evm_get_log_count",
@@ -984,6 +1173,17 @@ pub fn build(b: *std.Build) void {
         "evm_get_gas_refund",
         "evm_get_storage_change_count",
         "evm_get_storage_change",
+        "evm_set_js_opcode_callbacks_enabled",
+        "evm_enable_tracing",
+        "evm_disable_tracing",
+        "evm_get_trace_json_len",
+        "evm_get_trace_json",
+        "evm_enable_call_tracer",
+        "evm_get_call_trace_json_len",
+        "evm_get_call_trace_json",
+        "evm_enable_access_list_tracker",
+        "evm_get_access_list_json_len",
+        "evm_get_access_list_json",
     };
 
     const wasm_install = b.addInstallArtifact(wasm_lib, .{});
@@ -1008,6 +1208,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "build_options", .module = evm_options_mod },
             .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "precompiles", .module = precompiles_mod },

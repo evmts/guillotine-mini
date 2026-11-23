@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guillotine Mini Phase 4A verification</title>
+<style>
+:root { color-scheme: light dark; font: 16px/1.55 system-ui, sans-serif; }
+body { max-width: 70rem; margin: 3rem auto; padding: 0 1.25rem; }
+h1 { margin-bottom: .25rem; }
+h2 { margin-top: 2rem; }
+a { color: LinkText; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: .6rem .7rem; text-align: left; vertical-align: top; border-bottom: 1px solid GrayText; }
+pre { padding: .8rem; overflow: auto; border: 1px solid GrayText; border-radius: .3rem; }
+code { font-size: .9em; }
+summary { cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>Guillotine Mini Phase 4A verification</h1>
+<p>All six requested Zig 0.15.2 commands exited with status 0. Unit verification reported 1,015 passes and one skip. The WASM suite passed all eight tests. A standalone build of the reference runner passed both of its tests.</p>
+</header>
+<section>
+<h2>Implementation</h2>
+<table>
+<thead><tr><th scope="col">Files</th><th scope="col">Changes</th></tr></thead>
+<tbody>
+<tr><td><code>src/inspector.zig</code>, <code>src/root.zig</code></td><td>Read-only inspector vtable, typed events, opcode masks, inspector composition, ABI revert decoding, normalized error names, and public exports.</td></tr>
+<tr><td><code>src/evm.zig</code>, <code>src/frame.zig</code>, <code>src/errors.zig</code></td><td>Transaction and frame lifecycle hooks, stable frame IDs, delegation metadata, opcode gas and memory accounting, account mutation hooks, and safe precompile failure handling. <code>getBytecode()</code> now returns the raw slice from the existing <code>Bytecode.code</code> field.</td></tr>
+<tr><td><code>src/trace.zig</code>, <code>test/specs/runner.zig</code></td><td>Accurate memory size, static opcode names for VM steps, fault serialization, streaming EIP-3155 JSONL, optional storage snapshots, truncation and ordered eviction, expanded trace diffs, and reference parsing for stacks, return data, errors, and summary records.</td></tr>
+<tr><td><code>src/storage.zig</code>, <code>src/storage_injector.zig</code></td><td>Transaction writes, including zero, shadow injected prestate. Change dumps use current state and report balance, nonce, and code updates.</td></tr>
+<tr><td><code>src/instructions/handlers_context.zig</code>, <code>handlers_log.zig</code>, <code>handlers_memory.zig</code>, <code>handlers_storage.zig</code>, <code>handlers_system.zig</code></td><td>Account and slot access events, log and state events, SELFDESTRUCT events, child gas attribution, and overflow-safe memory gas charges.</td></tr>
+<tr><td><code>client/main.zig</code>, <code>src/evm_test.zig</code></td><td>CLI tracer lifetime fix and regression tests for frames, faults, bytecode access, state hooks, injected read-after-write, dirty account fields, and precompile overrides.</td></tr>
+</tbody>
+</table>
+<p>CALL-family <code>gasCost</code> includes the charged forwarded gas. CREATE-family <code>gasCost</code> excludes child execution and code deposit. The trace writer uses hex-string memory as shown in the EIP examples and captures pre-op values of observed slots for the execution address. <a href="https://eips.ethereum.org/EIPS/eip-3155">EIP-3155</a> · <a href="https://github.com/ethereum/go-ethereum/blob/master/core/vm/gas_table.go">Geth CALL metering</a> · <a href="https://github.com/ethereum/go-ethereum/blob/master/core/vm/instructions.go">Geth CREATE forwarding</a></p>
+<p>Frame entry identifies built-in precompiles and Zig overrides. Custom WASM precompiles still receive frame entry and exit events. Their classification is resolved by the JavaScript callback during execution, so a custom address can appear as an empty-code call at entry.</p>
+</section>
+<section>
+<h2>Exact build output</h2>
+<details open><summary>Requested command chain</summary>
+<pre><code>$ zig build unit
+    Finished `release` profile [optimized] target(s) in 0.43s
+$ zig build test-trace
+    Finished `release` profile [optimized] target(s) in 0.08s
+$ zig build test-evm-adapter
+    Finished `release` profile [optimized] target(s) in 0.59s
+$ zig build test-rpc
+    Finished `release` profile [optimized] target(s) in 0.46s
+$ zig build wasm
+ Downloading crates ...
+  Downloaded hashbrown v0.15.5
+    Finished `release` profile [optimized] target(s) in 1.29s
+$ zig build test-wasm
+    Blocking waiting for file lock on package cache
+ Downloading crates ...
+  Downloaded crunchy v0.2.4
+  Downloaded tiny-keccak v2.0.2
+    Finished `release` profile [optimized] target(s) in 4.13s
+(node:96043) ExperimentalWarning: WASI is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ WASI reactor contains crypto implementations and exports its complete C API (1.413458ms)
+✔ executes arithmetic bytecode and returns output and gas (8.768084ms)
+✔ preserves revert data and reports out of gas (2.140208ms)
+✔ exposes storage writes and logs through the WASM C API (1.540875ms)
+✔ executes SHA256, BN254 pairing, and BLS12-381 precompiles inside WASM (179.213333ms)
+✔ transfer buffers support memory growth and reuse (5.219959ms)
+✔ destroy releases copied bytecode, calldata, access lists, and blob hashes (39.415417ms)
+✔ failed replacement allocations leave an instance safe to destroy (2.432958ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 269.5475</code></pre>
+</details>
+<details><summary>Additional checks</summary>
+<pre><code>$ zig build unit --summary all
+Build Summary: 31/31 steps succeeded; 1015/1016 tests passed; 1 skipped
+
+Standalone reference runner
+Build Summary: 9/9 steps succeeded; 2/2 tests passed</code></pre>
+</details>
+<p>The initial unit run needed trie and genesis files from the revisions pinned by the workspace. Those fixtures were restored locally. The first attempt to save command logs encountered a full disk. The recorded chain streamed its output and completed after disk space became available. The Smithers CLI failed to start and its preflight is implemented with raw Git, so implementation and verification ran directly in the Jujutsu workspace.</p>
+</section>
+</main>
+</body>
+</html>

@@ -20,6 +20,7 @@ pub fn Handlers(FrameType: type) type {
 
             const value = try evm.storage.get(frame.address, key);
             try frame.pushStack(value);
+            try evm.observeStorage(frame, key, value, value, true);
             frame.pc += 1;
         }
 
@@ -34,7 +35,7 @@ pub fn Handlers(FrameType: type) type {
             // SSTORE requires at least GAS_CALL_STIPEND (2300) gas remaining
             if (evm.hardfork.isAtLeast(.ISTANBUL)) {
                 if (frame.gas_remaining <= GasConstants.SstoreSentryGas) {
-                    return error.OutOfGas;
+                    return frame.consumeGas(GasConstants.SstoreSentryGas + 1);
                 }
             }
 
@@ -65,6 +66,7 @@ pub fn Handlers(FrameType: type) type {
                     is_istanbul_or_later,
                 );
             } else blk: {
+                _ = try evm.accessStorageSlot(frame.address, key);
                 // Pre-Istanbul (Constantinople, Petersburg): Simple storage gas rules
                 // If setting zero to non-zero: 20,000 gas
                 // Otherwise: 5,000 gas
@@ -158,6 +160,7 @@ pub fn Handlers(FrameType: type) type {
             }
 
             try evm.storage.set(frame.address, key, value);
+            try evm.observeStorage(frame, key, current_value, value, false);
             frame.pc += 1;
         }
 
@@ -172,6 +175,16 @@ pub fn Handlers(FrameType: type) type {
             const key = try frame.popStack();
             const value = evm.storage.get_transient(frame.address, key);
             try frame.pushStack(value);
+            if (evm.inspector) |sink| {
+                @branchHint(.unlikely);
+                sink.onTransientStorageChange(.{
+                    .frame_id = frame.frame_id,
+                    .address = frame.address,
+                    .slot = key,
+                    .value = value,
+                    .is_write = false,
+                });
+            }
             frame.pc += 1;
         }
 
@@ -189,6 +202,16 @@ pub fn Handlers(FrameType: type) type {
             const key = try frame.popStack();
             const value = try frame.popStack();
             try evm.storage.set_transient(frame.address, key, value);
+            if (evm.inspector) |sink| {
+                @branchHint(.unlikely);
+                sink.onTransientStorageChange(.{
+                    .frame_id = frame.frame_id,
+                    .address = frame.address,
+                    .slot = key,
+                    .value = value,
+                    .is_write = true,
+                });
+            }
             frame.pc += 1;
         }
     };

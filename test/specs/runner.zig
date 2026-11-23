@@ -385,12 +385,89 @@ fn runJsonTestImplForFork(allocator: std.mem.Allocator, test_case: std.json.Valu
     try runJsonTestImplWithOptionalFork(allocator, test_case, tracer, forced_hardfork);
 }
 
+fn traceNumber(comptime T: type, value: std.json.Value) !T {
+    return switch (value) {
+        .integer => |number| std.math.cast(T, number) orelse error.InvalidTraceNumber,
+        .string => |number| std.fmt.parseInt(T, number, 0),
+        .number_string => |number| std.fmt.parseInt(T, number, 10),
+        else => error.InvalidTraceNumber,
+    };
+}
+
+fn traceHexBytes(allocator: std.mem.Allocator, value: std.json.Value) ![]const u8 {
+    if (value != .string) return error.InvalidTraceBytes;
+    const hex = if (std.mem.startsWith(u8, value.string, "0x")) value.string[2..] else value.string;
+    if (hex.len % 2 != 0) return error.InvalidTraceBytes;
+    const bytes = try allocator.alloc(u8, hex.len / 2);
+    errdefer allocator.free(bytes);
+    return std.fmt.hexToBytes(bytes, hex);
+}
+
+fn parseReferenceTraceStep(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !trace.TraceEntry {
+    var entry: trace.TraceEntry = .{
+        .pc = try traceNumber(u64, obj.get("pc") orelse return error.MissingTraceField),
+        .op = try traceNumber(u8, obj.get("op") orelse return error.MissingTraceField),
+        .gas = try traceNumber(u64, obj.get("gas") orelse return error.MissingTraceField),
+        .gasCost = try traceNumber(u64, obj.get("gasCost") orelse return error.MissingTraceField),
+        .memSize = try traceNumber(usize, obj.get("memSize") orelse return error.MissingTraceField),
+        .depth = try traceNumber(usize, obj.get("depth") orelse return error.MissingTraceField),
+        .refund = try traceNumber(i64, obj.get("refund") orelse .{ .integer = 0 }),
+        .memory = null,
+        .stack = &.{},
+        .returnData = &.{},
+        .opName = "",
+    };
+    errdefer entry.deinit(allocator);
+
+    if (obj.get("stack")) |value| {
+        if (value != .array) return error.InvalidTraceStack;
+        const stack = try allocator.alloc(u256, value.array.items.len);
+        entry.stack = stack;
+        for (stack, value.array.items) |*item, number| item.* = try traceNumber(u256, number);
+    }
+    if (obj.get("returnData")) |value| {
+        if (value != .null) entry.returnData = try traceHexBytes(allocator, value);
+    }
+    if (obj.get("opName")) |value| {
+        if (value == .string) {
+            entry.opName = try allocator.dupe(u8, value.string);
+            entry.op_name_owned = true;
+        }
+    }
+    if (obj.get("error")) |value| {
+        if (value == .string) {
+            entry.error_msg = try allocator.dupe(u8, value.string);
+            entry.error_msg_owned = true;
+        }
+    }
+    return entry;
+}
+
+test "reference trace parser preserves stack, return data and faults" {
+    const allocator = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"pc":3,"op":253,"gas":"0xa","gasCost":0,"memSize":32,"depth":2,"refund":0,
+        \\"stack":["0x20","0x0"],"returnData":"0x002a","error":"execution reverted"}
+    , .{});
+    defer parsed.deinit();
+
+    const entry = try parseReferenceTraceStep(allocator, parsed.value.object);
+    defer entry.deinit(allocator);
+    try std.testing.expectEqual(@as(u64, 10), entry.gas);
+    try std.testing.expectEqualSlices(u256, &.{ 32, 0 }, entry.stack);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 42 }, entry.returnData.?);
+    try std.testing.expectEqualStrings("execution reverted", entry.error_msg.?);
+}
+
 fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.Value, opt_test_file_path: ?[]const u8, opt_test_name: ?[]const u8) !void {
     _ = opt_test_name; // Currently unused parameter
 
     // Re-run with trace capture
     var tracer = trace.Tracer.init(allocator);
     defer tracer.deinit();
+    tracer.config.enable_return_data = true;
+    tracer.config.disable_memory = true;
+    tracer.config.disable_storage = true;
     tracer.enable();
 
     // Capture our trace (ignore errors since we're already in error state)
@@ -473,42 +550,15 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
         defer parsed.deinit();
 
-        // Extract trace entry fields from JSON
-        const obj = parsed.value.object;
-        const entry = trace.TraceEntry{
-            .pc = @intCast(obj.get("pc").?.integer),
-            .op = @intCast(obj.get("op").?.integer),
-            .gas = blk: {
-                const gas_val = obj.get("gas").?;
-                if (gas_val == .string) {
-                    break :blk try std.fmt.parseInt(u64, gas_val.string, 0);
-                } else {
-                    break :blk @intCast(gas_val.integer);
-                }
-            },
-            .gasCost = blk: {
-                const cost_val = obj.get("gasCost").?;
-                if (cost_val == .string) {
-                    break :blk try std.fmt.parseInt(u64, cost_val.string, 0);
-                } else {
-                    break :blk @intCast(cost_val.integer);
-                }
-            },
-            .memory = null,
-            .memSize = @intCast(obj.get("memSize").?.integer),
-            .stack = &.{},
-            .returnData = null,
-            .depth = @intCast(obj.get("depth").?.integer),
-            .refund = @intCast(obj.get("refund").?.integer),
-            .opName = try allocator.dupe(u8, obj.get("opName").?.string),
-        };
-
-        // Zig 0.15 ArrayList API requires an allocator parameter for append
+        // Summary records do not have a program counter.
+        if (parsed.value != .object or !parsed.value.object.contains("pc")) continue;
+        const entry = try parseReferenceTraceStep(allocator, parsed.value.object);
+        errdefer entry.deinit(allocator);
         try ref_tracer.entries.append(allocator, entry);
     }
 
-    // Compare traces and print diff
-    const diff = try trace.TraceDiff.compare(allocator, &tracer, &ref_tracer);
+    var diff = try trace.TraceDiff.compare(allocator, &tracer, &ref_tracer);
+    defer diff.deinit(allocator);
 
     std.debug.print("\n", .{});
 

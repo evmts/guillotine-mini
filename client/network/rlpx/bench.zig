@@ -5,43 +5,32 @@ const client_network = @import("client_network");
 
 fn benchDecode(iterations: usize) bench.BenchResult {
     var sum: usize = 0; // prevent optimization-out
-    const bytes: [3]u8 = .{ 0x12, 0x34, 0x56 };
+    var bytes: [3]u8 = .{ 0x12, 0x34, 0x56 };
     const start = std.time.nanoTimestamp();
     var i: usize = 0;
     while (i < iterations) : (i += 1) {
-        // Inline decode of constant header bytes
+        bytes[2] = @truncate(i);
         sum +%= client_network.Frame.decode_frame_size_24(bytes);
     }
     const end = std.time.nanoTimestamp();
+    std.mem.doNotOptimizeAway(sum);
     const elapsed: u64 = @intCast(end - start);
-    return .{
-        .name = "RLPx decode_frame_size_24([3]u8)",
-        .ops = iterations,
-        .elapsed_ns = elapsed,
-        .per_op_ns = if (iterations == 0) 0 else @as(u64, @intCast(elapsed / iterations)),
-        .ops_per_sec = if (elapsed == 0) std.math.inf(f64) else @as(f64, @floatFromInt(iterations)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0),
-    };
+    return bench.make_result("RLPx decode_frame_size_24([3]u8)", iterations, elapsed);
 }
 
 fn benchEncode(iterations: usize) bench.BenchResult {
     var sink: u8 = 0; // prevent optimization-out
-    const size: usize = 0x12_34_56;
     const start = std.time.nanoTimestamp();
     var i: usize = 0;
     while (i < iterations) : (i += 1) {
+        const size: usize = 0x12_34_00 | (i & 0xff);
         const out = client_network.Frame.encode_frame_size_24(size) catch unreachable;
         sink = sink ^ out[0] ^ out[1] ^ out[2];
     }
     const end = std.time.nanoTimestamp();
     const elapsed: u64 = @intCast(end - start);
     std.mem.doNotOptimizeAway(sink);
-    return .{
-        .name = "RLPx encode_frame_size_24(usize)",
-        .ops = iterations,
-        .elapsed_ns = elapsed,
-        .per_op_ns = if (iterations == 0) 0 else @as(u64, @intCast(elapsed / iterations)),
-        .ops_per_sec = if (elapsed == 0) std.math.inf(f64) else @as(f64, @floatFromInt(iterations)) / (@as(f64, @floatFromInt(elapsed)) / 1_000_000_000.0),
-    };
+    return bench.make_result("RLPx encode_frame_size_24(usize)", iterations, elapsed);
 }
 
 pub fn main() !void {
@@ -56,7 +45,10 @@ pub fn main() !void {
         iters = std.fmt.parseInt(usize, val, 10) catch iters;
     } else |_| {}
 
-    std.debug.print("RLPx Frame Encode/Decode Benchmarks (iters={d})\n", .{iters});
-    bench.print_result(benchDecode(iters));
-    bench.print_result(benchEncode(iters));
+    var suite = bench.BenchSuite.init(alloc, "client/network-rlpx");
+    defer suite.deinit();
+    suite.section("RLPx Frame Encode/Decode");
+    try suite.record(benchDecode(iters));
+    try suite.record(benchEncode(iters));
+    try suite.finish();
 }

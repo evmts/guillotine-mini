@@ -44,32 +44,40 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
     cfg.max_tx_size = 256 * 1024; // legacy/1559/2930/7702
     cfg.max_blob_tx_size = 1024 * 1024; // 4844 (excludes blobs)
 
-    // Prepare a small mix of transactions
+    // Prepare a small mix of transactions with runtime-varying calldata to prevent DCE
+    var payload_buf: [256]u8 = undefined;
+    for (&payload_buf, 0..) |*b, idx| b.* = @truncate(idx *% 31 +% 7);
     var ops: usize = 0;
     var timer = std.time.Timer.start() catch unreachable;
+    var sink: usize = 0;
 
     // Legacy
     {
-        const tx = Tx.LegacyTransaction{
+        var tx = Tx.LegacyTransaction{
             .nonce = 0,
             .gas_price = 1,
             .gas_limit = 21_000,
             .to = mk_addr(0x11),
             .value = 0,
-            .data = &[_]u8{},
+            .data = &payload_buf,
             .v = 37,
             .r = [_]u8{0} ** 32,
             .s = [_]u8{0} ** 32,
         };
-        for (0..n_per_type) |_| {
-            txpool.fits_size_limits(tx, cfg) catch unreachable;
+        for (0..n_per_type) |i| {
+            tx.nonce = @intCast(i);
+            tx.data = payload_buf[0 .. (i % 128) + 1];
+            var tx_copy = tx;
+            std.mem.doNotOptimizeAway(&tx_copy);
+            txpool.fits_size_limits(tx_copy, cfg) catch unreachable;
+            sink +%= tx_copy.data.len;
         }
         ops += n_per_type;
     }
 
     // EIP-1559
     {
-        const tx = Tx.Eip1559Transaction{
+        var tx = Tx.Eip1559Transaction{
             .chain_id = 1,
             .nonce = 0,
             .max_priority_fee_per_gas = 1,
@@ -77,14 +85,19 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
             .gas_limit = 21_000,
             .to = mk_addr(0x22),
             .value = 0,
-            .data = &[_]u8{},
+            .data = &payload_buf,
             .access_list = &[_]Tx.AccessListItem{},
             .y_parity = 1,
             .r = [_]u8{1} ** 32,
             .s = [_]u8{2} ** 32,
         };
-        for (0..n_per_type) |_| {
-            txpool.fits_size_limits(tx, cfg) catch unreachable;
+        for (0..n_per_type) |i| {
+            tx.nonce = @intCast(i);
+            tx.data = payload_buf[0 .. (i % 128) + 1];
+            var tx_copy = tx;
+            std.mem.doNotOptimizeAway(&tx_copy);
+            txpool.fits_size_limits(tx_copy, cfg) catch unreachable;
+            sink +%= tx_copy.data.len;
         }
         ops += n_per_type;
     }
@@ -94,7 +107,7 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
     // EIP-4844 (blob tx; size excludes blobs)
     {
         const hashes = [_]VersionedHash{mk_vhash(0xAA)};
-        const tx = Tx.Eip4844Transaction{
+        var tx = Tx.Eip4844Transaction{
             .chain_id = 1,
             .nonce = 0,
             .max_priority_fee_per_gas = 1,
@@ -102,7 +115,7 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
             .gas_limit = 21_000,
             .to = mk_addr(0x33), // non-null
             .value = 0,
-            .data = &[_]u8{},
+            .data = &payload_buf,
             .access_list = &[_]Tx.AccessListItem{},
             .max_fee_per_blob_gas = 1,
             .blob_versioned_hashes = &hashes,
@@ -110,8 +123,13 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
             .r = [_]u8{3} ** 32,
             .s = [_]u8{4} ** 32,
         };
-        for (0..n_per_type) |_| {
-            txpool.fits_size_limits(tx, cfg) catch unreachable;
+        for (0..n_per_type) |i| {
+            tx.nonce = @intCast(i);
+            tx.data = payload_buf[0 .. (i % 128) + 1];
+            var tx_copy = tx;
+            std.mem.doNotOptimizeAway(&tx_copy);
+            txpool.fits_size_limits(tx_copy, cfg) catch unreachable;
+            sink +%= tx_copy.data.len;
         }
         ops += n_per_type;
     }
@@ -119,7 +137,7 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
     // EIP-7702 (authorization list; empty here)
     {
         const Authorization = primitives.Authorization.Authorization;
-        const tx = Tx.Eip7702Transaction{
+        var tx = Tx.Eip7702Transaction{
             .chain_id = 1,
             .nonce = 0,
             .max_priority_fee_per_gas = 1,
@@ -127,19 +145,25 @@ fn bench_admission(_: std.mem.Allocator, n_per_type: usize) bench.BenchResult {
             .gas_limit = 21_000,
             .to = mk_addr(0x44),
             .value = 0,
-            .data = &[_]u8{},
+            .data = &payload_buf,
             .access_list = &[_]Tx.AccessListItem{},
             .authorization_list = &[_]Authorization{},
             .y_parity = 0,
             .r = [_]u8{0} ** 32,
             .s = [_]u8{0} ** 32,
         };
-        for (0..n_per_type) |_| {
-            txpool.fits_size_limits(tx, cfg) catch unreachable;
+        for (0..n_per_type) |i| {
+            tx.nonce = @intCast(i);
+            tx.data = payload_buf[0 .. (i % 128) + 1];
+            var tx_copy = tx;
+            std.mem.doNotOptimizeAway(&tx_copy);
+            txpool.fits_size_limits(tx_copy, cfg) catch unreachable;
+            sink +%= tx_copy.data.len;
         }
         ops += n_per_type;
     }
 
+    std.mem.doNotOptimizeAway(sink);
     const elapsed = timer.read();
     const per_op = if (ops > 0) elapsed / ops else 0;
     return .{
@@ -177,11 +201,12 @@ fn bench_fee_compare_only(n: usize) bench.BenchResult {
     const base_fee = BaseFeePerGas.from(15_000_000_000);
     var timer = std.time.Timer.start() catch unreachable;
     var cmp_count: usize = 0;
+    var acc: i64 = 0;
     // Just slam comparator without sorting cost
     for (tuples.items, 0..) |x, i| {
         const j = (i * 17 + 13) % tuples.items.len;
         const y = tuples.items[j];
-        _ = txpool.compare_fee_market_priority(
+        acc +%= txpool.compare_fee_market_priority(
             x.gas_price,
             x.max_fee,
             x.max_priority,
@@ -193,6 +218,7 @@ fn bench_fee_compare_only(n: usize) bench.BenchResult {
         );
         cmp_count += 1;
     }
+    std.mem.doNotOptimizeAway(acc);
     const elapsed = timer.read();
     const per = if (cmp_count > 0) elapsed / cmp_count else 0;
     return .{
@@ -266,6 +292,9 @@ fn bench_admission_memory(n_per_type: usize) struct { elapsed_ns: u64, bytes_per
 }
 
 pub fn main() !void {
+    var suite = bench.BenchSuite.initQuiet(std.heap.page_allocator, "client/txpool");
+    defer suite.deinit();
+
     std.debug.print("\n" ++ "=" ** 100 ++ "\n", .{});
     std.debug.print("  Guillotine Phase-5-TxPool Benchmarks\n", .{});
     std.debug.print("  Warmup: implicit in generation; timings averaged per run\n", .{});
@@ -275,10 +304,10 @@ pub fn main() !void {
     std.debug.print("--- Admission: fits_size_limits (GPA allocator) ---\n", .{});
     {
         const r_small = bench_admission(std.heap.c_allocator, N_ADMISSION_SMALL);
-        bench.print_result(r_small);
+        try suite.record(r_small);
 
         const r_med = bench_admission(std.heap.c_allocator, N_ADMISSION_MED);
-        bench.print_result(r_med);
+        try suite.record(r_med);
     }
     std.debug.print("\n", .{});
 
@@ -286,8 +315,9 @@ pub fn main() !void {
     std.debug.print("--- Allocation Behavior (GPA observed) ---\n", .{});
     {
         const m = bench_admission_memory(2_000);
-        const time_str = bench.format_ns(m.elapsed_ns);
-        std.debug.print("  fits_size_limits: ~{d} bytes/op (2k/tx-type), time={s}\n", .{ m.bytes_per_op, &time_str });
+        var time_buf: [32]u8 = undefined;
+        const time_str = bench.format_ns_buf(&time_buf, m.elapsed_ns);
+        std.debug.print("  fits_size_limits: ~{d} bytes/op (2k/tx-type), time={s}\n", .{ m.bytes_per_op, time_str });
         std.debug.print("  Note: using GPA to ensure frees are honored; Arena would retain until deinit.\n", .{});
     }
     std.debug.print("\n", .{});
@@ -296,11 +326,12 @@ pub fn main() !void {
     std.debug.print("--- Fee Market Priority Sorting ---\n", .{});
     {
         const r_cmp = bench_fee_compare_only(N_SORT);
-        bench.print_result(r_cmp);
+        try suite.record(r_cmp);
 
         const r_sort = bench_fee_sort(N_SORT);
-        bench.print_result(r_sort);
+        try suite.record(r_sort);
     }
 
     std.debug.print("\n" ++ "=" ** 100 ++ "\n\n", .{});
+    try suite.writeJsonIfRequested();
 }

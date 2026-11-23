@@ -81,8 +81,8 @@ fn run(
         tracer_instance = Tracer.init(allocator);
         tracer_instance.config = config.trace_config;
         tracer_instance.enable();
-        defer tracer_instance.deinit();
     }
+    defer if (trace_enabled) tracer_instance.deinit();
 
     var evm_instance: EvmType = undefined;
     try evm_instance.init(allocator, null, config.hardfork, block_context, primitives.ZERO_ADDRESS, 0, null);

@@ -17,6 +17,7 @@ const std = @import("std");
 const hash_mod = @import("hash.zig");
 const trie_root = hash_mod.trie_root;
 const Hash = @import("crypto").Hash;
+const bench_utils = @import("bench_utils");
 
 /// Number of iterations for each benchmark tier.
 const TINY_N: usize = 10;
@@ -99,16 +100,7 @@ const BenchResult = struct {
 };
 
 fn print_result(r: BenchResult) void {
-    const total_str = format_ns(r.elapsed_ns);
-    const per_key_str = format_ns(r.per_key_ns);
-    const ops_str = format_ops_per_sec(r.n_keys, r.elapsed_ns);
-    std.debug.print("  {s:<55} {d:>6} keys  total={s}  per-key={s}  {s}\n", .{
-        r.name,
-        r.n_keys,
-        &total_str,
-        &per_key_str,
-        &ops_str,
-    });
+    bench_utils.print_result(bench_utils.make_result(r.name, r.n_keys, r.elapsed_ns));
 }
 
 fn run_trie_root_bench(keys: []const []const u8, values: []const []const u8) u64 {
@@ -242,6 +234,11 @@ fn bench_block_state_root(n_accounts: usize) u64 {
 // ============================================================================
 
 pub fn main() !void {
+    var suite = bench_utils.BenchSuite.initQuiet(std.heap.page_allocator, "client/trie");
+    defer suite.deinit();
+    suite.attach();
+    defer suite.writeJsonIfRequested() catch {};
+
     std.debug.print("\n", .{});
     std.debug.print("=" ** 100 ++ "\n", .{});
     std.debug.print("  Guillotine Phase-1-Trie Benchmarks (MPT Root Hash)\n", .{});
@@ -252,13 +249,18 @@ pub fn main() !void {
     // -- Scaling behavior: small values --
     std.debug.print("--- Trie Root: Small Values ({d} bytes) ---\n", .{SMALL_VALUE_SIZE});
     {
-        const sizes = [_]usize{ TINY_N, SMALL_N, MEDIUM_N, LARGE_N };
-        for (sizes) |n| {
-            const elapsed = bench_trie_root(n, SMALL_VALUE_SIZE);
-            const per_key = if (n > 0) elapsed / n else 0;
+        const sizes = [_]struct { n: usize, name: []const u8 }{
+            .{ .n = TINY_N, .name = "trie_root (small 4B values, 10 keys)" },
+            .{ .n = SMALL_N, .name = "trie_root (small 4B values, 100 keys)" },
+            .{ .n = MEDIUM_N, .name = "trie_root (small 4B values, 1K keys)" },
+            .{ .n = LARGE_N, .name = "trie_root (small 4B values, 10K keys)" },
+        };
+        for (sizes) |s| {
+            const elapsed = bench_trie_root(s.n, SMALL_VALUE_SIZE);
+            const per_key = if (s.n > 0) elapsed / s.n else 0;
             print_result(.{
-                .name = std.fmt.comptimePrint("trie_root (small values, {d} keys)", .{0}),
-                .n_keys = n,
+                .name = s.name,
+                .n_keys = s.n,
                 .elapsed_ns = elapsed,
                 .per_key_ns = per_key,
             });
@@ -269,13 +271,18 @@ pub fn main() !void {
     // -- Scaling behavior: medium values (RLP-encoded accounts) --
     std.debug.print("--- Trie Root: Medium Values ({d} bytes, account-like) ---\n", .{MEDIUM_VALUE_SIZE});
     {
-        const sizes = [_]usize{ TINY_N, SMALL_N, MEDIUM_N, LARGE_N };
-        for (sizes) |n| {
-            const elapsed = bench_trie_root(n, MEDIUM_VALUE_SIZE);
-            const per_key = if (n > 0) elapsed / n else 0;
+        const sizes = [_]struct { n: usize, name: []const u8 }{
+            .{ .n = TINY_N, .name = "trie_root (medium 80B values, 10 keys)" },
+            .{ .n = SMALL_N, .name = "trie_root (medium 80B values, 100 keys)" },
+            .{ .n = MEDIUM_N, .name = "trie_root (medium 80B values, 1K keys)" },
+            .{ .n = LARGE_N, .name = "trie_root (medium 80B values, 10K keys)" },
+        };
+        for (sizes) |s| {
+            const elapsed = bench_trie_root(s.n, MEDIUM_VALUE_SIZE);
+            const per_key = if (s.n > 0) elapsed / s.n else 0;
             print_result(.{
-                .name = std.fmt.comptimePrint("trie_root (medium values, {d} keys)", .{0}),
-                .n_keys = n,
+                .name = s.name,
+                .n_keys = s.n,
                 .elapsed_ns = elapsed,
                 .per_key_ns = per_key,
             });
@@ -286,13 +293,18 @@ pub fn main() !void {
     // -- Scaling behavior: large values --
     std.debug.print("--- Trie Root: Large Values ({d} bytes) ---\n", .{LARGE_VALUE_SIZE});
     {
-        const sizes = [_]usize{ TINY_N, SMALL_N, MEDIUM_N, LARGE_N };
-        for (sizes) |n| {
-            const elapsed = bench_trie_root(n, LARGE_VALUE_SIZE);
-            const per_key = if (n > 0) elapsed / n else 0;
+        const sizes = [_]struct { n: usize, name: []const u8 }{
+            .{ .n = TINY_N, .name = "trie_root (large 256B values, 10 keys)" },
+            .{ .n = SMALL_N, .name = "trie_root (large 256B values, 100 keys)" },
+            .{ .n = MEDIUM_N, .name = "trie_root (large 256B values, 1K keys)" },
+            .{ .n = LARGE_N, .name = "trie_root (large 256B values, 10K keys)" },
+        };
+        for (sizes) |s| {
+            const elapsed = bench_trie_root(s.n, LARGE_VALUE_SIZE);
+            const per_key = if (s.n > 0) elapsed / s.n else 0;
             print_result(.{
-                .name = std.fmt.comptimePrint("trie_root (large values, {d} keys)", .{0}),
-                .n_keys = n,
+                .name = s.name,
+                .n_keys = s.n,
                 .elapsed_ns = elapsed,
                 .per_key_ns = per_key,
             });
@@ -303,13 +315,18 @@ pub fn main() !void {
     // -- Secure trie (keccak256'd keys, like state trie) --
     std.debug.print("--- Secure Trie Root (keccak256 keys, {d}-byte values) ---\n", .{MEDIUM_VALUE_SIZE});
     {
-        const sizes = [_]usize{ TINY_N, SMALL_N, MEDIUM_N, LARGE_N };
-        for (sizes) |n| {
-            const elapsed = bench_trie_root_secure(n, MEDIUM_VALUE_SIZE);
-            const per_key = if (n > 0) elapsed / n else 0;
+        const sizes = [_]struct { n: usize, name: []const u8 }{
+            .{ .n = TINY_N, .name = "secureTrie (80B values, 10 keys)" },
+            .{ .n = SMALL_N, .name = "secureTrie (80B values, 100 keys)" },
+            .{ .n = MEDIUM_N, .name = "secureTrie (80B values, 1K keys)" },
+            .{ .n = LARGE_N, .name = "secureTrie (80B values, 10K keys)" },
+        };
+        for (sizes) |s| {
+            const elapsed = bench_trie_root_secure(s.n, MEDIUM_VALUE_SIZE);
+            const per_key = if (s.n > 0) elapsed / s.n else 0;
             print_result(.{
-                .name = std.fmt.comptimePrint("secureTrie (medium values, {d} keys)", .{0}),
-                .n_keys = n,
+                .name = s.name,
+                .n_keys = s.n,
                 .elapsed_ns = elapsed,
                 .per_key_ns = per_key,
             });

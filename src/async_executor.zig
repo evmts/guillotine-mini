@@ -175,7 +175,8 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
         /// Start a new call and begin execution
         pub fn startNewCall(self: *Self, params: CallParams) !CallOrContinueOutput {
             // Initialize transaction state in EVM
-            try self.evm.initTransactionState(null);
+            try params.validateForHardfork(self.evm.hardfork);
+            try self.evm.initTransactionState(self.evm.blob_versioned_hashes);
 
             if (self.evm.storage.storage_injector) |injector| {
                 log.debug("callOrContinue: Storage injector enabled, clearing cache", .{});
@@ -232,6 +233,7 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
                 }
             }
 
+            self.evm.startAsyncObservation(params, address, bytecode);
             // Create frame WITHOUT defer (critical!)
             log.debug("callOrContinue: Creating frame with address={any}", .{address.bytes});
             const FrameType = @TypeOf(self.evm.frames.items[0]);
@@ -245,8 +247,9 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
                 calldata,
                 @as(*anyopaque, @ptrCast(self.evm)),
                 self.evm.hardfork,
-                false, // Top-level is never static
+                params == .staticcall,
             ));
+            self.evm.attachAsyncFrame(address);
 
             // Execute (may yield)
             return try self.executeUntilYieldOrComplete();

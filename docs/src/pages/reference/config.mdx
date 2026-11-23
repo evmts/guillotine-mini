@@ -1,31 +1,35 @@
 ---
 title: EvmConfig & HostInterface
-description: Every field and default of EvmConfig, override structs, and HostInterface.VTable.
+description: Every wired limit and default of EvmConfig, build-option loading, override structs, and HostInterface.VTable.
 ---
 
 # `EvmConfig` & `HostInterface`
 
 ## `EvmConfig`
 
-Defined in `src/evm_config.zig`. Passed at compile time to `Evm(config)` and `Frame(config)`.
+Defined in `src/evm_config.zig`. Passed at compile time to `Evm(config)` and `Frame(config)`. The table describes how each field is used by `Evm` and `Frame`.
 
-| Field | Type | Default | Purpose |
+| Field | Type | Default | Enforcement & purpose |
 | --- | --- | --- | --- |
-| `hardfork` | `Hardfork` | `Hardfork.DEFAULT` (`.PRAGUE`) | Compile-time default fork (overridden by `vm.init()` hardfork arg; passing `null` to `init()` uses `Hardfork.DEFAULT`) |
-| `stack_size` | `u12` | `1024` | Maximum operand stack depth |
-| `max_bytecode_size` | `u32` | `24576` | EIP-170 runtime bytecode limit (24 KB) |
-| `max_initcode_size` | `u32` | `49152` | EIP-3860 initcode limit (48 KB) |
-| `block_gas_limit` | `u64` | `30_000_000` | Default `BlockContext.block_gas_limit` |
-| `memory_initial_capacity` | `usize` | `4096` | Initial memory sizing hint |
-| `memory_limit` | `u64` | `0xFFFFFF` (~16.7 MB) | Maximum addressable memory per frame |
-| `max_call_depth` | `u16` | `1024` | Maximum nested call depth |
-| `opcode_overrides` | `[]const OpcodeOverride` | `&.{}` | Custom native opcode handlers |
-| `precompile_overrides` | `[]const PrecompileOverride` | `&.{}` | Custom or replaced precompiles |
-| `loop_quota` | `?u32` | `1_000_000` (Debug/ReleaseSafe), `null` (ReleaseFast/Small) | Maximum opcodes per `Frame.execute()` before safety failure |
-| `enable_beacon_roots` | `bool` | `true` | EIP-4788 system contract update flag |
-| `enable_historical_block_hashes` | `bool` | `true` | EIP-2935 system contract update flag |
-| `enable_validator_deposits` | `bool` | `true` | EIP-6110 deposit system contract flag |
-| `enable_validator_withdrawals` | `bool` | `true` | EIP-7002 withdrawal system contract flag |
+| `hardfork` | `Hardfork` | `Hardfork.DEFAULT` (`.OSAKA`) | Default fork when `vm.init()` receives `hardfork == null`. The Voltaire enum includes `.AMSTERDAM` |
+| `stack_size` | `u12` | `1024` | Wired into `Frame.pushStack()`; pushing at `stack.items.len >= config.stack_size` returns `error.StackOverflow` |
+| `max_bytecode_size` | `u32` | `24576` | Wired into `Evm.inner_create()` (Spurious Dragon+); deployed runtime code exceeding this limit fails with `error.CreateContractSizeLimit` |
+| `max_initcode_size` | `u32` | `49152` | Wired into `Evm.inner_create()` (Shanghai+); initcode exceeding this limit fails with `error.OutOfGas` |
+| `block_gas_limit` | `u64` | `30_000_000` | Default `BlockContext.block_gas_limit` when `vm.init()` receives `block_context == null` |
+| `memory_initial_capacity` | `usize` | `4096` | Config field with no core execution consumer |
+| `memory_limit` | `u64` | `0xFFFFFF` (~16.7 MB) | Wired into `Frame` memory expansion (`@min(config.memory_limit, maxInt(u32)) & ~31`); exceeding it fails with `error.OutOfGas` |
+| `max_call_depth` | `u16` | `1024` | `Evm.inner_call()` reports `error.callDepthExceeded` and `Evm.inner_create()` reports `error.CallDepthExceeded`. The limit also pre-sizes `Evm.frames` to `max_call_depth + 1` |
+| `opcode_overrides` | `[]const OpcodeOverride` | `&.{}` | Custom native opcode handlers checked in `Frame.executeOpcode()` |
+| `precompile_overrides` | `[]const PrecompileOverride` | `&.{}` | Custom or replaced precompiles checked in `Evm.executePrecompile()` |
+| `loop_quota` | `?u32` | `1_000_000` (Debug/ReleaseSafe), `null` (ReleaseFast/Small) | Wired into `Frame.execute()`; executing more than `quota` opcodes in a single frame returns `error.ExecutionTimeout` |
+| `enable_beacon_roots` | `bool` | `true` | EIP-4788 config flag with no core execution consumer |
+| `enable_historical_block_hashes` | `bool` | `true` | EIP-2935 config flag with no core execution consumer |
+| `enable_validator_deposits` | `bool` | `true` | EIP-6110 config flag with no core execution consumer |
+| `enable_validator_withdrawals` | `bool` | `true` | EIP-7002 config flag with no core execution consumer |
+
+### Loading from Zig build options (`fromBuildOptions`)
+
+`EvmConfig.fromBuildOptions()` constructs an `EvmConfig` from `@import("build_options")`, applying any configured `hardfork`, `max_call_depth`, `stack_size`, `max_bytecode_size`, `max_initcode_size`, `block_gas_limit`, `memory_initial_capacity`, and `memory_limit`. Hardfork names are parsed case-insensitively (including aliases `"TANGERINE"`, `"SPURIOUS"`, `"PRAGUE"`, `"OSAKA"`), falling back to `Hardfork.DEFAULT` (`.OSAKA`).
 
 ### Override structs
 

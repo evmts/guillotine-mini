@@ -63,7 +63,7 @@ pub const EvmConfig = struct {
 
     /// Loop quota for safety counters to prevent infinite loops
     /// null = disabled (default for optimized builds)
-    /// value = maximum iterations before panic (default for debug/safe builds)
+    /// value = maximum opcodes per frame before ExecutionTimeout
     loop_quota: ?u32 = if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) 1_000_000 else null,
 
     /// Enable system contract updates (EIP-4788 beacon roots, EIP-2935 historical block hashes)
@@ -83,35 +83,24 @@ pub const EvmConfig = struct {
         var config = EvmConfig{};
 
         // Apply build options
-        config.hardfork = getHardforkFromString(build_options.hardfork);
-        config.max_call_depth = build_options.max_call_depth;
-        config.stack_size = build_options.stack_size;
-        config.max_bytecode_size = build_options.max_bytecode_size;
-        config.max_initcode_size = build_options.max_initcode_size;
-        config.block_gas_limit = build_options.block_gas_limit;
-        config.memory_initial_capacity = build_options.memory_initial_capacity;
-        config.memory_limit = build_options.memory_limit;
+        if (build_options.hardfork) |name| config.hardfork = getHardforkFromString(name);
+        config.max_call_depth = build_options.max_call_depth orelse config.max_call_depth;
+        config.stack_size = build_options.stack_size orelse config.stack_size;
+        config.max_bytecode_size = build_options.max_bytecode_size orelse config.max_bytecode_size;
+        config.max_initcode_size = build_options.max_initcode_size orelse config.max_initcode_size;
+        config.block_gas_limit = build_options.block_gas_limit orelse config.block_gas_limit;
+        config.memory_initial_capacity = build_options.memory_initial_capacity orelse config.memory_initial_capacity;
+        config.memory_limit = build_options.memory_limit orelse config.memory_limit;
 
         return config;
     }
 
     /// Get the hardfork enum from a string
     fn getHardforkFromString(hardfork_str: []const u8) Hardfork {
-        if (std.mem.eql(u8, hardfork_str, "FRONTIER")) return .FRONTIER;
-        if (std.mem.eql(u8, hardfork_str, "HOMESTEAD")) return .HOMESTEAD;
-        if (std.mem.eql(u8, hardfork_str, "TANGERINE")) return .TANGERINE;
-        if (std.mem.eql(u8, hardfork_str, "SPURIOUS")) return .SPURIOUS;
-        if (std.mem.eql(u8, hardfork_str, "BYZANTIUM")) return .BYZANTIUM;
-        if (std.mem.eql(u8, hardfork_str, "CONSTANTINOPLE")) return .CONSTANTINOPLE;
-        if (std.mem.eql(u8, hardfork_str, "ISTANBUL")) return .ISTANBUL;
-        if (std.mem.eql(u8, hardfork_str, "BERLIN")) return .BERLIN;
-        if (std.mem.eql(u8, hardfork_str, "LONDON")) return .LONDON;
-        if (std.mem.eql(u8, hardfork_str, "MERGE")) return .MERGE;
-        if (std.mem.eql(u8, hardfork_str, "SHANGHAI")) return .SHANGHAI;
-        if (std.mem.eql(u8, hardfork_str, "CANCUN")) return .CANCUN;
-        if (std.mem.eql(u8, hardfork_str, "PRAGUE")) return .PRAGUE;
-        // Default to CANCUN if unknown
-        return .CANCUN;
+        if (std.ascii.eqlIgnoreCase(hardfork_str, "TANGERINE")) return .TANGERINE_WHISTLE;
+        if (std.ascii.eqlIgnoreCase(hardfork_str, "SPURIOUS")) return .SPURIOUS_DRAGON;
+        return std.meta.stringToEnum(Hardfork, hardfork_str) orelse
+            Hardfork.fromString(hardfork_str) orelse Hardfork.DEFAULT;
     }
 };
 
@@ -120,6 +109,20 @@ pub const EvmConfig = struct {
 // =============================================================================
 
 const testing = std.testing;
+
+test "EvmConfig - hardfork names and build options" {
+    inline for (std.meta.tags(Hardfork)) |fork| {
+        try testing.expectEqual(fork, EvmConfig.getHardforkFromString(@tagName(fork)));
+    }
+    try testing.expectEqual(Hardfork.TANGERINE_WHISTLE, EvmConfig.getHardforkFromString("TANGERINE"));
+    try testing.expectEqual(Hardfork.SPURIOUS_DRAGON, EvmConfig.getHardforkFromString("SPURIOUS"));
+    try testing.expectEqual(Hardfork.OSAKA, EvmConfig.getHardforkFromString("Osaka"));
+    try testing.expectEqual(Hardfork.DEFAULT, EvmConfig.getHardforkFromString("unknown"));
+    const options = @import("build_options");
+    const config = EvmConfig.fromBuildOptions();
+    try testing.expectEqual(EvmConfig.getHardforkFromString(options.hardfork orelse ""), config.hardfork);
+    try testing.expectEqual(options.stack_size orelse (EvmConfig{}).stack_size, config.stack_size);
+}
 
 test "EvmConfig - default initialization" {
     const config = EvmConfig{};

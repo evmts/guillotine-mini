@@ -50,8 +50,9 @@ pub fn Handlers(FrameType: type) type {
             // Istanbul-Berlin: 700 gas (EIP-1884)
             // Tangerine Whistle-Petersburg: 400 gas
             // Pre-Tangerine Whistle: 20 gas
+            const warm_cold_cost = try evm.accessAddress(addr);
             const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
-                try evm.accessAddress(addr)
+                warm_cold_cost
             else if (evm.hardfork.isAtLeast(.ISTANBUL))
                 @as(u64, 700)
             else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
@@ -92,18 +93,18 @@ pub fn Handlers(FrameType: type) type {
         pub fn calldataload(frame: *FrameType) FrameType.EvmError!void {
             try frame.consumeGas(GasConstants.GasFastestStep);
             const offset = try frame.popStack();
-            if (offset > std.math.maxInt(u32)) {
+            if (offset >= frame.calldata.len) {
                 try frame.pushStack(0);
             } else {
-                const off = @as(u32, @intCast(offset));
-                var result: u256 = 0;
-                var i: u32 = 0;
-                while (i < 32) : (i += 1) {
-                    const idx_u32 = try add_u32(off, i);
-                    const idx: usize = @intCast(idx_u32);
-                    const byte = if (idx < frame.calldata.len) frame.calldata[idx] else 0;
-                    result = (result << 8) | byte;
-                }
+                const off_usize: usize = @intCast(offset);
+                const result: u256 = if (frame.calldata.len - off_usize >= 32)
+                    std.mem.readInt(u256, frame.calldata[off_usize..][0..32], .big)
+                else blk: {
+                    var buf: [32]u8 = [_]u8{0} ** 32;
+                    const avail = frame.calldata.len - off_usize;
+                    @memcpy(buf[0..avail], frame.calldata[off_usize .. off_usize + avail]);
+                    break :blk std.mem.readInt(u256, &buf, .big);
+                };
                 try frame.pushStack(result);
             }
             frame.pc += 1;
@@ -122,25 +123,26 @@ pub fn Handlers(FrameType: type) type {
             const offset = try frame.popStack();
             const length = try frame.popStack();
 
+            // Per Yellow Paper, zero-length copies charge only base gas with no memory expansion
+            // and do not validate dest_offset or source offset bounds.
+            if (length == 0) {
+                try frame.consumeGas(GasConstants.GasFastestStep);
+                frame.pc += 1;
+                return;
+            }
+
             const dest_off = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-            const src_off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
+            const src_off: u64 = std.math.cast(u64, offset) orelse std.math.maxInt(u64);
             const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
 
             // Charge base + memory expansion + copy per word
             const end_bytes_copy: u64 = @as(u64, dest_off) + @as(u64, len);
             const mem_cost4 = frame.memoryExpansionCost(end_bytes_copy);
             const copy_cost = copyGasCost(len);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost4 + copy_cost);
+            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost4 +| copy_cost);
 
-            // Copy calldata to memory
-            var i: u32 = 0;
-            while (i < len) : (i += 1) {
-                const src_idx_u32 = try add_u32(src_off, i);
-                const src_idx: usize = @intCast(src_idx_u32);
-                const byte = if (src_idx < frame.calldata.len) frame.calldata[src_idx] else 0;
-                const dst_idx = try add_u32(dest_off, i);
-                try frame.writeMemory(dst_idx, byte);
-            }
+            // Copy calldata to memory (reads past calldata.len are zero-padded)
+            try frame.writeMemoryZeroPadded(dest_off, frame.calldata, src_off, len);
             frame.pc += 1;
         }
 
@@ -157,23 +159,25 @@ pub fn Handlers(FrameType: type) type {
             const offset = try frame.popStack();
             const length = try frame.popStack();
 
+            // Per Yellow Paper, zero-length copies charge only base gas with no memory expansion
+            // and do not validate dest_offset or source offset bounds.
+            if (length == 0) {
+                try frame.consumeGas(GasConstants.GasFastestStep);
+                frame.pc += 1;
+                return;
+            }
+
             const dest_off = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-            const src_off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
+            const src_off: u64 = std.math.cast(u64, offset) orelse std.math.maxInt(u64);
             const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
 
             const end_bytes_code: u64 = @as(u64, dest_off) + @as(u64, len);
             const mem_cost5 = frame.memoryExpansionCost(end_bytes_code);
             const copy_cost = copyGasCost(len);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost5 + copy_cost);
+            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost5 +| copy_cost);
 
-            // Copy code to memory
-            var i: u32 = 0;
-            while (i < len) : (i += 1) {
-                const src_idx_u32 = try add_u32(src_off, i);
-                const byte = frame.bytecode.getOpcode(src_idx_u32) orelse 0;
-                const dst_idx = try add_u32(dest_off, i);
-                try frame.writeMemory(dst_idx, byte);
-            }
+            // Copy code to memory (reads past bytecode.code.len are zero-padded)
+            try frame.writeMemoryZeroPadded(dest_off, frame.bytecode.code, src_off, len);
             frame.pc += 1;
         }
 
@@ -197,8 +201,9 @@ pub fn Handlers(FrameType: type) type {
             // Istanbul-Berlin: 700 gas (EIP-1884)
             // Tangerine Whistle-Istanbul: 700 gas (EIP-150)
             // Pre-Tangerine Whistle: 20 gas
+            const warm_cold_cost = try evm.accessAddress(ext_addr);
             const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
-                try evm.accessAddress(ext_addr)
+                warm_cold_cost
             else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
                 @as(u64, 700)
             else
@@ -221,30 +226,39 @@ pub fn Handlers(FrameType: type) type {
             const size = try frame.popStack();
 
             const ext_addr = primitives.Address.fromU256(addr_int);
+
+            // Gas cost: hardfork-aware
+            // Berlin+: cold/warm access (2600/100)
+            // Tangerine Whistle-Berlin: 700 gas (EIP-150)
+            // Pre-Tangerine Whistle: 20 gas
+            const warm_cold_cost = try evm.accessAddress(ext_addr);
+            const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
+                warm_cold_cost
+            else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
+                @as(u64, 700)
+            else
+                @as(u64, 20);
+
+            // Per Yellow Paper, zero-length EXTCODECOPY charges only account access gas
+            // with no memory expansion and no dest_offset overflow check.
+            if (size == 0) {
+                try frame.consumeGas(access_cost);
+                frame.pc += 1;
+                return;
+            }
+
             const dest = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
             // Per spec, code offset may exceed code length; reads beyond code return zero bytes.
             // Do NOT error on large code offsets; treat them as valid but out-of-range.
             const off_u64: u64 = std.math.cast(u64, offset) orelse std.math.maxInt(u64);
             const len = std.math.cast(u32, size) orelse return error.OutOfBounds;
 
-            // Calculate ALL gas costs at once: access + copy + memory expansion
-            // Gas cost: hardfork-aware
-            // Berlin+: cold/warm access (2600/100)
-            // Tangerine Whistle-Berlin: 700 gas (EIP-150)
-            // Pre-Tangerine Whistle: 20 gas
-            const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
-                try evm.accessAddress(ext_addr)
-            else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                @as(u64, 700)
-            else
-                @as(u64, 20);
-
             const copy_cost = copyGasCost(len);
             const end_bytes: u64 = @as(u64, dest) + @as(u64, len);
             const mem_cost = frame.memoryExpansionCost(end_bytes);
 
             // Charge all costs at once
-            try frame.consumeGas(access_cost + copy_cost + mem_cost);
+            try frame.consumeGas(access_cost + copy_cost +| mem_cost);
 
             // Update memory size after charging for expansion (per EVM spec)
             // Subsequent memory-expanding ops must not be double-charged for the same range
@@ -255,16 +269,7 @@ pub fn Handlers(FrameType: type) type {
             const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
 
             // Copy code to memory
-            var i: u32 = 0;
-            while (i < len) : (i += 1) {
-                const dst_idx = try add_u32(dest, i);
-                const src_idx_u64: u64 = off_u64 +| @as(u64, i);
-                const byte = if (src_idx_u64 < code.len) blk: {
-                    const idx: usize = @intCast(src_idx_u64);
-                    break :blk code[idx];
-                } else 0;
-                try frame.writeMemory(dst_idx, byte);
-            }
+            try frame.writeMemoryZeroPadded(dest, code, off_u64, len);
             frame.pc += 1;
         }
 
@@ -304,20 +309,14 @@ pub fn Handlers(FrameType: type) type {
             const end_bytes_ret: u64 = @as(u64, dest_off) + @as(u64, len);
             const mem_cost6 = frame.memoryExpansionCost(end_bytes_ret);
             const copy_cost = copyGasCost(len);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost6 + copy_cost);
+            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost6 +| copy_cost);
 
             // Update memory size after charging for expansion
             const aligned_ret = wordAlignedSize(end_bytes_ret);
             if (aligned_ret > frame.memory_size) frame.memory_size = aligned_ret;
 
             // Copy return data to memory
-            var i: u32 = 0;
-            while (i < len) : (i += 1) {
-                const src_idx = @as(usize, @intCast(src_off)) + @as(usize, @intCast(i));
-                const byte = frame.return_data[src_idx];
-                const dst_idx = try add_u32(dest_off, i);
-                try frame.writeMemory(dst_idx, byte);
-            }
+            try frame.writeMemorySlice(dest_off, frame.return_data[src_usize .. src_usize + len_usize]);
             frame.pc += 1;
         }
 
@@ -335,8 +334,9 @@ pub fn Handlers(FrameType: type) type {
             // Berlin+: cold/warm access (2600/100)
             // Istanbul-Berlin: 700 gas (EIP-1884)
             // Constantinople-Petersburg: 400 gas
+            const warm_cold_cost = try evm.accessAddress(ext_addr);
             const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
-                try evm.accessAddress(ext_addr)
+                warm_cold_cost
             else if (evm.hardfork.isAtLeast(.ISTANBUL))
                 @as(u64, 700)
             else

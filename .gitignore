@@ -24,9 +24,12 @@ bun.lockb
 test/specs/generated/
 worktrees/
 
-# Smithers workflow DB files
+# Smithers workflow DB files and incremental build/bench caches
 *.db
 .smithers/
+.flows/
+.bench-results/
+**/.bench-result.json
 
 # Zig extra caches
 .zig-cache-global/
