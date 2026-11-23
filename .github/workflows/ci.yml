@@ -6,45 +6,52 @@ on:
 
 jobs:
   build-test:
-    # Zig 0.15.x cannot link against the latest macOS SDK; revisit with Zig upgrades.
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Zig 0.15.x cannot link against newer macOS SDKs.
+        os: [macos-15, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: guillotine-mini
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: guillotine-mini
-          submodules: recursive
+      - name: Check out native test fixtures
+        run: git submodule update --init --depth 1 -- execution-specs ethereum-tests
       - name: Read native dependency pin
         id: native
         working-directory: .
         run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: evmts/voltaire
           ref: ${{ steps.native.outputs.voltaire }}
           path: voltaire
-          submodules: recursive
+      - name: Check out Voltaire HTTPS submodules
+        working-directory: voltaire
+        run: git submodule update --init --depth 1 -- packages/voltaire-zig/lib/libwally-core vendor/execution-apis
       - name: Install Zig 0.15.2
-        uses: goto-bus-stop/setup-zig@v2
+        uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a
         with:
           version: 0.15.2
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - name: Cache Cargo downloads
+        uses: actions/cache@v5
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('voltaire/Cargo.lock') }}
       - name: Build native crypto archive
         working-directory: voltaire
         run: cargo build --release --lib
       - name: Build
         run: zig build
-      - name: Test
-        run: zig build test
-      - name: Unit and native trace regressions
-        run: zig build unit test-trace -Doptimize=ReleaseSafe
+      - name: Unit tests
+        run: zig build unit
+      - name: Native trace regressions
+        run: zig build test-trace -Doptimize=ReleaseSafe
+      - name: Full test suite
+        run: zig build test -Dnethermind-diff=false

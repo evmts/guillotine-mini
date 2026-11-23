@@ -14,32 +14,66 @@ jobs:
       run:
         working-directory: guillotine-mini
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: guillotine-mini
       - name: Read Voltaire revision
         id: native
         working-directory: .
         run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: evmts/voltaire
           ref: ${{ steps.native.outputs.voltaire }}
           path: voltaire
-          submodules: recursive
-      - uses: goto-bus-stop/setup-zig@v2
+      - name: Check out Voltaire HTTPS submodules
+        working-directory: voltaire
+        run: git submodule update --init --depth 1 -- packages/voltaire-zig/lib/libwally-core vendor/execution-apis
+      - uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a
         with:
           version: 0.15.2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24.12.0'
       - name: Install Rust WASM target
         run: rustup target add wasm32-unknown-unknown
       - name: Build WASM from source
         run: zig build wasm --summary all
+      - name: Report and check WASM bundle size
+        env:
+          MAX_WASM_BYTES: ${{ vars.MAX_WASM_BYTES || '2621440' }}
+        shell: python3 {0}
+        run: |
+          import gzip
+          import os
+          from pathlib import Path
+
+          wasm = Path("zig-out/bin/guillotine_mini.wasm").read_bytes()
+          raw_bytes = len(wasm)
+          gzip_bytes = len(gzip.compress(wasm, compresslevel=6, mtime=0))
+
+          try:
+              max_bytes = int(os.environ["MAX_WASM_BYTES"])
+              if max_bytes < 0:
+                  raise ValueError
+          except ValueError:
+              raise SystemExit("::error::MAX_WASM_BYTES must be a non-negative integer")
+
+          report = (
+              "### WASM bundle size\n\n"
+              f"- Raw: {raw_bytes} bytes\n"
+              f"- Gzip: {gzip_bytes} bytes\n"
+              f"- Raw size limit: {max_bytes} bytes\n"
+          )
+          print(report, end="", flush=True)
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+              summary.write(report)
+
+          if raw_bytes > max_bytes:
+              raise SystemExit(f"::error::WASM bundle size {raw_bytes} exceeds MAX_WASM_BYTES={max_bytes}")
       - name: Test WASM execution
         run: zig build test-wasm --summary all
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: guillotine-mini-wasm
           path: guillotine-mini/zig-out/bin/guillotine_mini.wasm
