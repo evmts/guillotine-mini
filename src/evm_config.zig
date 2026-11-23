@@ -95,22 +95,13 @@ pub const EvmConfig = struct {
         return config;
     }
 
-    /// Get the hardfork enum from a string
+    /// Get the hardfork enum from a build-option string.
+    /// Accepts any `Hardfork` tag name (e.g. "OSAKA") plus legacy short aliases.
+    /// Unknown strings fall back to CANCUN for backwards compatibility.
     fn getHardforkFromString(hardfork_str: []const u8) Hardfork {
-        if (std.mem.eql(u8, hardfork_str, "FRONTIER")) return .FRONTIER;
-        if (std.mem.eql(u8, hardfork_str, "HOMESTEAD")) return .HOMESTEAD;
-        if (std.mem.eql(u8, hardfork_str, "TANGERINE")) return .TANGERINE;
-        if (std.mem.eql(u8, hardfork_str, "SPURIOUS")) return .SPURIOUS;
-        if (std.mem.eql(u8, hardfork_str, "BYZANTIUM")) return .BYZANTIUM;
-        if (std.mem.eql(u8, hardfork_str, "CONSTANTINOPLE")) return .CONSTANTINOPLE;
-        if (std.mem.eql(u8, hardfork_str, "ISTANBUL")) return .ISTANBUL;
-        if (std.mem.eql(u8, hardfork_str, "BERLIN")) return .BERLIN;
-        if (std.mem.eql(u8, hardfork_str, "LONDON")) return .LONDON;
-        if (std.mem.eql(u8, hardfork_str, "MERGE")) return .MERGE;
-        if (std.mem.eql(u8, hardfork_str, "SHANGHAI")) return .SHANGHAI;
-        if (std.mem.eql(u8, hardfork_str, "CANCUN")) return .CANCUN;
-        if (std.mem.eql(u8, hardfork_str, "PRAGUE")) return .PRAGUE;
-        // Default to CANCUN if unknown
+        if (std.meta.stringToEnum(Hardfork, hardfork_str)) |fork| return fork;
+        if (std.mem.eql(u8, hardfork_str, "TANGERINE")) return .TANGERINE_WHISTLE;
+        if (std.mem.eql(u8, hardfork_str, "SPURIOUS")) return .SPURIOUS_DRAGON;
         return .CANCUN;
     }
 };
@@ -227,4 +218,27 @@ test "EvmConfig - system contract flags" {
     try testing.expectEqual(false, config.enable_historical_block_hashes);
     try testing.expectEqual(false, config.enable_validator_deposits);
     try testing.expectEqual(false, config.enable_validator_withdrawals);
+}
+
+test "EvmConfig - getHardforkFromString parses every Hardfork tag" {
+    inline for (@typeInfo(Hardfork).@"enum".fields) |field| {
+        const expected: Hardfork = @enumFromInt(field.value);
+        try testing.expectEqual(expected, EvmConfig.getHardforkFromString(field.name));
+    }
+}
+
+test "EvmConfig - getHardforkFromString parses OSAKA and PRAGUE" {
+    try testing.expectEqual(Hardfork.OSAKA, EvmConfig.getHardforkFromString("OSAKA"));
+    try testing.expectEqual(Hardfork.PRAGUE, EvmConfig.getHardforkFromString("PRAGUE"));
+}
+
+test "EvmConfig - getHardforkFromString legacy aliases" {
+    try testing.expectEqual(Hardfork.TANGERINE_WHISTLE, EvmConfig.getHardforkFromString("TANGERINE"));
+    try testing.expectEqual(Hardfork.SPURIOUS_DRAGON, EvmConfig.getHardforkFromString("SPURIOUS"));
+}
+
+test "EvmConfig - getHardforkFromString unknown falls back to CANCUN" {
+    try testing.expectEqual(Hardfork.CANCUN, EvmConfig.getHardforkFromString("NOT_A_FORK"));
+    try testing.expectEqual(Hardfork.CANCUN, EvmConfig.getHardforkFromString(""));
+    try testing.expectEqual(Hardfork.CANCUN, EvmConfig.getHardforkFromString("osaka"));
 }
