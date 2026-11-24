@@ -98,6 +98,34 @@ Handlers require these methods on `FrameType`:
 | `getEvm()` | Get parent EVM | `*EvmType` |
 | `memoryExpansionCost(size)` | Calculate memory gas | `u64` |
 
+### Core Frame Interface (shared with guillotine-performance)
+
+`frame_interface.zig` defines the contract a frame must meet to reuse the
+arithmetic, comparison and bitwise handlers with its own stack and memory
+layout. Dispatch is static: `checkFrameInterface(FrameType, config)` checks the
+members at comptime and names the first missing one in a compile error.
+`DispatcherWithConfig.execute` runs this check.
+
+| Member | Signature | Notes |
+|--------|-----------|-------|
+| `EvmError` | error set decl | Returned by every handler |
+| `pc` | integer field | Advanced by 1 per opcode |
+| `popStack` | `fn (*Self) EvmError!u256` | |
+| `pushStack` | `fn (*Self, u256) EvmError!void` | |
+| `peekStack` | `fn (*const Self, usize) EvmError!u256` | Index 0 is the top |
+| `setStackTop` | `fn (*Self, u256) void` | Caller has peeked, so the stack is non-empty |
+| `consumeGas` | `fn (*Self, u64) EvmError!void` | Required only when `charge_gas` is true |
+
+Binary and unary ops pop N-1 inputs, peek the last, and overwrite the top in
+place with `setStackTop`, avoiding a pop and a push.
+
+Every handler module exports `Handlers(FrameType)` and
+`HandlersWithConfig(FrameType, HandlerConfig)`. `HandlerConfig{ .charge_gas = false }`
+removes all `consumeGas` calls for callers that meter gas themselves. Logic that
+reads `gas_remaining` directly (SSTORE sentry, CALL gas forwarding, `GAS`) is
+unchanged. `root.zig` exports `handlers`, `frame_interface`,
+`checkFrameInterface`, `HandlerConfig`, `Dispatcher` and `DispatcherWithConfig`.
+
 ### Required Frame Fields
 
 | Field | Type | Purpose |

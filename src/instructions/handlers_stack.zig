@@ -1,5 +1,6 @@
 /// Stack manipulation opcode handlers for the EVM
 const std = @import("std");
+const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 
@@ -7,10 +8,20 @@ const GasConstants = primitives.GasConstants;
 /// The FrameType must have methods: consumeGas, popStack, pushStack
 /// and fields: pc (program counter), stack, bytecode
 pub fn Handlers(FrameType: type) type {
+    return HandlersWithConfig(FrameType, .{});
+}
+
+/// `Handlers` with comptime `HandlerConfig`. `.charge_gas = false` removes every
+/// `consumeGas` call so callers can meter gas themselves.
+pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type {
     return struct {
+        inline fn charge(frame: *FrameType, amount: u64) FrameType.EvmError!void {
+            if (config.charge_gas) try frame.consumeGas(amount);
+        }
+
         /// POP opcode (0x50) - Remove top item from stack
         pub fn pop(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             _ = try frame.popStack();
             frame.pc += 1;
         }
@@ -27,9 +38,9 @@ pub fn Handlers(FrameType: type) type {
                 if (evm.hardfork.isBefore(.SHANGHAI)) {
                     return error.InvalidOpcode;
                 }
-                try frame.consumeGas(GasConstants.GasQuickStep);
+                try charge(frame, GasConstants.GasQuickStep);
             } else {
-                try frame.consumeGas(GasConstants.GasFastestStep);
+                try charge(frame, GasConstants.GasFastestStep);
             }
 
             // Use the bytecode module's readImmediate method
@@ -42,7 +53,7 @@ pub fn Handlers(FrameType: type) type {
         /// DUP1-DUP16 opcodes (0x80-0x8f) - Duplicate stack item at position n
         /// DUP1 duplicates top item, DUP2 duplicates second item, etc.
         pub fn dup(frame: *FrameType, opcode: u8) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasFastestStep);
+            try charge(frame, GasConstants.GasFastestStep);
             const n = opcode - 0x7f;
             if (frame.stack.items.len < n) {
                 return error.StackUnderflow;
@@ -55,7 +66,7 @@ pub fn Handlers(FrameType: type) type {
         /// SWAP1-SWAP16 opcodes (0x90-0x9f) - Swap top stack item with item at position n+1
         /// SWAP1 swaps top with second, SWAP2 swaps top with third, etc.
         pub fn swap(frame: *FrameType, opcode: u8) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasFastestStep);
+            try charge(frame, GasConstants.GasFastestStep);
             const n = opcode - 0x8f;
             if (frame.stack.items.len <= n) {
                 return error.StackUnderflow;

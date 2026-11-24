@@ -1,5 +1,6 @@
 /// Block context opcode handlers for the EVM
 const std = @import("std");
+const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 
@@ -7,7 +8,17 @@ const GasConstants = primitives.GasConstants;
 /// The FrameType must have methods: consumeGas, popStack, pushStack
 /// and fields: pc (program counter), address, evm (EVM context)
 pub fn Handlers(FrameType: type) type {
+    return HandlersWithConfig(FrameType, .{});
+}
+
+/// `Handlers` with comptime `HandlerConfig`. `.charge_gas = false` removes every
+/// `consumeGas` call so callers can meter gas themselves.
+pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type {
     return struct {
+        inline fn charge(frame: *FrameType, amount: u64) FrameType.EvmError!void {
+            if (config.charge_gas) try frame.consumeGas(amount);
+        }
+
         /// BLOCKHASH opcode (0x40) - Get hash of recent block
         /// Per Python reference (cancun/vm/instructions/block.py:21-64):
         /// - Charges GAS_BLOCK_HASH (20 gas)
@@ -17,7 +28,7 @@ pub fn Handlers(FrameType: type) type {
         pub fn blockhash(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
             // GAS_BLOCK_HASH = 20 (GasExtStep)
-            try frame.consumeGas(GasConstants.GasExtStep);
+            try charge(frame, GasConstants.GasExtStep);
 
             const block_number = try frame.popStack();
             const current_block = evm.block_context.block_number;
@@ -59,7 +70,7 @@ pub fn Handlers(FrameType: type) type {
         /// COINBASE opcode (0x41) - Get block coinbase address
         pub fn coinbase(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             const coinbase_u256 = primitives.Address.toU256(evm.block_context.block_coinbase);
             try frame.pushStack(coinbase_u256);
             frame.pc += 1;
@@ -68,7 +79,7 @@ pub fn Handlers(FrameType: type) type {
         /// TIMESTAMP opcode (0x42) - Get block timestamp
         pub fn timestamp(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             try frame.pushStack(evm.block_context.block_timestamp);
             frame.pc += 1;
         }
@@ -76,7 +87,7 @@ pub fn Handlers(FrameType: type) type {
         /// NUMBER opcode (0x43) - Get block number
         pub fn number(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             try frame.pushStack(evm.block_context.block_number);
             frame.pc += 1;
         }
@@ -86,7 +97,7 @@ pub fn Handlers(FrameType: type) type {
         /// Post-Merge: returns prevrandao value
         pub fn difficulty(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             if (evm.hardfork.isAtLeast(.MERGE)) {
                 try frame.pushStack(evm.block_context.block_prevrandao);
             } else {
@@ -98,7 +109,7 @@ pub fn Handlers(FrameType: type) type {
         /// GASLIMIT opcode (0x45) - Get block gas limit
         pub fn gaslimit(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             try frame.pushStack(@as(u256, evm.block_context.block_gas_limit));
             frame.pc += 1;
         }
@@ -109,7 +120,7 @@ pub fn Handlers(FrameType: type) type {
             // EIP-1344: CHAINID was introduced in Istanbul hardfork
             if (evm.hardfork.isBefore(.ISTANBUL)) return error.InvalidOpcode;
 
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             try frame.pushStack(evm.block_context.chain_id);
             frame.pc += 1;
         }
@@ -120,7 +131,7 @@ pub fn Handlers(FrameType: type) type {
             // EIP-1884: SELFBALANCE was introduced in Istanbul hardfork
             if (evm.hardfork.isBefore(.ISTANBUL)) return error.InvalidOpcode;
 
-            try frame.consumeGas(GasConstants.GasFastStep);
+            try charge(frame, GasConstants.GasFastStep);
             const balance = evm.get_balance(frame.address);
             try frame.pushStack(balance);
             frame.pc += 1;
@@ -132,7 +143,7 @@ pub fn Handlers(FrameType: type) type {
             // EIP-3198: BASEFEE was introduced in London hardfork
             if (evm.hardfork.isBefore(.LONDON)) return error.InvalidOpcode;
 
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             try frame.pushStack(evm.block_context.block_base_fee);
             frame.pc += 1;
         }
@@ -146,7 +157,7 @@ pub fn Handlers(FrameType: type) type {
             if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;
 
             // GAS_BLOBHASH_OPCODE = 3 (GasFastestStep is correct)
-            try frame.consumeGas(GasConstants.GasFastestStep);
+            try charge(frame, GasConstants.GasFastestStep);
             const index = try frame.popStack();
 
             // Return the blob hash at the given index, or 0 if out of bounds
@@ -183,7 +194,7 @@ pub fn Handlers(FrameType: type) type {
             if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;
 
             // GAS_BASE = 2 (GasQuickStep is correct)
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             // blob_base_fee is pre-calculated from excess_blob_gas in BlockContext
             try frame.pushStack(evm.block_context.blob_base_fee);
             frame.pc += 1;

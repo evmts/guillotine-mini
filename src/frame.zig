@@ -196,6 +196,13 @@ pub fn Frame(comptime config: EvmConfig) type {
             return self.stack.items[self.stack.items.len - 1 - index];
         }
 
+        /// Overwrite the top stack word in place.
+        /// Precondition: the stack is non-empty (callers peek first).
+        pub fn setStackTop(self: *Self, value: u256) void {
+            std.debug.assert(self.stack.items.len > 0);
+            self.stack.items[self.stack.items.len - 1] = value;
+        }
+
         inline fn wordCount(bytes: u64) u64 {
             return (bytes + 31) / 32;
         }

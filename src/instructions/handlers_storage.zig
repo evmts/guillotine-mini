@@ -1,5 +1,6 @@
 /// Storage opcode handlers for the EVM
 const std = @import("std");
+const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 
@@ -7,7 +8,17 @@ const GasConstants = primitives.GasConstants;
 /// The FrameType must have methods: consumeGas, popStack, pushStack, getEvm
 /// and fields: pc, address, is_static
 pub fn Handlers(FrameType: type) type {
+    return HandlersWithConfig(FrameType, .{});
+}
+
+/// `Handlers` with comptime `HandlerConfig`. `.charge_gas = false` removes every
+/// `consumeGas` call so callers can meter gas themselves.
+pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type {
     return struct {
+        inline fn charge(frame: *FrameType, amount: u64) FrameType.EvmError!void {
+            if (config.charge_gas) try frame.consumeGas(amount);
+        }
+
         /// SLOAD opcode (0x54) - Load word from storage
         pub fn sload(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
@@ -16,7 +27,7 @@ pub fn Handlers(FrameType: type) type {
             // EIP-2929: charge warm/cold storage access cost and warm the slot
             const access_cost = try evm.accessStorageSlot(frame.address, key);
             // Access cost already includes the full SLOAD gas cost (100 for warm, 2100 for cold)
-            try frame.consumeGas(access_cost);
+            try charge(frame, access_cost);
 
             const value = try evm.storage.get(frame.address, key);
             try frame.pushStack(value);
@@ -76,7 +87,7 @@ pub fn Handlers(FrameType: type) type {
                     GasConstants.SstoreResetGas; // 5,000
             };
 
-            try frame.consumeGas(gas_cost);
+            try charge(frame, gas_cost);
 
             // Refund logic (hardfork-dependent)
             if (evm.hardfork.isAtLeast(.ISTANBUL) and evm.hardfork.isBefore(.LONDON)) {
@@ -171,7 +182,7 @@ pub fn Handlers(FrameType: type) type {
             // EIP-1153: TLOAD was introduced in Cancun hardfork
             if (evm.hardfork.isBefore(.CANCUN)) return error.InvalidOpcode;
 
-            try frame.consumeGas(GasConstants.TLoadGas);
+            try charge(frame, GasConstants.TLoadGas);
             const key = try frame.popStack();
             const value = evm.storage.get_transient(frame.address, key);
             try frame.pushStack(value);
@@ -198,7 +209,7 @@ pub fn Handlers(FrameType: type) type {
             // EIP-1153: TSTORE cannot modify state in static call context
             if (frame.is_static) return error.StaticCallViolation;
 
-            try frame.consumeGas(GasConstants.TStoreGas);
+            try charge(frame, GasConstants.TStoreGas);
             const key = try frame.popStack();
             const value = try frame.popStack();
             try evm.storage.set_transient(frame.address, key, value);

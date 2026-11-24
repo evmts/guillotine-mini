@@ -1,5 +1,6 @@
 /// System opcode handlers for the EVM (CALL, CREATE, SELFDESTRUCT)
 const std = @import("std");
+const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 const Address = primitives.Address.Address;
@@ -9,9 +10,19 @@ const precompiles = @import("precompiles");
 /// The FrameType must have methods: getEvm, consumeGas, popStack, pushStack
 /// and fields appropriate for system operations
 pub fn Handlers(FrameType: type) type {
+    return HandlersWithConfig(FrameType, .{});
+}
+
+/// `Handlers` with comptime `HandlerConfig`. `.charge_gas = false` removes every
+/// `consumeGas` call so callers can meter gas themselves.
+pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type {
     const CallParams = FrameType.EvmType.CallParams;
 
     return struct {
+        inline fn charge(frame: *FrameType, amount: u64) FrameType.EvmError!void {
+            if (config.charge_gas) try frame.consumeGas(amount);
+        }
+
         /// Helper functions
         inline fn preBerlinCallGas(hardfork: primitives.Hardfork) u64 {
             return if (hardfork.isBefore(.TANGERINE_WHISTLE))
@@ -50,7 +61,7 @@ pub fn Handlers(FrameType: type) type {
 
             const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
             const gas_cost = frame.createGasCost(len);
-            try frame.consumeGas(gas_cost);
+            try charge(frame, gas_cost);
 
             // Read init code from memory
             var init_code: []const u8 = &.{};
@@ -63,7 +74,7 @@ pub fn Handlers(FrameType: type) type {
                 // Check memory bounds and charge for expansion
                 const end_bytes = @as(u64, off) + @as(u64, len);
                 const mem_cost = frame.memoryExpansionCost(end_bytes);
-                try frame.consumeGas(mem_cost);
+                try charge(frame, mem_cost);
 
                 // Update logical memory size
                 const aligned = wordAlignedSize(end_bytes);
@@ -223,7 +234,7 @@ pub fn Handlers(FrameType: type) type {
             // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
             // where message_call_gas.cost = gas + extra_gas
             const total_cost = gas_cost +| available_gas_without_stipend;
-            try frame.consumeGas(total_cost);
+            try charge(frame, total_cost);
             const aligned_size = wordAlignedSize(max_end);
             if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 
@@ -361,7 +372,7 @@ pub fn Handlers(FrameType: type) type {
             // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
             // where message_call_gas.cost = gas + extra_gas
             const total_cost = gas_cost +| available_gas_without_stipend;
-            try frame.consumeGas(total_cost);
+            try charge(frame, total_cost);
             const aligned_size = wordAlignedSize(max_end);
             if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 
@@ -489,7 +500,7 @@ pub fn Handlers(FrameType: type) type {
             // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
             // where message_call_gas.cost = gas + extra_gas
             const total_cost = gas_cost +| available_gas;
-            try frame.consumeGas(total_cost);
+            try charge(frame, total_cost);
             const aligned_size = wordAlignedSize(max_end);
             if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 
@@ -616,7 +627,7 @@ pub fn Handlers(FrameType: type) type {
             // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
             // where message_call_gas.cost = gas + extra_gas
             const total_cost = call_gas_cost +| available_gas;
-            try frame.consumeGas(total_cost);
+            try charge(frame, total_cost);
             const aligned_size = wordAlignedSize(max_end);
             if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 
@@ -697,7 +708,7 @@ pub fn Handlers(FrameType: type) type {
 
             const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
             const gas_cost = frame.create2GasCost(len);
-            try frame.consumeGas(gas_cost);
+            try charge(frame, gas_cost);
 
             // Read init code from memory
             var init_code: []const u8 = &.{};
@@ -710,7 +721,7 @@ pub fn Handlers(FrameType: type) type {
                 // Check memory bounds and charge for expansion
                 const end_bytes = @as(u64, off) + @as(u64, len);
                 const mem_cost = frame.memoryExpansionCost(end_bytes);
-                try frame.consumeGas(mem_cost);
+                try charge(frame, mem_cost);
 
                 // Update logical memory size
                 const aligned = wordAlignedSize(end_bytes);
@@ -820,7 +831,7 @@ pub fn Handlers(FrameType: type) type {
                 }
             }
 
-            try frame.consumeGas(gas_cost);
+            try charge(frame, gas_cost);
 
             // EIP-214: SELFDESTRUCT cannot be executed in static call context
             // This check must happen AFTER gas charging (Python reference line 525)

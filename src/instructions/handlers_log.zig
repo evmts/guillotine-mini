@@ -1,5 +1,6 @@
 /// Log opcode handlers for the EVM (LOG0-LOG4)
 const std = @import("std");
+const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 const call_result = @import("../call_result.zig");
@@ -27,7 +28,17 @@ inline fn wordAlignedSize(bytes: u64) u32 {
 /// The FrameType must have methods: consumeGas, popStack, memoryExpansionCost
 /// and fields: pc, memory_size, is_static
 pub fn Handlers(FrameType: type) type {
+    return HandlersWithConfig(FrameType, .{});
+}
+
+/// `Handlers` with comptime `HandlerConfig`. `.charge_gas = false` removes every
+/// `consumeGas` call so callers can meter gas themselves.
+pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type {
     return struct {
+        inline fn charge(frame: *FrameType, amount: u64) FrameType.EvmError!void {
+            if (config.charge_gas) try frame.consumeGas(amount);
+        }
+
         /// LOG0-LOG4 opcodes (0xa0-0xa4) - Emit log entries with 0-4 indexed topics
         /// Takes opcode as parameter to determine topic count (0xa0=LOG0, 0xa1=LOG1, etc.)
         pub fn log(frame: *FrameType, opcode: u8) FrameType.EvmError!void {
@@ -42,11 +53,11 @@ pub fn Handlers(FrameType: type) type {
             const off_u32 = std.math.cast(u32, offset) orelse return error.OutOfBounds;
             const length_u32 = std.math.cast(u32, length) orelse return error.OutOfBounds;
             const log_cost = logGasCost(topic_count, length_u32);
-            try frame.consumeGas(log_cost);
+            try charge(frame, log_cost);
             if (length_u32 > 0) {
                 const end_bytes: u64 = @as(u64, off_u32) + @as(u64, length_u32);
                 const mem_cost = frame.memoryExpansionCost(end_bytes);
-                try frame.consumeGas(mem_cost);
+                try charge(frame, mem_cost);
                 const aligned = wordAlignedSize(end_bytes);
                 if (aligned > frame.memory_size) frame.memory_size = aligned;
             }

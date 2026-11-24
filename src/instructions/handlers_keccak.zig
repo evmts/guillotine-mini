@@ -1,5 +1,6 @@
 /// Keccak256 (SHA3) opcode handler for the EVM
 const std = @import("std");
+const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 
@@ -24,7 +25,17 @@ fn keccak256GasCost(data_size: u32) u64 {
 /// The FrameType must have methods: consumeGas, popStack, pushStack, readMemory, memoryExpansionCost
 /// and fields: pc, memory_size, allocator
 pub fn Handlers(FrameType: type) type {
+    return HandlersWithConfig(FrameType, .{});
+}
+
+/// `Handlers` with comptime `HandlerConfig`. `.charge_gas = false` removes every
+/// `consumeGas` call so callers can meter gas themselves.
+pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type {
     return struct {
+        inline fn charge(frame: *FrameType, amount: u64) FrameType.EvmError!void {
+            if (config.charge_gas) try frame.consumeGas(amount);
+        }
+
         /// SHA3/KECCAK256 opcode (0x20) - Compute Keccak-256 hash
         pub fn sha3(frame: *FrameType) FrameType.EvmError!void {
             const offset = try frame.popStack();
@@ -33,7 +44,7 @@ pub fn Handlers(FrameType: type) type {
             // Use centralized gas calculation
             const size_u32 = std.math.cast(u32, size) orelse return error.OutOfBounds;
             const gas_cost = keccak256GasCost(size_u32);
-            try frame.consumeGas(gas_cost);
+            try charge(frame, gas_cost);
 
             // Handle empty data case
             if (size == 0) {
@@ -47,7 +58,7 @@ pub fn Handlers(FrameType: type) type {
                 // Charge memory expansion to cover [offset, offset+size)
                 const end_addr = @as(u64, offset_u32) + @as(u64, size_u32);
                 const mem_cost = frame.memoryExpansionCost(end_addr);
-                try frame.consumeGas(mem_cost);
+                try charge(frame, mem_cost);
                 const aligned_size = wordAlignedSize(end_addr);
                 if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
 

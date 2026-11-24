@@ -1,5 +1,6 @@
 /// Memory opcode handlers for the EVM
 const std = @import("std");
+const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 
@@ -18,7 +19,17 @@ fn copyGasCost(size_bytes: u32) u64 {
 /// The FrameType must have methods: consumeGas, popStack, pushStack, readMemory, writeMemory,
 /// memoryExpansionCost, and fields: pc, memory_size, allocator, address, is_static
 pub fn Handlers(FrameType: type) type {
+    return HandlersWithConfig(FrameType, .{});
+}
+
+/// `Handlers` with comptime `HandlerConfig`. `.charge_gas = false` removes every
+/// `consumeGas` call so callers can meter gas themselves.
+pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type {
     return struct {
+        inline fn charge(frame: *FrameType, amount: u64) FrameType.EvmError!void {
+            if (config.charge_gas) try frame.consumeGas(amount);
+        }
+
         /// MLOAD opcode (0x51) - Load word from memory
         pub fn mload(frame: *FrameType) FrameType.EvmError!void {
             const offset = try frame.popStack();
@@ -27,7 +38,7 @@ pub fn Handlers(FrameType: type) type {
             // Charge base + memory expansion for reading 32 bytes
             const end_bytes: u64 = @as(u64, off) + 32;
             const mem_cost = frame.memoryExpansionCost(end_bytes);
-            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost);
+            try charge(frame, GasConstants.GasFastestStep +| mem_cost);
             const aligned_size = wordAlignedSize(end_bytes);
             const aligned_size_u32 = std.math.cast(u32, aligned_size) orelse return error.OutOfBounds;
             if (aligned_size_u32 > frame.memory_size) frame.memory_size = aligned_size_u32;
@@ -48,7 +59,7 @@ pub fn Handlers(FrameType: type) type {
             // Charge base + memory expansion for writing 32 bytes
             const end_bytes: u64 = @as(u64, off) + 32;
             const mem_cost = frame.memoryExpansionCost(end_bytes);
-            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost);
+            try charge(frame, GasConstants.GasFastestStep +| mem_cost);
 
             // Update memory size after charging expansion (spec-compliant)
             const aligned_size = wordAlignedSize(end_bytes);
@@ -68,7 +79,7 @@ pub fn Handlers(FrameType: type) type {
             const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
             const end_bytes: u64 = @as(u64, off) + 1;
             const mem_cost = frame.memoryExpansionCost(end_bytes);
-            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost);
+            try charge(frame, GasConstants.GasFastestStep +| mem_cost);
 
             // Update memory size after charging expansion
             const aligned_size = wordAlignedSize(end_bytes);
@@ -81,7 +92,7 @@ pub fn Handlers(FrameType: type) type {
 
         /// MSIZE opcode (0x59) - Get size of active memory in bytes
         pub fn msize(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             // Memory size is already tracked as word-aligned in memory_size field
             try frame.pushStack(frame.memory_size);
             frame.pc += 1;
@@ -130,7 +141,7 @@ pub fn Handlers(FrameType: type) type {
 
             // Use saturating arithmetic to prevent overflow when adding gas costs
             const total_gas = GasConstants.GasFastestStep +| mem_cost +| copy_cost;
-            try frame.consumeGas(total_gas);
+            try charge(frame, total_gas);
 
             // Fast path: zero length - gas charged but no copy needed
             if (len == 0) {

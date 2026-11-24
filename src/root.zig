@@ -100,6 +100,26 @@ pub const getOpName = opcode.getOpName;
 // Export instruction dispatcher
 pub const dispatcher = @import("instructions/dispatcher.zig");
 pub const Dispatcher = dispatcher.Dispatcher;
+pub const DispatcherWithConfig = dispatcher.DispatcherWithConfig;
+
+// Export reusable opcode handlers and the frame interface they require
+pub const frame_interface = @import("instructions/frame_interface.zig");
+pub const checkFrameInterface = frame_interface.checkFrameInterface;
+pub const HandlerConfig = frame_interface.HandlerConfig;
+pub const handlers = struct {
+    pub const arithmetic = @import("instructions/handlers_arithmetic.zig");
+    pub const comparison = @import("instructions/handlers_comparison.zig");
+    pub const bitwise = @import("instructions/handlers_bitwise.zig");
+    pub const keccak = @import("instructions/handlers_keccak.zig");
+    pub const context = @import("instructions/handlers_context.zig");
+    pub const block = @import("instructions/handlers_block.zig");
+    pub const stack = @import("instructions/handlers_stack.zig");
+    pub const memory = @import("instructions/handlers_memory.zig");
+    pub const storage = @import("instructions/handlers_storage.zig");
+    pub const control_flow = @import("instructions/handlers_control_flow.zig");
+    pub const log = @import("instructions/handlers_log.zig");
+    pub const system = @import("instructions/handlers_system.zig");
+};
 
 test {
     std.testing.refAllDecls(@This());
@@ -118,6 +138,7 @@ test {
     _ = @import("devtools_test.zig");
     _ = @import("oom_safety_test.zig");
     _ = @import("instructions/handlers_stack_test.zig");
+    _ = @import("instructions/frame_interface.zig");
     _ = @import("instructions/handlers_arithmetic_test.zig");
     _ = @import("instructions/handlers_comparison_test.zig");
     _ = @import("instructions/handlers_bitwise_test.zig");

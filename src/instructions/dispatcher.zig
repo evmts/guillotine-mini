@@ -14,6 +14,8 @@
 ///   try dispatcher.execute(frame, opcode);
 ///
 const std = @import("std");
+const frame_interface = @import("frame_interface.zig");
+const HandlerConfig = frame_interface.HandlerConfig;
 
 // Import all handler modules
 const handlers_arithmetic = @import("handlers_arithmetic.zig");
@@ -34,29 +36,35 @@ const handlers_system = @import("handlers_system.zig");
 /// Type Parameters:
 ///   FrameType: Must provide:
 ///     - EvmError error union type
-///     - consumeGas, popStack, pushStack methods
-///     - pc (program counter) field
+///     - The core frame interface checked by `frame_interface.checkFrameInterface`
+///       (popStack, pushStack, peekStack, setStackTop, consumeGas, pc field)
 ///     - All methods required by individual handlers
 ///
 /// Returns: Struct with execute() method for opcode dispatch
 pub fn Dispatcher(comptime FrameType: type) type {
+    return DispatcherWithConfig(FrameType, .{});
+}
+
+/// `Dispatcher` with comptime `HandlerConfig` forwarded to every handler module.
+/// `execute` checks `FrameType` against the core frame interface at comptime.
+pub fn DispatcherWithConfig(comptime FrameType: type, comptime config: HandlerConfig) type {
     return struct {
         const Self = @This();
         const EvmError = FrameType.EvmError;
 
         // Instantiate all handler modules with the Frame type
-        const ArithmeticHandlers = handlers_arithmetic.Handlers(FrameType);
-        const ComparisonHandlers = handlers_comparison.Handlers(FrameType);
-        const BitwiseHandlers = handlers_bitwise.Handlers(FrameType);
-        const KeccakHandlers = handlers_keccak.Handlers(FrameType);
-        const ContextHandlers = handlers_context.Handlers(FrameType);
-        const BlockHandlers = handlers_block.Handlers(FrameType);
-        const StackHandlers = handlers_stack.Handlers(FrameType);
-        const MemoryHandlers = handlers_memory.Handlers(FrameType);
-        const StorageHandlers = handlers_storage.Handlers(FrameType);
-        const ControlFlowHandlers = handlers_control_flow.Handlers(FrameType);
-        const LogHandlers = handlers_log.Handlers(FrameType);
-        const SystemHandlers = handlers_system.Handlers(FrameType);
+        const ArithmeticHandlers = handlers_arithmetic.HandlersWithConfig(FrameType, config);
+        const ComparisonHandlers = handlers_comparison.HandlersWithConfig(FrameType, config);
+        const BitwiseHandlers = handlers_bitwise.HandlersWithConfig(FrameType, config);
+        const KeccakHandlers = handlers_keccak.HandlersWithConfig(FrameType, config);
+        const ContextHandlers = handlers_context.HandlersWithConfig(FrameType, config);
+        const BlockHandlers = handlers_block.HandlersWithConfig(FrameType, config);
+        const StackHandlers = handlers_stack.HandlersWithConfig(FrameType, config);
+        const MemoryHandlers = handlers_memory.HandlersWithConfig(FrameType, config);
+        const StorageHandlers = handlers_storage.HandlersWithConfig(FrameType, config);
+        const ControlFlowHandlers = handlers_control_flow.HandlersWithConfig(FrameType, config);
+        const LogHandlers = handlers_log.HandlersWithConfig(FrameType, config);
+        const SystemHandlers = handlers_system.HandlersWithConfig(FrameType, config);
 
         /// Execute an opcode by dispatching to the appropriate handler
         ///
@@ -79,6 +87,7 @@ pub fn Dispatcher(comptime FrameType: type) type {
         ///   - InvalidOpcode: If opcode is unrecognized or inactive at the current hardfork
         ///   - Other errors: Depending on specific opcode requirements
         pub fn execute(frame: *FrameType, opcode: u8) EvmError!void {
+            comptime frame_interface.checkFrameInterface(FrameType, config);
             switch (opcode) {
                 // 0x00-0x0f: Arithmetic & control flow
                 0x00 => try ControlFlowHandlers.stop(frame),

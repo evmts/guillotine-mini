@@ -1,5 +1,6 @@
 /// Execution context opcode handlers for the EVM
 const std = @import("std");
+const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 const Address = primitives.Address;
@@ -8,7 +9,17 @@ const Address = primitives.Address;
 /// The FrameType must have methods: consumeGas, popStack, pushStack, writeMemory, readMemory
 /// and fields: pc, address, caller, value, calldata, bytecode, return_data, hardfork
 pub fn Handlers(FrameType: type) type {
+    return HandlersWithConfig(FrameType, .{});
+}
+
+/// `Handlers` with comptime `HandlerConfig`. `.charge_gas = false` removes every
+/// `consumeGas` call so callers can meter gas themselves.
+pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type {
     return struct {
+        inline fn charge(frame: *FrameType, amount: u64) FrameType.EvmError!void {
+            if (config.charge_gas) try frame.consumeGas(amount);
+        }
+
         /// Calculate copy gas cost based on size
         fn copyGasCost(size: u32) u64 {
             const words = wordCount(@as(u64, size));
@@ -28,7 +39,7 @@ pub fn Handlers(FrameType: type) type {
 
         /// ADDRESS opcode (0x30) - Get address of currently executing account
         pub fn address(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             const addr_u256 = primitives.Address.toU256(frame.address);
             try frame.pushStack(addr_u256);
             frame.pc += 1;
@@ -54,7 +65,7 @@ pub fn Handlers(FrameType: type) type {
                 @as(u64, 400)
             else
                 @as(u64, 20);
-            try frame.consumeGas(access_cost);
+            try charge(frame, access_cost);
             const bal = evm.get_balance(addr);
             try frame.pushStack(bal);
             frame.pc += 1;
@@ -63,7 +74,7 @@ pub fn Handlers(FrameType: type) type {
         /// ORIGIN opcode (0x32) - Get execution origination address
         pub fn origin(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             const origin_u256 = primitives.Address.toU256(evm.origin);
             try frame.pushStack(origin_u256);
             frame.pc += 1;
@@ -71,7 +82,7 @@ pub fn Handlers(FrameType: type) type {
 
         /// CALLER opcode (0x33) - Get caller address
         pub fn caller(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             const caller_u256 = primitives.Address.toU256(frame.caller);
             try frame.pushStack(caller_u256);
             frame.pc += 1;
@@ -79,14 +90,14 @@ pub fn Handlers(FrameType: type) type {
 
         /// CALLVALUE opcode (0x34) - Get deposited value by instruction/transaction responsible for this execution
         pub fn callvalue(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             try frame.pushStack(frame.value);
             frame.pc += 1;
         }
 
         /// CALLDATALOAD opcode (0x35) - Get input data of current environment
         pub fn calldataload(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasFastestStep);
+            try charge(frame, GasConstants.GasFastestStep);
             const offset = try frame.popStack();
             if (offset >= frame.calldata.len) {
                 try frame.pushStack(0);
@@ -107,7 +118,7 @@ pub fn Handlers(FrameType: type) type {
 
         /// CALLDATASIZE opcode (0x36) - Get size of input data in current environment
         pub fn calldatasize(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             try frame.pushStack(frame.calldata.len);
             frame.pc += 1;
         }
@@ -121,7 +132,7 @@ pub fn Handlers(FrameType: type) type {
             // Per Yellow Paper, zero-length copies charge only base gas with no memory expansion
             // and do not validate dest_offset or source offset bounds.
             if (length == 0) {
-                try frame.consumeGas(GasConstants.GasFastestStep);
+                try charge(frame, GasConstants.GasFastestStep);
                 frame.pc += 1;
                 return;
             }
@@ -134,7 +145,7 @@ pub fn Handlers(FrameType: type) type {
             const end_bytes_copy: u64 = @as(u64, dest_off) + @as(u64, len);
             const mem_cost4 = frame.memoryExpansionCost(end_bytes_copy);
             const copy_cost = copyGasCost(len);
-            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost4 +| copy_cost);
+            try charge(frame, GasConstants.GasFastestStep +| mem_cost4 +| copy_cost);
 
             // Copy calldata to memory (reads past calldata.len are zero-padded)
             try frame.writeMemoryZeroPadded(dest_off, frame.calldata, src_off, len);
@@ -143,7 +154,7 @@ pub fn Handlers(FrameType: type) type {
 
         /// CODESIZE opcode (0x38) - Get size of code running in current environment
         pub fn codesize(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             try frame.pushStack(frame.bytecode.len());
             frame.pc += 1;
         }
@@ -157,7 +168,7 @@ pub fn Handlers(FrameType: type) type {
             // Per Yellow Paper, zero-length copies charge only base gas with no memory expansion
             // and do not validate dest_offset or source offset bounds.
             if (length == 0) {
-                try frame.consumeGas(GasConstants.GasFastestStep);
+                try charge(frame, GasConstants.GasFastestStep);
                 frame.pc += 1;
                 return;
             }
@@ -169,7 +180,7 @@ pub fn Handlers(FrameType: type) type {
             const end_bytes_code: u64 = @as(u64, dest_off) + @as(u64, len);
             const mem_cost5 = frame.memoryExpansionCost(end_bytes_code);
             const copy_cost = copyGasCost(len);
-            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost5 +| copy_cost);
+            try charge(frame, GasConstants.GasFastestStep +| mem_cost5 +| copy_cost);
 
             // Copy code to memory (reads past bytecode.code.len are zero-padded)
             try frame.writeMemoryZeroPadded(dest_off, frame.bytecode.code, src_off, len);
@@ -179,7 +190,7 @@ pub fn Handlers(FrameType: type) type {
         /// GASPRICE opcode (0x3a) - Get price of gas in current environment
         pub fn gasprice(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             try frame.pushStack(evm.gas_price);
             frame.pc += 1;
         }
@@ -203,7 +214,7 @@ pub fn Handlers(FrameType: type) type {
                 @as(u64, 700)
             else
                 @as(u64, 20);
-            try frame.consumeGas(access_cost);
+            try charge(frame, access_cost);
 
             // Get the code from the external address
             const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
@@ -237,7 +248,7 @@ pub fn Handlers(FrameType: type) type {
             // Per Yellow Paper, zero-length EXTCODECOPY charges only account access gas
             // with no memory expansion and no dest_offset overflow check.
             if (size == 0) {
-                try frame.consumeGas(access_cost);
+                try charge(frame, access_cost);
                 frame.pc += 1;
                 return;
             }
@@ -253,7 +264,7 @@ pub fn Handlers(FrameType: type) type {
             const mem_cost = frame.memoryExpansionCost(end_bytes);
 
             // Charge all costs at once
-            try frame.consumeGas(access_cost + copy_cost +| mem_cost);
+            try charge(frame, access_cost + copy_cost +| mem_cost);
 
             // Update memory size after charging for expansion (per EVM spec)
             // Subsequent memory-expanding ops must not be double-charged for the same range
@@ -274,7 +285,7 @@ pub fn Handlers(FrameType: type) type {
             // EIP-211: RETURNDATASIZE was introduced in Byzantium hardfork
             if (evm.hardfork.isBefore(.BYZANTIUM)) return error.InvalidOpcode;
 
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             try frame.pushStack(frame.return_data.len);
             frame.pc += 1;
         }
@@ -304,7 +315,7 @@ pub fn Handlers(FrameType: type) type {
             const end_bytes_ret: u64 = @as(u64, dest_off) + @as(u64, len);
             const mem_cost6 = frame.memoryExpansionCost(end_bytes_ret);
             const copy_cost = copyGasCost(len);
-            try frame.consumeGas(GasConstants.GasFastestStep +| mem_cost6 +| copy_cost);
+            try charge(frame, GasConstants.GasFastestStep +| mem_cost6 +| copy_cost);
 
             // Update memory size after charging for expansion
             const aligned_ret = wordAlignedSize(end_bytes_ret);
@@ -336,7 +347,7 @@ pub fn Handlers(FrameType: type) type {
                 @as(u64, 700)
             else
                 @as(u64, 400);
-            try frame.consumeGas(access_cost);
+            try charge(frame, access_cost);
 
             // Get the code from the external address
             const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
@@ -371,7 +382,7 @@ pub fn Handlers(FrameType: type) type {
 
         /// GAS opcode (0x5a) - Get the amount of available gas
         pub fn gas(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasQuickStep);
+            try charge(frame, GasConstants.GasQuickStep);
             try frame.pushStack(@intCast(frame.gas_remaining));
             frame.pc += 1;
         }

@@ -1,55 +1,67 @@
 /// Bitwise opcode handlers for the EVM
 const std = @import("std");
+const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 
 /// Handlers struct - provides bitwise operation handlers for a Frame type
-/// The FrameType must have methods: consumeGas, popStack, pushStack, getEvm
+/// The FrameType must implement the core frame interface (see frame_interface.zig):
+/// popStack, peekStack, setStackTop, consumeGas (when charging gas), getEvm
 /// and a field: pc (program counter), hardfork
 pub fn Handlers(FrameType: type) type {
+    return HandlersWithConfig(FrameType, .{});
+}
+
+/// `Handlers` with comptime `HandlerConfig`. `.charge_gas = false` removes every
+/// `consumeGas` call so callers can meter gas themselves.
+pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type {
     return struct {
+        inline fn charge(frame: *FrameType, amount: u64) FrameType.EvmError!void {
+            if (config.charge_gas) try frame.consumeGas(amount);
+        }
+
         /// AND opcode (0x16) - Bitwise AND operation
         pub fn op_and(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasFastestStep);
+            try charge(frame, GasConstants.GasFastestStep);
             const a = try frame.popStack();
-            const b = try frame.popStack();
-            try frame.pushStack(a & b);
+            const b = try frame.peekStack(0);
+            frame.setStackTop(a & b);
             frame.pc += 1;
         }
 
         /// OR opcode (0x17) - Bitwise OR operation
         pub fn op_or(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasFastestStep);
+            try charge(frame, GasConstants.GasFastestStep);
             const a = try frame.popStack();
-            const b = try frame.popStack();
-            try frame.pushStack(a | b);
+            const b = try frame.peekStack(0);
+            frame.setStackTop(a | b);
             frame.pc += 1;
         }
 
         /// XOR opcode (0x18) - Bitwise XOR operation
         pub fn op_xor(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasFastestStep);
+            try charge(frame, GasConstants.GasFastestStep);
             const a = try frame.popStack();
-            const b = try frame.popStack();
-            try frame.pushStack(a ^ b);
+            const b = try frame.peekStack(0);
+            frame.setStackTop(a ^ b);
             frame.pc += 1;
         }
 
         /// NOT opcode (0x19) - Bitwise NOT operation
         pub fn op_not(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasFastestStep);
-            const a = try frame.popStack();
-            try frame.pushStack(~a);
+            try charge(frame, GasConstants.GasFastestStep);
+            const a = try frame.peekStack(0);
+            frame.setStackTop(~a);
             frame.pc += 1;
         }
 
         /// BYTE opcode (0x1a) - Extract byte from word
         pub fn byte(frame: *FrameType) FrameType.EvmError!void {
-            try frame.consumeGas(GasConstants.GasFastestStep);
+            try charge(frame, GasConstants.GasFastestStep);
             const i = try frame.popStack();
-            const x = try frame.popStack();
+            const x = try frame.peekStack(0);
             const result = if (i >= 32) 0 else (x >> @intCast(8 * (31 - i))) & 0xff;
-            try frame.pushStack(result);
+            frame.setStackTop(result);
             frame.pc += 1;
         }
 
@@ -59,17 +71,17 @@ pub fn Handlers(FrameType: type) type {
             // EIP-145: SHL opcode was introduced in Constantinople hardfork
             if (evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
 
-            try frame.consumeGas(GasConstants.GasFastestStep);
+            try charge(frame, GasConstants.GasFastestStep);
             // Pop shift (TOS), then value
             const shift = try frame.popStack();
-            const value = try frame.popStack();
+            const value = try frame.peekStack(0);
             // For shifts >= 256, result is always 0
             // Otherwise, shift left and wrap to 256 bits
             const result = if (shift >= 256)
                 0
             else
                 value << @as(u8, @intCast(shift));
-            try frame.pushStack(result);
+            frame.setStackTop(result);
             frame.pc += 1;
         }
 
@@ -79,16 +91,16 @@ pub fn Handlers(FrameType: type) type {
             // EIP-145: SHR opcode was introduced in Constantinople hardfork
             if (evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
 
-            try frame.consumeGas(GasConstants.GasFastestStep);
+            try charge(frame, GasConstants.GasFastestStep);
             // Pop shift (TOS), then value
             const shift = try frame.popStack();
-            const value = try frame.popStack();
+            const value = try frame.peekStack(0);
             // For shifts >= 256, result is always 0
             const result = if (shift >= 256)
                 0
             else
                 value >> @as(u8, @intCast(shift));
-            try frame.pushStack(result);
+            frame.setStackTop(result);
             frame.pc += 1;
         }
 
@@ -98,10 +110,10 @@ pub fn Handlers(FrameType: type) type {
             // EIP-145: SAR opcode was introduced in Constantinople hardfork
             if (evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
 
-            try frame.consumeGas(GasConstants.GasFastestStep);
+            try charge(frame, GasConstants.GasFastestStep);
             // Pop shift (TOS), then value
             const shift = try frame.popStack();
-            const value = try frame.popStack();
+            const value = try frame.peekStack(0);
             const value_signed = @as(i256, @bitCast(value));
             // For shifts >= 256, result depends on sign bit
             const result = if (shift >= 256) blk: {
@@ -113,7 +125,7 @@ pub fn Handlers(FrameType: type) type {
             } else blk: {
                 break :blk @as(u256, @bitCast(value_signed >> @as(u8, @intCast(shift))));
             };
-            try frame.pushStack(result);
+            frame.setStackTop(result);
             frame.pc += 1;
         }
 
@@ -121,9 +133,9 @@ pub fn Handlers(FrameType: type) type {
         pub fn clz(frame: *FrameType) FrameType.EvmError!void {
             if (frame.hardfork.isBefore(.OSAKA)) return error.InvalidOpcode;
 
-            try frame.consumeGas(GasConstants.GasFastStep);
-            const value = try frame.popStack();
-            try frame.pushStack(@as(u256, @clz(value)));
+            try charge(frame, GasConstants.GasFastStep);
+            const value = try frame.peekStack(0);
+            frame.setStackTop(@as(u256, @clz(value)));
             frame.pc += 1;
         }
     };
