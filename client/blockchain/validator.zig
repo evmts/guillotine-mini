@@ -37,6 +37,14 @@ pub const ValidationError = error{
     MissingParentBeaconBlockRoot,
     // Pre-Cancun headers must not carry any 4844 fields
     UnexpectedBlobFieldsPreCancun,
+    // Shanghai+ header must include withdrawals_root (EIP-4895)
+    MissingWithdrawalsRoot,
+    // Pre-Shanghai header must not carry withdrawals_root
+    UnexpectedWithdrawalsRoot,
+    // Prague+ header must include requests_hash (EIP-7685)
+    MissingRequestsHash,
+    // Pre-Prague header must not carry requests_hash
+    UnexpectedRequestsHash,
     OutOfMemory,
 };
 
@@ -263,6 +271,30 @@ fn validate_post_merge_header(
 
     const parent_hash = try BlockHeader.hash(parent_header, ctx.allocator);
     if (!Hash.equals(&header.parent_hash, &parent_hash)) return ValidationError.InvalidParentHash;
+
+    try validate_fork_header_fields(header, ctx.hardfork);
+}
+
+/// Enforces fork-gated header field presence: `withdrawals_root` from
+/// Shanghai (EIP-4895) and `requests_hash` from Prague (EIP-7685), and their
+/// absence before activation. `requests_hash` is checked only when the
+/// Voltaire `BlockHeader` in use declares it (older pins do not).
+pub fn validate_fork_header_fields(
+    header: *const BlockHeader.BlockHeader,
+    hardfork: Hardfork,
+) ValidationError!void {
+    if (hardfork.isAtLeast(.SHANGHAI)) {
+        if (header.withdrawals_root == null) return ValidationError.MissingWithdrawalsRoot;
+    } else if (header.withdrawals_root != null) {
+        return ValidationError.UnexpectedWithdrawalsRoot;
+    }
+    if (comptime @hasField(BlockHeader.BlockHeader, "requests_hash")) {
+        if (hardfork.isAtLeast(.PRAGUE)) {
+            if (header.requests_hash == null) return ValidationError.MissingRequestsHash;
+        } else if (header.requests_hash != null) {
+            return ValidationError.UnexpectedRequestsHash;
+        }
+    }
 }
 
 /// Ensures `header.timestamp` is strictly greater than `parent.timestamp`.
@@ -636,6 +668,7 @@ test "merge_header_validator - prague accepts correct excess blob gas" {
     header.blob_gas_used = 0;
     header.parent_beacon_block_root = Hash.ZERO;
     header.excess_blob_gas = try calculate_excess_blob_gas(.PRAGUE, &parent);
+    set_test_fork_roots(&header, .PRAGUE);
 
     const ctx = HeaderValidationContext{
         .allocator = allocator,
@@ -983,7 +1016,16 @@ fn test_post_merge_child(
         header.excess_blob_gas = try calculate_excess_blob_gas(hardfork, parent);
         header.parent_beacon_block_root = Hash.ZERO;
     }
+    set_test_fork_roots(&header, hardfork);
     return header;
+}
+
+/// Sets the fork-gated roots a valid `hardfork` header carries.
+fn set_test_fork_roots(header: *BlockHeader.BlockHeader, hardfork: Hardfork) void {
+    if (hardfork.isAtLeast(.SHANGHAI)) header.withdrawals_root = Hash.ZERO;
+    if (comptime @hasField(BlockHeader.BlockHeader, "requests_hash")) {
+        if (hardfork.isAtLeast(.PRAGUE)) header.requests_hash = Hash.ZERO;
+    }
 }
 
 fn test_parent(excess_blob_gas: ?u64, blob_gas_used: ?u64) BlockHeader.BlockHeader {
@@ -1149,4 +1191,52 @@ test "merge_header_validator - pre-Cancun forbids parent_beacon_block_root" {
         .hardfork = .SHANGHAI,
         .parent_header = &parent,
     }));
+}
+
+test "merge_header_validator - Shanghai+ requires withdrawals_root and earlier forks forbid it" {
+    const MergeValidator = merge_header_validator(AcceptAllPreMerge);
+    const parent = test_parent(null, null);
+
+    var shanghai = try test_post_merge_child(.SHANGHAI, &parent, 0);
+    const shanghai_ctx = HeaderValidationContext{ .allocator = std.testing.allocator, .hardfork = .SHANGHAI, .parent_header = &parent };
+    try MergeValidator.validate(&shanghai, shanghai_ctx);
+    shanghai.withdrawals_root = null;
+    try std.testing.expectError(ValidationError.MissingWithdrawalsRoot, MergeValidator.validate(&shanghai, shanghai_ctx));
+
+    var merge = try test_post_merge_child(.MERGE, &parent, 0);
+    const merge_ctx = HeaderValidationContext{ .allocator = std.testing.allocator, .hardfork = .MERGE, .parent_header = &parent };
+    try MergeValidator.validate(&merge, merge_ctx);
+    merge.withdrawals_root = Hash.ZERO;
+    try std.testing.expectError(ValidationError.UnexpectedWithdrawalsRoot, MergeValidator.validate(&merge, merge_ctx));
+
+    const blob_parent = test_parent(0, 0);
+    var prague = try test_post_merge_child(.PRAGUE, &blob_parent, 0);
+    prague.withdrawals_root = null;
+    try std.testing.expectError(ValidationError.MissingWithdrawalsRoot, MergeValidator.validate(&prague, .{
+        .allocator = std.testing.allocator,
+        .hardfork = .PRAGUE,
+        .parent_header = &blob_parent,
+    }));
+}
+
+test "merge_header_validator - Prague+ requires requests_hash and earlier forks forbid it" {
+    if (comptime !@hasField(BlockHeader.BlockHeader, "requests_hash")) {
+        // Voltaire pins before ae039ed07 have no requests_hash field.
+        return error.SkipZigTest;
+    } else {
+        const MergeValidator = merge_header_validator(AcceptAllPreMerge);
+        const parent = test_parent(0, 0);
+
+        var prague = try test_post_merge_child(.PRAGUE, &parent, 0);
+        const prague_ctx = HeaderValidationContext{ .allocator = std.testing.allocator, .hardfork = .PRAGUE, .parent_header = &parent };
+        try MergeValidator.validate(&prague, prague_ctx);
+        prague.requests_hash = null;
+        try std.testing.expectError(ValidationError.MissingRequestsHash, MergeValidator.validate(&prague, prague_ctx));
+
+        var cancun = try test_post_merge_child(.CANCUN, &parent, 0);
+        const cancun_ctx = HeaderValidationContext{ .allocator = std.testing.allocator, .hardfork = .CANCUN, .parent_header = &parent };
+        try MergeValidator.validate(&cancun, cancun_ctx);
+        cancun.requests_hash = Hash.ZERO;
+        try std.testing.expectError(ValidationError.UnexpectedRequestsHash, MergeValidator.validate(&cancun, cancun_ctx));
+    }
 }

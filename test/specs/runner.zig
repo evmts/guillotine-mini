@@ -105,8 +105,12 @@ fn fillHeaderFromJson(
     if (header_json.object.get("parentBeaconBlockRoot")) |root| {
         header.parent_beacon_block_root = try parseFixedHexBytes(Hash.SIZE, allocator, root);
     }
-    if (header_json.object.get("requestsHash")) |hash| {
-        header.requests_hash = try parseFixedHexBytes(Hash.SIZE, allocator, hash);
+    // `requests_hash` exists only in Voltaire ae039ed07 and later; the
+    // declared pin 8b513683 lacks it, so the field is set only when present.
+    if (comptime @hasField(BlockHeader.BlockHeader, "requests_hash")) {
+        if (header_json.object.get("requestsHash")) |hash| {
+            header.requests_hash = try parseFixedHexBytes(Hash.SIZE, allocator, hash);
+        }
     }
     if (header_json.object.get("extraData")) |extra| {
         if (extra == .string) {
@@ -224,8 +228,10 @@ const TxRejection = enum {
     insufficient_funds,
     insufficient_max_fee,
     priority_fee_above_max_fee,
-    nonce_mismatch,
+    nonce_too_high,
+    nonce_too_low,
     nonce_is_max,
+    invalid_chain_id,
     initcode_size,
     gas_limit_cap,
     blob_contract_creation,
@@ -241,8 +247,10 @@ const TxRejection = enum {
             .insufficient_funds => &.{ "INSUFFICIENT_ACCOUNT_FUNDS", "TR_NoFunds" },
             .insufficient_max_fee => &.{ "INSUFFICIENT_MAX_FEE_PER_GAS", "TR_FeeCapLessThanBlocks" },
             .priority_fee_above_max_fee => &.{ "PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS", "TR_TipGtFeeCap" },
-            .nonce_mismatch => &.{ "NONCE_MISMATCH", "TR_NonceTooHigh", "TR_NonceTooLow" },
+            .nonce_too_high => &.{ "NONCE_MISMATCH_TOO_HIGH", "TR_NonceTooHigh" },
+            .nonce_too_low => &.{ "NONCE_MISMATCH_TOO_LOW", "TR_NonceTooLow" },
             .nonce_is_max => &.{ "NONCE_IS_MAX", "TR_NonceHasMaxValue" },
+            .invalid_chain_id => &.{ "INVALID_CHAINID", "TR_ChainId" },
             .initcode_size => &.{ "INITCODE_SIZE_EXCEEDED", "TR_InitCodeLimitExceeded" },
             .gas_limit_cap => &.{"GAS_LIMIT_EXCEEDS_MAXIMUM"},
             .blob_contract_creation => &.{"TYPE_3_TX_CONTRACT_CREATION"},
@@ -255,12 +263,67 @@ const TxRejection = enum {
     /// True when `expected` (an `expectException` value, possibly `A|B`)
     /// names this rejection.
     fn matches(self: TxRejection, expected: []const u8) bool {
-        for (self.names()) |name| {
-            if (std.mem.indexOf(u8, expected, name) != null) return true;
-        }
-        return false;
+        return exceptionNamesAny(expected, self.names());
+    }
+
+    fn forNonce(tx_nonce: u256, account_nonce: u64) ?TxRejection {
+        if (tx_nonce > account_nonce) return .nonce_too_high;
+        if (tx_nonce < account_nonce) return .nonce_too_low;
+        return null;
     }
 };
+
+/// True when one alternative of `expected` (`A|B`, each optionally prefixed
+/// `TransactionException.` or `BlockException.`) is exactly one of `names`.
+/// Exact comparison keeps `NONCE_MISMATCH_TOO_LOW` from matching a
+/// too-high nonce and `UNKNOWN_PARENT` from matching `UNCLE_UNKNOWN_PARENT`.
+fn exceptionNamesAny(expected: []const u8, names: []const []const u8) bool {
+    var alternatives = std.mem.splitScalar(u8, expected, '|');
+    while (alternatives.next()) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        const bare = if (std.mem.lastIndexOfScalar(u8, trimmed, '.')) |dot| trimmed[dot + 1 ..] else trimmed;
+        for (names) |name| {
+            if (std.mem.eql(u8, bare, name)) return true;
+        }
+    }
+    return false;
+}
+
+/// Fixture `BlockException.*` names for a header validation error. Errors
+/// without a fixture name (allocation failure) return an empty list, which
+/// never matches an expectation.
+fn headerErrorNames(err: anyerror) []const []const u8 {
+    return switch (err) {
+        error.InvalidDifficulty => &.{ "INVALID_DIFFICULTY", "IMPORT_IMPOSSIBLE_DIFFICULTY_OVER_PARIS" },
+        error.InvalidNonce => &.{"IMPORT_IMPOSSIBLE_PARIS_WRONG_POW"},
+        error.InvalidOmmersHash => &.{ "INVALID_UNCLES_HASH", "IMPORT_IMPOSSIBLE_UNCLES_OVER_PARIS" },
+        error.InvalidExtraDataLength => &.{"EXTRA_DATA_TOO_BIG"},
+        error.InvalidGasLimit => &.{ "INVALID_GASLIMIT", "GASLIMIT_TOO_BIG" },
+        error.InvalidGasUsed => &.{ "INVALID_GAS_USED", "INVALID_GAS_USED_ABOVE_LIMIT", "GAS_USED_OVERFLOW" },
+        error.InvalidTimestamp => &.{"INVALID_BLOCK_TIMESTAMP_OLDER_THAN_PARENT"},
+        error.InvalidBaseFee, error.MissingBaseFee, error.BaseFeeMath => &.{"INVALID_BASEFEE_PER_GAS"},
+        error.InvalidParentHash, error.MissingParentHeader => &.{ "UNKNOWN_PARENT", "UNKNOWN_PARENT_ZERO" },
+        error.InvalidBlockNumber => &.{"INVALID_BLOCK_NUMBER"},
+        error.InvalidExcessBlobGas => &.{"INCORRECT_EXCESS_BLOB_GAS"},
+        error.InvalidBlobGasUsed => &.{ "BLOB_GAS_USED_ABOVE_LIMIT", "INCORRECT_BLOB_GAS_USED" },
+        error.MissingBlobGasUsed,
+        error.MissingExcessBlobGas,
+        error.MissingParentBeaconBlockRoot,
+        error.UnexpectedBlobFieldsPreCancun,
+        error.MissingWithdrawalsRoot,
+        error.UnexpectedWithdrawalsRoot,
+        error.MissingRequestsHash,
+        error.UnexpectedRequestsHash,
+        => &.{"INCORRECT_BLOCK_FORMAT"},
+        else => &.{},
+    };
+}
+
+/// True when `expected` names `rejection`.
+fn expectsRejection(expected: ?[]const u8, rejection: TxRejection) bool {
+    const want = expected orelse return false;
+    return rejection.matches(want);
+}
 
 /// Checks one state-test case against its `expectException`: a negative case
 /// must be rejected for one of the named reasons, and a positive case must
@@ -426,45 +489,69 @@ pub fn runJsonTestWithPathAndName(allocator: std.mem.Allocator, test_case: std.j
         return error.SkipZigTest;
     }
 
-    // Check if test has multiple hardforks in post section
-    const post = test_case.object.get("post");
-    if (post) |p| {
-        if (p == .object) {
-            // Collect all hardforks present in post section
-            var hardforks_to_test: std.ArrayList(Hardfork) = .{};
-            defer hardforks_to_test.deinit(allocator);
-
-            // Check for each hardfork in order
-            inline for (&[_][]const u8{ "Cancun", "Prague", "Osaka", "Shanghai", "Paris", "Merge", "London", "Berlin" }) |fork_name| {
-                if (p.object.get(fork_name)) |_| {
-                    if (Hardfork.fromString(fork_name)) |hf| {
-                        try hardforks_to_test.append(allocator, hf);
-                    }
+    // A fork-keyed `post` runs every fork it lists, each on a fresh host.
+    var forks: std.ArrayList(Hardfork) = .{};
+    defer forks.deinit(allocator);
+    if (try postForks(allocator, test_case, &forks)) {
+        var skipped: usize = 0;
+        for (forks.items) |hf| {
+            runJsonTestImplForFork(allocator, test_case, null, hf) catch |err| {
+                if (err == error.SkipZigTest) {
+                    skipped += 1;
+                    continue;
                 }
-            }
-
-            // If multiple hardforks found, test each one separately
-            if (hardforks_to_test.items.len > 1) {
-                for (hardforks_to_test.items) |hf| {
-                    runJsonTestImplForFork(allocator, test_case, null, hf) catch |err| {
-                        generateTraceDiffOnFailure(allocator, test_case, test_file_path, test_name) catch |trace_err| {
-                            std.debug.print("Warning: Failed to generate trace diff for failed test: {}\n", .{trace_err});
-                        };
-                        return err;
-                    };
-                }
-                return;
-            }
+                std.debug.print("fork {s} failed: {s}\n", .{ hardforkToString(hf), @errorName(err) });
+                generateTraceDiffOnFailure(allocator, test_case, test_file_path, test_name) catch |trace_err| {
+                    std.debug.print("Warning: Failed to generate trace diff for failed test: {}\n", .{trace_err});
+                };
+                return err;
+            };
         }
+        // Skip only when no fork could be checked.
+        if (skipped == forks.items.len) return error.SkipZigTest;
+        return;
     }
 
-    // Single hardfork or no post section - use original logic
+    // No fork-keyed post section - use original logic
     runJsonTestImpl(allocator, test_case, null) catch |err| {
+        if (err == error.SkipZigTest) return err;
         generateTraceDiffOnFailure(allocator, test_case, test_file_path, test_name) catch |trace_err| {
             std.debug.print("Warning: Failed to generate trace diff for failed test: {}\n", .{trace_err});
         };
         return err;
     };
+}
+
+/// Collects the forks of a fork-keyed `post` section into `forks`, in key
+/// order. Returns false when `post` is absent or address-keyed. A key that
+/// is neither a supported fork nor an address fails the fixture instead of
+/// dropping that fork's expectations.
+fn postForks(allocator: std.mem.Allocator, test_case: std.json.Value, forks: *std.ArrayList(Hardfork)) !bool {
+    const post = test_case.object.get("post") orelse return false;
+    if (post != .object) return false;
+    var unsupported: ?[]const u8 = null;
+    var it = post.object.iterator();
+    while (it.next()) |kv| {
+        if (Hardfork.fromString(kv.key_ptr.*)) |hf| {
+            try forks.append(allocator, hf);
+        } else if (parseAddress(kv.key_ptr.*)) |_| {
+            // Address-keyed listing.
+        } else |_| {
+            unsupported = unsupported orelse kv.key_ptr.*;
+        }
+    }
+    if (forks.items.len == 0) {
+        if (unsupported) |key| {
+            std.debug.print("post section names unsupported fork {s}\n", .{key});
+            return error.UnsupportedPostFork;
+        }
+        return false;
+    }
+    if (unsupported) |key| {
+        std.debug.print("post section names unsupported fork {s}\n", .{key});
+        return error.UnsupportedPostFork;
+    }
+    return true;
 }
 
 // Helper to run test with a specific hardfork (for multi-fork tests)
@@ -854,6 +941,40 @@ const HostSnapshot = struct {
         self.storage.deinit();
     }
 
+    /// Replaces the host's accounts with the snapshot's, discarding every
+    /// change made since `capture` (a rejected block's effects).
+    fn restore(self: *const HostSnapshot, host: *TestHost) !void {
+        var balances = try self.balances.clone();
+        errdefer balances.deinit();
+        var nonces = try self.nonces.clone();
+        errdefer nonces.deinit();
+        var storage = try self.storage.clone();
+        errdefer storage.deinit();
+        var code = std.AutoHashMap(Address, []const u8).init(host.allocator);
+        errdefer {
+            var values = code.valueIterator();
+            while (values.next()) |bytes| host.allocator.free(bytes.*);
+            code.deinit();
+        }
+        var it = self.code.iterator();
+        while (it.next()) |kv| {
+            const owned = try host.allocator.dupe(u8, kv.value_ptr.*);
+            errdefer host.allocator.free(owned);
+            try code.put(kv.key_ptr.*, owned);
+        }
+
+        var old_code = host.code.valueIterator();
+        while (old_code.next()) |bytes| host.allocator.free(bytes.*);
+        host.code.deinit();
+        host.balances.deinit();
+        host.nonces.deinit();
+        host.storage.deinit();
+        host.code = code;
+        host.balances = balances;
+        host.nonces = nonces;
+        host.storage = storage;
+    }
+
     /// Fails when any balance, nonce, code or storage slot differs from the
     /// snapshot. Missing entries compare as zero or empty.
     fn expectUnchanged(self: *const HostSnapshot, host: *TestHost) !void {
@@ -940,6 +1061,51 @@ fn expectCode(allocator: std.mem.Allocator, host: *TestHost, address: Address, e
         std.debug.print("CODE MISMATCH: addr={any} expected {x}, found {x}\n", .{ address.bytes, expected, actual });
         return error.CodeMismatch;
     }
+}
+
+fn freeAccessList(allocator: std.mem.Allocator, entries: []const primitives.AccessList.AccessListEntry) void {
+    for (entries) |entry| allocator.free(entry.storage_keys);
+    allocator.free(entries);
+}
+
+/// Parses a fixture access list (`[{address, storageKeys}]`). Entries
+/// without an address are ignored. On error nothing leaks and no
+/// uninitialized entry is freed: only the `initialized` prefix owns keys.
+fn parseAccessListJson(allocator: std.mem.Allocator, items: []const std.json.Value) ![]primitives.AccessList.AccessListEntry {
+    var addr_count: usize = 0;
+    for (items) |entry| {
+        if (entry != .object) return error.InvalidAccessList;
+        if (entry.object.get("address") != null) addr_count += 1;
+    }
+
+    const entries = try allocator.alloc(primitives.AccessList.AccessListEntry, addr_count);
+    var initialized: usize = 0;
+    errdefer {
+        for (entries[0..initialized]) |entry| allocator.free(entry.storage_keys);
+        allocator.free(entries);
+    }
+
+    for (items) |entry| {
+        const addr_json = entry.object.get("address") orelse continue;
+        if (addr_json != .string) return error.InvalidAccessList;
+        const addr = try parseAddress(addr_json.string);
+
+        const keys_json: []const std.json.Value = if (entry.object.get("storageKeys")) |keys|
+            if (keys == .array) keys.array.items else &.{}
+        else
+            &.{};
+        const storage_keys = try allocator.alloc([32]u8, keys_json.len);
+        errdefer allocator.free(storage_keys);
+        for (keys_json, storage_keys) |key_json, *key| {
+            if (key_json != .string) return error.InvalidAccessList;
+            const slot = try std.fmt.parseInt(u256, key_json.string, 0);
+            std.mem.writeInt(u256, key, slot, .big);
+        }
+
+        entries[initialized] = .{ .address = addr, .storage_keys = storage_keys };
+        initialized += 1;
+    }
+    return entries;
 }
 
 // ---------------------------------------------------------------- RLP
@@ -1084,6 +1250,9 @@ fn recoverTxSender(hf: Hardfork, hash: [32]u8, y_parity: u256, r: u256, s: u256)
 /// A decoded, signature-checked raw transaction (legacy, EIP-2930 or EIP-1559).
 const RawTransaction = struct {
     sender: Address,
+    /// Signed chain id: typed envelopes and EIP-155 legacy transactions.
+    /// Null only for pre-EIP-155 legacy signatures (v = 27 or 28).
+    chain_id: ?u256,
     nonce: u64,
     /// Legacy and EIP-2930 use gas_price for both fee fields.
     max_fee_per_gas: u256,
@@ -1134,6 +1303,7 @@ fn decodeRawTransaction(allocator: std.mem.Allocator, hf: Hardfork, raw: []const
     const gas_limit_idx = base + 1 + fee_fields;
 
     var tx: RawTransaction = undefined;
+    tx.chain_id = if (tx_type == 0) null else try rlpUint(u256, fields[0]);
     tx.nonce = try rlpUint(u64, fields[base]);
     tx.is_fee_market = tx_type == 2;
     if (tx_type == 2) {
@@ -1169,6 +1339,7 @@ fn decodeRawTransaction(allocator: std.mem.Allocator, hf: Hardfork, raw: []const
         } else if (v >= 35 and hf.isAtLeast(.SPURIOUS_DRAGON)) {
             // EIP-155: sign [nonce, gasPrice, gas, to, value, data, chainId, 0, 0].
             y_parity = (v - 35) % 2;
+            tx.chain_id = (v - 35) / 2;
             var chain_fields: std.ArrayList(u8) = .{};
             defer chain_fields.deinit(allocator);
             try rlpAppendUint(&chain_fields, allocator, (v - 35) / 2);
@@ -1248,6 +1419,12 @@ fn processRlpTransaction(
 
     const is_create = tx.to == null;
 
+    // The signed chain id must be the block's chain (EIP-155, EIP-2718).
+    if (tx.chain_id) |chain_id| {
+        const block_chain_id: u256 = if (block_ctx) |ctx| ctx.chain_id else 1;
+        if (chain_id != block_chain_id) return .invalid_chain_id;
+    }
+
     // Fees (EIP-1559 from London).
     const base_fee: u256 = if (hf.isAtLeast(.LONDON)) (if (block_ctx) |ctx| ctx.block_base_fee else 0) else 0;
     if (tx.max_priority_fee_per_gas > tx.max_fee_per_gas) return .priority_fee_above_max_fee;
@@ -1281,7 +1458,7 @@ fn processRlpTransaction(
 
     // Sender nonce and balance: affordability includes the value, but only
     // gas is bought here.
-    if (tx.nonce != test_host.getNonce(tx.sender)) return .nonce_mismatch;
+    if (TxRejection.forNonce(tx.nonce, test_host.getNonce(tx.sender))) |reason| return reason;
     const max_gas_fee = std.math.mul(u256, tx.gas_limit, tx.max_fee_per_gas) catch return .insufficient_funds;
     const required = std.math.add(u256, max_gas_fee, tx.value) catch return .insufficient_funds;
     const sender_balance = test_host.balances.get(tx.sender) orelse 0;
@@ -1319,6 +1496,94 @@ fn processRlpTransaction(
         try test_host.setBalance(ctx.block_coinbase, coinbase_balance + @as(u256, settlement.gas_used) * priority_fee_per_gas);
     }
     return null;
+}
+
+/// Chain id for a blockchain fixture: `config.chainid`, else mainnet.
+fn fixtureChainId(test_case: std.json.Value) !u256 {
+    const config = test_case.object.get("config") orelse return 1;
+    if (config != .object) return 1;
+    const chain_id = config.object.get("chainid") orelse config.object.get("chainId") orelse return 1;
+    return parseU256FromJson(chain_id);
+}
+
+/// Execution context of one blockchain-fixture block, from its own header.
+fn blockContextFromHeader(test_case: std.json.Value, hardfork: ?Hardfork, header: std.json.Value) !evm_mod.BlockContext {
+    if (header != .object) return error.InvalidBlockHeader;
+    const h = header.object;
+    return .{
+        .chain_id = try fixtureChainId(test_case),
+        .block_number = if (h.get("number")) |v| try parseIntFromJson(v) else 0,
+        .block_timestamp = if (h.get("timestamp")) |v| try parseIntFromJson(v) else 0,
+        .block_difficulty = if (h.get("difficulty")) |v| try parseU256FromJson(v) else 0,
+        .block_prevrandao = if (h.get("mixHash")) |v| try parseU256FromJson(v) else 0,
+        .block_coinbase = if (h.get("coinbase")) |v| try parseAddress(v.string) else primitives.ZERO_ADDRESS,
+        .block_gas_limit = if (h.get("gasLimit")) |v| try parseIntFromJson(v) else 30_000_000,
+        .block_base_fee = if (h.get("baseFeePerGas")) |v| try parseU256FromJson(v) else 0,
+        .blob_base_fee = if (h.get("excessBlobGas")) |v| blobBaseFee(hardfork, try parseIntFromJson(v)) else 0,
+    };
+}
+
+const SYSTEM_ADDRESS_HEX = "fffffffffffffffffffffffffffffffffffffffe";
+const BEACON_ROOTS_ADDRESS_HEX = "000F3df6D732807Ef1319fB7B8bB8522d0Beac02";
+const HISTORY_STORAGE_ADDRESS_HEX = "0000F90827F1C53a10cb7A02335B175320002935";
+
+/// Runs one block-start system call (EIP-4788 beacon root, EIP-2935 block
+/// hash history) when the system contract has code. Failures are ignored, as
+/// in EELS `process_system_transaction` before Prague's strict variant.
+fn runSystemCall(allocator: std.mem.Allocator, evm_instance: anytype, test_host: *TestHost, contract_hex: []const u8, input_hex: []const u8) !void {
+    const contract = try parseAddress(contract_hex);
+    if (test_host.code.get(contract) == null) return;
+    const input = try primitives.Hex.hexToBytes(allocator, input_hex);
+    defer allocator.free(input);
+    _ = evm_instance.call(.{
+        .call = .{
+            .caller = try parseAddress(SYSTEM_ADDRESS_HEX),
+            .to = contract,
+            .value = 0,
+            .input = input,
+            .gas = 30_000_000, // SYSTEM_TRANSACTION_GAS
+        },
+    });
+}
+
+/// Block-start system calls for a block whose context is installed:
+/// EIP-4788 from Cancun with `parent_beacon_root_hex`, EIP-2935 from Prague
+/// with `parent_hash_hex`.
+fn runBlockSystemCalls(
+    allocator: std.mem.Allocator,
+    evm_instance: anytype,
+    test_host: *TestHost,
+    hardfork: ?Hardfork,
+    parent_beacon_root_hex: ?[]const u8,
+    parent_hash_hex: ?[]const u8,
+) !void {
+    const hf = hardfork orelse return;
+    if (hf.isAtLeast(.CANCUN)) {
+        if (parent_beacon_root_hex) |root| try runSystemCall(allocator, evm_instance, test_host, BEACON_ROOTS_ADDRESS_HEX, root);
+    }
+    if (hf.isAtLeast(.PRAGUE)) {
+        if (parent_hash_hex) |hash| try runSystemCall(allocator, evm_instance, test_host, HISTORY_STORAGE_ADDRESS_HEX, hash);
+    }
+}
+
+/// EIP-4895: credits one block's withdrawals (amounts in Gwei).
+fn applyBlockWithdrawals(test_host: *TestHost, block: std.json.Value) !void {
+    const withdrawals = block.object.get("withdrawals") orelse return;
+    if (withdrawals != .array) return error.InvalidWithdrawals;
+    for (withdrawals.array.items) |withdrawal| {
+        if (withdrawal != .object) return error.InvalidWithdrawals;
+        const address_json = withdrawal.object.get("address") orelse return error.InvalidWithdrawals;
+        const amount_json = withdrawal.object.get("amount") orelse return error.InvalidWithdrawals;
+        const address = try parseAddress(address_json.string);
+        const amount_wei = @as(u256, try parseIntFromJson(amount_json)) * 1_000_000_000;
+        const balance = test_host.balances.get(address) orelse 0;
+        try test_host.setBalance(address, std.math.add(u256, balance, amount_wei) catch return error.WithdrawalBalanceOverflow);
+    }
+}
+
+fn jsonString(value: ?std.json.Value) ?[]const u8 {
+    const v = value orelse return null;
+    return if (v == .string) v.string else null;
 }
 
 fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?*trace.Tracer) !void {
@@ -1577,51 +1842,12 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
             }
         }
         break :blk null;
-    } else if (test_case.object.get("blocks") != null) blk: {
-        // Build block context from blocks array for blockchain tests
-        if (test_case.object.get("blocks")) |blocks_json| {
-            if (blocks_json == .array and blocks_json.array.items.len > 0) {
-                const first_block = blocks_json.array.items[0];
-                if (first_block.object.get("blockHeader")) |block_header| {
-                    break :blk .{
-                        .chain_id = 1, // Default chain ID
-                        .block_number = if (block_header.object.get("number")) |num|
-                            try parseIntFromJson(num)
-                        else
-                            0,
-                        .block_timestamp = if (block_header.object.get("timestamp")) |ts|
-                            try parseIntFromJson(ts)
-                        else
-                            0,
-                        .block_difficulty = if (block_header.object.get("difficulty")) |diff|
-                            try std.fmt.parseInt(u256, diff.string, 0)
-                        else
-                            0,
-                        .block_prevrandao = if (block_header.object.get("mixHash")) |mix|
-                            try std.fmt.parseInt(u256, mix.string, 0)
-                        else
-                            0,
-                        .block_coinbase = if (block_header.object.get("coinbase")) |cb|
-                            try parseAddress(cb.string)
-                        else
-                            try parseAddress("0000000000000000000000000000000000000000"),
-                        .block_gas_limit = if (block_header.object.get("gasLimit")) |gl|
-                            try parseIntFromJson(gl)
-                        else
-                            30_000_000,
-                        .block_base_fee = if (block_header.object.get("baseFeePerGas")) |bf|
-                            try parseIntFromJson(bf)
-                        else
-                            0,
-                        .blob_base_fee = if (block_header.object.get("excessBlobGas")) |excess|
-                            blobBaseFee(hardfork, try parseIntFromJson(excess))
-                        else
-                            0,
-                    };
-                }
-            }
-        }
-        break :blk null;
+    } else if (test_case.object.get("blocks")) |blocks_json| blk: {
+        // Blockchain tests start from the first block's context; each block
+        // installs its own before it runs.
+        if (blocks_json != .array or blocks_json.array.items.len == 0) break :blk null;
+        const header = extractHeaderJson(blocks_json.array.items[0]) orelse break :blk null;
+        break :blk try blockContextFromHeader(test_case, hardfork, header);
     } else null;
 
     // Create EVM with test host and detected hardfork
@@ -1642,7 +1868,8 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
     const has_blocks_field = test_case.object.get("blocks") != null;
     const has_engine_payloads = test_case.object.get("engineNewPayloads") != null;
 
-    // Collect all transactions to process
+    // State tests and Engine payloads run as one segment of transactions.
+    // Blockchain fixtures run block by block (below).
     var transactions_list = std.ArrayList(std.json.Value){};
     defer transactions_list.deinit(allocator);
 
@@ -1650,61 +1877,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
         try transactions_list.appendSlice(allocator, test_case.object.get("transactions").?.array.items);
     } else if (has_transaction) {
         try transactions_list.append(allocator, test_case.object.get("transaction").?);
-    } else if (has_blocks_field) {
-        // Blockchain tests: collect transactions from all blocks
-        if (test_case.object.get("blocks")) |blocks_json| {
-            if (blocks_json == .array) {
-                var parent_block: ?std.json.Value = null;
-                if (test_case.object.get("genesisBlockHeader")) |genesis| {
-                    parent_block = genesis;
-                }
-                for (blocks_json.array.items) |block| {
-                    const has_expect_exception = block.object.get("expectException") != null;
-                    if (hardfork) |hf| {
-                        validateBlockHeaderConstants(allocator, hf, block, parent_block) catch |err| switch (err) {
-                            client_blockchain.ValidationError.InvalidDifficulty,
-                            client_blockchain.ValidationError.InvalidNonce,
-                            client_blockchain.ValidationError.InvalidOmmersHash,
-                            client_blockchain.ValidationError.InvalidExtraDataLength,
-                            client_blockchain.ValidationError.InvalidGasLimit,
-                            client_blockchain.ValidationError.InvalidGasUsed,
-                            client_blockchain.ValidationError.InvalidTimestamp,
-                            client_blockchain.ValidationError.InvalidBaseFee,
-                            client_blockchain.ValidationError.MissingBaseFee,
-                            client_blockchain.ValidationError.InvalidParentHash,
-                            client_blockchain.ValidationError.InvalidBlockNumber,
-                            client_blockchain.ValidationError.MissingParentHeader,
-                            client_blockchain.ValidationError.BaseFeeMath,
-                            client_blockchain.ValidationError.MissingBlobGasUsed,
-                            client_blockchain.ValidationError.MissingExcessBlobGas,
-                            client_blockchain.ValidationError.InvalidExcessBlobGas,
-                            client_blockchain.ValidationError.InvalidBlobGasUsed,
-                            client_blockchain.ValidationError.MissingParentBeaconBlockRoot,
-                            client_blockchain.ValidationError.UnexpectedBlobFieldsPreCancun,
-                            => {
-                                if (has_expect_exception) break;
-                                return err;
-                            },
-                            else => return err,
-                        };
-                    }
-                    if (has_expect_exception) {
-                        // The header is valid, so the block is invalid for a
-                        // body-level reason this runner cannot check. Skip
-                        // rather than report a pass.
-                        std.debug.print("block expects an exception its header does not show; skipping\n", .{});
-                        return error.SkipZigTest;
-                    }
-                    if (block.object.get("transactions")) |txs| {
-                        if (txs == .array) {
-                            try transactions_list.appendSlice(allocator, txs.array.items);
-                        }
-                    }
-                    parent_block = block;
-                }
-            }
-        }
-    } else if (has_engine_payloads) {
+    } else if (!has_blocks_field and has_engine_payloads) {
         // Engine API tests: collect transactions from engineNewPayloads
         if (test_case.object.get("engineNewPayloads")) |payloads| {
             if (payloads == .array) {
@@ -1724,147 +1897,24 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
         }
     }
 
-    // EIP-4788: Process beacon root system call for blockchain tests (Cancun+)
-    const needs_beacon_root = if (hardfork) |hf|
-        (hf == .CANCUN or hf == .PRAGUE or hf == .OSAKA)
-    else
-        false;
-    if ((has_engine_payloads or has_blocks_field) and needs_beacon_root) {
-        // Beacon roots contract address (EIP-4788)
-        const beacon_roots_address = try parseAddress("000F3df6D732807Ef1319fB7B8bB8522d0Beac02");
-        // System address that calls the beacon root contract
-        const system_address = try parseAddress("fffffffffffffffffffffffffffffffffffffffe");
+    const blocks: []const std.json.Value = if (test_case.object.get("blocks")) |blocks_json| blk: {
+        if (blocks_json != .array) return error.InvalidBlocks;
+        break :blk blocks_json.array.items;
+    } else &.{};
 
-        var parent_beacon_root_hex: []const u8 = undefined;
-        var found_parent_root = false;
-
-        // Get parent beacon block root from engineNewPayloads params[2]
-        if (has_engine_payloads) {
-            if (test_case.object.get("engineNewPayloads")) |payloads| {
-                if (payloads == .array and payloads.array.items.len > 0) {
-                    const first_payload = payloads.array.items[0];
-                    if (first_payload.object.get("params")) |params| {
-                        if (params == .array and params.array.items.len >= 3) {
-                            parent_beacon_root_hex = params.array.items[2].string;
-                            found_parent_root = true;
-                        }
-                    }
-                }
-            }
-        } else if (has_blocks_field) {
-            // Get parent beacon block root from blocks[0].blockHeader.parentBeaconBlockRoot
-            if (test_case.object.get("blocks")) |blocks_json| {
-                if (blocks_json == .array and blocks_json.array.items.len > 0) {
-                    const first_block = blocks_json.array.items[0];
-                    if (first_block.object.get("blockHeader")) |block_header| {
-                        if (block_header.object.get("parentBeaconBlockRoot")) |pbr| {
-                            parent_beacon_root_hex = pbr.string;
-                            found_parent_root = true;
-                        }
-                    }
+    // Engine payloads: block-start system calls for the first payload
+    // (EIP-4788 root from params[2], EIP-2935 parent from the genesis hash).
+    if (!has_blocks_field and has_engine_payloads) {
+        var beacon_root: ?[]const u8 = null;
+        if (test_case.object.get("engineNewPayloads")) |payloads| {
+            if (payloads == .array and payloads.array.items.len > 0) {
+                if (payloads.array.items[0].object.get("params")) |params| {
+                    if (params == .array and params.array.items.len >= 3) beacon_root = jsonString(params.array.items[2]);
                 }
             }
         }
-
-        if (found_parent_root) {
-            const parent_beacon_root = try primitives.Hex.hexToBytes(allocator, parent_beacon_root_hex);
-            defer allocator.free(parent_beacon_root);
-
-            // Extract block timestamp for the beacon root call
-            var block_timestamp: u64 = 0;
-            if (has_engine_payloads) {
-                if (test_case.object.get("engineNewPayloads")) |payloads| {
-                    if (payloads == .array and payloads.array.items.len > 0) {
-                        const first_payload = payloads.array.items[0];
-                        if (first_payload.object.get("params")) |params| {
-                            if (params == .array and params.array.items.len > 0) {
-                                const block_params = params.array.items[0];
-                                if (block_params.object.get("timestamp")) |ts| {
-                                    block_timestamp = try std.fmt.parseInt(u64, ts.string, 0);
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if (has_blocks_field) {
-                if (test_case.object.get("blocks")) |blocks_json| {
-                    if (blocks_json == .array and blocks_json.array.items.len > 0) {
-                        const first_block = blocks_json.array.items[0];
-                        if (first_block.object.get("blockHeader")) |block_header| {
-                            if (block_header.object.get("timestamp")) |ts| {
-                                block_timestamp = try std.fmt.parseInt(u64, ts.string, 0);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Set block timestamp in EVM instance for the beacon root call
-            evm_instance.block_context.block_timestamp = block_timestamp;
-
-            // Get beacon roots contract code from pre-state
-            if (test_host.code.get(beacon_roots_address)) |beacon_code| {
-                // Execute system call to beacon roots contract
-                // This call uses system address as caller and has 30M gas
-                _ = beacon_code; // Bytecode is fetched via host interface
-                const call_result = evm_instance.call(.{
-                    .call = .{
-                        .caller = system_address,
-                        .to = beacon_roots_address,
-                        .value = 0,
-                        .input = parent_beacon_root,
-                        .gas = 30_000_000, // SYSTEM_TRANSACTION_GAS
-                    },
-                });
-                _ = call_result; // System call failures are ignored per spec
-            }
-        }
-    }
-
-    // EIP-2935: Process history storage system call for Prague+ blockchain tests
-    const needs_history_storage = if (hardfork) |hf|
-        (hf == .PRAGUE or hf == .OSAKA)
-    else
-        false;
-
-    if ((has_engine_payloads or has_blocks_field) and needs_history_storage) {
-        // History storage contract address (EIP-2935)
-        const history_storage_address = try parseAddress("0000F90827F1C53a10cb7A02335B175320002935");
-        // System address that calls the history storage contract
-        const system_address = try parseAddress("fffffffffffffffffffffffffffffffffffffffe");
-
-        var parent_hash_hex: []const u8 = undefined;
-        var found_parent_hash = false;
-
-        // Get parent hash from genesis block header
-        if (test_case.object.get("genesisBlockHeader")) |genesis| {
-            if (genesis.object.get("hash")) |hash| {
-                parent_hash_hex = hash.string;
-                found_parent_hash = true;
-            }
-        }
-
-        if (found_parent_hash) {
-            const parent_hash = try primitives.Hex.hexToBytes(allocator, parent_hash_hex);
-            defer allocator.free(parent_hash);
-
-            // Get history storage contract code from pre-state
-            if (test_host.code.get(history_storage_address)) |history_code| {
-                // Execute system call to history storage contract
-                // This call uses system address as caller and has 30M gas
-                _ = history_code; // Bytecode is fetched via host interface
-                const call_result = evm_instance.call(.{
-                    .call = .{
-                        .caller = system_address,
-                        .to = history_storage_address,
-                        .value = 0,
-                        .input = parent_hash,
-                        .gas = 30_000_000, // SYSTEM_TRANSACTION_GAS
-                    },
-                });
-                _ = call_result; // System call failures are ignored per spec
-            }
-        }
+        const genesis_hash: ?[]const u8 = if (test_case.object.get("genesisBlockHeader")) |genesis| jsonString(genesis.object.get("hash")) else null;
+        try runBlockSystemCalls(allocator, &evm_instance, &test_host, hardfork, beacon_root, genesis_hash);
     }
 
     // The first transaction the runner refused to include, and why.
@@ -1873,7 +1923,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
     var tx_logs: std.ArrayList(evm_mod.Log) = .{};
     defer tx_logs.deinit(allocator);
     // Base fee the transactions see: block header first, then env.
-    const tx_base_fee: u256 = block_header_base_fee orelse if (block_ctx) |ctx| ctx.block_base_fee else 0;
+    var tx_base_fee: u256 = block_header_base_fee orelse if (block_ctx) |ctx| ctx.block_base_fee else 0;
     // A negative case must leave state exactly as `pre` set it.
     var pre_snapshot: ?HostSnapshot = if (variant.expectedException() != null)
         try HostSnapshot.capture(allocator, &test_host)
@@ -1881,12 +1931,71 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
         null;
     defer if (pre_snapshot) |*snapshot| snapshot.deinit();
 
-    if (transactions_list.items.len > 0) {
-        tx_loop: for (transactions_list.items) |tx| {
+    // Blockchain fixtures: the last accepted block is the next one's parent.
+    var parent_block: ?std.json.Value = test_case.object.get("genesisBlockHeader");
+    const segment_count: usize = if (has_blocks_field) blocks.len else 1;
+    block_loop: for (0..segment_count) |segment_index| {
+        const block: ?std.json.Value = if (has_blocks_field) blocks[segment_index] else null;
+        var segment_txs: []const std.json.Value = transactions_list.items;
+        // State tests: the post entry's expectation. Blocks: the block's own.
+        var expected_exception: ?[]const u8 = variant.expectedException();
+        // Pre-block state, restored when the block is rejected.
+        var block_snapshot: ?HostSnapshot = null;
+        defer if (block_snapshot) |*snapshot| snapshot.deinit();
+
+        if (block) |b| {
+            if (b != .object) return error.InvalidBlock;
+            expected_exception = jsonString(b.object.get("expectException"));
+            if (hardfork) |hf| {
+                validateBlockHeaderConstants(allocator, hf, b, parent_block) catch |err| {
+                    const names = headerErrorNames(err);
+                    const want = expected_exception orelse return err;
+                    if (names.len == 0) return err;
+                    if (!exceptionNamesAny(want, names)) {
+                        std.debug.print("block {d} header failed ({s}) but the fixture expects {s}\n", .{ segment_index, @errorName(err), want });
+                        return error.WrongExceptionRaised;
+                    }
+                    // Rejected header: no body, no withdrawals, parent unchanged.
+                    continue :block_loop;
+                };
+            }
+            segment_txs = if (b.object.get("transactions")) |txs|
+                (if (txs == .array) txs.array.items else return error.InvalidBlockTransactions)
+            else
+                &.{};
+            const header = extractHeaderJson(b);
+            if (header) |h| {
+                const ctx = try blockContextFromHeader(test_case, hardfork, h);
+                evm_instance.block_context = ctx;
+                coinbase = ctx.block_coinbase;
+                block_header_base_fee = ctx.block_base_fee;
+                tx_base_fee = ctx.block_base_fee;
+            }
+            block_snapshot = try HostSnapshot.capture(allocator, &test_host);
+            if (header) |h| {
+                try runBlockSystemCalls(
+                    allocator,
+                    &evm_instance,
+                    &test_host,
+                    hardfork,
+                    jsonString(h.object.get("parentBeaconBlockRoot")),
+                    jsonString(h.object.get("parentHash")),
+                );
+            }
+        }
+
+        tx_loop: for (segment_txs) |tx| {
+            // A block is invalid at its first invalid transaction.
+            if (block != null and rejection != null) break;
+
             // Handle RLP-encoded transactions (Engine API format)
             if (tx == .string) {
-                // Transactions of accepted blocks must all be valid.
-                if (try processRlpTransaction(allocator, &evm_instance, &test_host, tx.string, block_ctx)) |reason| {
+                if (try processRlpTransaction(allocator, &evm_instance, &test_host, tx.string, evm_instance.block_context)) |reason| {
+                    if (block != null) {
+                        rejection = reason;
+                        break;
+                    }
+                    // Transactions of accepted payloads must all be valid.
                     std.debug.print("raw block transaction rejected: {s}\n", .{@tagName(reason)});
                     return error.InvalidBlockTransaction;
                 }
@@ -2006,8 +2115,8 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                             else
                                 0;
                             // Use max_fee_per_gas for affordability check (not effective price)
-                            const upfront_gas_cost = @as(u256, gas_limit) * max_fee_per_gas_for_validation;
-                            if (acct_balance >= (upfront_gas_cost + value)) {
+                            const upfront_gas_cost = @as(u256, gas_limit) *| max_fee_per_gas_for_validation;
+                            if (acct_balance >= (upfront_gas_cost +| value)) {
                                 chosen = addr;
                                 break; // good match
                             } else if (chosen == null) {
@@ -2041,7 +2150,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
             if (tx.object.get("authorizationList")) |auth_list_json| {
                 const empty = auth_list_json != .array or auth_list_json.array.items.len == 0;
                 if (evm_instance.hardfork.isBefore(.PRAGUE) or to == null or empty) {
-                    if (variant.expects(.set_code_invalid)) {
+                    if (expectsRejection(expected_exception, .set_code_invalid)) {
                         rejection = rejection orelse .set_code_invalid;
                         continue;
                     }
@@ -2062,7 +2171,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                 // Check if this is a contract creation (to is null or empty)
                 if (to == null) {
                     // Transaction should be rejected - check if test expects this
-                    if (variant.expects(.blob_contract_creation)) {
+                    if (expectsRejection(expected_exception, .blob_contract_creation)) {
                         rejection = rejection orelse .blob_contract_creation;
                         continue;
                     }
@@ -2089,7 +2198,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                 // Check if blob count exceeds maximum
                 if (blob_count > max_blobs) {
                     // Transaction should be rejected - check if test expects this
-                    if (variant.expects(.blob_count)) {
+                    if (expectsRejection(expected_exception, .blob_count)) {
                         rejection = rejection orelse .blob_count;
                         continue;
                     }
@@ -2114,7 +2223,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                 for (blob_hashes_array) |hash| {
                     if (hash[0] != 0x01) {
                         // Transaction should be rejected - check if test expects this
-                        if (variant.expects(.blob_versioned_hash)) {
+                        if (expectsRejection(expected_exception, .blob_versioned_hash)) {
                             allocator.free(blob_hashes_array);
                             rejection = rejection orelse .blob_versioned_hash;
                             continue :tx_loop;
@@ -2228,7 +2337,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                         if (tx_data.len > primitives.GasConstants.MaxInitcodeSize) {
                             // Transaction is invalid - initcode too large
                             // Check if test expects this exception
-                            if (variant.expects(.initcode_size)) {
+                            if (expectsRejection(expected_exception, .initcode_size)) {
                                 rejection = rejection orelse .initcode_size;
                                 continue;
                             }
@@ -2247,7 +2356,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
             // EIP-7623 calldata floor (EELS: max(intrinsic, floor) > tx.gas).
             if (txGasLimitTooLow(gas_limit, intrinsic_gas, calldata_floor_gas_cost)) {
                 // Transaction is invalid - check if test expects this
-                if (variant.expects(.intrinsic_gas)) {
+                if (expectsRejection(expected_exception, .intrinsic_gas)) {
                     rejection = rejection orelse .intrinsic_gas;
                     continue;
                 }
@@ -2258,7 +2367,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
             // EIP-7825 (Osaka+): reject transactions above the per-tx gas cap.
             if (hardfork) |hf| {
                 if (exceedsTxGasLimitCap(hf, gas_limit)) {
-                    if (variant.expects(.gas_limit_cap)) {
+                    if (expectsRejection(expected_exception, .gas_limit_cap)) {
                         rejection = rejection orelse .gas_limit_cap;
                         continue;
                     }
@@ -2288,7 +2397,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                 blob_gas_fee = total_blob_gas * blob_gas_price;
 
                 // Max fee for upfront check (uses max_fee_per_blob_gas)
-                blob_gas_fee_for_validation = total_blob_gas * max_fee_per_blob_gas;
+                blob_gas_fee_for_validation = std.math.mul(u256, total_blob_gas, max_fee_per_blob_gas) catch std.math.maxInt(u256);
             }
 
             // EELS `check_transaction`: fee caps against the base fee (London+),
@@ -2313,18 +2422,21 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                     rejection = rejection orelse .nonce_is_max;
                     continue;
                 }
-                if (tx_nonce != test_host.getNonce(sender)) {
-                    rejection = rejection orelse .nonce_mismatch;
+                if (TxRejection.forNonce(tx_nonce, test_host.getNonce(sender))) |reason| {
+                    rejection = rejection orelse reason;
                     continue;
                 }
             }
 
             // Per Ethereum spec: sender must have sufficient funds for upfront gas + blob fee + value
             // Use max_fee_per_gas and max_fee_per_blob_gas for upfront check (worst case)
-            const upfront_gas_cost_for_validation = @as(u256, gas_limit) * max_fee_per_gas_for_validation;
             const sender_balance = test_host.balances.get(sender) orelse 0;
-            const total_required = upfront_gas_cost_for_validation + blob_gas_fee_for_validation + value;
-            if (sender_balance < total_required) {
+            const total_required: ?u256 = blk: {
+                const gas_cost = std.math.mul(u256, gas_limit, max_fee_per_gas_for_validation) catch break :blk null;
+                const with_blob = std.math.add(u256, gas_cost, blob_gas_fee_for_validation) catch break :blk null;
+                break :blk std.math.add(u256, with_blob, value) catch null;
+            };
+            if (total_required == null or sender_balance < total_required.?) {
                 // INSUFFICIENT_ACCOUNT_FUNDS: the transaction is not included.
                 rejection = rejection orelse .insufficient_funds;
                 continue;
@@ -2348,13 +2460,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
 
             // Parse access list for EIP-2930 (Berlin+)
             var access_list_entries_storage: ?[]primitives.AccessList.AccessListEntry = null;
-            defer if (access_list_entries_storage) |entries| {
-                // Free storage_keys for each entry
-                for (entries) |entry| {
-                    allocator.free(entry.storage_keys);
-                }
-                allocator.free(entries);
-            };
+            defer if (access_list_entries_storage) |entries| freeAccessList(allocator, entries);
 
             // Parse access list from either "accessList" (blockchain tests) or "accessLists" (state tests)
             const has_access_list_singular = tx.object.get("accessList") != null;
@@ -2378,52 +2484,8 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                     break :blk null;
                 };
 
-                // First pass: count addresses
-                var addr_count: usize = 0;
-                for (access_list_array.items) |entry| {
-                    if (entry.object.get("address")) |_| {
-                        addr_count += 1;
-                    }
-                }
-
-                // Allocate array of entries
-                const entries = try allocator.alloc(primitives.AccessList.AccessListEntry, addr_count);
+                const entries = try parseAccessListJson(allocator, access_list_array.items);
                 access_list_entries_storage = entries;
-
-                // Second pass: populate entries
-                var entry_idx: usize = 0;
-                for (access_list_array.items) |entry| {
-                    if (entry.object.get("address")) |addr_json| {
-                        const addr = try parseAddress(addr_json.string);
-
-                        // Count storage keys for this address
-                        var key_count: usize = 0;
-                        if (entry.object.get("storageKeys")) |keys| {
-                            if (keys == .array) {
-                                key_count = keys.array.items.len;
-                            }
-                        }
-
-                        // Allocate and populate storage keys
-                        const storage_keys = try allocator.alloc([32]u8, key_count);
-                        if (entry.object.get("storageKeys")) |keys| {
-                            if (keys == .array) {
-                                for (keys.array.items, 0..) |key_json, i| {
-                                    const slot = try std.fmt.parseInt(u256, key_json.string, 0);
-                                    // Convert u256 to [32]u8 (big-endian)
-                                    std.mem.writeInt(u256, &storage_keys[i], slot, .big);
-                                }
-                            }
-                        }
-
-                        entries[entry_idx] = .{
-                            .address = addr,
-                            .storage_keys = storage_keys,
-                        };
-                        entry_idx += 1;
-                    }
-                }
-
                 break :blk entries;
             } else null;
 
@@ -2484,9 +2546,15 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
             if (warm_authorities.items.len > 0) {
                 const old_entries: []primitives.AccessList.AccessListEntry = access_list_entries_storage orelse &.{};
                 const entries = try allocator.alloc(primitives.AccessList.AccessListEntry, old_entries.len + warm_authorities.items.len);
+                var initialized: usize = old_entries.len;
+                errdefer {
+                    for (entries[old_entries.len..initialized]) |entry| allocator.free(entry.storage_keys);
+                    allocator.free(entries);
+                }
                 @memcpy(entries[0..old_entries.len], old_entries);
                 for (warm_authorities.items, old_entries.len..) |authority, i| {
                     entries[i] = .{ .address = authority, .storage_keys = try allocator.alloc([32]u8, 0) };
+                    initialized += 1;
                 }
                 if (access_list_entries_storage) |old| allocator.free(old);
                 access_list_entries_storage = entries;
@@ -2559,38 +2627,31 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
             const coinbase_balance = test_host.balances.get(coinbase) orelse 0;
             try test_host.setBalance(coinbase, coinbase_balance + coinbase_reward);
         }
-    }
 
-    // Process withdrawals (EIP-4895, Shanghai+)
-    // Withdrawals are processed at the END of block execution (after transactions)
-    // For blockchain tests with multiple blocks, we need to apply withdrawals after EACH block's transactions
-    const has_blocks = test_case.object.get("blocks") != null;
-    if (has_blocks) {
-        if (test_case.object.get("blocks")) |blocks_json| {
-            if (blocks_json == .array) {
-                for (blocks_json.array.items) |block| {
-                    if (block.object.get("withdrawals")) |withdrawals_json| {
-                        if (withdrawals_json == .array) {
-                            for (withdrawals_json.array.items) |withdrawal| {
-                                if (withdrawal.object.get("address")) |addr| {
-                                    if (withdrawal.object.get("amount")) |amt| {
-                                        const withdrawal_address = try parseAddress(addr.string);
-                                        const withdrawal_amount_gwei = try parseIntFromJson(amt);
-
-                                        // Convert Gwei to Wei (multiply by 10^9)
-                                        const withdrawal_amount_wei: u256 = @as(u256, withdrawal_amount_gwei) * 1_000_000_000;
-
-                                        // Add to recipient balance
-                                        const current_balance = test_host.balances.get(withdrawal_address) orelse 0;
-                                        try test_host.setBalance(withdrawal_address, current_balance + withdrawal_amount_wei);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        const b = block orelse continue;
+        if (rejection) |reason| {
+            const want = expected_exception orelse {
+                std.debug.print("block {d} transaction rejected ({s}) but the block is expected to be valid\n", .{ segment_index, @tagName(reason) });
+                return error.InvalidBlockTransaction;
+            };
+            if (!reason.matches(want)) {
+                std.debug.print("block {d} transaction rejected ({s}) but the fixture expects {s}\n", .{ segment_index, @tagName(reason), want });
+                return error.WrongExceptionRaised;
             }
+            // Rejected block: discard its effects; the parent stays.
+            try block_snapshot.?.restore(&test_host);
+            rejection = null;
+            continue;
         }
+        if (expected_exception) |want| {
+            // Header and transactions are valid, so the block is invalid for a
+            // body rule this runner cannot check. Skip rather than pass.
+            std.debug.print("block {d} expects {s}, which its header and transactions do not show; skipping\n", .{ segment_index, want });
+            return error.SkipZigTest;
+        }
+        // EIP-4895: withdrawals apply at the end of their own accepted block.
+        try applyBlockWithdrawals(&test_host, b);
+        parent_block = b;
     }
 
     // Validate post-state
@@ -2635,171 +2696,128 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                 // Only a state root is given, which this runner cannot compute.
                 return error.SkipZigTest;
             }
-            // Direct format (postState or address-keyed post)
+            // Direct format: a blockchain `postState` is a complete snapshot;
+            // an address-keyed `post` lists only the accounts it checks.
+            if (test_case.object.get("post") == null) full_state = true;
             break :blk post;
         };
 
-        if (post_state == .object) {
-            var it = post_state.object.iterator();
-            while (it.next()) |kv| {
-                const address = try parseAddress(kv.key_ptr.*);
-                // std.debug.print("DEBUG: Validating account {any}\n", .{address.bytes});
-                const expected = kv.value_ptr.*;
-
-                // Check if account should not exist
-                if (expected.object.get("shouldnotexist")) |sne| {
-                    const should_not_exist = try parseIntFromJson(sne);
-                    if (should_not_exist == 1) {
-                        // Verify account doesn't exist (no balance, no code, no nonce, no storage)
-                        const balance = test_host.balances.get(address) orelse 0;
-                        const nonce = test_host.getNonce(address);
-                        const code = test_host.code.get(address) orelse &[_]u8{};
-
-                        try testing.expectEqual(@as(u256, 0), balance);
-                        try testing.expectEqual(@as(u64, 0), nonce);
-                        try testing.expectEqual(@as(usize, 0), code.len);
-                        continue;
-                    }
-                }
-
-                // Check code
-                if (expected.object.get("code")) |expected_code| {
-                    try expectCode(allocator, &test_host, address, expected_code);
-                }
-
-                // Check balance
-                if (expected.object.get("balance")) |expected_bal| {
-                    const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
-                    const actual = test_host.balances.get(address) orelse 0;
-                    if (exp != actual) {
-                        std.debug.print("BALANCE MISMATCH: addr={any} expected {}, found {}\n", .{ address.bytes, exp, actual });
-                    }
-                    try testing.expectEqual(exp, actual);
-                }
-
-                // Check nonce
-                if (expected.object.get("nonce")) |expected_nonce| {
-                    const exp = try parseIntFromJson(expected_nonce);
-                    const actual = test_host.getNonce(address);
-                    if (exp != actual) {
-                        std.debug.print("NONCE MISMATCH: addr={any} expected {}, found {}\n", .{ address.bytes, exp, actual });
-                    }
-                    try testing.expectEqual(exp, actual);
-                }
-
-                // Check storage
-                if (expected.object.get("storage")) |storage| {
-                    if (storage == .object) {
-                        var storage_it = storage.object.iterator();
-                        while (storage_it.next()) |storage_kv| {
-                            const key = try std.fmt.parseInt(u256, storage_kv.key_ptr.*, 0);
-                            const exp_value: u256 = if (std.mem.startsWith(u8, storage_kv.value_ptr.*.string, "<") and std.mem.endsWith(u8, storage_kv.value_ptr.*.string, ">")) blk: {
-                                const addr = try parseAddress(storage_kv.value_ptr.*.string);
-                                const addr_bytes = addr.bytes;
-                                var addr_int: u256 = 0;
-                                for (addr_bytes) |b| {
-                                    addr_int = (addr_int << 8) | b;
-                                }
-                                break :blk addr_int;
-                            } else blk: {
-                                break :blk try std.fmt.parseInt(u256, storage_kv.value_ptr.*.string, 0);
-                            };
-
-                            const slot_key = StorageSlotKey{ .address = address, .slot = key };
-                            const actual_value = test_host.storage.get(slot_key) orelse 0;
-                            if (exp_value != actual_value) {
-                                std.debug.print("STORAGE MISMATCH: addr={any} slot={} expected {}, found {}\n", .{ address.bytes, key, exp_value, actual_value });
-                            }
-                            try testing.expectEqual(exp_value, actual_value);
-                        }
-                    }
-                }
-            }
-            // A post entry's state is complete: no other account may exist.
-            if (full_state) try expectNoUnlistedAccounts(&test_host, post_state);
-        }
+        try checkExpectedAccounts(allocator, &test_host, post_state, .{ .full_state = full_state, .check_code = true });
     } else if (test_case.object.get("expect")) |expect_list| {
-        // Debug: print all storage for debugging
-        // var storage_debug_it2 = test_host.storage.iterator();
-        // while (storage_debug_it2.next()) |entry| {
-        //     // std.debug.print("DEBUG: Storage addr={any} slot={} value={}\n", .{entry.key_ptr.address.bytes, entry.key_ptr.slot, entry.value_ptr.*});
-        // }
-
-        // Handle expect format (alternative to post)
+        // Filler `expect` format: each expectation's `result` lists accounts.
         if (expect_list == .array) {
             for (expect_list.array.items) |expectation| {
                 if (expectation.object.get("result")) |result| {
-                    if (result == .object) {
-                        var it = result.object.iterator();
-                        while (it.next()) |kv| {
-                            const address = try parseAddress(kv.key_ptr.*);
-                            const expected = kv.value_ptr.*;
-
-                            // Check if account should not exist
-                            if (expected.object.get("shouldnotexist")) |sne| {
-                                const should_not_exist = try parseIntFromJson(sne);
-                                if (should_not_exist == 1) {
-                                    // Verify account doesn't exist (no balance, no code, no nonce, no storage)
-                                    const balance = test_host.balances.get(address) orelse 0;
-                                    const nonce = test_host.getNonce(address);
-                                    const code = test_host.code.get(address) orelse &[_]u8{};
-
-                                    try testing.expectEqual(@as(u256, 0), balance);
-                                    try testing.expectEqual(@as(u64, 0), nonce);
-                                    try testing.expectEqual(@as(usize, 0), code.len);
-                                    continue;
-                                }
-                            }
-
-                            // Check balance
-                            if (expected.object.get("balance")) |expected_bal| {
-                                const exp = if (expected_bal.string.len == 0) 0 else try std.fmt.parseInt(u256, expected_bal.string, 0);
-                                const actual = test_host.balances.get(address) orelse 0;
-                                // All debug removed
-                                try testing.expectEqual(exp, actual);
-                            }
-
-                            // Check nonce
-                            if (expected.object.get("nonce")) |expected_nonce| {
-                                const exp = try parseIntFromJson(expected_nonce);
-                                const actual = test_host.getNonce(address);
-                                if (exp != actual) {
-                                    std.debug.print("NONCE MISMATCH: addr={any} expected {}, found {}\n", .{ address.bytes, exp, actual });
-                                }
-                                try testing.expectEqual(exp, actual);
-                            }
-
-                            // Check storage
-                            if (expected.object.get("storage")) |storage| {
-                                if (storage == .object) {
-                                    var storage_it = storage.object.iterator();
-                                    while (storage_it.next()) |storage_kv| {
-                                        const key = try std.fmt.parseInt(u256, storage_kv.key_ptr.*, 0);
-                                        const exp_value: u256 = if (std.mem.startsWith(u8, storage_kv.value_ptr.*.string, "<") and std.mem.endsWith(u8, storage_kv.value_ptr.*.string, ">")) blk: {
-                                            const addr = try parseAddress(storage_kv.value_ptr.*.string);
-                                            const addr_bytes = addr.bytes;
-                                            var addr_int: u256 = 0;
-                                            for (addr_bytes) |b| {
-                                                addr_int = (addr_int << 8) | b;
-                                            }
-                                            break :blk addr_int;
-                                        } else blk: {
-                                            break :blk try std.fmt.parseInt(u256, storage_kv.value_ptr.*.string, 0);
-                                        };
-
-                                        const slot_key = StorageSlotKey{ .address = address, .slot = key };
-                                        const actual_value = test_host.storage.get(slot_key) orelse 0;
-                                        // Debug removed
-                                        try testing.expectEqual(exp_value, actual_value);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    try checkExpectedAccounts(allocator, &test_host, result, .{ .full_state = false, .check_code = false });
                 }
             }
         }
     }
+}
+
+/// How `checkExpectedAccounts` treats what the expectation leaves out.
+const AccountCheck = struct {
+    /// The listing is a complete snapshot: every nonempty host account must
+    /// be listed, and a listed account without `storage` has none.
+    full_state: bool,
+    /// Compare `code` (filler `expect` code may be assembly, so it is not).
+    check_code: bool,
+};
+
+/// Parses an expected storage key or value; `<address>` placeholders are
+/// the address as an integer.
+fn parseStorageWord(text: []const u8) !u256 {
+    if (std.mem.startsWith(u8, text, "<") and std.mem.endsWith(u8, text, ">")) {
+        const addr = try parseAddress(text);
+        return std.mem.readInt(u160, &addr.bytes, .big);
+    }
+    return std.fmt.parseInt(u256, text, 0);
+}
+
+/// Compares `address`'s storage with `expected` in both directions: every
+/// listed slot holds its value, and every nonzero host slot is listed.
+fn expectStorage(host: *TestHost, address: Address, expected: std.json.Value) !void {
+    if (expected != .object) return error.InvalidPostState;
+    var it = expected.object.iterator();
+    while (it.next()) |kv| {
+        if (kv.value_ptr.* != .string) return error.InvalidPostState;
+        const slot = try parseStorageWord(kv.key_ptr.*);
+        const want = try parseStorageWord(kv.value_ptr.string);
+        const actual = host.storage.get(.{ .address = address, .slot = slot }) orelse 0;
+        if (want != actual) {
+            std.debug.print("STORAGE MISMATCH: addr={any} slot={} expected {}, found {}\n", .{ address.bytes, slot, want, actual });
+            return error.StorageMismatch;
+        }
+    }
+    var host_it = host.storage.iterator();
+    while (host_it.next()) |kv| {
+        if (!kv.key_ptr.address.equals(address) or kv.value_ptr.* == 0) continue;
+        if (try storageLists(expected, kv.key_ptr.slot)) continue;
+        std.debug.print("UNEXPECTED STORAGE SLOT: addr={any} slot={} holds {}\n", .{ address.bytes, kv.key_ptr.slot, kv.value_ptr.* });
+        return error.UnexpectedStorageSlot;
+    }
+}
+
+fn storageLists(expected: std.json.Value, slot: u256) !bool {
+    var it = expected.object.iterator();
+    while (it.next()) |kv| {
+        if (try parseStorageWord(kv.key_ptr.*) == slot) return true;
+    }
+    return false;
+}
+
+/// Checks every account in an expected listing (`address -> account`).
+fn checkExpectedAccounts(allocator: std.mem.Allocator, host: *TestHost, accounts: std.json.Value, opts: AccountCheck) !void {
+    if (accounts != .object) return error.InvalidPostState;
+    var it = accounts.object.iterator();
+    while (it.next()) |kv| {
+        const address = try parseAddress(kv.key_ptr.*);
+        const expected = kv.value_ptr.*;
+        if (expected != .object) return error.InvalidPostState;
+
+        if (expected.object.get("shouldnotexist")) |sne| {
+            if (try parseIntFromJson(sne) == 1) {
+                // No balance, nonce, code or nonzero storage.
+                if (hostAccountNonEmpty(host, address)) {
+                    std.debug.print("ACCOUNT SHOULD NOT EXIST: addr={any}\n", .{address.bytes});
+                    return error.AccountShouldNotExist;
+                }
+                continue;
+            }
+        }
+
+        if (opts.check_code) {
+            if (expected.object.get("code")) |expected_code| try expectCode(allocator, host, address, expected_code);
+        }
+
+        if (expected.object.get("balance")) |expected_bal| {
+            const want = try parseU256FromJson(expected_bal);
+            const actual = host.balances.get(address) orelse 0;
+            if (want != actual) {
+                std.debug.print("BALANCE MISMATCH: addr={any} expected {}, found {}\n", .{ address.bytes, want, actual });
+                return error.BalanceMismatch;
+            }
+        }
+
+        if (expected.object.get("nonce")) |expected_nonce| {
+            const want = try parseIntFromJson(expected_nonce);
+            const actual = host.getNonce(address);
+            if (want != actual) {
+                std.debug.print("NONCE MISMATCH: addr={any} expected {}, found {}\n", .{ address.bytes, want, actual });
+                return error.NonceMismatch;
+            }
+        }
+
+        if (expected.object.get("storage")) |storage| {
+            try expectStorage(host, address, storage);
+        } else if (opts.full_state) {
+            var none = std.json.ObjectMap.init(allocator);
+            defer none.deinit();
+            try expectStorage(host, address, .{ .object = none });
+        }
+    }
+    // A complete snapshot: no other account may exist.
+    if (opts.full_state) try expectNoUnlistedAccounts(host, accounts);
 }
 
 fn parseIntFromJson(value: std.json.Value) !u64 {
@@ -3086,7 +3104,10 @@ test "checkExpectedException matches the rejection to the named exception" {
     try testing.expectError(error.ExpectedExceptionNotRaised, checkExpectedException(intrinsic, null));
     try checkExpectedException(intrinsic, .intrinsic_gas);
     try testing.expectError(error.WrongExceptionRaised, checkExpectedException("TransactionException.NONCE_MISMATCH_TOO_LOW", .insufficient_funds));
-    try checkExpectedException("TransactionException.INSUFFICIENT_ACCOUNT_FUNDS|TransactionException.NONCE_MISMATCH_TOO_HIGH", .nonce_mismatch);
+    try checkExpectedException("TransactionException.INSUFFICIENT_ACCOUNT_FUNDS|TransactionException.NONCE_MISMATCH_TOO_HIGH", .nonce_too_high);
+    // Exact names: the opposite nonce direction is a different exception.
+    try testing.expectError(error.WrongExceptionRaised, checkExpectedException("TransactionException.NONCE_MISMATCH_TOO_LOW", .nonce_too_high));
+    try testing.expectError(error.WrongExceptionRaised, checkExpectedException("TransactionException.NONCE_MISMATCH_TOO_HIGH", .nonce_too_low));
     try checkExpectedException("TR_NoFunds", .insufficient_funds);
     try checkExpectedException(null, null);
     try testing.expectError(error.UnexpectedTransactionRejection, checkExpectedException(null, .insufficient_funds));
@@ -3547,8 +3568,42 @@ test "raw transactions recover the signer, move value once and call the zero add
     try testing.expectEqual(@as(u256, 210_000), host.balances.get(coinbase).?);
 
     // Replaying nonce 0 is rejected without touching state.
-    try testing.expectEqual(@as(?TxRejection, .nonce_mismatch), try processRlpTransaction(allocator, &evm_instance, &host, tx_hex, block_ctx));
+    try testing.expectEqual(@as(?TxRejection, .nonce_too_low), try processRlpTransaction(allocator, &evm_instance, &host, tx_hex, block_ctx));
     try testing.expectEqual(@as(u256, 999_999_999_999_789_999), host.balances.get(signer).?);
+}
+
+test "raw transactions signed for another chain are rejected" {
+    const allocator = testing.allocator;
+    var key: [32]u8 = undefined;
+    std.mem.writeInt(u256, &key, 0x45a915e4d060149eb4365960e6a7a45f334393093061116b197e3240065ff2d8, .big);
+    const signer = try Address.fromHex("0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+
+    var host = try TestHost.init(allocator);
+    defer host.deinit();
+    try host.setBalance(signer, 1_000_000_000_000_000_000);
+
+    const Evm = evm_mod.Evm(.{});
+    var evm_instance: Evm = undefined;
+    // The transaction signs chain 1 (EIP-155); the block is chain 5.
+    const block_ctx = evm_mod.BlockContext{
+        .chain_id = 5,
+        .block_number = 1,
+        .block_timestamp = 1000,
+        .block_difficulty = 0,
+        .block_prevrandao = 0,
+        .block_coinbase = testAddress(0xc0),
+        .block_gas_limit = 30_000_000,
+        .block_base_fee = 0,
+        .blob_base_fee = 0,
+    };
+    try evm_instance.init(allocator, host.hostInterface(), .CANCUN, block_ctx, primitives.ZERO_ADDRESS, 0, null);
+    defer evm_instance.deinit();
+
+    const tx_hex = try signedLegacyTxHex(allocator, key, 21_000, testAddress(0x01), 1);
+    defer allocator.free(tx_hex);
+    try testing.expectEqual(@as(?TxRejection, .invalid_chain_id), try processRlpTransaction(allocator, &evm_instance, &host, tx_hex, block_ctx));
+    try testing.expectEqual(@as(u64, 0), host.getNonce(signer));
+    try testing.expectEqual(@as(u256, 1_000_000_000_000_000_000), host.balances.get(signer).?);
 }
 
 test "createAwareBaseGas charges the creation surcharge from Homestead" {
@@ -3563,4 +3618,226 @@ test "rlpItem rejects truncated input" {
     const item = try rlpItem(&.{ 0xc2, 0x01, 0x02 });
     try testing.expect(item.is_list);
     try testing.expectEqual(@as(usize, 3), item.encoded_len);
+}
+
+test "exceptionNamesAny matches whole names only" {
+    try testing.expect(exceptionNamesAny("BlockException.UNKNOWN_PARENT", &.{"UNKNOWN_PARENT"}));
+    try testing.expect(!exceptionNamesAny("BlockException.UNCLE_UNKNOWN_PARENT", &.{"UNKNOWN_PARENT"}));
+    try testing.expect(exceptionNamesAny("BlockException.INVALID_GASLIMIT | TransactionException.NONCE_IS_MAX", &.{"NONCE_IS_MAX"}));
+    try testing.expect(exceptionNamesAny("TR_NoFunds", &.{ "INSUFFICIENT_ACCOUNT_FUNDS", "TR_NoFunds" }));
+    try testing.expect(!exceptionNamesAny("BlockException.INVALID_BASEFEE_PER_GAS", headerErrorNames(error.InvalidGasLimit)));
+}
+
+/// Pre-state with the default sender and a contract that runs
+/// PUSH1 1 PUSH1 1 SSTORE.
+const sstore_pre =
+    \\"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}},
+    \\  "0x1000000000000000000000000000000000000000": {"balance": "0x00", "nonce": "0x01", "code": "0x6001600155", "storage": {}}}
+;
+
+fn sstoreFixture(comptime contract_post: []const u8) []const u8 {
+    return "{" ++ fixture_env ++ "," ++ sstore_pre ++
+        \\,"transaction": {"data": ["0x"], "gasLimit": ["0x0186a0"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"]},
+        \\"post": {"Cancun": [{"state": {
+        \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"nonce": "0x01"},
+        \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {},
+        \\  "0x1000000000000000000000000000000000000000":
+    ++ contract_post ++ "}}]}}";
+}
+
+test "post state rejects an unexpected nonzero storage slot" {
+    try runFixtureForTest(sstoreFixture(
+        \\{"nonce": "0x01", "storage": {"0x01": "0x01"}}
+    ));
+    // The contract wrote slot 1, but the expectation lists no slots.
+    try testing.expectError(error.UnexpectedStorageSlot, runFixtureForTest(sstoreFixture(
+        \\{"nonce": "0x01", "storage": {}}
+    )));
+    // A complete snapshot without `storage` expects none.
+    try testing.expectError(error.UnexpectedStorageSlot, runFixtureForTest(sstoreFixture(
+        \\{"nonce": "0x01"}
+    )));
+    // The wrong value in a listed slot.
+    try testing.expectError(error.StorageMismatch, runFixtureForTest(sstoreFixture(
+        \\{"nonce": "0x01", "storage": {"0x01": "0x02"}}
+    )));
+    // An account that must not exist may not keep storage either.
+    try testing.expectError(error.AccountShouldNotExist, runFixtureForTest(sstoreFixture(
+        \\{"shouldnotexist": "1"}
+    )));
+}
+
+/// Runs a fixture through the public entry point, which expands fork-keyed
+/// `post` sections.
+fn runFixtureAllForks(json: []const u8) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+    try runJsonTestWithPathAndName(testing.allocator, parsed.value, null, null);
+}
+
+fn multiForkFixture(comptime post: []const u8) []const u8 {
+    return "{" ++ fixture_env ++ "," ++ fixture_pre_sender ++
+        \\,"transaction": {"data": ["0x"], "gasLimit": ["0x5208"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"]},
+        \\"post": {
+    ++ post ++ "}}";
+}
+
+const transfer_wrong_nonce_state =
+    \\"state": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a760cbb0", "nonce": "0x05"},
+    \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {"balance": "0x033450"}}
+;
+
+test "multi-fork post runs every fork" {
+    try runFixtureAllForks(multiForkFixture(
+        \\"Berlin": [{
+    ++ transfer_ok_state ++
+        \\}], "Istanbul": [{
+    ++ transfer_ok_state ++ "}]"));
+    // A wrong Istanbul expectation fails even beside a right Berlin one,
+    // whichever fork is listed first.
+    try testing.expectError(error.NonceMismatch, runFixtureAllForks(multiForkFixture(
+        \\"Berlin": [{
+    ++ transfer_ok_state ++
+        \\}], "Istanbul": [{
+    ++ transfer_wrong_nonce_state ++ "}]")));
+    try testing.expectError(error.NonceMismatch, runFixtureAllForks(multiForkFixture(
+        \\"Istanbul": [{
+    ++ transfer_wrong_nonce_state ++
+        \\}], "Berlin": [{
+    ++ transfer_ok_state ++ "}]")));
+    // A hash-only fork does not skip a checkable wrong fork.
+    try testing.expectError(error.NonceMismatch, runFixtureAllForks(multiForkFixture(
+        \\"Cancun": [{"hash": "0x00"}], "Prague": [{
+    ++ transfer_wrong_nonce_state ++ "}]")));
+    // Only hash-only forks: nothing is checkable, so the fixture is skipped.
+    try testing.expectError(error.SkipZigTest, runFixtureAllForks(multiForkFixture(
+        \\"Cancun": [{"hash": "0x00"}]
+    )));
+    try testing.expectError(error.UnsupportedPostFork, runFixtureAllForks(multiForkFixture(
+        \\"Berlin": [{
+    ++ transfer_ok_state ++
+        \\}], "NotAFork": []
+    )));
+}
+
+/// Three blocks on the default fork. Block 1 runs NUMBER NUMBER SSTORE and
+/// pays a withdrawal to 0xee..ee; block 2 runs the contract again and spends
+/// that withdrawal; block 3 is rejected and its withdrawal is dropped.
+fn multiBlockFixture(comptime block3: []const u8, comptime post: []const u8) []const u8 {
+    return 
+    \\{"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}},
+    \\  "0xc0de000000000000000000000000000000000000": {"balance": "0x00", "nonce": "0x01", "code": "0x434355", "storage": {}}},
+    \\"blocks": [
+    \\  {"blockHeader": {"number": "0x01", "timestamp": "0x0a", "coinbase": "0xcb00000000000000000000000000000000000000"},
+    \\   "transactions": [{"data": "0x", "gasLimit": "0x0186a0", "gasPrice": "0x0a", "nonce": "0x00",
+    \\     "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0xc0de000000000000000000000000000000000000", "value": "0x00"}],
+    \\   "withdrawals": [{"index": "0x00", "validatorIndex": "0x00", "address": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "amount": "0x01"}]},
+    \\  {"blockHeader": {"number": "0x02", "timestamp": "0x14", "coinbase": "0xcb00000000000000000000000000000000000000"},
+    \\   "transactions": [{"data": "0x", "gasLimit": "0x0186a0", "gasPrice": "0x0a", "nonce": "0x01",
+    \\     "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0xc0de000000000000000000000000000000000000", "value": "0x00"},
+    \\    {"data": "0x", "gasLimit": "0x5208", "gasPrice": "0x0a", "nonce": "0x00",
+    \\     "sender": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "to": "0x1000000000000000000000000000000000000000", "value": "0x00"}]},
+    \\  {"blockHeader": {"number": "0x03", "timestamp": "0x1e", "coinbase": "0xcb00000000000000000000000000000000000000"},
+    \\   "transactions": [{"data": "0x", "gasLimit": "0x5208", "gasPrice": "0x0a", "nonce": "0x00",
+    \\     "sender": "0xdddddddddddddddddddddddddddddddddddddddd", "to": "0x1000000000000000000000000000000000000000", "value": "0x00"}],
+    \\   "withdrawals": [{"index": "0x01", "validatorIndex": "0x00", "address": "0xffffffffffffffffffffffffffffffffffffff00", "amount": "0x05"}]
+++ block3 ++
+    \\}],
+    \\"postState": {
+++ post ++ "}}";
+}
+
+test "multi-block fixtures run each block in its own context with its own withdrawals" {
+    // Slot NUMBER holds NUMBER for blocks 1 and 2 (one shared context would
+    // write slot 1 twice). The block-2 transaction spends the block-1
+    // withdrawal: 1 gwei - 21000 * 10 wei.
+    const post_spent =
+        \\"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"nonce": "0x02"},
+        \\"0xc0de000000000000000000000000000000000000": {"nonce": "0x01", "storage": {"0x01": "0x01", "0x02": "0x02"}},
+        \\"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": {"nonce": "0x01", "balance": "0x3b9795b0"},
+        \\"0xcb00000000000000000000000000000000000000": {}
+    ;
+    // Block 3 is rejected for the expected reason: its withdrawal to
+    // 0xff..00 is not credited, so the complete post state omits it.
+    try runFixtureForTest(multiBlockFixture(
+        \\, "expectException": "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS"
+    , post_spent));
+    // The rejected block's withdrawal (5 gwei to 0xff..00) is not credited.
+    try testing.expectError(error.BalanceMismatch, runFixtureForTest(multiBlockFixture(
+        \\, "expectException": "TransactionException.INSUFFICIENT_ACCOUNT_FUNDS"
+    , post_spent ++
+        \\, "0xffffffffffffffffffffffffffffffffffffff00": {"balance": "0x012a05f200"}
+    )));
+    // The wrong exception for the rejected block fails the fixture.
+    try testing.expectError(error.WrongExceptionRaised, runFixtureForTest(multiBlockFixture(
+        \\, "expectException": "TransactionException.INTRINSIC_GAS_TOO_LOW"
+    , post_spent)));
+    // A block expected to be valid may not contain an invalid transaction.
+    try testing.expectError(error.InvalidBlockTransaction, runFixtureForTest(multiBlockFixture("", post_spent)));
+}
+
+/// A Shanghai chain whose only block raises its gas limit far beyond the
+/// 1/1024 bound, so header validation fails with INVALID_GASLIMIT.
+fn badGasLimitFixture(comptime expect: []const u8) []const u8 {
+    return 
+    \\{"network": "Shanghai",
+    \\"genesisBlockHeader": {"number": "0x00", "timestamp": "0x00", "gasLimit": "0x01000000", "gasUsed": "0x00", "baseFeePerGas": "0x07",
+    \\  "difficulty": "0x00", "nonce": "0x0000000000000000", "uncleHash": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"},
+    \\"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}}},
+    \\"blocks": [{"blockHeader": {"number": "0x01", "timestamp": "0x0c", "gasLimit": "0x7fffffff", "gasUsed": "0x00", "baseFeePerGas": "0x07",
+    \\    "difficulty": "0x00", "nonce": "0x0000000000000000", "uncleHash": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+    \\    "withdrawalsRoot": "0x0000000000000000000000000000000000000000000000000000000000000000"},
+    \\  "withdrawals": [{"index": "0x00", "validatorIndex": "0x00", "address": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "amount": "0x01"}],
+    \\  "expectException": "
+++ expect ++
+    \\"}],
+    \\"postState": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00"}}}
+    ;
+}
+
+test "a block header error must be the expected one" {
+    try runFixtureForTest(badGasLimitFixture("BlockException.INVALID_GASLIMIT"));
+    try testing.expectError(error.WrongExceptionRaised, runFixtureForTest(badGasLimitFixture("BlockException.INVALID_BASEFEE_PER_GAS")));
+}
+
+test "access-list parse error on entry 2 frees only initialized entries" {
+    const json =
+        \\[{"address": "0x1000000000000000000000000000000000000000", "storageKeys": ["0x01", "0x02"]},
+        \\ {"address": "0x2000000000000000000000000000000000000000", "storageKeys": ["0x01", "0xzz"]},
+        \\ {"address": "0x3000000000000000000000000000000000000000", "storageKeys": []}]
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+    // testing.allocator fails the test on a leak or an invalid free.
+    try testing.expectError(error.InvalidCharacter, parseAccessListJson(testing.allocator, parsed.value.array.items));
+
+    const bad_address =
+        \\[{"address": "0x1000000000000000000000000000000000000000", "storageKeys": ["0x01"]}, {"address": "0xzz", "storageKeys": []}]
+    ;
+    const parsed_bad = try std.json.parseFromSlice(std.json.Value, testing.allocator, bad_address, .{});
+    defer parsed_bad.deinit();
+    try testing.expect(std.meta.isError(parseAccessListJson(testing.allocator, parsed_bad.value.array.items)));
+
+    const entries = try parseAccessListJson(testing.allocator, parsed.value.array.items[0..1]);
+    defer freeAccessList(testing.allocator, entries);
+    try testing.expectEqual(@as(usize, 1), entries.len);
+    try testing.expectEqual(@as(usize, 2), entries[0].storage_keys.len);
+    try testing.expectEqual(@as(u8, 2), entries[0].storage_keys[1][31]);
+}
+
+test "failing access-list allocations never free uninitialized entries" {
+    const json =
+        \\[{"address": "0x1000000000000000000000000000000000000000", "storageKeys": ["0x01"]},
+        \\ {"address": "0x2000000000000000000000000000000000000000", "storageKeys": ["0x01", "0x02"]}]
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+    try testing.checkAllAllocationFailures(testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator, items: []const std.json.Value) !void {
+            const entries = try parseAccessListJson(allocator, items);
+            freeAccessList(allocator, entries);
+        }
+    }.run, .{parsed.value.array.items});
 }
