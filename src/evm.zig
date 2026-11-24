@@ -12,6 +12,7 @@ const host = @import("host.zig");
 const errors = @import("errors.zig");
 const trace = @import("trace.zig");
 const precompiles = @import("precompiles");
+const crypto = @import("crypto");
 const evm_config = @import("evm_config.zig");
 const EvmConfig = evm_config.EvmConfig;
 const storage_injector = @import("storage_injector.zig");
@@ -49,6 +50,99 @@ pub const BlockContext = struct {
     /// Empty slice if no block hashes available
     block_hashes: []const [32]u8 = &[_][32]u8{},
 };
+
+/// EIP-7951 (Osaka): address of the P256VERIFY precompile.
+pub const P256VERIFY_ADDRESS: Address = Address.fromU256(0x0100);
+/// EIP-7951: fixed gas cost for P256VERIFY regardless of input validity.
+pub const P256VERIFY_GAS: u64 = 6900;
+/// EIP-7951: input layout is `msg_hash(32) || r(32) || s(32) || qx(32) || qy(32)`.
+pub const P256VERIFY_INPUT_LEN: usize = 160;
+const P256VERIFY_SUCCESS_OUTPUT = [_]u8{0} ** 31 ++ [_]u8{1};
+
+/// Highest address in the contiguous 0x01.. precompile range that Voltaire may report
+/// (0x01..0x13 covers both Voltaire's current BLS12-381 table and the final 7-operation
+/// EIP-2537 table 0x0b..0x11 without hardcoding a per-fork count).
+const MAX_CONTIGUOUS_PRECOMPILE: u16 = 0x13;
+
+/// Single source of truth for precompile address membership across call dispatch,
+/// transaction-start pre-warming (EIP-2929), and end-of-tx empty-account cleanup (EIP-161).
+pub fn isPrecompileAddress(address: Address, hardfork: Hardfork) bool {
+    if (hardfork.isAtLeast(.OSAKA) and address.equals(P256VERIFY_ADDRESS)) return true;
+    return precompiles.isPrecompile(address, hardfork);
+}
+
+/// Execute the standard precompile at `address`. Caller must check `isPrecompileAddress()`.
+pub fn executePrecompile(
+    allocator: std.mem.Allocator,
+    address: Address,
+    input: []const u8,
+    gas_limit: u64,
+    hardfork: Hardfork,
+) precompiles.PrecompileError!precompiles.PrecompileResult {
+    if (hardfork.isAtLeast(.OSAKA) and address.equals(P256VERIFY_ADDRESS)) {
+        return executeP256Verify(allocator, input, gas_limit);
+    }
+    return precompiles.execute(allocator, address, input, gas_limit, hardfork);
+}
+
+/// Execute EIP-7951 P256VERIFY (secp256r1 / NIST P-256 ECDSA prehashed verification).
+///
+/// Charges a fixed `P256VERIFY_GAS` (6900) and fails only with `error.OutOfGas` (or OOM).
+/// A valid signature returns a 32-byte big-endian 1; wrong length, invalid scalars/points,
+/// or a signature mismatch succeed with 0-byte empty output.
+pub fn executeP256Verify(
+    allocator: std.mem.Allocator,
+    input: []const u8,
+    gas_limit: u64,
+) precompiles.PrecompileError!precompiles.PrecompileResult {
+    if (gas_limit < P256VERIFY_GAS) return error.OutOfGas;
+    const valid = input.len == P256VERIFY_INPUT_LEN and verifyP256Signature(input[0..P256VERIFY_INPUT_LEN]);
+    return .{
+        .output = if (valid) try allocator.dupe(u8, &P256VERIFY_SUCCESS_OUTPUT) else &.{},
+        .gas_used = P256VERIFY_GAS,
+    };
+}
+
+/// EIP-7951 input validation and secp256r1 ECDSA verification over a 160-byte input.
+fn verifyP256Signature(input: *const [P256VERIFY_INPUT_LEN]u8) bool {
+    const p256 = crypto.p256;
+    const msg_hash = input[0..32];
+    const r_bytes = input[32..64];
+    const s_bytes = input[64..96];
+    const qx_bytes = input[96..128];
+    const qy_bytes = input[128..160];
+
+    // EIP-7951 bounds: r, s in [1, n-1] (high-s permitted); qx, qy in [0, p-1]; Q != (0, 0).
+    const r_int = std.mem.readInt(u256, r_bytes, .big);
+    const s_int = std.mem.readInt(u256, s_bytes, .big);
+    if (r_int == 0 or r_int >= p256.P256_N or s_int == 0 or s_int >= p256.P256_N) return false;
+
+    const qx_int = std.mem.readInt(u256, qx_bytes, .big);
+    const qy_int = std.mem.readInt(u256, qy_bytes, .big);
+    if (qx_int >= p256.P256_P or qy_int >= p256.P256_P) return false;
+    if (qx_int == 0 and qy_int == 0) return false;
+
+    // Explicit on-curve and non-identity check (also rejects Zig's affine (0, 1) identity).
+    const P256 = p256.P256;
+    const pub_point = P256.fromSerializedAffineCoordinates(qx_bytes.*, qy_bytes.*, .big) catch return false;
+    pub_point.rejectIdentity() catch return false;
+
+    // Zig 0.15 std.crypto.sign.ecdsa rejects h == 0 (mod n), whereas EIP-7951 permits it:
+    // when h == 0 (mod n), u1 = 0 so R' = (r * s^-1) * Q, valid iff R' != infinity and R'.x mod n == r.
+    const h_int = std.mem.readInt(u256, msg_hash, .big);
+    if (h_int % p256.P256_N != 0) {
+        return p256.verify(msg_hash, r_bytes, s_bytes, input[96..160]) catch false;
+    }
+
+    const r_scalar = P256.scalar.Scalar.fromBytes(r_bytes.*, .big) catch return false;
+    const s_scalar = P256.scalar.Scalar.fromBytes(s_bytes.*, .big) catch return false;
+    const u2_scalar = r_scalar.mul(s_scalar.invert()).toBytes(.little);
+    const r_point = pub_point.mulPublic(u2_scalar, .little) catch return false;
+    r_point.rejectIdentity() catch return false;
+    const rx_bytes = r_point.affineCoordinates().x.toBytes(.big);
+    const rx_mod_n = std.mem.readInt(u256, &rx_bytes, .big) % p256.P256_N;
+    return rx_mod_n == r_int;
+}
 
 /// Creates a configured EVM instance type.
 pub fn Evm(comptime config: EvmConfig) type {
@@ -107,39 +201,49 @@ pub fn Evm(comptime config: EvmConfig) type {
         opcode_overrides: []const evm_config.OpcodeOverride,
         precompile_overrides: []const evm_config.PrecompileOverride,
 
-        // State changes JSON (arena-allocated, sized to fit — persists across yields within
-        // a transaction). Previously a fixed 16 KiB array that silently truncated large dumps.
-        pending_state_changes: []const u8 = &.{},
-        pending_state_changes_len: usize = 0,
+        // Full state-changes JSON from the latest dumpStateChanges(), owned by `allocator`
+        // (not the arena) at its exact size so large dumps are never truncated (BUG_HUNT_REPORT #9).
+        // Freed on the next dump, transaction init, and deinit().
+        pending_state_changes: []u8 = &.{},
 
         // Async executor (initialized after Self is fully constructed)
         async_executor: ?AsyncExecutorType = null,
+        // Direct async precompile calls have no frame to hold their result across a commit yield.
+        pending_precompile_result: ?CallResult = null,
 
         // Accumulated logs for current transaction
         logs: std.ArrayList(call_result.Log),
 
-        /// Initialize a new EVM instance
-        /// Config provides defaults, but hardfork can be overridden at runtime
+        /// Single source of truth for precompile address membership (delegates to module helper).
+        pub fn isPrecompileAddress(address: Address, hardfork: Hardfork) bool {
+            return @import("evm.zig").isPrecompileAddress(address, hardfork);
+        }
+
+        /// Initialize a new EVM instance with every field in a valid empty/default state.
+        /// Calling `init` followed immediately by `deinit` (or pre-call accessors) is always safe and leak-free.
+        /// Config provides defaults, but hardfork can be overridden at runtime.
         pub fn init(self: *Self, allocator: std.mem.Allocator, h: ?host.HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext, origin: primitives.Address, gas_price: u256, log_level: ?log.LogLevel) !void {
             // Set log level if provided
             if (log_level) |level| {
                 log.setLogLevel(level);
             }
 
+            // Initialize every field without `undefined`. Empty containers do not allocate on
+            // init; arena-backed maps are rebound below once `self.arena` is in its final address.
             self.* = Self{
-                .frames = undefined,
-                .storage = undefined,
-                .created_accounts = undefined,
-                .selfdestructed_accounts = undefined,
-                .touched_accounts = undefined,
-                .balances = undefined,
-                .nonces = undefined,
-                .code = undefined,
-                .access_list_manager = undefined,
+                .frames = .empty,
+                .storage = Storage.init(allocator, h, null),
+                .created_accounts = std.AutoHashMap(primitives.Address, void).init(allocator),
+                .selfdestructed_accounts = std.AutoHashMap(primitives.Address, void).init(allocator),
+                .touched_accounts = std.AutoHashMap(primitives.Address, void).init(allocator),
+                .balances = std.AutoHashMap(primitives.Address, u256).init(allocator),
+                .nonces = std.AutoHashMap(primitives.Address, u64).init(allocator),
+                .code = std.AutoHashMap(primitives.Address, []const u8).init(allocator),
+                .access_list_manager = AccessListManager.init(allocator),
                 .gas_refund = 0,
-                .balance_snapshot_stack = undefined,
-                .nonce_snapshot_stack = undefined,
-                .code_snapshot_stack = undefined,
+                .balance_snapshot_stack = .empty,
+                .nonce_snapshot_stack = .empty,
+                .code_snapshot_stack = .empty,
                 .hardfork = hardfork orelse Hardfork.DEFAULT,
                 .fork_transition = null,
                 .block_context = block_context orelse .{
@@ -166,16 +270,30 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .opcode_overrides = config.opcode_overrides,
                 .precompile_overrides = config.precompile_overrides,
                 .pending_state_changes = &.{},
-                .pending_state_changes_len = 0,
                 .async_executor = null, // Initialized when needed
-                .logs = undefined,
+                .pending_precompile_result = null,
+                .logs = .empty,
             };
-            errdefer self.arena.deinit();
 
             const arena_alloc = self.arena.allocator();
+            self.storage = Storage.init(arena_alloc, h, null);
+            self.created_accounts = std.AutoHashMap(primitives.Address, void).init(arena_alloc);
+            self.selfdestructed_accounts = std.AutoHashMap(primitives.Address, void).init(arena_alloc);
+            self.touched_accounts = std.AutoHashMap(primitives.Address, void).init(arena_alloc);
             self.balances = std.AutoHashMap(primitives.Address, u256).init(arena_alloc);
             self.nonces = std.AutoHashMap(primitives.Address, u64).init(arena_alloc);
             self.code = std.AutoHashMap(primitives.Address, []const u8).init(arena_alloc);
+            self.access_list_manager = AccessListManager.init(arena_alloc);
+        }
+
+        fn freePendingStateChanges(self: *Self) void {
+            if (self.pending_state_changes.len > 0) self.allocator.free(self.pending_state_changes);
+            self.pending_state_changes = &.{};
+        }
+
+        /// Return the full pending state-changes JSON slice (empty slice if none).
+        pub fn getPendingStateChanges(self: *const Self) []const u8 {
+            return self.pending_state_changes;
         }
 
         /// Look up custom opcode handler override
@@ -200,8 +318,9 @@ pub fn Evm(comptime config: EvmConfig) type {
             return null;
         }
 
-        /// Clean up resources
+        /// Clean up resources. Safe to call directly after `init`, without `call()`.
         pub fn deinit(self: *Self) void {
+            self.freePendingStateChanges();
             self.arena.deinit();
         }
 
@@ -216,13 +335,18 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Initialize internal state (hash maps, lists, etc.) for transaction execution
         /// Must be called before any transaction execution (call or inner_create)
         pub fn initTransactionState(self: *Self, blob_versioned_hashes: ?[]const [32]u8) !void {
+            self.freePendingStateChanges();
+            self.pending_precompile_result = null;
             const arena_allocator = self.arena.allocator();
-            self.storage = Storage.init(arena_allocator, self.host, self.pending_storage_injector);
+            // Keep an injector installed directly on storage if none is pending.
+            const injector = self.pending_storage_injector orelse self.storage.storage_injector;
+            self.storage = Storage.init(arena_allocator, self.host, injector);
             // Clear existing HashMaps instead of creating new ones (allows pre-state setup)
             self.balances.clearRetainingCapacity();
             self.nonces.clearRetainingCapacity();
             self.code.clearRetainingCapacity();
             self.access_list_manager = AccessListManager.init(arena_allocator);
+            try self.preWarmPrecompiles();
             self.frames = std.ArrayList(FrameType){};
             try self.frames.ensureTotalCapacity(arena_allocator, 1024);
             self.logs = std.ArrayList(call_result.Log){};
@@ -427,7 +551,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             var it = self.touched_accounts.iterator();
             while (it.next()) |entry| {
                 const addr = entry.key_ptr.*;
-                if (precompiles.isPrecompile(addr, self.hardfork)) continue;
+                if (Self.isPrecompileAddress(addr, self.hardfork)) continue;
                 if (self.accountIsEmpty(addr)) {
                     self.deleteAccountState(addr);
                 }
@@ -565,29 +689,32 @@ pub fn Evm(comptime config: EvmConfig) type {
             return addr;
         }
 
-        /// Pre-warm addresses at transaction start (EIP-2929, EIP-3651)
+        /// EIP-2929: mark every precompile active at `self.hardfork` as warm.
         ///
-        /// Marks specific addresses as "warm" before transaction execution begins.
-        /// This affects gas costs for subsequent accesses to these addresses.
-        ///
-        /// Pre-warmed addresses (Berlin+):
-        ///   - Transaction origin (sender)
-        ///   - Transaction target (if not zero address)
-        ///   - Coinbase address (Shanghai+, EIP-3651)
-        ///   - All precompile addresses (0x01-0x09 Berlin-Istanbul, 0x01-0x0A Cancun+, 0x01-0x12 Prague+)
-        ///
-        /// Pre-Berlin: No-op (no warm/cold distinction)
-        ///
-        /// Parameters:
-        ///   - target: The transaction target address
-        ///
-        /// Returns: void
-        ///
-        /// Errors:
-        ///   - StorageError: If warming addresses fails
-        pub fn preWarmTransaction(self: *Self, target: primitives.Address) errors.CallError!void {
-            // EIP-2929 (Berlin+): Pre-warm addresses at transaction start
-            // Pre-Berlin: no warm/cold distinction, so skip this entirely
+        /// Derived dynamically from `isPrecompileAddress` so the warm set tracks Voltaire's
+        /// EIP-2537 BLS12-381 table (whether 0x0b..0x13 or 7-op 0x0b..0x11) and includes
+        /// Osaka+ EIP-7951 P256VERIFY at 0x0100.
+        fn preWarmPrecompiles(self: *Self) errors.CallError!void {
+            if (!self.hardfork.isAtLeast(.BERLIN)) return;
+
+            var precompile_addrs: [MAX_CONTIGUOUS_PRECOMPILE + 1]primitives.Address = undefined;
+            var count: usize = 0;
+            var addr_int: u16 = 1;
+            while (addr_int <= MAX_CONTIGUOUS_PRECOMPILE) : (addr_int += 1) {
+                const candidate = primitives.Address.fromU256(addr_int);
+                if (Self.isPrecompileAddress(candidate, self.hardfork)) {
+                    precompile_addrs[count] = candidate;
+                    count += 1;
+                }
+            }
+            if (Self.isPrecompileAddress(P256VERIFY_ADDRESS, self.hardfork)) {
+                precompile_addrs[count] = P256VERIFY_ADDRESS;
+                count += 1;
+            }
+            try self.pre_warm_addresses(precompile_addrs[0..count]);
+        }
+
+        fn preWarmParticipants(self: *Self, target: primitives.Address) errors.CallError!void {
             if (!self.hardfork.isAtLeast(.BERLIN)) return;
 
             var warm: [3]primitives.Address = undefined;
@@ -601,35 +728,23 @@ pub fn Evm(comptime config: EvmConfig) type {
                 count += 1;
             }
 
-            // EIP-3651 (Shanghai+): Coinbase address is pre-warmed at transaction start
             if (self.hardfork.isAtLeast(.SHANGHAI)) {
                 @branchHint(.likely);
                 warm[count] = self.block_context.block_coinbase;
                 count += 1;
             }
 
-            // Pre-warm origin, target, and coinbase
             try self.pre_warm_addresses(warm[0..count]);
+        }
 
-            // Pre-warm precompiles
-            // EIP-2929: Precompiles are always warm at transaction start
-            // Determine number of precompiles based on hardfork
-            // Berlin-Istanbul: 0x01-0x09 (9 precompiles: ECRECOVER through BLAKE2F)
-            // Cancun+: 0x01-0x0A (10 precompiles, added KZG point evaluation at 0x0A via EIP-4844)
-            // Prague+: 0x01-0x13 (standard BLS12-381 precompile table in Voltaire)
-            const precompile_count: usize = if (self.hardfork.isAtLeast(.PRAGUE))
-                0x13 // Prague: All precompiles including BLS12-381
-            else if (self.hardfork.isAtLeast(.CANCUN))
-                0x0A // Cancun: Includes KZG point evaluation
-            else
-                0x09; // Berlin-Istanbul: Up to BLAKE2F
-
-            var precompile_addrs: [0x13]primitives.Address = undefined;
-            var i: usize = 0;
-            while (i < precompile_count) : (i += 1) {
-                precompile_addrs[i] = primitives.Address.fromU256(i + 1);
-            }
-            try self.pre_warm_addresses(precompile_addrs[0..precompile_count]);
+        /// Pre-warm addresses at transaction start (EIP-2929, EIP-3651)
+        ///
+        /// Marks origin, target, coinbase (Shanghai+), and all active precompiles
+        /// (via `isPrecompileAddress`) as warm. Idempotent when called after `initTransactionState`.
+        /// Pre-Berlin: No-op.
+        pub fn preWarmTransaction(self: *Self, target: primitives.Address) errors.CallError!void {
+            try self.preWarmParticipants(target);
+            try self.preWarmPrecompiles();
         }
 
         /// Set bytecode for the next call() invocation
@@ -663,14 +778,21 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
             }.call;
 
+            const target = params.get_to();
+            const is_precompile = if (target) |addr| Self.isPrecompileAddress(addr, self.hardfork) else false;
+
             // Validate parameters
-            params.validate() catch {
-                return makeFailure(self.arena.allocator(), 0);
+            params.validate() catch |err| {
+                // EIP-7951 P256VERIFY rejects any non-160-byte input at fixed gas, even
+                // above the general calldata size cap.
+                if (err != error.InvalidInputSize or !is_precompile or !target.?.equals(P256VERIFY_ADDRESS)) {
+                    return makeFailure(self.arena.allocator(), 0);
+                }
             };
 
             // Extract common parameters
             const caller = params.getCaller();
-            const gas = @as(i64, @intCast(params.getGas()));
+            const gas = params.getGas();
             const is_create = params.isCreate();
 
             // Determine target address and value
@@ -701,16 +823,16 @@ pub fn Evm(comptime config: EvmConfig) type {
             };
 
             const calldata = params.getInput();
-            const bytecode = if (params.isCreate()) &[_]u8{} else self.get_code(address);
+            const bytecode = if (is_create or is_precompile) &[_]u8{} else self.get_code(address);
             const blob_versioned_hashes = if (self.blob_versioned_hashes.len > 0) self.blob_versioned_hashes else null;
             const access_list = self.pending_access_list;
 
-            // Initialize transaction state
+            // Initialize transaction state (warms active precompiles on Berlin+)
             self.initTransactionState(blob_versioned_hashes) catch {
                 return makeFailure(self.arena.allocator(), 0);
             };
 
-            self.preWarmTransaction(address) catch {
+            self.preWarmParticipants(address) catch {
                 return makeFailure(self.arena.allocator(), 0);
             };
 
@@ -726,7 +848,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     .create2 => |p| p.salt,
                     else => null,
                 };
-                const create_result = self.inner_create(value, calldata, @intCast(gas), salt) catch {
+                const create_result = self.inner_create(value, calldata, gas, salt) catch {
                     return makeFailure(self.arena.allocator(), 0);
                 };
 
@@ -772,16 +894,14 @@ pub fn Evm(comptime config: EvmConfig) type {
             // before calling this function. This function receives gas that's already
             // net of intrinsic costs, similar to inner_call().
 
-            // Check if this is a precompile address with empty bytecode (like inner_call)
+            // Check if this is a precompile address or empty account (like inner_call)
             if (bytecode.len == 0) {
-                // Check if this is a precompile address (hardfork-aware)
-                if (precompiles.isPrecompile(address, self.hardfork)) {
-                    // Use the precompiles module to handle all precompile execution
-                    const result = precompiles.execute(
+                if (is_precompile) {
+                    const result = executePrecompile(
                         self.arena.allocator(),
                         address,
                         calldata,
-                        @intCast(gas),
+                        gas,
                         self.hardfork,
                     ) catch {
                         // On error, return failure
@@ -816,7 +936,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
                     return CallResult{
                         .success = true,
-                        .gas_left = @as(u64, @intCast(gas)) - result.gas_used,
+                        .gas_left = gas - result.gas_used,
                         .output = result.output,
                         .refund_counter = self.gas_refund,
                     };
@@ -833,7 +953,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
                 return CallResult{
                     .success = true,
-                    .gas_left = @intCast(gas),
+                    .gas_left = gas,
                     .output = &[_]u8{},
                     .refund_counter = self.gas_refund,
                 };
@@ -843,7 +963,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.frames.append(self.arena.allocator(), FrameType.init(
                 self.arena.allocator(),
                 bytecode,
-                gas,
+                @intCast(gas),
                 caller,
                 address,
                 value,
@@ -942,6 +1062,29 @@ pub fn Evm(comptime config: EvmConfig) type {
             self: *Self,
             input: CallOrContinueInput,
         ) !CallOrContinueOutput {
+            switch (input) {
+                .call => |params| dispatch: {
+                    self.pending_precompile_result = null;
+                    const target = params.get_to() orelse break :dispatch;
+                    if (!Self.isPrecompileAddress(target, self.hardfork)) break :dispatch;
+                    if (self.pending_storage_injector orelse self.storage.storage_injector) |injector| {
+                        injector.clearCache();
+                    }
+                    const result = self.call(params);
+                    if (result.success and self.storage.storage_injector != null) {
+                        const json = try self.dumpStateChanges();
+                        self.pending_precompile_result = result;
+                        return .{ .ready_to_commit = .{ .changes_json = json } };
+                    }
+                    return .{ .result = result };
+                },
+                .continue_after_commit => if (self.pending_precompile_result) |result| {
+                    self.pending_precompile_result = null;
+                    return .{ .result = result };
+                },
+                else => {},
+            }
+
             // Initialize async executor on first use
             if (self.async_executor == null) {
                 self.async_executor = AsyncExecutorType.init(self);
@@ -1028,26 +1171,23 @@ pub fn Evm(comptime config: EvmConfig) type {
             } };
         }
 
-        /// Dump state changes to JSON
+        /// Dump state changes to JSON into a heap-allocated owned slice on `self`
+        /// (freed on the next dump, transaction init, or `deinit()`). Never truncates.
         pub fn dumpStateChanges(self: *Self) ![]const u8 {
-            if (self.storage.storage_injector) |injector| {
-                const result = try injector.dumpChanges(self);
-                log.debug("dumpStateChanges: Got {} bytes from injector", .{result.len});
-                // Copy into an arena-allocated buffer sized to fit (persists for the tx; no
-                // truncation). Falls back to the raw result if allocation fails.
-                const buf = self.arena.allocator().alloc(u8, result.len) catch {
-                    self.pending_state_changes = result;
-                    self.pending_state_changes_len = result.len;
-                    return result;
-                };
-                @memcpy(buf, result);
-                self.pending_state_changes = buf;
-                self.pending_state_changes_len = buf.len;
-                return self.pending_state_changes;
-            }
-            log.debug("dumpStateChanges: No injector, returning empty", .{});
-            self.pending_state_changes_len = 0;
-            return &.{};
+            // Release any previous dump first so a failed dump never leaves stale changes behind.
+            self.freePendingStateChanges();
+
+            const injector = self.storage.storage_injector orelse {
+                log.debug("dumpStateChanges: No injector, returning empty", .{});
+                return &.{};
+            };
+            const raw = try injector.dumpChanges(self);
+            defer injector.allocator.free(raw);
+            log.debug("dumpStateChanges: Got {} bytes from injector", .{raw.len});
+            if (raw.len == 0) return &.{};
+
+            self.pending_state_changes = try self.allocator.dupe(u8, raw);
+            return self.pending_state_changes;
         }
 
         /// Delete accounts marked via SELFDESTRUCT at end of transaction (EIP-6780).
@@ -1384,8 +1524,9 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
             }
 
-            // Get code for the target address
-            const code = self.get_code(address);
+            // Get code for the target address (active precompiles always dispatch as precompiles)
+            const is_precompile = Self.isPrecompileAddress(address, self.hardfork);
+            const code = if (is_precompile) &[_]u8{} else self.get_code(address);
             if (code.len == 0) {
                 // Check for JavaScript custom precompile handler first
                 const root_c = @import("root_c.zig");
@@ -1445,9 +1586,8 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
 
                 // Check if this is a standard precompile address (hardfork-aware)
-                if (precompiles.isPrecompile(address, self.hardfork)) {
-                    // Use the precompiles module to handle all precompile execution
-                    const result = precompiles.execute(
+                if (is_precompile) {
+                    const result = executePrecompile(
                         self.arena.allocator(),
                         address,
                         input,
