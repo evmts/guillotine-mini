@@ -61,10 +61,11 @@ pub const EvmConfig = struct {
     /// Set to empty slice for no overrides
     precompile_overrides: []const PrecompileOverride = &.{},
 
-    /// Loop quota for safety counters to prevent infinite loops
-    /// null = disabled (default for optimized builds)
-    /// value = maximum iterations before panic (default for debug/safe builds)
-    loop_quota: ?u32 = if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) 1_000_000 else null,
+    /// Optional per-frame opcode step limit for sandboxes and fuzzers.
+    /// null (default in every build mode) = unlimited; gas alone bounds execution,
+    /// as consensus requires. A value N makes a frame return `error.ExecutionTimeout`
+    /// after N steps, which is NOT consensus-safe.
+    loop_quota: ?u32 = null,
 
     /// Enable system contract updates (EIP-4788 beacon roots, EIP-2935 historical block hashes)
     /// When true, these contracts are updated at the start of each transaction
@@ -199,6 +200,10 @@ test "EvmConfig - precompile overrides" {
 }
 
 test "EvmConfig - loop quota" {
+    // Default is unlimited in every build mode: execution is bounded by gas only.
+    const default_config = EvmConfig{};
+    try testing.expectEqual(@as(?u32, null), default_config.loop_quota);
+
     const debug_config = EvmConfig{ .loop_quota = 1_000_000 };
     try testing.expectEqual(@as(?u32, 1_000_000), debug_config.loop_quota);
 

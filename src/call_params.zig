@@ -30,6 +30,9 @@ pub fn CallParams(config: anytype) type {
             to: Address,
             input: []const u8,
             gas: u64,
+            /// Call value inherited from the parent frame (EIP-7). Visible to CALLVALUE in
+            /// the child; never transferred.
+            value: u256 = 0,
         },
         /// STATICCALL operation (read-only)
         staticcall: struct {
@@ -62,43 +65,13 @@ pub fn CallParams(config: anytype) type {
             InvalidStaticCallValue,
         };
 
-        /// Validate call parameters to ensure they meet EVM requirements.
-        /// Checks gas limits and other critical constraints.
+        /// Validate call parameters against fork-independent invariants.
+        ///
+        /// Protocol size limits are fork-dependent and enforced during execution:
+        /// EIP-3860 initcode limits run in `Evm.inner_create` (Shanghai+ only), and
+        /// calldata has no protocol size cap beyond the gas it costs.
         pub fn validate(self: @This()) ValidationError!void {
-            // EIP-3860: Limit init code size to 49152 bytes (2 * max contract size)
-            const MAX_INITCODE_SIZE = 49152;
-            const MAX_INPUT_SIZE = 1024 * 1024 * 4; // 4MB practical limit for input data
-
-            switch (self) {
-                .call => |params| {
-                    // Validate input data size
-                    if (params.input.len > MAX_INPUT_SIZE) return ValidationError.InvalidInputSize;
-                },
-                .callcode => |params| {
-                    // Validate input data size
-                    if (params.input.len > MAX_INPUT_SIZE) return ValidationError.InvalidInputSize;
-                },
-                .delegatecall => |params| {
-                    // Validate input data size
-                    if (params.input.len > MAX_INPUT_SIZE) return ValidationError.InvalidInputSize;
-                    // DELEGATECALL doesn't transfer value, validation happens at protocol level
-                },
-                .staticcall => |params| {
-                    // Validate input data size
-                    if (params.input.len > MAX_INPUT_SIZE) return ValidationError.InvalidInputSize;
-                    // STATICCALL cannot have value (enforced by not having value field)
-                },
-                .create => |params| {
-                    // Validate init code size (EIP-3860)
-                    if (params.init_code.len > MAX_INITCODE_SIZE) return ValidationError.InvalidInitCodeSize;
-                    // CREATE can have any value, no special validation needed
-                },
-                .create2 => |params| {
-                    // Validate init code size (EIP-3860)
-                    if (params.init_code.len > MAX_INITCODE_SIZE) return ValidationError.InvalidInitCodeSize;
-                    // CREATE2 can have any value, no special validation needed
-                },
-            }
+            _ = self;
         }
 
         /// Get the gas limit for this call operation
@@ -208,6 +181,7 @@ pub fn CallParams(config: anytype) type {
                         .to = params.to,
                         .input = cloned_input,
                         .gas = params.gas,
+                        .value = params.value,
                     } };
                 },
                 .staticcall => |params| blk: {

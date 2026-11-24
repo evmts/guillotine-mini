@@ -9,26 +9,20 @@ const Address = primitives.Address;
 /// and fields: pc, address, caller, value, calldata, bytecode, return_data, hardfork
 pub fn Handlers(FrameType: type) type {
     return struct {
-        /// Helper function to add two u32 values with overflow checking
-        inline fn add_u32(a: u32, b: u32) FrameType.EvmError!u32 {
-            return std.math.add(u32, a, b) catch return error.OutOfBounds;
-        }
-
-        /// Calculate copy gas cost based on size
+        /// Copy gas: 3 per 32-byte word.
         fn copyGasCost(size: u32) u64 {
-            const words = wordCount(@as(u64, size));
-            return GasConstants.CopyGas * words;
+            return GasConstants.CopyGas * ((@as(u64, size) + 31) / 32);
         }
 
-        /// Calculate number of 32-byte words needed for size bytes
-        fn wordCount(size: u64) u64 {
-            return (size + 31) / 32;
-        }
-
-        /// Calculate word-aligned memory size for EVM compliance
-        fn wordAlignedSize(bytes: u64) u32 {
-            const words = wordCount(bytes);
-            return @intCast(words * 32);
+        /// Shared CALLDATACOPY / CODECOPY / EXTCODECOPY body after pops and `extra_cost`.
+        /// A zero-length copy charges no expansion and ignores both offsets. Source bytes
+        /// past the end of `src` (at any offset, including >= 2^64) read as zero.
+        fn copyPadded(frame: *FrameType, extra_cost: u64, dest_offset: u256, src_offset: u256, length: u256, src: []const u8) FrameType.EvmError!void {
+            const range = try frame.memoryRange(dest_offset, length);
+            const len: u32 = if (range) |r| r.len else 0;
+            try frame.consumeGas(extra_cost +| copyGasCost(len) +| frame.memoryRangeCost(range));
+            if (range) |r| try frame.copyToMemory(r, src, src_offset);
+            frame.pc += 1;
         }
 
         /// ADDRESS opcode (0x30) - Get address of currently executing account
@@ -92,20 +86,13 @@ pub fn Handlers(FrameType: type) type {
         pub fn calldataload(frame: *FrameType) FrameType.EvmError!void {
             try frame.consumeGas(GasConstants.GasFastestStep);
             const offset = try frame.popStack();
-            if (offset > std.math.maxInt(u32)) {
-                try frame.pushStack(0);
-            } else {
-                const off = @as(u32, @intCast(offset));
-                var result: u256 = 0;
-                var i: u32 = 0;
-                while (i < 32) : (i += 1) {
-                    const idx_u32 = try add_u32(off, i);
-                    const idx: usize = @intCast(idx_u32);
-                    const byte = if (idx < frame.calldata.len) frame.calldata[idx] else 0;
-                    result = (result << 8) | byte;
-                }
-                try frame.pushStack(result);
+            var word: [32]u8 = [_]u8{0} ** 32;
+            if (offset < frame.calldata.len) {
+                const start: usize = @intCast(offset);
+                const n = @min(32, frame.calldata.len - start);
+                @memcpy(word[0..n], frame.calldata[start..][0..n]);
             }
+            try frame.pushStack(std.mem.readInt(u256, &word, .big));
             frame.pc += 1;
         }
 
@@ -121,27 +108,7 @@ pub fn Handlers(FrameType: type) type {
             const dest_offset = try frame.popStack();
             const offset = try frame.popStack();
             const length = try frame.popStack();
-
-            const dest_off = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-            const src_off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-            const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
-
-            // Charge base + memory expansion + copy per word
-            const end_bytes_copy: u64 = @as(u64, dest_off) + @as(u64, len);
-            const mem_cost4 = frame.memoryExpansionCost(end_bytes_copy);
-            const copy_cost = copyGasCost(len);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost4 + copy_cost);
-
-            // Copy calldata to memory
-            var i: u32 = 0;
-            while (i < len) : (i += 1) {
-                const src_idx_u32 = try add_u32(src_off, i);
-                const src_idx: usize = @intCast(src_idx_u32);
-                const byte = if (src_idx < frame.calldata.len) frame.calldata[src_idx] else 0;
-                const dst_idx = try add_u32(dest_off, i);
-                try frame.writeMemory(dst_idx, byte);
-            }
-            frame.pc += 1;
+            try copyPadded(frame, GasConstants.GasFastestStep, dest_offset, offset, length, frame.calldata);
         }
 
         /// CODESIZE opcode (0x38) - Get size of code running in current environment
@@ -156,25 +123,7 @@ pub fn Handlers(FrameType: type) type {
             const dest_offset = try frame.popStack();
             const offset = try frame.popStack();
             const length = try frame.popStack();
-
-            const dest_off = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-            const src_off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-            const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
-
-            const end_bytes_code: u64 = @as(u64, dest_off) + @as(u64, len);
-            const mem_cost5 = frame.memoryExpansionCost(end_bytes_code);
-            const copy_cost = copyGasCost(len);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost5 + copy_cost);
-
-            // Copy code to memory
-            var i: u32 = 0;
-            while (i < len) : (i += 1) {
-                const src_idx_u32 = try add_u32(src_off, i);
-                const byte = frame.bytecode.getOpcode(src_idx_u32) orelse 0;
-                const dst_idx = try add_u32(dest_off, i);
-                try frame.writeMemory(dst_idx, byte);
-            }
-            frame.pc += 1;
+            try copyPadded(frame, GasConstants.GasFastestStep, dest_offset, offset, length, frame.bytecode.code);
         }
 
         /// GASPRICE opcode (0x3a) - Get price of gas in current environment
@@ -221,13 +170,7 @@ pub fn Handlers(FrameType: type) type {
             const size = try frame.popStack();
 
             const ext_addr = primitives.Address.fromU256(addr_int);
-            const dest = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-            // Per spec, code offset may exceed code length; reads beyond code return zero bytes.
-            // Do NOT error on large code offsets; treat them as valid but out-of-range.
-            const off_u64: u64 = std.math.cast(u64, offset) orelse std.math.maxInt(u64);
-            const len = std.math.cast(u32, size) orelse return error.OutOfBounds;
 
-            // Calculate ALL gas costs at once: access + copy + memory expansion
             // Gas cost: hardfork-aware
             // Berlin+: cold/warm access (2600/100)
             // Tangerine Whistle-Berlin: 700 gas (EIP-150)
@@ -239,33 +182,8 @@ pub fn Handlers(FrameType: type) type {
             else
                 @as(u64, 20);
 
-            const copy_cost = copyGasCost(len);
-            const end_bytes: u64 = @as(u64, dest) + @as(u64, len);
-            const mem_cost = frame.memoryExpansionCost(end_bytes);
-
-            // Charge all costs at once
-            try frame.consumeGas(access_cost + copy_cost + mem_cost);
-
-            // Update memory size after charging for expansion (per EVM spec)
-            // Subsequent memory-expanding ops must not be double-charged for the same range
-            const aligned = wordAlignedSize(end_bytes);
-            if (aligned > frame.memory_size) frame.memory_size = aligned;
-
-            // Get the code from the external address
             const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
-
-            // Copy code to memory
-            var i: u32 = 0;
-            while (i < len) : (i += 1) {
-                const dst_idx = try add_u32(dest, i);
-                const src_idx_u64: u64 = off_u64 +| @as(u64, i);
-                const byte = if (src_idx_u64 < code.len) blk: {
-                    const idx: usize = @intCast(src_idx_u64);
-                    break :blk code[idx];
-                } else 0;
-                try frame.writeMemory(dst_idx, byte);
-            }
-            frame.pc += 1;
+            try copyPadded(frame, access_cost, dest_offset, offset, size, code);
         }
 
         /// RETURNDATASIZE opcode (0x3d) - Get size of output data from the previous call
@@ -289,35 +207,18 @@ pub fn Handlers(FrameType: type) type {
             const offset = try frame.popStack();
             const length = try frame.popStack();
 
-            const dest_off = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-            const src_off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-            const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
+            const range = try frame.memoryRange(dest_offset, length);
+            const len: u32 = if (range) |r| r.len else 0;
+            try frame.consumeGas(GasConstants.GasFastestStep +| copyGasCost(len) +| frame.memoryRangeCost(range));
 
-            // Check bounds with overflow-safety
-            const rd_len: usize = frame.return_data.len;
-            const src_usize: usize = @intCast(src_off);
-            const len_usize: usize = @intCast(len);
-            if (src_usize > rd_len or len_usize > rd_len - src_usize) {
+            // EIP-211: reading past the end of the return data is an exceptional halt,
+            // even for a zero-length copy.
+            const rd_len = frame.return_data.len;
+            if (offset > rd_len or length > rd_len - @as(usize, @intCast(offset))) {
                 return error.OutOfBounds;
             }
 
-            const end_bytes_ret: u64 = @as(u64, dest_off) + @as(u64, len);
-            const mem_cost6 = frame.memoryExpansionCost(end_bytes_ret);
-            const copy_cost = copyGasCost(len);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost6 + copy_cost);
-
-            // Update memory size after charging for expansion
-            const aligned_ret = wordAlignedSize(end_bytes_ret);
-            if (aligned_ret > frame.memory_size) frame.memory_size = aligned_ret;
-
-            // Copy return data to memory
-            var i: u32 = 0;
-            while (i < len) : (i += 1) {
-                const src_idx = @as(usize, @intCast(src_off)) + @as(usize, @intCast(i));
-                const byte = frame.return_data[src_idx];
-                const dst_idx = try add_u32(dest_off, i);
-                try frame.writeMemory(dst_idx, byte);
-            }
+            if (range) |r| try frame.copyToMemory(r, frame.return_data, offset);
             frame.pc += 1;
         }
 

@@ -12,17 +12,6 @@ inline fn logGasCost(topic_count: u8, data_size: u32) u64 {
     return base_cost + topic_cost + data_cost;
 }
 
-/// Calculate word count (32-byte words)
-inline fn wordCount(bytes: u64) u64 {
-    return (bytes + 31) / 32;
-}
-
-/// Calculate word-aligned memory size for EVM compliance
-inline fn wordAlignedSize(bytes: u64) u32 {
-    const words = wordCount(bytes);
-    return @intCast(words * 32);
-}
-
 /// Handlers struct - provides log operation handlers for a Frame type
 /// The FrameType must have methods: consumeGas, popStack, memoryExpansionCost
 /// and fields: pc, memory_size, is_static
@@ -38,18 +27,11 @@ pub fn Handlers(FrameType: type) type {
             const offset = try frame.popStack();
             const length = try frame.popStack();
 
-            // Gas cost + memory expansion for log data
-            const off_u32 = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-            const length_u32 = std.math.cast(u32, length) orelse return error.OutOfBounds;
-            const log_cost = logGasCost(topic_count, length_u32);
-            try frame.consumeGas(log_cost);
-            if (length_u32 > 0) {
-                const end_bytes: u64 = @as(u64, off_u32) + @as(u64, length_u32);
-                const mem_cost = frame.memoryExpansionCost(end_bytes);
-                try frame.consumeGas(mem_cost);
-                const aligned = wordAlignedSize(end_bytes);
-                if (aligned > frame.memory_size) frame.memory_size = aligned;
-            }
+            // Gas cost + memory expansion for log data. Zero-length data ignores the offset.
+            const range = try frame.memoryRange(offset, length);
+            const length_u32: u32 = if (range) |r| r.len else 0;
+            try frame.consumeGas(logGasCost(topic_count, length_u32) +| frame.memoryRangeCost(range));
+            if (range) |r| try frame.expandMemory(r.end);
 
             const evm = frame.getEvm();
 
@@ -63,14 +45,8 @@ pub fn Handlers(FrameType: type) type {
 
             // Read data from memory
             var data_slice: []u8 = &[_]u8{};
-            if (length_u32 > 0) {
-                const alloc = evm.arena.allocator();
-                const buf = try alloc.alloc(u8, length_u32);
-                var idx: u32 = 0;
-                while (idx < length_u32) : (idx += 1) {
-                    buf[idx] = frame.readMemory(off_u32 + idx);
-                }
-                data_slice = buf;
+            if (range) |r| {
+                data_slice = try frame.readMemoryAlloc(evm.arena.allocator(), r);
             }
 
             // Allocate topics in arena and copy (reverse order if needed)
