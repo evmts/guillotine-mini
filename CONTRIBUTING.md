@@ -4,18 +4,19 @@ Thanks for helping improve Guillotine Mini. This guide covers setup, workflows, 
 
 ## Prerequisites
 
-- Zig `0.15.1` or later
-- Cargo (Rust build tool) - required for cryptographic dependencies
-- Python `3.10+`
-- uv (Python package manager): `brew install uv`
-- Bun (TypeScript scripts/agents): `brew install bun`
-- macOS or Linux (tested on macOS/arm64)
+- Zig `0.15.1` or later (CI uses `0.15.2`)
+- Cargo (Rust build tool), required for Voltaire's cryptographic archive
+- A `../voltaire` checkout at the revision pinned in `native-dependencies.json` (see the README "Build from source" section)
+- Python 3 and uv (`brew install uv`); execution-specs fills fixtures with Python `3.11+`, which uv can install
+- Bun (TypeScript scripts/agents and `client-ts`): `brew install bun`
+- Node 22+ and `rustup target add wasm32-unknown-unknown` for the WASM build and tests
+- macOS or Linux (CI runs on macOS)
 
 ## One‑Time Setup
 
 ```bash
-# Fetch execution-specs submodule for test generation
-git submodule update --init execution-specs
+# Fetch the fixture submodules read by `zig build test` and `zig build specs`
+git submodule update --init execution-specs ethereum-tests
 
 # Ensure Python deps and virtualenv for execution-specs are created on first fill
 uv --version  # should print a version
@@ -27,7 +28,7 @@ cd scripts && bun install && cd -
 ## Build And Test
 
 ```bash
-# Build library + modules
+# Configure the build (plain `zig build` installs no artifacts; see `native` and `wasm` below)
 zig build
 
 # Run unit tests and trace regression
@@ -39,9 +40,6 @@ zig build test
 
 # Run execution-spec tests (generation happens automatically)
 zig build specs
-
-# Interactive runner
-zig build test-watch
 
 # Build native static library for C FFI
 zig build native
@@ -57,70 +55,30 @@ cd docs && npm ci && npm run build && cd -
 
 ## Running Spec Subsets (fast iteration)
 
-We provide granular targets to iterate quickly:
+`build.zig` defines a `specs-<fork>` step per hardfork and finer `specs-<fork>-<area>`
+sub-steps. List them all with:
 
 ```bash
-# Berlin
-zig build specs-berlin-acl
-zig build specs-berlin-intrinsic-gas-cost
-zig build specs-berlin-intrinsic-type0
-zig build specs-berlin-intrinsic-type1
-
-# Frontier
-zig build specs-frontier-precompiles
-zig build specs-frontier-identity
-zig build specs-frontier-create
-zig build specs-frontier-call
-zig build specs-frontier-calldata
-zig build specs-frontier-dup
-zig build specs-frontier-push
-zig build specs-frontier-stack
-zig build specs-frontier-opcodes
-
-# Shanghai
-zig build specs-shanghai-push0
-zig build specs-shanghai-warmcoinbase
-zig build specs-shanghai-initcode
-zig build specs-shanghai-withdrawals
-
-# Cancun
-zig build specs-cancun-tstore-basic
-zig build specs-cancun-tstore-reentrancy
-zig build specs-cancun-tstore-contexts
-zig build specs-cancun-mcopy
-zig build specs-cancun-selfdestruct
-zig build specs-cancun-blobbasefee
-zig build specs-cancun-blob-precompile
-zig build specs-cancun-blob-opcodes
-zig build specs-cancun-blob-tx-small
-zig build specs-cancun-blob-tx-subtraction
-zig build specs-cancun-blob-tx-insufficient
-zig build specs-cancun-blob-tx-sufficient
-zig build specs-cancun-blob-tx-valid-combos
-
-# Prague
-zig build specs-prague-calldata-cost-type0
-zig build specs-prague-calldata-cost-type1-2
-zig build specs-prague-calldata-cost-type3
-zig build specs-prague-calldata-cost-type4
-zig build specs-prague-calldata-cost-refunds
-zig build specs-prague-bls-g1
-zig build specs-prague-bls-g2
-zig build specs-prague-bls-pairing
-zig build specs-prague-bls-map
-zig build specs-prague-bls-misc
-zig build specs-prague-setcode-calls
-zig build specs-prague-setcode-gas
-zig build specs-prague-setcode-txs
-zig build specs-prague-setcode-advanced
-
-# Osaka
-zig build specs-osaka-modexp-variable-gas
-zig build specs-osaka-modexp-vectors-eip
-zig build specs-osaka-modexp-vectors-legacy
-zig build specs-osaka-modexp-misc
-zig build specs-osaka-other
+zig build -l | grep specs-
 ```
+
+Examples:
+
+```bash
+zig build specs-shanghai-push0
+zig build specs-cancun-tstore-basic
+zig build specs-cancun-selfdestruct-basic
+zig build specs-cancun-blob-precompile-gas
+zig build specs-byzantium-modexp
+zig build specs-istanbul-blake2
+```
+
+> **Known issue:** the Berlin, Frontier, Prague and Osaka sub-steps (and the
+> `specs-berlin`, `specs-frontier`, `specs-prague` and `specs-osaka` steps that
+> aggregate them) declare regex-style filters such as `berlin.*acl.*`, but the
+> runner matches `TEST_FILTER` as a plain substring (`test/utils.zig`
+> `matchesFilter`). Those steps currently select no tests. Use `TEST_FILTER`
+> with a literal substring for those forks instead.
 
 You can also filter tests with an environment variable:
 
@@ -147,11 +105,12 @@ TEST_SEQUENTIAL=1 TEST_FILTER="vmIOandFlowOperations" \
 rg -n "Trace Divergence|Difference in|Our EVM|Reference" reports/divergence_example.log
 ```
 
-You can also validate tracing independently:
+You can also validate tracing independently. `zig build test-trace` runs a
+deterministic native trace regression (`test_trace.zig`) that exits non-zero on
+mismatch; it writes no output file:
 
 ```bash
 zig build test-trace
-cat trace_test.json | head -n 10
 ```
 
 Tip: Generation prints are verbose. Using `TEST_FILTER` to reduce to a few tests keeps logs manageable.
@@ -177,9 +136,9 @@ If `ANTHROPIC_API_KEY` is not set, the script still runs tests but skips auto‑
 - Preserve behavior across hardforks; gate with `hardfork.isAtLeast()`
 - Prefer fixing root causes (gas constants, warm/cold access) over patching symptoms
 - Use `scripts/test-subset.sh` while iterating; run full `zig build specs` before PRs
-- Commit messages: conventional style (e.g., `fix: correct CALL memory expansion for Cancun`)
+- Commit messages: `EMOJI type(scope): description` with one of `🐛 fix`, `♻️ refactor`, `🧪 test` or `⚡ perf` (e.g., `🐛 fix(frame): correct CALL memory expansion for Cancun`). The `commit-lint` workflow rejects other subjects; enable the local hook with `git config core.hooksPath .githooks`
 
 ## Known Status
 
-The EVM currently passes most tests. Some failure is expected in deep/future suites; that’s acceptable while we focus on runner stability, trace/diff quality, and developer ergonomics.
+Not every execution-spec state test passes yet, so `zig build test` can fail on `main`. The CI badge in the README shows the current result. Fix failures against the Python execution-specs, which are authoritative for gas order, hardfork guards and error mapping.
 

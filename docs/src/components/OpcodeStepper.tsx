@@ -432,7 +432,7 @@ export const EXAMPLES = [
 		label: 'Cold vs warm storage',
 		code: '600160005560026000556000546000526 0206000f3'.replace(/ /g, ''),
 		blurb:
-			'Two SSTOREs to the same slot: the first pays the cold surcharge plus 20000 for zero → non-zero, the second only 2900.',
+			'Two SSTOREs to the same slot: the first pays the 2100 cold surcharge plus 20000 for zero → non-zero. This stepper charges the second 2900 because it ignores original values; the real EVM charges 100 for that dirty slot (EIP-2200).',
 	},
 	{
 		id: 'revert',

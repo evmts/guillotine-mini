@@ -109,9 +109,9 @@ Guillotine Mini is an execution engine, not a full node. Block headers, transact
 
 ## Current status
 
-- **Native Zig (`0.15.2`):** `zig build`, `zig build native`, and `zig build test-trace` pass cleanly. Core EVM unit tests pass; the 6 client/trie fixture tests in `zig build unit` require the optional `ethereum-tests` submodule.
+- **Native Zig (`0.15.2`):** `zig build`, `zig build native`, and `zig build test-trace` pass cleanly. Core EVM unit tests pass; the 5 `TrieTests` fixture tests (`client/trie/fixtures.zig`) in `zig build unit` require the optional `ethereum-tests` submodule.
 - **WebAssembly (`wasm32-wasi`):** `zig build wasm` builds `zig-out/bin/guillotine_mini.wasm` (WASI Preview 1 reactor with linked Rust crypto), and `zig build test-wasm` verifies execution, reverts, logs, SHA256, BN254 pairing, and BLS12-381 precompiles on Node 22+.
-- **Hardforks:** Frontier through Osaka, including EIP-1153 transient storage, EIP-4844 blobs, EIP-6780 `SELFDESTRUCT`, EIP-7702 set-code delegation, BLS12-381 (`0x01`–`0x13`), Osaka `CLZ` (`0x1E`), and `P256VERIFY` (`0x0100`).
+- **Hardforks:** Frontier through Osaka, including EIP-1153 transient storage, EIP-4844 blobs, EIP-6780 `SELFDESTRUCT`, EIP-7702 set-code delegation, BLS12-381 (`0x0B`–`0x11`), Osaka `CLZ` (`0x1E`), and `P256VERIFY` (`0x0100`).
 
 ## Part of the Tevm family
 

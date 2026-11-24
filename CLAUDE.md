@@ -5,11 +5,10 @@ Minimal, correct, and well-tested Ethereum Virtual Machine (EVM) implementation 
 ## Quick Start
 
 ```bash
-zig build              # Build all modules
+zig build unit         # Fast unit tests (plain `zig build` installs nothing)
 zig build test         # Run unit + spec tests
-zig build specs        # Run ethereum/tests validation
+zig build specs        # Run execution-specs state tests
 zig build wasm         # Build WebAssembly library
-zig build test-watch   # Interactive test runner
 
 # Debug failing tests (recommended)
 bun scripts/isolate-test.ts "test_name"  # Max debug output + analysis
@@ -18,10 +17,11 @@ bun scripts/test-subset.ts "pattern"     # Filter test categories
 
 ## Prerequisites
 
-- Zig 0.15.1+ (core build system)
+- Zig 0.15.1+ (core build system; CI uses 0.15.2)
 - Cargo (required for BN254/ARK cryptographic dependencies)
-- Python 3.8+ (test generation and reference implementation)
-- uv (Python package manager for spec fixture generation): `brew install uv`
+- A `../voltaire` checkout at the revision pinned in `native-dependencies.json`
+- Python 3 (spec test generation and reference implementation)
+- uv (Python package manager for spec fixture generation; execution-specs needs Python 3.11+): `brew install uv`
 - Bun (TS helpers/agents): `brew install bun`
 
 ## Architecture
@@ -46,7 +46,7 @@ src/
 ├── evmc_adapter.zig      # EVMC ABI 12 types and EvmcHostBridge
 └── errors.zig            # Error types
 
-External Dependencies (fetched via zig build):
+External Dependencies (Voltaire, path dependency on ../voltaire in build.zig.zon):
 ├── voltaire (primitives) # Ethereum types (Address, u256, Hardfork, gas constants, RLP, ABI, etc.)
 ├── crypto                # Cryptographic primitives (keccak256, secp256k1, BLS12-381)
 └── precompiles           # Ethereum precompiled contracts
@@ -74,11 +74,11 @@ External Dependencies (fetched via zig build):
 
 | Type | Purpose | Command |
 |------|---------|---------|
-| Unit tests | Inline `test` blocks | `zig build test` |
-| Spec tests | ethereum/tests GeneralStateTests | `zig build specs` |
+| Unit tests | Inline `test` blocks | `zig build unit` |
+| Spec tests | execution-specs state fixtures | `zig build specs` |
 | Filtered tests | By hardfork/EIP/opcode | `TEST_FILTER="Cancun" zig build specs` |
 | Trace tests | EIP-3155 trace capture/comparison | `zig build test-trace` |
-| Watch mode | Auto-reload on changes | `zig build test-watch` |
+| Watch mode | Auto-reload on changes | `zig build test-watch` (broken: `interactive_test_runner.zig` is missing) |
 | Engine tests | Consensus-layer format tests | `INCLUDE_ENGINE_TESTS=1 zig build specs` |
 
 ### Engine API Tests (Optional)
@@ -139,70 +139,21 @@ TEST_FILTER="push0" zig build specs
 
 ### Granular Spec Targets
 
-Large hardforks are split into smaller sub-targets for faster iteration:
+`build.zig` defines a `specs-<fork>` step per hardfork and finer `specs-<fork>-<area>`
+sub-steps for faster iteration. List them with:
 
 ```bash
-# Berlin
-zig build specs-berlin-acl
-zig build specs-berlin-intrinsic-gas-cost
-zig build specs-berlin-intrinsic-type0
-zig build specs-berlin-intrinsic-type1
-
-# Frontier
-zig build specs-frontier-precompiles
-zig build specs-frontier-identity
-zig build specs-frontier-create
-zig build specs-frontier-call
-zig build specs-frontier-calldata
-zig build specs-frontier-dup
-zig build specs-frontier-push
-zig build specs-frontier-stack
-zig build specs-frontier-opcodes
-
-# Shanghai
-zig build specs-shanghai-push0
-zig build specs-shanghai-warmcoinbase
-zig build specs-shanghai-initcode
-zig build specs-shanghai-withdrawals
-
-# Cancun
-zig build specs-cancun-tstore-basic
-zig build specs-cancun-tstore-reentrancy
-zig build specs-cancun-tstore-contexts
-zig build specs-cancun-mcopy
-zig build specs-cancun-selfdestruct
-zig build specs-cancun-blobbasefee
-zig build specs-cancun-blob-precompile
-zig build specs-cancun-blob-opcodes
-zig build specs-cancun-blob-tx-small
-zig build specs-cancun-blob-tx-subtraction
-zig build specs-cancun-blob-tx-insufficient
-zig build specs-cancun-blob-tx-sufficient
-zig build specs-cancun-blob-tx-valid-combos
-
-# Prague
-zig build specs-prague-calldata-cost-type0
-zig build specs-prague-calldata-cost-type1-2
-zig build specs-prague-calldata-cost-type3
-zig build specs-prague-calldata-cost-type4
-zig build specs-prague-calldata-cost-refunds
-zig build specs-prague-bls-g1
-zig build specs-prague-bls-g2
-zig build specs-prague-bls-pairing
-zig build specs-prague-bls-map
-zig build specs-prague-bls-misc
-zig build specs-prague-setcode-calls
-zig build specs-prague-setcode-gas
-zig build specs-prague-setcode-txs
-zig build specs-prague-setcode-advanced
-
-# Osaka
-zig build specs-osaka-modexp-variable-gas
-zig build specs-osaka-modexp-vectors-eip
-zig build specs-osaka-modexp-vectors-legacy
-zig build specs-osaka-modexp-misc
-zig build specs-osaka-other
+zig build -l | grep specs-
 ```
+
+Examples: `specs-shanghai-push0`, `specs-cancun-tstore-basic`,
+`specs-cancun-selfdestruct-basic`, `specs-byzantium-modexp`, `specs-istanbul-blake2`.
+
+**Known issue:** the Berlin, Frontier, Prague and Osaka sub-steps (and their
+`specs-berlin`, `specs-frontier`, `specs-prague` and `specs-osaka` aggregates)
+use regex-style filters such as `berlin.*acl.*`, but `test/utils.zig`
+`matchesFilter` does plain substring matching, so those steps select no tests.
+Use `TEST_FILTER` with a literal substring for those forks.
 
 ### Debugging Workflow
 
@@ -366,7 +317,7 @@ pub const Hardfork = enum {
 <details>
 <summary><b>Primitives Module (External Dependency)</b></summary>
 
-The primitives library is an external dependency fetched via `zig fetch` from https://github.com/evmts/primitives. It is no longer included as a git submodule.
+Primitives, crypto and precompiles come from Voltaire (https://github.com/evmts/voltaire). `build.zig.zon` resolves it as a path dependency on the sibling `../voltaire` checkout, pinned to the revision in `native-dependencies.json`. Its Zig sources live under `packages/voltaire-zig/src/`.
 
 **Modules provided:**
 - **Address** - 20-byte Ethereum address
@@ -404,7 +355,7 @@ The primitives library is an external dependency fetched via `zig fetch` from ht
 
 ## Gas Metering
 
-**Location:** Voltaire’s `primitives/GasConstants/gas_constants.zig`
+**Location:** Voltaire’s `packages/voltaire-zig/src/primitives/GasConstants/gas_constants.zig`
 
 - Base costs: per-opcode execution (ADD, MUL, SSTORE)
 - Memory expansion: quadratic cost for growth
@@ -427,7 +378,7 @@ Includes PC, opcode, gas remaining, stack, memory, storage changes. Compare trac
 
 ```bash
 zig build wasm
-# Output: zig-out/bin/guillotine_mini.wasm (~100-200 KB)
+# Output: zig-out/bin/guillotine_mini.wasm (ReleaseSmall WASI reactor, ~620 KB with linked crypto)
 ```
 
 <details>
@@ -449,17 +400,19 @@ See `src/root_c.zig` for full API.
 
 | Command | Purpose |
 |---------|---------|
-| `zig build` | Build all modules |
+| `zig build unit` | Unit tests only (fast) |
 | `zig build test` | Unit + spec tests |
 | `zig build specs` | Spec tests only |
-| `zig build wasm` | WASM library + size report |
-| `zig build test-watch` | Interactive test runner |
+| `zig build native` | C ABI static library |
+| `zig build wasm` | WASI reactor library |
+| `zig build test-wasm` | WASM execution and crypto regression tests (Node 22+) |
+| `zig build test-watch` | Interactive test runner (broken: `interactive_test_runner.zig` is missing) |
 | `zig build test-trace` | Trace capture tests |
 
 ### Adding New Features
 
 1. Implement in `src/frame.zig` (opcodes) or `src/evm.zig` (behavior)
-2. Update gas in Voltaire’s `primitives/GasConstants/gas_constants.zig` if needed
+2. Update gas in Voltaire’s `packages/voltaire-zig/src/primitives/GasConstants/gas_constants.zig` if needed
 3. Add guards: `self.hardfork.isAtLeast(.FORK_NAME)`
 4. Test: run relevant spec tests
 5. Debug: use trace divergence analysis
@@ -483,12 +436,12 @@ See `src/root_c.zig` for full API.
 | Problem Area | Python Reference | Zig Implementation |
 |--------------|------------------|-------------------|
 | Opcode logic | `execution-specs/.../vm/instructions/*.py` | `src/frame.zig` |
-| Gas calculation | `execution-specs/.../vm/gas.py` | Voltaire’s `primitives/GasConstants/gas_constants.zig` + `src/frame.zig` |
+| Gas calculation | `execution-specs/.../vm/gas.py` | Voltaire’s `packages/voltaire-zig/src/primitives/GasConstants/gas_constants.zig` + `src/frame.zig` |
 | Call/Create | `execution-specs/.../vm/instructions/system.py` | `src/evm.zig` (`inner_call`, `inner_create`) |
 | Storage ops | `execution-specs/.../vm/instructions/storage.py` | `vm.storage.get()` and `vm.storage.set()` in `src/storage.zig` |
 | Transient storage | `execution-specs/forks/cancun/.../storage.py` | `vm.storage.get_transient()` and `vm.storage.set_transient()` in `src/storage.zig` |
 | State management | `execution-specs/.../state.py` | `src/evm.zig` (balances, nonces, code) |
-| Hardfork activation | `execution-specs/forks/<hardfork>/` | Voltaire’s `primitives/Hardfork/hardfork.zig` |
+| Hardfork activation | `execution-specs/forks/<hardfork>/` | Voltaire’s `packages/voltaire-zig/src/primitives/Hardfork/hardfork.zig` |
 | Warm/cold tracking | `execution-specs/.../vm/__init__.py` | `vm.access_list_manager` in `src/evm.zig` |
 | Memory ops | `execution-specs/.../vm/memory.py` | `Frame.ensureMemoryBytes()` in `src/frame.zig` |
 | Stack ops | `execution-specs/.../vm/stack.py` | `src/frame.zig` (pushStack, popStack) |
@@ -652,7 +605,7 @@ Must match exactly between Python and Zig.
 
 **Locations:**
 - Python: `execution-specs/src/ethereum/forks/<hardfork>/vm/gas.py`
-- Zig: Voltaire’s `primitives/GasConstants/gas_constants.zig`
+- Zig: Voltaire’s `packages/voltaire-zig/src/primitives/GasConstants/gas_constants.zig`
 
 </details>
 
@@ -672,7 +625,7 @@ Must match exactly between Python and Zig.
 4. Compare Zig implementation
    - Opcodes: `src/frame.zig`
    - Calls/creates: `src/evm.zig`
-   - Storage: `src/evm.zig`
+   - Storage: `src/storage.zig`
 5. Fix minimally, preserve hardfork guards
 6. Verify
    ```bash

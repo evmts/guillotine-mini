@@ -75,7 +75,7 @@ When `fork_transition` is `null` (the default), `getActiveFork()` returns `vm.ha
 | `0x08` | `ECPAIRING` (BN254) | Byzantium (repriced Istanbul) |
 | `0x09` | `BLAKE2F` | Istanbul |
 | `0x0A` | `POINT_EVALUATION` (KZG) | Cancun (EIP-4844) |
-| `0x0B`–`0x13` | `BLS12-381` suite | Prague (EIP-2537; pre-warmed `0x01`–`0x13`) |
+| `0x0B`–`0x11` | `BLS12-381` suite (7 precompiles) | Prague (EIP-2537; `preWarmTransaction` warms `0x01`–`0x13`) |
 | `0x0100` | `P256VERIFY` | Osaka (EIP-7951; pre-warmed at tx start) |
 
 ## Hardfork string parsing (C / WASM API)

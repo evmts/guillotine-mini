@@ -21,6 +21,6 @@ Pick a preset or paste your own hex bytecode, then click **Step**. The highlight
 
 ## What it omits
 
-This widget is a visual reading aid, not a consensus engine. It covers arithmetic, comparison, bitwise, stack, memory, storage, jumps, and halting opcodes — it does not execute `KECCAK256`, environment/block opcodes, nested `CALL`/`CREATE`, precompiles, or gas refunds.
+This widget is a visual reading aid, not a consensus engine. It covers arithmetic, comparison, bitwise, stack, memory, storage, jumps, and halting opcodes — it does not execute `KECCAK256`, environment/block opcodes, nested `CALL`/`CREATE`, precompiles, or gas refunds, and it prices `SSTORE` from the current value only, without EIP-2200 original-value (dirty slot) pricing.
 
 To run full consensus execution over the same bytecode, see [Tutorial 1: Your First Contract Call](/tutorials/first-call) or [Tutorial 4: Running in WebAssembly](/tutorials/webassembly).

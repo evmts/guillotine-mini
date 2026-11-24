@@ -15,7 +15,7 @@ import {
 
 In [Getting Started](/getting-started), we returned a hard-coded `42`. Real contracts take **calldata**, emit **logs**, and sometimes **revert** with an error payload.
 
-In this tutorial, you will build a 19-byte contract that:
+In this tutorial, you will build a 23-byte contract that:
 1. Reads two 32-byte integers `a` and `b` from calldata.
 2. Adds them (`a + b`).
 3. Emits a `LOG1` event carrying the sum.
@@ -32,7 +32,7 @@ Think of a `Frame` as three separate workspaces:
 - **Logs** are append-only receipts stored on `Evm.logs` — kept on `RETURN`, discarded on `REVERT`.
 </MentalModel>
 
-Here is our 19-byte adder contract:
+Here is a first draft of the adder's opening instructions:
 
 ```text
 PC   Opcode        Stack after (top on left)         What happens
@@ -50,7 +50,7 @@ PC   Opcode        Stack after (top on left)         What happens
 
 Wait — look at PC `07` and `0b`! Why throw away the extra copy on the stack when `LOG1` wants a **topic**? If we push a topic tag (say `0xdead`), we can drop `DUP1`/`POP` and save 2 bytes and 5 gas!
 
-Even cleaner — 17 bytes total:
+The finished contract is 23 bytes:
 
 ```text
 00  PUSH1 0x00    # calldata offset 0
@@ -192,11 +192,11 @@ defer owned.deinit(caller_allocator);
     },
     {
       q: 'Can I call this contract with .staticcall instead of .call?',
-      a: 'Try it! LOG1 modifies transaction receipts, which violates static mode — in .staticcall, LOG1 fails with WriteProtection (or StaticCallViolation) and burns gas. Remove LOG1 and .staticcall succeeds.',
+      a: 'Try it! LOG1 modifies transaction receipts, which violates static mode — in .staticcall, LOG1 fails with StaticCallViolation and burns all gas. Remove LOG1 and .staticcall succeeds.',
     },
   ]}
 />
 
 ## Next
 
-In **[Tutorial 2: State, Storage & Snapshots](/tutorials/state-and-snapshots)**, we add persistent storage (`SSTORE`/`SLOAD`), uncover why `vm.balances.put()` can mysteriously disappear, and watch copy-on-write snapshots undo a reverted nested call.
+In **[Tutorial 2: State, Storage & Snapshots](/tutorials/state-and-snapshots)**, we add persistent storage (`SSTORE`/`SLOAD`), see which seeded state survives `vm.call()`, and watch copy-on-write snapshots undo a reverted nested call.

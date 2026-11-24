@@ -57,7 +57,7 @@ pub union(enum) {
 
 | Method | Signature | Behavior |
 | --- | --- | --- |
-| `validate` | `fn (self) ValidationError!void` | Enforces `input.len ≤ 4 MiB` (`InvalidInputSize`) and `init_code.len ≤ 49,152` (`InvalidInitCodeSize`, EIP-3860). |
+| `validate` / `validateForHardfork` | `fn (self) ValidationError!void` / `fn (self, hardfork) ValidationError!void` | Enforces `input.len ≤ 4 MiB` on call variants (`InvalidInputSize`) and, at Shanghai or later, `init_code.len ≤ config.max_initcode_size` (default 49,152; `InvalidInitCodeSize`, EIP-3860). `validate` checks against `config.hardfork`; `vm.call()` runs `validateForHardfork(vm.hardfork)`. |
 | `getGas` / `setGas` | `u64` / `void` | Reads or updates the gas field on any variant. |
 | `getCaller` | `Address` | Returns `caller`. |
 | `get_to` | `?Address` | Returns `to` for call variants; `null` for `.create` / `.create2`. |

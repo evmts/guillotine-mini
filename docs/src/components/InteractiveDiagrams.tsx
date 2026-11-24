@@ -282,18 +282,18 @@ const FORKS: ForkInfo[] = [
 	{
 		id: 'PRAGUE',
 		year: '2025',
-		short: 'DEFAULT · BLS & 7702',
-		summary: 'Hardfork.DEFAULT. Added BLS12-381 precompiles (pre-warmed 0x01–0x13), EIP-7702 delegation (0xEF0100 + 20B), EIP-7623 calldata floor.',
+		short: 'BLS & 7702',
+		summary: 'Added BLS12-381 precompiles (0x0B–0x11), EIP-7702 delegation (0xEF0100 + 20B), EIP-7623 calldata floor.',
 		eips: ['EIP-2537', 'EIP-2935', 'EIP-7623', 'EIP-7702'],
-		precompiles: '0x01–0x13 (+ BLS12-381 suite)',
+		precompiles: '0x01–0x11 (+ BLS12-381 suite at 0x0B–0x11)',
 	},
 	{
 		id: 'OSAKA',
-		year: 'Next',
-		short: 'CLZ & P256VERIFY',
-		summary: 'Added CLZ opcode (0x1E), P256VERIFY precompile at 0x0100 (pre-warmed), and ModExp gas/size updates.',
+		year: '2025',
+		short: 'DEFAULT · CLZ & P256VERIFY',
+		summary: 'Hardfork.DEFAULT. Added CLZ opcode (0x1E), P256VERIFY precompile at 0x0100 (pre-warmed), and ModExp gas/size updates.',
 		eips: ['EIP-7823', 'EIP-7883', 'EIP-7939', 'EIP-7951'],
-		precompiles: '0x01–0x13 + 0x0100 (P256VERIFY)',
+		precompiles: '0x01–0x11 + 0x0100 (P256VERIFY)',
 	},
 ]
 

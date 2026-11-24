@@ -158,8 +158,8 @@ export function CallLifecycleDiagram() {
 	return (
 		<DiagramFrame
 			title="Inside vm.call(params) — Exact Execution Order"
-			badge="src/evm.zig:661"
-			caption="Notice step 2 before step 3: bytecode for the target address is fetched BEFORE initTransactionState() clears the internal maps."
+			badge="src/evm.zig · call()"
+			caption="Step 3 resets per-transaction state (original and transient storage, warm sets, logs, refunds) but keeps balances, nonces, code, and committed storage. Step 4 reads the target code after that reset."
 		>
 			<svg viewBox="0 0 820 270" role="img" aria-label="Step-by-step lifecycle of vm.call in Guillotine Mini">
 				<defs>
@@ -177,9 +177,9 @@ export function CallLifecycleDiagram() {
 				{/* Top row: 4 sequential boxes */}
 				{[
 					{ x: 16, n: '1', t: 'Validate', d1: 'input ≤ 4 MB', d2: 'initcode ≤ 48 KB' },
-					{ x: 214, n: '2', t: 'Resolve Target', d1: 'CREATE/2 addr or to', d2: 'get_code(address)' },
+					{ x: 214, n: '2', t: 'Resolve Target', d1: 'CREATE/2 addr or to', d2: 'sender = vm.origin' },
 					{ x: 412, n: '3', t: 'Reset & Warm', d1: 'initTransactionState()', d2: 'preWarmTransaction()' },
-					{ x: 610, n: '4', t: 'Dispatch', d1: 'CREATE · Precompile', d2: 'or Frame.execute()' },
+					{ x: 610, n: '4', t: 'Dispatch', d1: 'CREATE, or get_code()', d2: '→ Precompile / Frame' },
 				].map((s, i) => (
 					<g key={s.n}>
 						<rect x={s.x} y="18" width="182" height="76" rx="8" fill={F.raised} stroke={i === 2 ? F.amber : F.accent} strokeWidth="1.5" />
@@ -415,7 +415,7 @@ export function WasmBoundaryDiagram() {
 					C ABI  (src/root_c.zig)
 				</text>
 				<text x="558" y="112" fill={F.muted} fontFamily={F.sans} fontSize="10.5">
-					30 exported evm_* symbols
+					42 exported evm_* symbols
 				</text>
 
 				<rect x="546" y="134" width="238" height="46" rx="6" fill={F.sunken} stroke={F.border} />

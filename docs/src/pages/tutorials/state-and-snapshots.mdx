@@ -1,6 +1,6 @@
 ---
 title: "Tutorial 2: State, Storage & Snapshots"
-description: Understand the three storage maps, EIP-2929 cold/warm gas, EIP-1153 transient storage, and why internal maps reset at transaction start.
+description: Understand the three storage maps, EIP-2929 cold/warm gas, EIP-1153 transient storage, and which state resets at transaction start.
 ---
 
 import { StateSnapshotDiagram } from '../../components/Diagrams'
@@ -14,7 +14,7 @@ import {
 
 # 2. State, Storage & Snapshots
 
-Imagine you write a test to verify that Alice has 10 ETH before calling a contract:
+Imagine you write a test that funds Alice with 10 ETH before calling a contract:
 
 ```zig
 try vm.balances.put(alice, 10_000_000_000_000_000_000);
@@ -28,42 +28,35 @@ _ = vm.call(.{ .call = .{
 std.debug.print("Alice balance: {d}\n", .{vm.get_balance(alice)});
 ```
 
-You run it, expecting `10000000000000000000`. Instead, it prints:
+With `host = null`, it prints the seeded value:
 
 ```text
-Alice balance: 0
+Alice balance: 10000000000000000000
 ```
 
-**Wait — what just happened?!** Where did Alice's 10 ETH go?!
+Without a host, `vm.call()` reads and writes `vm.balances`, `vm.nonces`, `vm.code`, and `vm.storage` directly, and those maps keep their contents across calls until `vm.deinit()`.
 
-## The `initTransactionState()` mystery solved
+## What `initTransactionState()` resets
 
-Open `src/evm.zig` lines 714–719 and the puzzle clicks immediately:
+`vm.call()` runs `initTransactionState()` at the start of every transaction. It resets per-transaction bookkeeping only:
 
 ```zig
-const bytecode = if (params.isCreate()) &[_]u8{} else self.get_code(address);
-...
-self.initTransactionState(blob_versioned_hashes) catch ...
+self.storage.original_storage.clearRetainingCapacity();
+self.storage.clear_transient();
+self.gas_refund = 0;
+self.access_list_manager = AccessListManager.init(arena_allocator);
+self.logs = std.ArrayList(call_result.Log){};
 ```
 
-Inside `initTransactionState()` (lines 227–231):
-
-```zig
-self.storage = Storage.init(arena_allocator, self.host, self.pending_storage_injector);
-self.balances.clearRetainingCapacity();
-self.nonces.clearRetainingCapacity();
-self.code.clearRetainingCapacity();
-```
-
-`vm.call()` starts every transaction with a clean slate for its internal maps! The **only** pre-seeded map entry that survives is `vm.code.get(target)`, because `call()` reads `self.get_code(address)` five lines *before* resetting the maps.
+It also resets the frame list, the created, self-destructed, and touched account sets, and the balance, nonce, and code snapshot stacks. It never clears `balances`, `nonces`, `code`, or committed storage. The test `transaction startup preserves state and resets storage refund accounting` in `src/evm_test.zig` checks this.
 
 <WatchOut title="Internal maps vs HostInterface">
 With `host = null`:
-- `vm.code.put(target, code)` works for a single contract because `call()` reads it before `initTransactionState()`.
-- Pre-seeding `vm.balances`, `vm.nonces`, or a *second* contract in `vm.code` gets wiped at the start of `vm.call()`.
-- Touching `vm.storage` before calling `vm.call()` or `vm.initTransactionState()` panics (`vm.storage` starts `undefined`).
+- Seeds in `vm.code`, `vm.balances`, and `vm.nonces` survive `vm.call()`, so one seeded contract can call another without a host.
+- `vm.setStoragePrestate(key, value)` seeds a storage slot as committed state. When a storage injector is active, `initTransactionState()` rebuilds `vm.storage` from these seeds.
+- A top-level call transfers `value` only when a host is set. With `host = null`, `vm.call()` moves no balance from `caller` to `to`.
 
-Whenever you need pre-funded accounts, pre-existing storage, or Contract A calling Contract B, pass a [`HostInterface`](/tutorials/custom-host). `initTransactionState()` never clears your host.
+Pass a [`HostInterface`](/tutorials/custom-host) when state lives in your own backend or when top-level value transfers must move balances. `initTransactionState()` never clears your host.
 </WatchOut>
 
 ## Three storage maps, one revert model
@@ -94,7 +87,7 @@ If a nested call warms a new address or storage slot and then **reverts**, `Acce
 
 ## Reading storage and refunds after a call
 
-Let's execute a contract that writes `42` to slot `0`, reads it back, and clears it to `0` — then inspect `vm.storage` and `result.refund_counter`:
+Let's execute a contract that writes `42` to slot `0` and reads it back, then inspect `vm.storage`:
 
 ```zig
 const bytecode = [_]u8{
@@ -127,7 +120,7 @@ const result = vm.call(.{ .call = .{
 const stored = try vm.storage.get(target, 0); // 42
 ```
 
-Notice that `vm.storage` stays readable *after* `vm.call()` returns (only `transient` storage and warm sets are cleared at end-of-tx), right up until the next `vm.call()` or `vm.deinit()`.
+Notice that `vm.storage` stays readable *after* `vm.call()` returns (only `transient` storage and warm sets are cleared at end-of-tx). Without a host or storage injector, the slot also survives later `vm.call()`s until `vm.deinit()`.
 
 <TraceExercise
   title="Trace It Yourself: SSTORE 0 → 42 → 0 in the same transaction"

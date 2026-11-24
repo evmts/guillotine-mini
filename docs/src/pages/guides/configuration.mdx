@@ -81,9 +81,9 @@ const config = guillotine.EvmConfig{
 };
 ```
 
-Inside `executeOpcode` (`src/frame.zig:385`), dispatch priority is:
+Inside `executeOpcode` (`src/frame.zig:519`), dispatch priority is:
 
-1. WASM `js_opcode_callback` (when running in WebAssembly and the JS callback returns non-zero)
+1. WASM `js_opcode_callback` (when running in WebAssembly, `evm_set_js_opcode_callbacks_enabled(true)` was called, and the JS callback returns non-zero)
 2. `config.opcode_overrides` (linear scan; keep the override list small)
 3. Built-in opcode `switch`
 
@@ -98,4 +98,4 @@ Set `.loop_quota = null` explicitly in debug tests that intentionally run long c
 
 ## System contract flags
 
-Four boolean flags control system-contract hooks (`enable_beacon_roots`, `enable_historical_block_hashes`, `enable_validator_deposits`, `enable_validator_withdrawals`). All four default to `true`. Set them to `false` when running isolated EVM execution without block-level system contract state updates.
+`EvmConfig` declares four boolean system-contract flags (`enable_beacon_roots`, `enable_historical_block_hashes`, `enable_validator_deposits`, `enable_validator_withdrawals`). All four default to `true`. No code in `src/` reads them, so changing them does not change execution.

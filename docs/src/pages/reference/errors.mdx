@@ -9,6 +9,8 @@ description: Complete CallError and CallParams.ValidationError sets from src/err
 
 Defined in `src/errors.zig`. When `Frame.execute()` returns any of these errors during `vm.call()`, `CallResult` reports `success = false`, `gas_left = 0`, `output = &.{}`, and `error_info = @errorName(err)`.
 
+Core execution never raises `MissingJumpDestMetadata`, `ContractNotFound`, `AccountNotFound`, `TruncatedPush`, `WriteProtection`, `AllocationError`, `InvalidJumpDestination`, `BytecodeTooLarge`, or `CreateInitCodeSizeLimit`. They stay in the set so `inspector.formatErrorName` can map them to Geth strings.
+
 ### Execution & gas
 
 | Error | Cause |
@@ -26,14 +28,15 @@ Defined in `src/errors.zig`. When `Frame.execute()` returns any of these errors 
 | `StackUnderflow` | Opcode pops more items than currently on the stack |
 | `StackOverflow` | Push would exceed `1024` stack items |
 | `InvalidOpcode` | Undefined opcode byte or opcode inactive on the active hardfork (e.g., `PUSH0` pre-Shanghai, `CLZ` pre-Osaka) |
-| `InvalidJump` | `JUMP` / `JUMPI` target is out of range or invalid |
-| `InvalidJumpDestination` | Jump target does not point to a valid `JUMPDEST` (`0x5b`) outside `PUSH` data |
+| `InvalidJump` | `JUMP` / `JUMPI` target is not a valid `JUMPDEST` (`0x5b`) outside `PUSH` data |
+| `InvalidJumpDestination` | Declared but not raised by core execution; jump handlers return `InvalidJump` |
 | `MissingJumpDestMetadata` | Bytecode jump destination table unavailable |
-| `InvalidBytecode` | Malformed bytecode or EIP-3541 `0xEF` prefix rejection |
-| `BytecodeTooLarge` | Deployed runtime code exceeds `max_bytecode_size` (24,576 bytes, EIP-170) |
-| `InitcodeTooLarge` | Initcode exceeds `max_initcode_size` (49,152 bytes, EIP-3860) |
-| `CreateInitCodeSizeLimit` | `CREATE` / `CREATE2` initcode exceeds EIP-3860 limit |
-| `CreateContractSizeLimit` | Deployed contract exceeds EIP-170 limit |
+| `InvalidBytecode` | Deployed runtime code starts with `0xEF` (EIP-3541, London+) |
+| `BytecodeTooLarge` | Declared but not raised by core execution; oversized deployed code fails with `CreateContractSizeLimit` |
+| `InitcodeTooLarge` | Raised by `simulation.zig` request validation when a Shanghai+ create request exceeds 49,152 bytes. Core execution reports oversized initcode as `OutOfGas` (`CREATE`/`CREATE2`) or `InvalidInitCodeSize` (top-level create) |
+| `CreateInitCodeSizeLimit` | Declared but not raised by core execution (see `InitcodeTooLarge`) |
+| `CreateContractSizeLimit` | Deployed runtime code exceeds `max_bytecode_size` (default 24,576 bytes, EIP-170, Spurious Dragon+) |
+| `CodeStoreOutOfGas` | Remaining gas cannot pay the code-deposit fee (`200` gas per byte); creation fails and consumes all gas |
 | `InvalidPush` | Invalid `PUSH` instruction size |
 | `TruncatedPush` | Incomplete `PUSH` immediate |
 | `OutOfBounds` | Bytecode or slice offset out of range |
@@ -42,9 +45,10 @@ Defined in `src/errors.zig`. When `Frame.execute()` returns any of these errors 
 
 | Error | Cause |
 | --- | --- |
-| `CallDepthExceeded` | Nested call depth exceeds `max_call_depth` (`1024`) |
+| `CallDepthExceeded` | `CREATE` / `CREATE2` frame depth exceeds `max_call_depth` (default `1024`). Nested calls past the limit fail with `error_info = "callDepthExceeded"` (lowercase), which is not a `CallError` member |
+| `NonceOverflow` | `CREATE` / `CREATE2` sender nonce is already `2^64 - 1` |
 | `InsufficientBalance` | Value transfer exceeds caller balance |
-| `ContractCollision` | `CREATE` / `CREATE2` target already has non-zero nonce, code, or storage |
+| `ContractCollision` | `CREATE` / `CREATE2` target already has a non-zero nonce or non-empty code (storage is not checked) |
 | `ContractNotFound` | Target contract not found |
 | `AccountNotFound` | Account lookup failed |
 | `PrecompileError` | Built-in or overridden precompile returned an error |
@@ -53,8 +57,8 @@ Defined in `src/errors.zig`. When `Frame.execute()` returns any of these errors 
 
 | Error | Cause |
 | --- | --- |
-| `MemoryError` | Memory offset exceeds `memory_limit` (`0xFFFFFF`) or overflow |
-| `StorageError` | Storage operation failed |
+| `MemoryError` | A `CALL`, `CALLCODE`, `DELEGATECALL` or `STATICCALL` handler finds no active frame. Memory growth past `memory_limit` fails with `OutOfGas` instead |
+| `StorageError` | Pre-warming transaction addresses into the access list failed |
 | `OutOfMemory` | Backing Zig `Allocator` returned `OutOfMemory` |
 | `AllocationError` | Internal buffer allocation failed |
 | `NoSpaceLeft` | Fixed-capacity output/writer buffer full |
@@ -66,6 +70,6 @@ Defined in `src/errors.zig`. When `Frame.execute()` returns any of these errors 
 | --- | --- |
 | `GasZeroError` | Reserved validation error |
 | `InvalidInputSize` | Call `input.len > 4 MiB` |
-| `InvalidInitCodeSize` | Create `init_code.len > 49,152` bytes |
+| `InvalidInitCodeSize` | At Shanghai or later, create `init_code.len > config.max_initcode_size` (default 49,152 bytes) |
 | `InvalidCreateValue` | Reserved create value validation error |
 | `InvalidStaticCallValue` | Reserved static call value validation error |

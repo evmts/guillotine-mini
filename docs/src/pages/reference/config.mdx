@@ -29,7 +29,7 @@ Defined in `src/evm_config.zig`. Passed at compile time to `Evm(config)` and `Fr
 
 ### Loading from Zig build options (`fromBuildOptions`)
 
-`EvmConfig.fromBuildOptions()` constructs an `EvmConfig` from `@import("build_options")`, applying any configured `hardfork`, `max_call_depth`, `stack_size`, `max_bytecode_size`, `max_initcode_size`, `block_gas_limit`, `memory_initial_capacity`, and `memory_limit`. Hardfork names are parsed case-insensitively (including aliases `"TANGERINE"`, `"SPURIOUS"`, `"PRAGUE"`, `"OSAKA"`), falling back to `Hardfork.DEFAULT` (`.OSAKA`).
+`EvmConfig.fromBuildOptions()` constructs an `EvmConfig` from `@import("build_options")`, applying any configured `hardfork`, `max_call_depth`, `stack_size`, `max_bytecode_size`, `max_initcode_size`, `block_gas_limit`, `memory_initial_capacity`, and `memory_limit`. The hardfork name may be an exact enum tag (`"TANGERINE_WHISTLE"`), the case-insensitive alias `"TANGERINE"` or `"SPURIOUS"`, or any name `Hardfork.fromString()` accepts case-insensitively (such as `"osaka"`, `"Paris"`, `"ConstantinopleFix"`, or `"Glamsterdam"`). Unknown names fall back to `Hardfork.DEFAULT` (`.OSAKA`).
 
 ### Override structs
 

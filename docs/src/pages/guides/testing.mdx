@@ -21,7 +21,6 @@ parent/
 ## Fast checks (no submodules required)
 
 ```sh
-zig build                 # Compile the EVM module and artifacts
 zig build test-trace      # Deterministic EIP-3155 native trace regression
 zig build native          # Static archive zig-out/lib/libguillotine_mini.a
 zig build wasm            # WASI Preview 1 reactor zig-out/bin/guillotine_mini.wasm
@@ -32,10 +31,10 @@ zig build test-wasm       # Node 22+ WASM execution, revert, log, SHA256, BN254,
 
 ```sh
 zig build unit            # Core EVM + client module unit tests
-zig build test            # Unit tests + default suite
+zig build test            # unit + execution-specs state tests + nethermind-diff
 ```
 
-Note on `zig build unit`: the core EVM tests in `src/` pass without external fixtures. Six tests in `client/trie/fixtures.zig` and `client/main.zig` read JSON fixtures from the optional `ethereum-tests/` submodule and will report `FileNotFound` unless that submodule is initialized.
+Note on `zig build unit`: the core EVM tests in `src/` pass without external fixtures. Five tests in `client/trie/fixtures.zig` read JSON fixtures from the optional `ethereum-tests/` submodule, and the two runner tests in `client/main.zig` read genesis JSON from `execution-specs/`. They report `FileNotFound` unless those submodules are initialized.
 
 ## Ethereum specification tests (`execution-specs`)
 
@@ -45,6 +44,8 @@ Note on `zig build unit`: the core EVM tests in `src/` pass without external fix
 git submodule update --init execution-specs
 uv --version              # uv manages the Python virtualenv for fixture generation
 ```
+
+Fixture generation (`uv run ... fill`) requires Python 3.11 or later.
 
 ### Running spec suites
 
@@ -62,14 +63,13 @@ INCLUDE_ENGINE_TESTS=1 zig build specs
 TEST_FILTER="push0" zig build specs
 TEST_FILTER="transientStorage" zig build specs
 TEST_FILTER="Osaka" zig build specs
-
-# Interactive watch runner
-zig build test-watch
 ```
+
+`zig build test-watch` is declared in `build.zig`, but its test runner file `interactive_test_runner.zig` is missing from this checkout, so the step fails.
 
 ### Granular per-fork and per-EIP targets
 
-`build.zig` generates dedicated steps for every major hardfork and EIP slice (for example `specs-frontier-*`, `specs-berlin-*`, `specs-shanghai-push0`, `specs-cancun-tstore-basic`, `specs-cancun-mcopy`, `specs-prague-bls-pairing`, `specs-prague-setcode-calls`, `specs-osaka-modexp-variable-gas`). List all active targets with:
+`build.zig` generates dedicated steps for each hardfork and EIP slice (for example `specs-shanghai-push0`, `specs-cancun-tstore-basic`, `specs-cancun-mcopy`, `specs-byzantium-modexp`). The runner matches `TEST_FILTER` as a plain, case-sensitive substring, so the Berlin, Frontier, Prague, and Osaka sub-steps, whose filters use regex syntax, select zero tests. List all targets with:
 
 ```sh
 zig build --help

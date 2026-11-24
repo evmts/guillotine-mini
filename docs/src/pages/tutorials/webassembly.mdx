@@ -44,7 +44,7 @@ On Node 22+, `wasi.initialize(instance)` calls `_initialize()` for you. In a bro
 </MentalModel>
 
 Every WASM instance expects exactly two non-WASI imports under `env`:
-- `js_opcode_callback` — return `0` to use the built-in Zig opcode handler.
+- `js_opcode_callback` — return `0` to use the built-in Zig opcode handler. The EVM calls it only after `evm_set_js_opcode_callbacks_enabled(true)`.
 - `js_precompile_callback` — return `0` to use the built-in Zig/Rust precompile.
 
 No JavaScript crypto callbacks are required.
@@ -127,7 +127,7 @@ Always construct `new Uint8Array(api.memory.buffer, ptr, len)` **after** the all
 
 Because the crypto libraries are linked directly into `guillotine_mini.wasm`, calling precompile `0x02` (SHA256), `0x08` (BN254 pairing), or `0x0b`–`0x11` (BLS12-381) works identically to native Zig.
 
-For example, this 24-byte bytecode copies calldata to memory, `STATICCALL`s precompile `0x02` (SHA256), and returns its 32-byte digest (adapted from `test/wasm.test.mjs`):
+For example, this 22-byte bytecode copies calldata to memory, `STATICCALL`s precompile `0x02` (SHA256), and returns its 32-byte digest (adapted from `test/wasm.test.mjs`):
 
 ```js
 // CALLDATACOPY(0, 0, calldatasize)
@@ -192,7 +192,7 @@ for (let i = 0; i < logCount; i++) {
   }
   answer={
     <p>
-      On <strong>Prague</strong>, precompiles occupy <code>0x01</code>–<code>0x13</code>, so <code>0x0100</code> is a normal
+      On <strong>Prague</strong>, precompiles occupy <code>0x01</code>–<code>0x11</code>, so <code>0x0100</code> is a normal
       contract address. On <strong>Osaka</strong>, <code>0x0100</code> becomes the <strong>P256VERIFY</strong> precompile (EIP-7951)!
       If you execute custom bytecode at <code>0x0100</code> on Osaka, pick an address above <code>0x0100</code> (for example{' '}
       <code>0x1000</code>) instead.
@@ -219,5 +219,5 @@ for (let i = 0; i < logCount; i++) {
 
 ## Next
 
-- **[C & WASM ABI Reference](/reference/c-api)** — every signature of all 30 exported `evm_*` functions.
+- **[C & WASM ABI Reference](/reference/c-api)** — every signature of all 42 exported `evm_*` functions.
 - **[C FFI & Async State Injection](/guides/c-ffi)** — fetch cold storage/balances asynchronously from RPC or a database using `evm_call_ffi` and `evm_continue_ffi`.

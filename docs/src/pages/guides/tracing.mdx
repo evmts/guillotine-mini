@@ -220,7 +220,7 @@ try tracer.writeFlatJson(&flat_out.writer);
 ```
 
 - `writeGethJson(writer)` produces Geth `callTracer` JSON, omitting logs from reverted subtrees (matching Geth's `clearFailedLogs`), clearing `to` on failed `CREATE`/`CREATE2`, and streaming directly so deep call trees (up to 1024 frames) never hit `std.json.Stringify`'s nesting limit.
-- `writeFlatJson(writer)` produces a Geth `flatCallTracer` / Parity `trace_*` JSON array with `action`, `result` (or Parity-formatted `error`), `subtraces`, `traceAddress`, and `type` (`"call"`, `"create"`, `"suicide"`), omitting precompile frames by default.
+- `writeFlatJson(writer)` produces a Geth `flatCallTracer` / Parity `trace_*` JSON array with `action`, `result` (or Parity-formatted `error`), `subtraces`, `traceAddress`, and `type` (`"call"`, `"create"`, `"suicide"`). It always omits precompile frames, matching Geth's default `includePrecompiles=false`; `CallTracer.Options` has no flag to include them.
 
 ### 2. `FourByteTracer` (Geth `4byteTracer`)
 

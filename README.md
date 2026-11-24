@@ -8,11 +8,11 @@
     <a href="https://github.com/evmts/guillotine-mini">
        <img src="https://img.shields.io/badge/zig-0.15.1+-orange.svg" alt="zig version" />
     </a>
-    <a href="https://github.com/evmts/guillotine-mini/actions">
-      <img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="build status" />
+    <a href="https://github.com/evmts/guillotine-mini/actions/workflows/ci.yml">
+      <img src="https://github.com/evmts/guillotine-mini/actions/workflows/ci.yml/badge.svg" alt="CI" />
     </a>
-    <a href="https://github.com/evmts/guillotine-mini">
-      <img src="https://img.shields.io/badge/tests-all%20hardforks%20passing-brightgreen.svg" alt="tests" />
+    <a href="https://github.com/evmts/guillotine-mini/actions/workflows/wasm.yml">
+      <img src="https://github.com/evmts/guillotine-mini/actions/workflows/wasm.yml/badge.svg" alt="WASM" />
     </a>
   </sup>
 </div>
@@ -21,35 +21,13 @@
 
 ## Requirements
 
-- Zig 0.15.1+
-- Cargo (for Rust crypto deps)
-- Python 3.8+ (optional, test generation)
+- Zig 0.15.1+ (CI uses 0.15.2)
+- Cargo (Voltaire builds its Rust crypto archive)
+- A `../voltaire` checkout at the revision pinned in `native-dependencies.json`
+- Python 3 and [uv](https://docs.astral.sh/uv/) for `zig build test` and `zig build specs` (execution-specs fills fixtures with Python 3.11+)
+- Node 22+ for `zig build test-wasm` and `examples/wasm.mjs`
 
 ## Install
-
-**Use as a Zig dependency (recommended)**
-
-```bash
-zig fetch --save https://github.com/evmts/guillotine-mini/archive/main.tar.gz
-```
-
-```zig
-const guillotine_dep = b.dependency("guillotine_mini", .{
-    .target = target,
-    .optimize = optimize,
-});
-const guillotine_mod = guillotine_dep.module("guillotine_mini");
-exe.root_module.addImport("guillotine_mini", guillotine_mod);
-
-const primitives_dep = b.dependency("guillotine_primitives", .{
-    .target = target,
-    .optimize = optimize,
-});
-exe.linkLibrary(primitives_dep.artifact("blst"));
-exe.linkLibrary(primitives_dep.artifact("keccak-asm"));
-exe.linkLibrary(primitives_dep.artifact("sha3-asm"));
-exe.linkLibrary(primitives_dep.artifact("crypto_wrappers"));
-```
 
 **Build from source**
 
@@ -70,13 +48,44 @@ archive. Plain `zig build` installs no artifacts; use `zig build native` for the
 C ABI static library and `zig build wasm` for the WASI reactor.
 
 `zig build test` runs the unit tests and the execution-specs state tests. It reads
-fixtures from the `execution-specs` and `ethereum-tests` submodules and runs
-`python3` to generate the spec test wrappers. If you cloned without submodules,
-run `git submodule update --init execution-specs ethereum-tests`. The Nethermind
+fixtures from the `execution-specs` and `ethereum-tests` submodules and, on the
+first run, uses `uv` to fill the execution-specs fixtures and `python3` to generate
+the spec test wrappers. If you cloned without submodules, run
+`git submodule update --init execution-specs ethereum-tests`. The Nethermind
 trie diff runs only when `dotnet` is installed; pass `-Dnethermind-diff=false` to
 skip it explicitly.
 
-> Downstream consumers must link the crypto artifacts from `guillotine_primitives` (see snippet above).
+**Use as a Zig dependency**
+
+Because `build.zig.zon` points at `../voltaire`, consume Guillotine Mini as a
+path dependency from a sibling checkout. `zig fetch --save` of a GitHub tarball
+fails with `dependency path outside project`. Place your project next to the
+`guillotine-mini` and `voltaire` checkouts above, then declare both in your
+`build.zig.zon`:
+
+```zig
+.dependencies = .{
+    .guillotine_mini = .{ .path = "../guillotine-mini" },
+    .voltaire = .{ .path = "../voltaire" },
+},
+```
+
+```zig
+const guillotine_dep = b.dependency("guillotine_mini", .{
+    .target = target,
+    .optimize = optimize,
+});
+const voltaire_dep = b.dependency("voltaire", .{
+    .target = target,
+    .optimize = optimize,
+});
+exe.root_module.addImport("guillotine_mini", guillotine_dep.module("guillotine_mini"));
+exe.root_module.addImport("voltaire", voltaire_dep.module("primitives"));
+```
+
+Voltaire's modules carry the Rust crypto archive and its system libraries, so no
+extra `linkLibrary` calls are needed. The `voltaire` import is only required if
+your code constructs `Address` values or uses other Voltaire primitives directly.
 
 ## Quick Start
 
@@ -94,8 +103,8 @@ TEST_FILTER="push0" zig build specs
 
 ## WebAssembly
 
-The WASM build uses the adjacent `../voltaire` checkout and requires Zig 0.15.2,
-Rust/Cargo, and Python 3. Install Rust's WASM standard library once:
+The WASM build uses the adjacent `../voltaire` checkout and the same Zig and
+Cargo toolchain as the native build. Install Rust's WASM standard library once:
 
 ```bash
 rustup target add wasm32-unknown-unknown

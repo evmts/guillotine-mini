@@ -13,7 +13,7 @@ In five minutes you will compile Guillotine Mini, run real EVM bytecode from Zig
 
 | Tool | Version | Why it is required |
 | --- | --- | --- |
-| **Zig** | `0.15.1+` (`0.15.2` tested) | Compiles the EVM, tests, native archive, and WASI module |
+| **Zig** | `0.15.1+` (CI uses `0.15.2`) | Compiles the EVM, tests, native archive, and WASI module |
 | **Rust / Cargo** | Stable + `wasm32-unknown-unknown` (for WASM) | Builds Voltaire's Rust crypto static libraries (`blst`, BN254, KZG) |
 | **Adjacent `../voltaire` checkout** | Pinned in `native-dependencies.json` | `build.zig.zon` resolves `voltaire` as a sibling path dependency |
 | **Node.js** | `22+` (optional) | Runs `zig build test-wasm` and `examples/wasm.mjs` |
@@ -32,7 +32,9 @@ rustup target add wasm32-unknown-unknown
 Clone the repository alongside `voltaire` at the revision recorded in `native-dependencies.json`:
 
 ```sh
-git clone https://github.com/evmts/guillotine-mini.git
+git clone --recurse-submodules https://github.com/evmts/guillotine-mini.git
+git clone https://github.com/evmts/voltaire.git
+git -C voltaire checkout "$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)"
 cd guillotine-mini
 zig build
 zig build test-trace
@@ -51,7 +53,7 @@ In `build.zig.zon`, declare `guillotine_mini` (and `voltaire` if you construct `
 },
 ```
 
-In `build.zig`, import the module and link Voltaire's crypto artifacts:
+In `build.zig`, import both modules. Voltaire's `primitives` module carries its Rust crypto archive and system libraries, so no `linkLibrary` calls are needed:
 
 ```zig
 const guillotine_dep = b.dependency("guillotine_mini", .{
@@ -199,7 +201,7 @@ result.error_info == null       // REVERT is a clean halt, not a CallError
     },
     {
       q: 'Do I have to free result.output?',
-      a: 'No — result slices are allocated inside vm.arena and vanish when vm.deinit() runs. If you need a result to outlive the EVM, call result.toOwnedResult(your_allocator) and later result.deinit(your_allocator).',
+      a: 'No — result slices are allocated inside vm.arena and vanish when vm.deinit() runs. If you need a result to outlive the EVM, copy it with const owned = try result.toOwnedResult(your_allocator) and later call owned.deinit(your_allocator).',
     },
   ]}
 />

@@ -21,7 +21,7 @@ The Python `execution-specs` store stack, memory, program counter, storage, and 
 | **`Frame(config)`** | `src/frame.zig` | Operand stack (`≤ config.stack_size`), byte-addressed `memory`, `pc`, `gas_remaining`, `Bytecode` (`JUMPDEST` bitmap), `output`, `return_data`, `is_static` | Cross-frame storage, account balances, snapshots |
 | **`HostInterface`** | `src/host.zig` | External account/storage persistence via an 11-pointer vtable | EVM semantics or nested call dispatch |
 
-Inside a frame, opcodes that touch account state or spawn sub-calls (`SLOAD`, `SSTORE`, `BALANCE`, `CALL`, `CREATE`, `SELFDESTRUCT`) call back into the parent EVM via `frame.getEvm()`. Because `Evm.frames` is a dynamic `ArrayList`, frames never hold raw pointers to sibling frames across nested calls — `evm.zig` always indexes `self.frames.items[self.frames.items.len - 1]` after a nested call returns.
+Inside a frame, opcodes that touch account state or spawn sub-calls (`SLOAD`, `SSTORE`, `BALANCE`, `CALL`, `CREATE`, `SELFDESTRUCT`) call back into the parent EVM via `frame.getEvm()`. `initTransactionState()` reserves `max_call_depth + 1` slots in `Evm.frames` so frame pointers stay stable through nested calls, and `evm.zig` indexes `self.frames.items[self.frames.items.len - 1]` after a nested call returns.
 
 ## Memory and arena ownership
 
@@ -40,7 +40,7 @@ Inside a frame, opcodes that touch account state or spawn sub-calls (`SLOAD`, `S
 Five implementation details in `src/evm.zig` are worth knowing before you write host code:
 
 1. **Intrinsic gas is the caller's job.** `vm.call()` assumes the gas passed in `params` is already net of the 21,000 transaction base fee, calldata cost (including EIP-7623 floor), access list fees, and create fees.
-2. **Target bytecode is fetched before `initTransactionState()`.** Line 714 calls `self.get_code(address)` before line 719 clears `balances`, `nonces`, `code`, and recreates `storage`. That is why seeding `vm.code.put(target, code)` works for a single contract without a host, while seeding other contracts or balances requires a `HostInterface`.
+2. **Seeded state survives `initTransactionState()`.** Each `vm.call()` first runs `initTransactionState()`, which resets original and transient storage, warm sets, logs, the refund counter, and the snapshot stacks. It does not clear `balances`, `nonces`, `code`, or storage seeded with `setStoragePrestate()`, so without a host you can seed any number of accounts with `vm.code.put`, `vm.balances.put`, and `vm.nonces.put`, and the state persists across calls.
 3. **Top-level value transfer happens only with a host.** In `vm.call()`, value is moved from `caller` to `address` when `value > 0 and self.host != null` (and reversed if the top-level call reverts or errors).
 4. **Refunds are returned, not auto-applied.** `CallResult.refund_counter` reports the raw refund counter; the caller applies the fork-dependent cap (`gas_used / 5` from London onward, `gas_used / 2` earlier) after settling coinbase fees.
 5. **End-of-tx cleanup runs in spec order.** Warm sets clear, transient storage (EIP-1153) clears, then accounts marked by `SELFDESTRUCT` (EIP-6780) and touched empty accounts (EIP-161) are removed.
@@ -51,7 +51,7 @@ Five implementation details in `src/evm.zig` are worth knowing before you write 
 
 - It builds a `JUMPDEST` bitmap by skipping over `PUSH1`..`PUSH32` immediate bytes, so `0x5b` bytes inside push data are never accepted by `JUMP` or `JUMPI`.
 - Truncated `PUSH` immediates at the end of bytecode are zero-padded on the right per the Ethereum specification.
-- `Frame.execute()` runs a tight fetch-decode-dispatch loop (`src/instructions/dispatcher.zig`) over category handler files (`handlers_arithmetic.zig`, `handlers_storage.zig`, `handlers_system.zig`, etc.).
+- `Frame.execute()` calls `Frame.step()` in a loop; `Frame.executeOpcode()` in `src/frame.zig` dispatches each opcode through a `switch` to the category handler files in `src/instructions/` (`handlers_arithmetic.zig`, `handlers_storage.zig`, `handlers_system.zig`, etc.). `src/instructions/dispatcher.zig` is a standalone `Dispatcher` exported from `root.zig`; `Frame` does not use it.
 - In `Debug` and `ReleaseSafe` builds, `EvmConfig.loop_quota` defaults to `1_000_000` steps to catch runaway loops early; in `ReleaseFast` / `ReleaseSmall` it defaults to `null` (unlimited).
 
 ## C ABI and WebAssembly surface
@@ -59,8 +59,8 @@ Five implementation details in `src/evm.zig` are worth knowing before you write 
 Both `zig build native` (static library `libguillotine_mini.a`) and `zig build wasm` (WASI Preview 1 reactor `guillotine_mini.wasm`) compile the same entry file: **`src/root_c.zig`**.
 
 - An opaque `*EvmHandle` wraps an `ExecutionContext` (the `Evm`, staged bytecode/calldata, access lists, blob hashes, and last `CallResult`).
-- Every exported function accepts a nullable handle and returns a safe zero/false sentinel on `null`.
-- On `wasm32-wasi`, `evm_alloc` and `evm_free` manage host transfer buffers in linear memory, and the two `env` imports (`js_opcode_callback`, `js_precompile_callback`) let hosts intercept any opcode or precompile without recompiling Zig.
+- Every exported function that takes a handle accepts `null` and returns a safe zero/false sentinel.
+- On `wasm32-wasi`, `evm_alloc` and `evm_free` manage host transfer buffers in linear memory, and the two `env` imports (`js_opcode_callback`, `js_precompile_callback`) let hosts intercept any precompile, or any opcode after `evm_set_js_opcode_callbacks_enabled(true)`, without recompiling Zig.
 
 ## Source layout
 
@@ -80,6 +80,6 @@ src/
 ├── trace.zig                # EIP-3155 Tracer, TraceEntry, TraceDiff
 ├── async_executor.zig       # Yield/resume state-injection state machine
 ├── storage_injector.zig     # Async cache & state-change JSON serializer
-├── root_c.zig               # Exported C & WASM ABI (30 evm_* symbols)
+├── root_c.zig               # Exported C & WASM ABI (42 evm_* symbols)
 └── instructions/            # Opcode handlers grouped by category
 ```

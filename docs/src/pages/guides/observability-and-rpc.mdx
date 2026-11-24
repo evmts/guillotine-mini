@@ -123,7 +123,7 @@ When `validation = true`, `simulateV1` enforces sender nonces and EIP-1559 base 
 
 `SimulateV1Options` exposes `validation`, `trace_transfers`, and `return_full_transactions`. `CallRequest` includes `dynamic_fee` and `authorization_list` alongside the usual call fields.
 
-- **`authorizationList`** requires signed EIP-7702 tuples with `chainId`, `address`, `nonce`, `yParity` (or `v`), `r`, and `s`. The authority is recovered from the signature. RPC callers cannot provide an `authority` field. An explicitly empty list for a set-code request is rejected.
+- **`authorizationList`** requires signed EIP-7702 tuples with `chainId`, `address`, `nonce`, `yParity` (or `v`), `r`, and `s`. The authority is always recovered from the signature. An `authority` field in the request is ignored. An explicitly empty list for a set-code request is rejected.
 - **`traceTransfers`** emits synthetic ETH transfer logs at `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` with the first topic `keccak("Transfer(address,address,uint256)")`. Synthetic transfer logs and contract logs are interleaved in execution order. A reverted frame discards both kinds of logs from itself and its descendants.
 - **`returnFullTransactions`** returns Geth-style `RPCTransaction` objects in the block's `transactions` array. Objects carry type-specific fields, including `accessList` for access-list and later types, `maxFeePerGas` and `maxPriorityFeePerGas` for dynamic-fee types, `maxFeePerBlobGas` and `blobVersionedHashes` for blob transactions, and `authorizationList` for set-code transactions. The synthesized transaction's signature fields are zero. By default, `transactions` contains transaction hashes.
 

@@ -84,8 +84,8 @@ const addr2 = try vm.computeCreate2Address(alice, salt, &init_code);
 | Max initcode length (EIP-3860) | Shanghai+ | `49,152` bytes (48 KB); `+2` gas per 32-byte word (`+6`/word extra for `CREATE2` keccak) |
 | Max deployed runtime code (EIP-170) | Spurious Dragon+ | `24,576` bytes (24 KB) |
 | Banned `0xEF` prefix (EIP-3541) | London+ | Runtime code starting with `0xEF` fails creation and consumes gas |
-| Collision check (EIP-684 / EIP-7610) | All | Fails if target address already has non-zero nonce, code, or storage |
-| Code deposit out-of-gas (EIP-2) | Homestead+ | Entire creation fails instead of deploying empty code |
+| Collision check (EIP-684) | All | Fails if the target address already has a non-zero nonce or non-empty code. Storage is not checked (EIP-7610 is not implemented) |
+| Code deposit out-of-gas (EIP-2) | All | Entire creation fails with `CodeStoreOutOfGas`. The pre-Homestead rule that deploys empty code is not implemented |
 
 ## Nested call mechanics (`inner_call`)
 

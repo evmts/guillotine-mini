@@ -12,7 +12,7 @@ import {
 
 # 3. Building a Custom Host
 
-In [Tutorial 2](/tutorials/state-and-snapshots), you hit the limit of `host = null`: internal maps reset at the start of every `vm.call()`, so you cannot pre-fund accounts, keep storage across transactions, or call from Contract A into Contract B.
+In [Tutorial 2](/tutorials/state-and-snapshots), you saw that `host = null` keeps all state in the EVM's internal maps, which live in `vm.arena` and vanish at `vm.deinit()`, and that a top-level `vm.call()` moves no `value` without a host.
 
 The solution is **`HostInterface`** (`src/host.zig`) — a tiny type-erased vtable (`ptr` + `*const VTable`) that connects Guillotine Mini to whatever state store you want: a HashMap, SQLite, RocksDB, a Merkle Patricia Trie, or an RPC fork cache.
 
