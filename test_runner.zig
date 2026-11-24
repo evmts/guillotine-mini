@@ -90,6 +90,15 @@ pub fn main() !void {
         try test_indices.append(allocator, i);
     }
 
+    // A filter that selects nothing is a misnamed or empty target, not a pass.
+    // TEST_ALLOW_EMPTY=1 opts out for callers that probe optional suites.
+    if (test_filter) |filter| {
+        if (test_indices.items.len == 0 and std.posix.getenv("TEST_ALLOW_EMPTY") == null) {
+            std.debug.print("error: TEST_FILTER \"{s}\" matched 0 of {d} tests\n", .{ filter, total_tests });
+            return error.NoMatchingTests;
+        }
+    }
+
     // Run tests (parallel or sequential)
     if (parallel and test_indices.items.len > 1) {
         // Parallel execution
