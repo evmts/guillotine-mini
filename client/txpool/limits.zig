@@ -400,12 +400,8 @@ pub fn fits_size_limits(
         payload_len += rlp_len_of_uint(tx.max_fee_per_gas);
         payload_len += rlp_len_of_uint(tx.gas_limit);
 
-        // to (nullable)
-        if (tx.to) |_| {
-            payload_len += rlp_len_of_bytes(20, null);
-        } else {
-            payload_len += rlp_len_of_bytes(0, null);
-        }
+        // to (EIP-7702 cannot create, so always 20 bytes)
+        payload_len += rlp_len_of_bytes(20, null);
 
         // value, data
         payload_len += rlp_len_of_uint(tx.value);
@@ -883,12 +879,11 @@ test "fits_size_limits — eip7702 within and over limit (unsigned)" {
         defer allocator.free(enc);
         try list.appendSlice(enc);
     }
-    if (tx.to) |to_addr| {
-        const enc = try rlp.encodeBytes(allocator, &to_addr.bytes);
+    {
+        // EIP-7702 transactions cannot create contracts, so `to` is never null.
+        const enc = try rlp.encodeBytes(allocator, &tx.to.bytes);
         defer allocator.free(enc);
         try list.appendSlice(enc);
-    } else {
-        try list.append(0x80);
     }
     {
         const enc = try rlp.encode(allocator, tx.value);
@@ -983,12 +978,11 @@ test "fits_size_limits — eip7702 within and over limit (signed)" {
         defer allocator.free(enc);
         try list.appendSlice(enc);
     }
-    if (tx.to) |to_addr| {
-        const enc = try rlp.encodeBytes(allocator, &to_addr.bytes);
+    {
+        // EIP-7702 transactions cannot create contracts, so `to` is never null.
+        const enc = try rlp.encodeBytes(allocator, &tx.to.bytes);
         defer allocator.free(enc);
         try list.appendSlice(enc);
-    } else {
-        try list.append(0x80);
     }
     {
         const enc = try rlp.encode(allocator, tx.value);

@@ -93,7 +93,8 @@ pub fn calculate_intrinsic_gas(tx: anytype, hardfork: Hardfork) u64 {
     const Tx = @TypeOf(tx);
     comptime assert_supported_tx_type(Tx, "calculate_intrinsic_gas");
 
-    const is_create = if (comptime Tx == tx_mod.Eip4844Transaction) false else tx.to == null;
+    // EIP-4844 and EIP-7702 transactions have a non-optional `to`.
+    const is_create = if (comptime @typeInfo(@TypeOf(tx.to)) != .optional) false else tx.to == null;
 
     var access_list_address_count: u64 = 0;
     var access_list_storage_key_count: u64 = 0;

@@ -69,7 +69,8 @@ pub fn validate_transaction(
         if (hardfork.isBefore(fork)) return error.UnsupportedTransactionType;
     }
 
-    const is_create = if (comptime Tx == tx_mod.Eip4844Transaction) false else tx.to == null;
+    // EIP-4844 and EIP-7702 transactions have a non-optional `to`.
+    const is_create = if (comptime @typeInfo(@TypeOf(tx.to)) != .optional) false else tx.to == null;
     const intrinsic = calculate_intrinsic_gas(tx, hardfork);
 
     const calldata_floor = intrinsic_gas.calculate_calldata_floor_gas(tx.data, hardfork);

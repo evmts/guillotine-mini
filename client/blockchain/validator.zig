@@ -32,6 +32,8 @@ pub const ValidationError = error{
     InvalidExcessBlobGas,
     // Pre-Cancun headers must not carry any 4844 fields
     UnexpectedBlobFieldsPreCancun,
+    // Header fields that cannot be RLP-encoded for hashing
+    InvalidBlockHeader,
     OutOfMemory,
 };
 
@@ -421,6 +423,9 @@ test "merge_header_validator - prague requires excess blob gas" {
     parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
     parent.excess_blob_gas = 393_216;
     parent.blob_gas_used = 1;
+    // Cancun headers carry every earlier optional field (RLP trailing-field order).
+    parent.withdrawals_root = [_]u8{0} ** 32;
+    parent.parent_beacon_block_root = [_]u8{0} ** 32;
 
     var header = BlockHeader.init();
     header.number = 2;
@@ -467,6 +472,9 @@ test "merge_header_validator - prague rejects incorrect excess blob gas" {
     parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
     parent.excess_blob_gas = 393_216;
     parent.blob_gas_used = 1;
+    // Cancun headers carry every earlier optional field (RLP trailing-field order).
+    parent.withdrawals_root = [_]u8{0} ** 32;
+    parent.parent_beacon_block_root = [_]u8{0} ** 32;
 
     var header = BlockHeader.init();
     header.number = 2;
@@ -519,6 +527,9 @@ test "merge_header_validator - prague accepts correct excess blob gas" {
     parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
     parent.excess_blob_gas = 393_216;
     parent.blob_gas_used = 1;
+    // Cancun headers carry every earlier optional field (RLP trailing-field order).
+    parent.withdrawals_root = [_]u8{0} ** 32;
+    parent.parent_beacon_block_root = [_]u8{0} ** 32;
 
     var header = BlockHeader.init();
     header.number = 2;
@@ -613,6 +624,9 @@ test "Cancun+ requires blob_gas_used presence" {
     parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
     parent.excess_blob_gas = 0;
     parent.blob_gas_used = 0;
+    // Cancun headers carry every earlier optional field (RLP trailing-field order).
+    parent.withdrawals_root = [_]u8{0} ** 32;
+    parent.parent_beacon_block_root = [_]u8{0} ** 32;
 
     var header = BlockHeader.init();
     header.number = 2;
