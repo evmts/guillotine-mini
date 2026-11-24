@@ -22,11 +22,11 @@ function alloc(bytes) {
 
 let handle = 0
 try {
-  const fork = new TextEncoder().encode('prague')
+  const fork = new TextEncoder().encode('osaka')
   handle = api.evm_create(alloc(fork), fork.length, 0)
   if (!handle) throw new Error('EVM initialization failed')
   const addressBytes = new Uint8Array(20)
-  addressBytes[18] = 1 // Execute at address 0x100, outside the precompile range.
+  addressBytes[18] = 0x10 // Use 0x1000. Osaka reserves 0x0100 for P256VERIFY.
   const address = alloc(addressBytes)
   const zero = alloc(new Uint8Array(32))
   // PUSH1 42; PUSH1 0; MSTORE; PUSH1 32; PUSH1 0; RETURN.
@@ -36,7 +36,9 @@ try {
   if (!api.evm_execute(handle)) throw new Error('EVM execution failed')
   const output = alloc(new Uint8Array(32))
   const length = api.evm_get_output(handle, output, 32)
-  console.log(`Output: 0x${Buffer.from(api.memory.buffer, output, length).toString('hex')}`)
+  const outputHex = Buffer.from(api.memory.buffer, output, length).toString('hex')
+  if (outputHex !== '2a'.padStart(64, '0')) throw new Error('Expected the contract to return 42')
+  console.log(`Output: 0x${outputHex}`)
   console.log(`Gas used: ${api.evm_get_gas_used(handle)}`)
 } finally {
   api.evm_destroy(handle)

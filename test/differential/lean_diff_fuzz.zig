@@ -908,7 +908,7 @@ fn zigExec(h: *Harness, fork: Hardfork, gas: u64, code: []const u8, calldata: []
         .RETURN
     else
         .STOP;
-    const refund: u64 = if (status == .REVERT) 0 else evm.gas_refund;
+    const refund: u64 = if (status == .REVERT) 0 else evm.get_effective_refund();
     try h.zig.print(h.gpa, "OK\t{s}\t{d}\t{d}\t", .{ @tagName(status), gas_left, refund });
     try appendHexBytes(&h.zig, h.gpa, if (status == .STOP) &.{} else frame.output);
     return gas - gas_left;

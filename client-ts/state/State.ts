@@ -3,6 +3,12 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Address, Hash, Hex, RuntimeCode } from "voltaire-effect/primitives";
+import { TrieHashLive } from "../trie/hash";
+import { encodeRlp } from "../trie/internal/rlp";
+import { KeyNibblerLive } from "../trie/KeyNibbler";
+import type { BytesType } from "../trie/Node";
+import { TriePatricializeLive } from "../trie/patricialize";
+import { TrieRoot, TrieRootLive, type TrieRootEntry } from "../trie/root";
 import type { StorageSlotType, StorageValueType } from "./StorageTypes";
 import {
   EMPTY_ACCOUNT,
@@ -180,13 +186,6 @@ const cloneAccount = (account: AccountStateType): AccountStateType => ({
 
 const ZERO_STORAGE_VALUE = zeroBytes32() as StorageValueType;
 const EMPTY_CODE = new Uint8Array(0) as RuntimeCode.RuntimeCodeType;
-// Placeholder non-empty storageRoot sentinel used until trie integration.
-const NON_EMPTY_STORAGE_SENTINEL = (() => {
-  const s = new Uint8Array(32);
-  s[0] = 0x01;
-  return s as AccountStateType["storageRoot"];
-})();
-
 const cloneRuntimeCode = (
   code: RuntimeCode.RuntimeCodeType,
 ): RuntimeCode.RuntimeCodeType =>
@@ -210,6 +209,8 @@ const makeWorldState = Effect.gen(function* () {
     WorldStateJournalKey,
     WorldStateJournalValue
   >;
+  const trieRoot = yield* TrieRoot;
+  const stateMutation = (yield* Effect.makeSemaphore(1)).withPermits(1);
   const accounts = new Map<AccountKey, AccountStateType>();
   const codes = new Map<AccountKey, RuntimeCode.RuntimeCodeType>();
   const storage = new Map<AccountKey, Map<StorageKey, StorageValueType>>();
@@ -392,10 +393,10 @@ const makeWorldState = Effect.gen(function* () {
           ...base,
           codeHash: cloneBytes32(codeHash) as AccountStateType["codeHash"],
         };
-        // Delegate to setAccount for proper journaling and equality checks
-        yield* setAccount(address, nextAccount);
+        // Use the same account journaling and equality checks.
+        yield* updateAccount(address, nextAccount);
       }
-    });
+    }).pipe(stateMutation);
   const clearStorageForKey = (key: AccountKey) =>
     Effect.gen(function* () {
       const slots = storage.get(key);
@@ -411,47 +412,6 @@ const makeWorldState = Effect.gen(function* () {
         });
       }
       storage.delete(key);
-    });
-
-  const maybeResetStorageRootIfNoSlotsForKey = (
-    address: Address.AddressType,
-    key: AccountKey,
-  ) =>
-    Effect.gen(function* () {
-      const prior = accounts.get(key);
-      if (prior && (!storage.has(key) || storage.get(key)!.size === 0)) {
-        if (!bytes32Equals(prior.storageRoot, EMPTY_ACCOUNT.storageRoot)) {
-          const nextAccount: AccountStateType = {
-            ...prior,
-            storageRoot: cloneBytes32(
-              EMPTY_ACCOUNT.storageRoot,
-            ) as AccountStateType["storageRoot"],
-          };
-          if (!accountsEqual(prior, nextAccount)) {
-            yield* setAccount(address, nextAccount);
-          }
-        }
-      }
-    });
-
-  const ensureNonEmptyStorageRootForKey = (
-    address: Address.AddressType,
-    key: AccountKey,
-  ) =>
-    Effect.gen(function* () {
-      const prior = accounts.get(key);
-      if (!prior) return;
-      if (!bytes32Equals(prior.storageRoot, NON_EMPTY_STORAGE_SENTINEL)) {
-        const nextAccount: AccountStateType = {
-          ...prior,
-          storageRoot: cloneBytes32(
-            NON_EMPTY_STORAGE_SENTINEL,
-          ) as AccountStateType["storageRoot"],
-        };
-        if (!accountsEqual(prior, nextAccount)) {
-          yield* setAccount(address, nextAccount);
-        }
-      }
     });
 
   const clearCodeForKey = (key: AccountKey) =>
@@ -475,69 +435,76 @@ const makeWorldState = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const key = addressKey(address);
-      if (!accounts.has(key)) {
+      const account = accounts.get(key);
+      if (!account) {
         return yield* Effect.fail(new MissingAccountError({ address }));
       }
+
       const slotKey = storageSlotKey(slot);
       const slots = storage.get(key);
-      const previous = slots?.get(slotKey) ?? null;
+      const previous = slots?.get(slotKey);
+      const deleting = isZeroStorageValue(value);
       recordOriginalStorageValue(key, slotKey, previous ?? ZERO_STORAGE_VALUE);
+      if (previous ? bytes32Equals(previous, value) : deleting) {
+        return;
+      }
 
-      if (isZeroStorageValue(value)) {
-        if (previous === null) {
-          return;
-        }
-        yield* journal.append({
-          key: storageJournalKey(key, slotKey),
-          value: cloneStorageValue(previous),
-          tag: ChangeTag.Delete,
+      const nextSlots = new Map(slots);
+      if (deleting) {
+        nextSlots.delete(slotKey);
+      } else {
+        nextSlots.set(slotKey, cloneStorageValue(value));
+      }
+
+      const entries: TrieRootEntry[] = [];
+      for (const [keyHex, slotValue] of nextSlots) {
+        // Storage leaves hold RLP of the minimal big-endian integer.
+        const firstNonZero = slotValue.findIndex((byte) => byte !== 0);
+        const encoded = yield* encodeRlp(
+          slotValue.subarray(firstNonZero),
+        ).pipe(Effect.orDie);
+        entries.push({
+          key: Hex.toBytes(keyHex) as BytesType,
+          value: encoded as BytesType,
         });
-        slots?.delete(slotKey);
-        if (slots && slots.size === 0) {
-          storage.delete(key);
-        }
-        // Maintain storageRoot emptiness invariant: if storage becomes empty, set EMPTY_STORAGE_ROOT
-        yield* maybeResetStorageRootIfNoSlotsForKey(address, key);
-        return;
       }
+      const storageRoot = yield* trieRoot
+        .root(entries, { secured: true })
+        .pipe(Effect.orDie);
 
-      const next = cloneStorageValue(value);
+      // Publish the slot map and account root together once both are journaled.
+      yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          yield* journal.append({
+            key: storageJournalKey(key, slotKey),
+            value: previous ? cloneStorageValue(previous) : null,
+            tag: deleting
+              ? ChangeTag.Delete
+              : previous
+                ? ChangeTag.Update
+                : ChangeTag.Create,
+          });
+          yield* journal.append({
+            key: accountJournalKey(key),
+            value: cloneAccount(account),
+            tag: ChangeTag.Update,
+          });
+          if (nextSlots.size === 0) {
+            storage.delete(key);
+          } else {
+            storage.set(key, nextSlots);
+          }
+          accounts.set(key, {
+            ...account,
+            storageRoot: cloneBytes32(
+              storageRoot,
+            ) as AccountStateType["storageRoot"],
+          });
+        }),
+      );
+    }).pipe(stateMutation);
 
-      if (previous === null) {
-        yield* journal.append({
-          key: storageJournalKey(key, slotKey),
-          value: null,
-          tag: ChangeTag.Create,
-        });
-        const nextSlots = slots ?? new Map<StorageKey, StorageValueType>();
-        nextSlots.set(slotKey, next);
-        if (!slots) {
-          storage.set(key, nextSlots);
-        }
-        // Mark storageRoot as non-empty (placeholder) when first slot is created
-        yield* ensureNonEmptyStorageRootForKey(address, key);
-        return;
-      }
-
-      if (bytes32Equals(previous, next)) {
-        return;
-      }
-
-      yield* journal.append({
-        key: storageJournalKey(key, slotKey),
-        value: cloneStorageValue(previous),
-        tag: ChangeTag.Update,
-      });
-      const nextSlots = slots ?? new Map<StorageKey, StorageValueType>();
-      nextSlots.set(slotKey, next);
-      if (!slots) {
-        storage.set(key, nextSlots);
-      }
-      // Mark storageRoot as non-empty (placeholder) on update as well
-      yield* ensureNonEmptyStorageRootForKey(address, key);
-    });
-
-  const setAccount = (
+  const updateAccount = (
     address: Address.AddressType,
     account: AccountStateType | null,
   ) =>
@@ -584,12 +551,17 @@ const makeWorldState = Effect.gen(function* () {
       accounts.set(key, next);
     });
 
+  const setAccount = (
+    address: Address.AddressType,
+    account: AccountStateType | null,
+  ) => updateAccount(address, account).pipe(stateMutation);
+
   const destroyAccount = (address: Address.AddressType) =>
     Effect.gen(function* () {
       const key = addressKey(address);
       yield* clearStorageForKey(key);
-      yield* setAccount(address, null);
-    });
+      yield* updateAccount(address, null);
+    }).pipe(stateMutation);
 
   const destroyTouchedEmptyAccounts = (
     touchedAccounts: Iterable<Address.AddressType>,
@@ -619,7 +591,7 @@ const makeWorldState = Effect.gen(function* () {
         originalStorageLength: originalStorageJournal.length,
       });
       return snapshot;
-    });
+    }).pipe(stateMutation);
 
   const applyRevert = (
     entry: JournalEntry<WorldStateJournalKey, WorldStateJournalValue>,
@@ -718,14 +690,17 @@ const makeWorldState = Effect.gen(function* () {
       yield* journal.restore(entry.journalSnapshot, applyRevert);
       revertOriginalStorage(entry.originalStorageLength);
       dropSnapshotsFrom(index);
-    });
+    }).pipe(stateMutation);
 
   const commitSnapshot = (snapshot: WorldStateSnapshot) =>
     Effect.gen(function* () {
       const { index, entry } = yield* lookupSnapshot(snapshot);
-      yield* journal.commit(entry.journalSnapshot);
+      // A parent rollback still needs the child slot and account entries.
+      if (index === 0) {
+        yield* journal.commit(entry.journalSnapshot);
+      }
       dropSnapshotsFrom(index);
-    });
+    }).pipe(stateMutation);
 
   const clear = () =>
     Effect.gen(function* () {
@@ -737,9 +712,7 @@ const makeWorldState = Effect.gen(function* () {
       originalStorageJournal.length = 0;
       snapshotStack.length = 0;
       yield* journal.clear();
-      // TODO(storageRoot): When integrating the storage trie, assert here that
-      // all remaining accounts (if any) have storageRoot = EMPTY_STORAGE_ROOT.
-    });
+    }).pipe(stateMutation);
 
   return {
     getAccountOptional,
@@ -763,9 +736,21 @@ const makeWorldState = Effect.gen(function* () {
   } satisfies WorldStateService;
 });
 
+const StorageTrieRootLive = TrieRootLive.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      KeyNibblerLive,
+      TrieHashLive,
+      TriePatricializeLive.pipe(Layer.provide(TrieHashLive)),
+    ),
+  ),
+);
+
 /** Production world state layer. */
 export const WorldStateLive: Layer.Layer<WorldState, never, Journal> =
-  Layer.effect(WorldState, makeWorldState);
+  Layer.effect(WorldState, makeWorldState).pipe(
+    Layer.provide(StorageTrieRootLive),
+  );
 
 /** Deterministic world state layer for tests. */
 export const WorldStateTest: Layer.Layer<WorldState> = WorldStateLive.pipe(

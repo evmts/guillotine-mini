@@ -55,6 +55,21 @@ async function fixture(hardfork = 'prague') {
   return { api, alloc, handle, address, caller, zero, setCall, execute, close }
 }
 
+// Leak check for linear memory. The allocator returns whole pages only when every slot
+// in them is free, so memory can step up a page or two long after warm-up without any
+// leak (measured: flat for 3,000 cycles once past the step). A real leak grows with
+// every iteration, so run enough iterations that the smallest leak of interest
+// dwarfs the slack, then bound the growth.
+const WASM_PAGE = 65536
+function assertNoLeak(api, warmUp, measured, { slackPages = 4, leakBytesIfBroken }) {
+  assert.ok(leakBytesIfBroken >= 8 * slackPages * WASM_PAGE, 'measured phase must be able to expose a leak')
+  warmUp()
+  const before = api.memory.buffer.byteLength
+  measured()
+  const grown = api.memory.buffer.byteLength - before
+  assert.ok(grown <= slackPages * WASM_PAGE, `linear memory grew by ${grown} bytes`)
+}
+
 test('WASI reactor contains crypto implementations and exports its complete C API', () => {
   const exports = new Set(WebAssembly.Module.exports(module).map(({ name }) => name))
   for (const name of ['memory', '_initialize', 'evm_alloc', 'evm_free', 'evm_create', 'evm_destroy', 'evm_execute',
@@ -180,10 +195,10 @@ test('destroy releases copied bytecode, calldata, access lists, and blob hashes'
         f.api.evm_destroy(handle)
       }
     }
-    cycle()
-    const afterWarmup = f.api.memory.buffer.byteLength
-    cycle()
-    assert.equal(f.api.memory.buffer.byteLength, afterWarmup)
+    // Each cycle() copies ~1.3 MiB (100 handles x bytecode, calldata, lists, hashes).
+    // 1,000 measured handles; leaking one 4 KiB copy per handle would add ~4 MiB.
+    assertNoLeak(f.api, cycle, () => { for (let round = 0; round < 10; round++) cycle() },
+      { leakBytesIfBroken: 10 * 100 * 4096 })
   } finally { f.close() }
 })
 
@@ -378,5 +393,338 @@ test('async WASI ready_to_commit handles inline fast-path, >20 KiB overflow, and
     assert.equal(api.evm_continue_ffi(handle, 5, f.zero, 0, request), 1)
     assert.equal(tag(request), 0)
     assert.equal(api.evm_is_success(handle), 1)
+  } finally { f.close() }
+})
+
+// ---- Round 1 fixes: C ABI input validation, async state machine, ownership ----
+
+const REQUEST = { size: 60 + 16384, address: 1, slot: 21, jsonLen: 56, jsonData: 60 }
+// SSTORE(0, 7) with its operands pushed twice. A handler that probes the slot before
+// popping leaves the spare pair on the stack; one that pops before yielding consumes
+// it on resume. The stored value is the same either way.
+const STORE_SLOT0_7 = '600760006007600055'
+const RETURN_SLOT0 = '60005460005260206000f3'
+
+function asyncHelpers(f) {
+  const { api } = f
+  const bytesAt = (ptr, len) => new Uint8Array(api.memory.buffer, ptr, len)
+  const request = f.alloc(new Uint8Array(REQUEST.size).fill(0xa5))
+  const tag = () => bytesAt(request, 1)[0]
+  const json = () => {
+    const len = new DataView(api.memory.buffer).getUint32(request + REQUEST.jsonLen, true)
+    return JSON.parse(new TextDecoder().decode(bytesAt(request + REQUEST.jsonData, len)))
+  }
+  // address(20) + slot(32) + value(32)
+  function storageReply(slot, value) {
+    const reply = new Uint8Array(84)
+    reply[18] = 2
+    reply[51] = slot
+    reply[83] = value
+    return f.alloc(reply)
+  }
+  function output() {
+    const length = api.evm_get_output_len(f.handle)
+    const ptr = f.alloc(Math.max(length, 1))
+    assert.equal(api.evm_get_output(f.handle, ptr, length), length)
+    return Buffer.from(bytesAt(ptr, length))
+  }
+  return { bytesAt, request, tag, json, storageReply, output }
+}
+
+test('exports the origin and gas price setters', () => {
+  const exports = new Set(WebAssembly.Module.exports(module).map(({ name }) => name))
+  for (const name of ['evm_set_origin', 'evm_set_gas_price', 'evm_enable_storage_injector', 'evm_set_code',
+    'evm_set_balance', 'evm_set_storage', 'evm_get_storage', 'evm_set_blob_hashes']) assert.ok(exports.has(name), name)
+})
+
+test('invalid C ABI inputs return an error instead of trapping', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const h = asyncHelpers(f)
+    const name = f.alloc(new TextEncoder().encode('osaka'))
+    const bogus = f.alloc(new TextEncoder().encode('pragueee'))
+
+    // Out-of-range log levels, unknown forks, and a null name with a length.
+    for (const level of [5, 6, 99, 255]) assert.equal(api.evm_create(name, 5, level), 0, `log level ${level}`)
+    assert.equal(api.evm_create(bogus, 8, 0), 0)
+    assert.equal(api.evm_create(0, 5, 0), 0)
+    for (const level of [0, 1, 2, 3, 4]) {
+      const created = api.evm_create(0, 0, level)
+      assert.ok(created, `log level ${level}`)
+      api.evm_destroy(created)
+    }
+
+    // Negative gas is rejected and the previous context keeps running.
+    f.setCall('602a60005260206000f3', { gas: 100_000n })
+    assert.equal(api.evm_set_execution_context(handle, -1n, f.caller, f.address, f.zero, f.zero, 0), 0)
+    assert.equal(api.evm_set_execution_context(handle, -(2n ** 63n), f.caller, f.address, f.zero, f.zero, 0), 0)
+    assert.equal(api.evm_execute(handle), 1)
+    assert.equal(api.evm_get_gas_used(handle), 18n)
+
+    // Null handle.
+    api.evm_destroy(0)
+    assert.equal(api.evm_set_bytecode(0, f.zero, 1), 0)
+    assert.equal(api.evm_set_execution_context(0, 1n, f.caller, f.address, f.zero, f.zero, 0), 0)
+    assert.equal(api.evm_execute(0), 0)
+    assert.equal(api.evm_call_ffi(0, h.request), 0)
+    assert.equal(api.evm_continue_ffi(0, 5, 0, 0, h.request), 0)
+    assert.equal(api.evm_get_output(0, f.zero, 32), 0)
+    assert.equal(api.evm_set_code(0, f.address, f.zero, 1), 0)
+    assert.equal(api.evm_set_origin(0, f.address), 0)
+    assert.equal(api.evm_set_gas_price(0, f.zero), 0)
+    assert.equal(api.evm_enable_storage_injector(0), 0)
+    assert.equal(api.evm_get_storage_change(0, 0, f.zero, f.zero, f.zero), 0)
+
+    // Null data pointers with a non-zero length.
+    assert.equal(api.evm_set_bytecode(handle, 0, 4), 0)
+    assert.equal(api.evm_set_execution_context(handle, 1n, 0, f.address, f.zero, f.zero, 0), 0)
+    assert.equal(api.evm_set_execution_context(handle, 1n, f.caller, 0, f.zero, f.zero, 0), 0)
+    assert.equal(api.evm_set_execution_context(handle, 1n, f.caller, f.address, 0, f.zero, 0), 0)
+    assert.equal(api.evm_set_execution_context(handle, 1n, f.caller, f.address, f.zero, 0, 8), 0)
+    assert.equal(api.evm_set_access_list_addresses(handle, 0, 2), 0)
+    assert.equal(api.evm_set_access_list_storage_keys(handle, 0, f.zero, 1), 0)
+    assert.equal(api.evm_set_access_list_storage_keys(handle, f.address, 0, 1), 0)
+    assert.equal(api.evm_set_blob_hashes(handle, 0, 1), 0)
+    assert.equal(api.evm_set_storage(handle, 0, f.zero, f.zero), 0)
+    assert.equal(api.evm_get_storage(handle, f.address, f.zero, 0), 0)
+    assert.equal(api.evm_set_balance(handle, f.address, 0), 0)
+    assert.equal(api.evm_set_code(handle, f.address, 0, 4), 0)
+    assert.equal(api.evm_set_nonce(handle, 0, 1n), 0)
+    assert.equal(api.evm_set_origin(handle, 0), 0)
+    assert.equal(api.evm_set_gas_price(handle, 0), 0)
+    assert.equal(api.evm_call_ffi(handle, 0), 0)
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, 0), 0)
+    assert.equal(api.evm_get_output(handle, 0, 32), 0)
+    assert.equal(api.evm_get_log(handle, 0, 0, 0, 0, 0, 0, 0), 0)
+    api.evm_set_blockchain_context(handle, 0, 1n, 1n, 0, 0, 0, 1n, 0, 0)
+
+    // Malformed continuations report tag 255.
+    for (const [type, ptr, len] of [[1, 0, 84], [1, f.zero, 32], [2, f.zero, 20], [4, f.zero, 27], [9, 0, 0], [5, 0, 0]]) {
+      h.bytesAt(h.request, 1)[0] = 0
+      assert.equal(api.evm_continue_ffi(handle, type, ptr, len, h.request), 0, `continue type ${type}`)
+      assert.equal(h.tag(), 255)
+    }
+
+    // Null with zero length is an empty input, and the handle still works.
+    assert.equal(api.evm_set_bytecode(handle, 0, 0), 1)
+    assert.equal(api.evm_set_execution_context(handle, 21_000n, f.caller, f.address, f.zero, 0, 0), 1)
+    assert.equal(api.evm_set_code(handle, f.address, 0, 0), 1)
+    assert.equal(api.evm_execute(handle), 1, 'calling an account without code succeeds')
+    assert.equal(api.evm_get_output_len(handle), 0)
+    assert.deepEqual(f.execute('602a60005260206000f3').output[31], 42)
+  } finally { f.close() }
+})
+
+test('async SSTORE commits the written value, and SLOAD after SSTORE reads it', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const h = asyncHelpers(f)
+    assert.equal(api.evm_enable_storage_injector(handle), 1)
+
+    f.setCall(STORE_SLOT0_7 + RETURN_SLOT0, { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 1, 'need_storage')
+    assert.equal(h.bytesAt(h.request + REQUEST.address, 20)[18], 2)
+    assert.ok(h.bytesAt(h.request + REQUEST.slot, 32).every((b) => b === 0))
+
+    // Replies that do not answer the outstanding request are rejected and change nothing.
+    assert.equal(api.evm_continue_ffi(handle, 1, h.storageReply(1, 9), 84, h.request), 0)
+    assert.equal(h.tag(), 255)
+    assert.equal(api.evm_continue_ffi(handle, 2, h.storageReply(0, 9), 52, h.request), 0)
+    assert.equal(h.tag(), 255)
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 0)
+    assert.equal(h.tag(), 255)
+
+    // The host holds slot 0 = 5.
+    assert.equal(api.evm_continue_ffi(handle, 1, h.storageReply(0, 5), 84, h.request), 1)
+    assert.equal(h.tag(), 5, 'ready_to_commit')
+    const changes = h.json()
+    assert.deepEqual(changes.storage, [{
+      address: '0x' + '00'.repeat(18) + '0200', slot: '0x0', originalValue: '0x5', newValue: '0x7',
+    }])
+    assert.deepEqual(changes.selfDestructs, [])
+
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 1)
+    assert.equal(h.tag(), 0)
+    assert.equal(api.evm_is_success(handle), 1)
+    assert.equal(h.output().toString('hex'), '00'.repeat(31) + '07', 'SLOAD returns the value written by SSTORE')
+
+    // The acknowledgement is consumed once.
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 0)
+    assert.equal(h.tag(), 255)
+  } finally { f.close() }
+})
+
+test('reverted and halted async transactions never emit ready_to_commit', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const h = asyncHelpers(f)
+    assert.equal(api.evm_enable_storage_injector(handle), 1)
+
+    // SSTORE(0, 7); MSTORE(0, 0xdeadbeef); REVERT(28, 4)
+    f.setCall(STORE_SLOT0_7 + '63deadbeef6000526004601cfd', { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 1)
+    assert.equal(api.evm_continue_ffi(handle, 1, h.storageReply(0, 5), 84, h.request), 1)
+    assert.equal(h.tag(), 0, 'a revert is a final result, not ready_to_commit')
+    assert.equal(api.evm_is_success(handle), 0)
+    assert.equal(h.output().toString('hex'), 'deadbeef')
+    assert.ok(api.evm_get_gas_remaining(handle) > 0n)
+    assert.equal(api.evm_get_state_changes_len(handle), 0, 'no change set exists for a reverted transaction')
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 0, 'nothing to acknowledge')
+    assert.equal(h.tag(), 255)
+
+    // A successful transaction first, then INVALID: the halt reports its own failed
+    // result (tag 0), never tag 255 with the earlier output.
+    f.setCall('602a60005260206000f3', { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 5)
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 1)
+    assert.equal(api.evm_is_success(handle), 1)
+    assert.equal(h.output()[31], 42)
+
+    f.setCall('fe', { gas: 5_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 0)
+    assert.equal(api.evm_is_success(handle), 0)
+    assert.equal(api.evm_get_output_len(handle), 0)
+    assert.equal(api.evm_get_gas_remaining(handle), 0n)
+    assert.equal(api.evm_get_gas_used(handle), 5_000n)
+    assert.equal(api.evm_get_state_changes_len(handle), 0)
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 0)
+
+    // Out of gas takes the same path.
+    f.setCall('602a60005260206000f3', { gas: 2n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 0)
+    assert.equal(api.evm_is_success(handle), 0)
+  } finally { f.close() }
+})
+
+test('async execution without a storage injector returns the real result and logs', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const h = asyncHelpers(f)
+
+    // A continuation on a fresh handle is a protocol error.
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 0)
+    assert.equal(h.tag(), 255)
+
+    // MSTORE(0, 42); LOG0(0, 32); RETURN(0, 32)
+    f.setCall('602a60005260206000a060206000f3', { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 0)
+    assert.equal(api.evm_is_success(handle), 1)
+    assert.equal(h.output().toString('hex'), '00'.repeat(31) + '2a')
+    assert.equal(api.evm_get_log_count(handle), 1)
+    const used = api.evm_get_gas_used(handle)
+    assert.ok(used > 0n && used < 100_000n)
+    assert.equal(api.evm_get_gas_remaining(handle), 100_000n - used)
+
+    // Setting up the next call does not change the finished call's gas report.
+    f.setCall('00', { gas: 7n })
+    assert.equal(api.evm_get_gas_used(handle), used)
+  } finally { f.close() }
+})
+
+test('repeated evm_set_code and evm_set_bytecode do not leak', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const code = f.alloc(new Uint8Array(8192).fill(0x5b))
+    const other = f.alloc(new Uint8Array(20).fill(0x77))
+    function cycle() {
+      for (let i = 0; i < 400; i++) {
+        assert.equal(api.evm_set_code(handle, f.address, code, 8192), 1)
+        assert.equal(api.evm_set_code(handle, other, code, 4096 + (i % 7)), 1)
+        assert.equal(api.evm_set_bytecode(handle, code, 2048), 1)
+        if (i % 50 === 0) assert.equal(api.evm_set_code(handle, other, 0, 0), 1)
+      }
+    }
+    // 2,000 measured replacements of >= 4 KiB each.
+    assertNoLeak(api, cycle, () => { for (let round = 0; round < 5; round++) cycle() },
+      { leakBytesIfBroken: 5 * 400 * 4096 })
+
+    // Handles that own code and an injector release everything on destroy. 4,000
+    // measured lifecycles expose any leak of 525 bytes or more per handle, which
+    // covers the injector, each code copy, and the context itself.
+    function lifecycle(count) {
+      for (let i = 0; i < count; i++) {
+        const created = api.evm_create(0, 0, 0)
+        assert.ok(created)
+        assert.equal(api.evm_enable_storage_injector(created), 1)
+        assert.equal(api.evm_set_code(created, f.address, code, 8192), 1)
+        assert.equal(api.evm_set_code(created, other, code, 8192), 1)
+        api.evm_destroy(created)
+      }
+    }
+    assertNoLeak(api, () => lifecycle(200), () => lifecycle(4000), { leakBytesIfBroken: 4000 * 525 })
+  } finally { f.close() }
+})
+
+test('origin, gas price and blob hashes are set per handle and cleared correctly', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const h = asyncHelpers(f)
+
+    // MSTORE(0, ORIGIN); MSTORE(32, GASPRICE); RETURN(0, 64)
+    const context = '32600052' + '3a602052' + '60406000f3'
+    assert.equal(f.execute(context).output.toString('hex'), '00'.repeat(64))
+    const origin = f.alloc(new Uint8Array(20).fill(0xab))
+    const price = new Uint8Array(32)
+    price[30] = 0x12
+    price[31] = 0x34
+    assert.equal(api.evm_set_origin(handle, origin), 1)
+    assert.equal(api.evm_set_gas_price(handle, f.alloc(price)), 1)
+    const expected = '00'.repeat(12) + 'ab'.repeat(20) + '00'.repeat(30) + '1234'
+    assert.equal(f.execute(context).output.toString('hex'), expected)
+    f.setCall(context)
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 0)
+    assert.equal(h.output().toString('hex'), expected, 'async entry point sees the same context')
+
+    // MSTORE(0, BLOBHASH(0)); MSTORE(32, BLOBHASH(1)); RETURN(0, 64)
+    const blobs = '600049600052' + '600149602052' + '60406000f3'
+    const two = new Uint8Array(64).fill(0xaa)
+    two[0] = 1
+    two[32] = 1
+    two.fill(0xbb, 33)
+    assert.equal(api.evm_set_blob_hashes(handle, f.alloc(two), 2), 1)
+    assert.equal(f.execute(blobs).output.toString('hex'), Buffer.from(two).toString('hex'))
+    f.setCall(blobs)
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.output().toString('hex'), Buffer.from(two).toString('hex'), 'async entry point receives blob hashes')
+
+    // A shorter list hides the old second hash; an empty list clears all of them.
+    assert.equal(api.evm_set_blob_hashes(handle, f.alloc(two), 1), 1)
+    assert.equal(f.execute(blobs).output.toString('hex'), Buffer.from(two.subarray(0, 32)).toString('hex') + '00'.repeat(32))
+    assert.equal(api.evm_set_blob_hashes(handle, 0, 0), 1)
+    assert.equal(f.execute(blobs).output.toString('hex'), '00'.repeat(64))
+    f.setCall(blobs)
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.output().toString('hex'), '00'.repeat(64))
+  } finally { f.close() }
+})
+
+test('access list storage keys warm their slot and transfer buffers are 16-byte aligned', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    // SLOAD(1): 2100 cold, 100 warm, plus 3 for the PUSH1.
+    assert.equal(f.execute('60015400').gasUsed, 2103n)
+    const slotOne = new Uint8Array(32)
+    slotOne[31] = 1
+    // The key's address is not passed to evm_set_access_list_addresses.
+    assert.equal(api.evm_set_access_list_storage_keys(handle, f.address, f.alloc(slotOne), 1), 1)
+    assert.equal(f.execute('60015400').gasUsed, 103n)
+    assert.equal(api.evm_set_access_list_storage_keys(handle, 0, 0, 0), 1)
+    assert.equal(f.execute('60015400').gasUsed, 2103n)
+
+    for (const size of [1, 7, 60, REQUEST.size]) assert.equal(f.alloc(size) % 16, 0, `evm_alloc(${size}) alignment`)
   } finally { f.close() }
 })

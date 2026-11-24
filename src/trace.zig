@@ -149,27 +149,39 @@ pub const Tracer = struct {
         const track_stack = self.config.tracksStack();
         const track_return = self.config.enable_return_data;
 
-        const mem_copy = if (track_memory) blk: {
+        // Each copy below is owned by the entry only once the append succeeds.
+        // Until then an errdefer releases it, so a failed later allocation
+        // cannot leak the earlier ones. Empty slices are static, never freed.
+        const mem_copy: ?[]const u8 = if (track_memory) blk: {
             if (memory) |m| {
                 if (m.len == 0) break :blk &[_]u8{};
                 break :blk try self.allocator.dupe(u8, m);
             }
             break :blk null;
         } else null;
+        errdefer if (mem_copy) |m| {
+            if (m.len > 0) self.allocator.free(m);
+        };
 
-        const stack_copy = if (track_stack) blk: {
+        const stack_copy: []const u256 = if (track_stack) blk: {
             if (stack.len == 0) break :blk &[_]u256{};
             break :blk try self.allocator.dupe(u256, stack);
         } else &[_]u256{};
+        errdefer if (stack_copy.len > 0) self.allocator.free(stack_copy);
 
-        const return_copy = if (track_return) blk: {
+        const return_copy: ?[]const u8 = if (track_return) blk: {
             if (return_data) |r| {
                 if (r.len == 0) break :blk &[_]u8{};
                 break :blk try self.allocator.dupe(u8, r);
             }
             break :blk null;
         } else null;
+        errdefer if (return_copy) |r| {
+            if (r.len > 0) self.allocator.free(r);
+        };
+
         const op_name_copy = try self.allocator.dupe(u8, op_name);
+        errdefer self.allocator.free(op_name_copy);
 
         const entry = TraceEntry{
             .pc = pc,
@@ -381,3 +393,27 @@ pub const TraceDiff = struct {
         }
     }
 };
+
+test "Tracer.captureState frees partial copies when any allocation fails" {
+    const testing = std.testing;
+
+    const capture = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var tracer = Tracer.init(allocator);
+            defer tracer.deinit();
+            tracer.enable();
+            tracer.config.enable_return_data = true;
+
+            const memory = [_]u8{0xaa} ** 64;
+            const stack = [_]u256{ 1, 2, 3 };
+            const return_data = [_]u8{0xbb} ** 8;
+            // Two steps: the second append must grow the entry list.
+            try tracer.captureState(0, 0x60, 100, 3, &memory, &stack, &return_data, 1, 0, "PUSH1");
+            try tracer.captureState(2, 0x01, 97, 3, &memory, &stack, &return_data, 1, 0, "ADD");
+            try testing.expectEqual(@as(usize, 2), tracer.entries.items.len);
+        }
+    }.run;
+
+    // Fails every allocation in turn; the testing allocator reports any leak.
+    try testing.checkAllAllocationFailures(testing.allocator, capture, .{});
+}

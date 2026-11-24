@@ -10,6 +10,7 @@ import {
   BaseFeePerGas,
   Blob,
   GasPrice,
+  Hardfork,
   Receipt,
   Transaction,
 } from "voltaire-effect/primitives";
@@ -33,6 +34,7 @@ import {
   calculateClaimableRefund,
   type RefundCalculatorError,
 } from "./RefundCalculator";
+import { ReleaseSpec } from "./ReleaseSpec";
 
 /** Effective gas price breakdown for transaction execution. */
 export type EffectiveGasPrice = {
@@ -111,6 +113,7 @@ const BalanceSchema = Balance.BigInt as unknown as Schema.Schema<
 >;
 const toBigInt = (value: bigint | number): bigint =>
   typeof value === "bigint" ? value : BigInt(value);
+const OSAKA_TRANSACTION_GAS_LIMIT = 16_777_216n;
 const BLOB_GAS_PER_BLOB = toBigInt(Blob.GAS_PER_BLOB);
 const EOA_DELEGATION_CODE_LENGTH = 23;
 const EOA_DELEGATION_MARKER_0 = 0xef;
@@ -238,6 +241,14 @@ export class TransactionNonceTooHighError extends Data.TaggedError(
   readonly senderNonce: bigint;
 }> {}
 
+/** Error raised when tx gas exceeds the EIP-7825 per-transaction cap. */
+export class TransactionGasLimitExceededError extends Data.TaggedError(
+  "TransactionGasLimitExceededError",
+)<{
+  readonly txGasLimit: bigint;
+  readonly maxGasLimit: bigint;
+}> {}
+
 /** Error raised when tx gas exceeds remaining block gas capacity. */
 export class BlockGasLimitExceededError extends Data.TaggedError(
   "BlockGasLimitExceededError",
@@ -308,6 +319,7 @@ export type GasPurchaseError =
 /** Union of pre-execution inclusion check errors. */
 export type PreExecutionInclusionCheckError =
   | InvalidTransactionError
+  | TransactionGasLimitExceededError
   | BlockGasLimitExceededError
   | BlockBlobGasLimitExceededError
   | InvalidSenderAccountCodeError;
@@ -365,7 +377,7 @@ export interface TransactionProcessorService {
   ) => Effect.Effect<
     PreExecutionInclusionCheck,
     PreExecutionInclusionCheckError,
-    WorldState
+    ReleaseSpec | WorldState
   >;
   readonly processTransaction: (
     tx: Transaction.Any,
@@ -379,7 +391,7 @@ export interface TransactionProcessorService {
   ) => Effect.Effect<
     ProcessTransactionPreExecution,
     PreExecutionInclusionCheckError | GasPurchaseError,
-    WorldState
+    ReleaseSpec | WorldState
   >;
   readonly settlePostExecutionBalances: (
     txGasLimit: bigint,
@@ -853,6 +865,19 @@ const makeTransactionProcessor = Effect.gen(function* () {
     Effect.gen(function* () {
       const parsedTx = yield* decodeTransaction(tx);
 
+      const { hardfork } = yield* ReleaseSpec;
+      if (
+        Hardfork.isAtLeast(hardfork, Hardfork.OSAKA) &&
+        parsedTx.gasLimit > OSAKA_TRANSACTION_GAS_LIMIT
+      ) {
+        return yield* Effect.fail(
+          new TransactionGasLimitExceededError({
+            txGasLimit: parsedTx.gasLimit,
+            maxGasLimit: OSAKA_TRANSACTION_GAS_LIMIT,
+          }),
+        );
+      }
+
       const gasAvailable = blockGasLimit - blockGasUsed;
       if (parsedTx.gasLimit > gasAvailable) {
         return yield* Effect.fail(
@@ -992,20 +1017,26 @@ const makeTransactionProcessor = Effect.gen(function* () {
 
       const worldState = yield* WorldState;
       const senderAccount = yield* worldState.getAccount(sender);
-      const coinbaseAccount = yield* worldState.getAccount(coinbase);
+      const sameAccount = Address.equals(sender, coinbase);
+      const coinbaseAccount = sameAccount
+        ? senderAccount
+        : yield* worldState.getAccount(coinbase);
       const senderBalanceAfterRefund = yield* decodeBalance(
         senderAccount.balance + gasRefundAmount,
         "sender post-refund",
       );
       const coinbaseBalanceAfterFee = yield* decodeBalance(
-        coinbaseAccount.balance + transactionFee,
+        (sameAccount ? senderBalanceAfterRefund : coinbaseAccount.balance) +
+          transactionFee,
         "coinbase post-fee",
       );
 
-      yield* worldState.setAccount(sender, {
-        ...senderAccount,
-        balance: senderBalanceAfterRefund,
-      });
+      if (!sameAccount) {
+        yield* worldState.setAccount(sender, {
+          ...senderAccount,
+          balance: senderBalanceAfterRefund,
+        });
+      }
       yield* worldState.setAccount(coinbase, {
         ...coinbaseAccount,
         balance: coinbaseBalanceAfterFee,

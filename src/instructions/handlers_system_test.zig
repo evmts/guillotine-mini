@@ -1302,3 +1302,7 @@ test "SELFDESTRUCT: out of gas error" {
     // Verify error (needs at least 5000 gas)
     try testing.expectError(error.OutOfGas, result);
 }
+
+test {
+    _ = @import("r1_regression_test.zig");
+}

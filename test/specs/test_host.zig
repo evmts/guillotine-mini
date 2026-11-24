@@ -73,6 +73,8 @@ pub const TestHost = struct {
                 .setStorage = setStorage,
                 .getNonce = getNonceVTable,
                 .setNonce = setNonceVTable,
+                .accountHasStorage = accountHasStorageVTable,
+                .deleteAccount = deleteAccountVTable,
             },
         };
     }
@@ -84,7 +86,36 @@ pub const TestHost = struct {
 
     pub fn setCode(self: *Self, address: Address, code: []const u8) !void {
         const owned_code = try self.allocator.dupe(u8, code);
-        try self.code.put(address, owned_code);
+        errdefer self.allocator.free(owned_code);
+        const previous = try self.code.fetchPut(address, owned_code);
+        if (previous) |kv| self.allocator.free(kv.value);
+    }
+
+    /// True when any storage slot of `address` holds a non-zero value.
+    /// Zero-valued slots are never stored, so presence implies non-zero.
+    pub fn accountHasStorage(self: *const Self, address: Address) bool {
+        var it = self.storage.keyIterator();
+        while (it.next()) |key| {
+            if (key.address.equals(address)) return true;
+        }
+        return false;
+    }
+
+    /// Remove every trace of `address`: balance, nonce, code, and all storage
+    /// slots. SELFDESTRUCT and failed-CREATE cleanup rely on the storage wipe so
+    /// a recreated account starts with empty storage.
+    pub fn deleteAccount(self: *Self, address: Address) void {
+        var it = self.storage.iterator();
+        while (it.next()) |entry| {
+            if (entry.key_ptr.address.equals(address)) {
+                // removeByPtr keeps the iterator valid: it tombstones the slot
+                // without rehashing.
+                self.storage.removeByPtr(entry.key_ptr);
+            }
+        }
+        _ = self.balances.remove(address);
+        _ = self.nonces.remove(address);
+        if (self.code.fetchRemove(address)) |kv| self.allocator.free(kv.value);
     }
 
     pub fn setStorageSlot(self: *Self, address: Address, slot: u256, value: u256) !void {
@@ -182,6 +213,16 @@ pub const TestHost = struct {
         return self.getNonce(address);
     }
 
+    fn accountHasStorageVTable(ptr: *anyopaque, address: Address) bool {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        return self.accountHasStorage(address);
+    }
+
+    fn deleteAccountVTable(ptr: *anyopaque, address: Address) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        self.deleteAccount(address);
+    }
+
     fn setNonceVTable(ptr: *anyopaque, address: Address, nonce: u64) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
         self.setNonce(address, nonce) catch {
@@ -191,3 +232,78 @@ pub const TestHost = struct {
         };
     }
 };
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+fn testAddress(byte: u8) Address {
+    return .{ .bytes = [_]u8{byte} ++ [_]u8{0} ** 19 };
+}
+
+test "TestHost deleteAccount removes storage, balance, nonce, and code" {
+    var host = try TestHost.init(std.testing.allocator);
+    defer host.deinit();
+    const victim = testAddress(0xAA);
+    const bystander = testAddress(0xBB);
+
+    try host.setBalance(victim, 1000);
+    try host.setNonce(victim, 3);
+    try host.setCode(victim, &[_]u8{ 0x60, 0x00 });
+    try host.setStorageSlot(victim, 1, 11);
+    try host.setStorageSlot(victim, 2, 22);
+    try host.setStorageSlot(victim, std.math.maxInt(u256), 33);
+    try host.setStorageSlot(bystander, 1, 99);
+
+    const iface = host.hostInterface();
+    try std.testing.expect(iface.accountHasStorage(victim));
+    iface.deleteAccount(victim);
+
+    try std.testing.expectEqual(@as(u256, 0), iface.getStorage(victim, 1));
+    try std.testing.expectEqual(@as(u256, 0), iface.getStorage(victim, 2));
+    try std.testing.expectEqual(@as(u256, 0), iface.getStorage(victim, std.math.maxInt(u256)));
+    try std.testing.expectEqual(@as(u256, 0), iface.getBalance(victim));
+    try std.testing.expectEqual(@as(u64, 0), iface.getNonce(victim));
+    try std.testing.expectEqual(@as(usize, 0), iface.getCode(victim).len);
+    try std.testing.expect(!iface.accountHasStorage(victim));
+    try std.testing.expect(!iface.accountExists(victim));
+
+    // Other accounts keep their storage.
+    try std.testing.expectEqual(@as(u256, 99), iface.getStorage(bystander, 1));
+    try std.testing.expectEqual(@as(usize, 1), host.storage.count());
+}
+
+test "TestHost recreated account does not see previous incarnation's storage" {
+    var host = try TestHost.init(std.testing.allocator);
+    defer host.deinit();
+    const addr = testAddress(0xCC);
+    const iface = host.hostInterface();
+
+    iface.setStorage(addr, 7, 0xdead);
+    iface.deleteAccount(addr);
+    iface.setCode(addr, &[_]u8{0x00});
+    iface.setNonce(addr, 1);
+
+    try std.testing.expectEqual(@as(u256, 0), iface.getStorage(addr, 7));
+}
+
+test "TestHost accountExists counts storage-only accounts" {
+    var host = try TestHost.init(std.testing.allocator);
+    defer host.deinit();
+    const addr = testAddress(0xDD);
+    const iface = host.hostInterface();
+
+    try std.testing.expect(!iface.accountExists(addr));
+    iface.setStorage(addr, 1, 1);
+    try std.testing.expect(iface.accountExists(addr));
+}
+
+test "TestHost setCode replaces code without leaking" {
+    var host = try TestHost.init(std.testing.allocator);
+    defer host.deinit();
+    const addr = testAddress(0xEE);
+
+    try host.setCode(addr, &[_]u8{ 0x01, 0x02 });
+    try host.setCode(addr, &[_]u8{0x03});
+    try std.testing.expectEqualSlices(u8, &[_]u8{0x03}, host.hostInterface().getCode(addr));
+}

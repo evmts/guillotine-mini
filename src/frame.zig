@@ -12,19 +12,7 @@ const evm_mod = @import("evm.zig");
 const EvmConfig = @import("evm_config.zig").EvmConfig;
 const Bytecode = @import("bytecode.zig").Bytecode;
 
-// Handler modules
-const handlers_arithmetic = @import("instructions/handlers_arithmetic.zig");
-const handlers_comparison = @import("instructions/handlers_comparison.zig");
-const handlers_bitwise = @import("instructions/handlers_bitwise.zig");
-const handlers_keccak = @import("instructions/handlers_keccak.zig");
-const handlers_context = @import("instructions/handlers_context.zig");
-const handlers_block = @import("instructions/handlers_block.zig");
-const handlers_stack = @import("instructions/handlers_stack.zig");
-const handlers_memory = @import("instructions/handlers_memory.zig");
-const handlers_storage = @import("instructions/handlers_storage.zig");
-const handlers_control_flow = @import("instructions/handlers_control_flow.zig");
-const handlers_log = @import("instructions/handlers_log.zig");
-const handlers_system = @import("instructions/handlers_system.zig");
+const dispatcher_mod = @import("instructions/dispatcher.zig");
 
 /// Creates a configured Frame type that matches the given Evm config.
 pub fn Frame(comptime config: EvmConfig) type {
@@ -33,19 +21,8 @@ pub fn Frame(comptime config: EvmConfig) type {
         pub const EvmType = evm_mod.Evm(config);
         pub const EvmError = @import("errors.zig").CallError;
 
-        // Instantiate handler modules
-        const ArithmeticHandlers = handlers_arithmetic.Handlers(Self);
-        const ComparisonHandlers = handlers_comparison.Handlers(Self);
-        const BitwiseHandlers = handlers_bitwise.Handlers(Self);
-        const KeccakHandlers = handlers_keccak.Handlers(Self);
-        const ContextHandlers = handlers_context.Handlers(Self);
-        const BlockHandlers = handlers_block.Handlers(Self);
-        const StackHandlers = handlers_stack.Handlers(Self);
-        const MemoryHandlers = handlers_memory.Handlers(Self);
-        const StorageHandlers = handlers_storage.Handlers(Self);
-        const ControlFlowHandlers = handlers_control_flow.Handlers(Self);
-        const LogHandlers = handlers_log.Handlers(Self);
-        const SystemHandlers = handlers_system.Handlers(Self);
+        /// Standard opcode table shared with every Frame instantiation.
+        const Dispatcher = dispatcher_mod.Dispatcher(Self);
 
         stack: std.ArrayList(u256),
         /// Backing bytes for EVM memory. May be shorter than `memory_size`;
@@ -176,22 +153,113 @@ pub fn Frame(comptime config: EvmConfig) type {
             return value;
         }
 
-        /// Peek at top of stack
-        pub fn peekStack(self: *const Self, index: usize) EvmError!u256 {
-            if (index >= self.stack.items.len) {
+        /// Peek at the stack item `index_from_top` positions below the top (0 = top).
+        pub fn peekStack(self: *const Self, index_from_top: usize) EvmError!u256 {
+            if (index_from_top >= self.stack.items.len) {
                 return error.StackUnderflow;
             }
-            return self.stack.items[self.stack.items.len - 1 - index];
+            return self.stack.items[self.stack.items.len - 1 - index_from_top];
         }
 
+        /// Number of 32-byte words covering `bytes`. Never overflows.
         inline fn wordCount(bytes: u64) u64 {
-            return (bytes + 31) / 32;
+            return bytes / 32 + @intFromBool(bytes % 32 != 0);
         }
 
-        /// Calculate word-aligned memory size for EVM compliance
-        pub inline fn wordAlignedSize(bytes: u64) u32 {
-            const words = wordCount(bytes);
-            return @intCast(words * 32);
+        /// Calculate word-aligned memory size for EVM compliance.
+        /// Returns OutOfGas when the aligned size does not fit the u32 memory model;
+        /// no transaction can pay for 4 GiB of memory, so this is the spec outcome.
+        pub inline fn wordAlignedSize(bytes: u64) EvmError!u32 {
+            const aligned = std.math.mul(u64, wordCount(bytes), 32) catch return error.OutOfGas;
+            return std.math.cast(u32, aligned) orelse error.OutOfGas;
+        }
+
+        /// Largest end offset whose word-aligned size fits in `memory_size` (u32).
+        pub const max_memory_end: u64 = std.math.maxInt(u32) - 31;
+
+        /// A non-empty memory region `[offset, end)` validated against the u32 memory model.
+        pub const MemoryRange = struct {
+            offset: u32,
+            len: u32,
+            end: u64,
+        };
+
+        /// Validate a u256 memory region from the stack.
+        ///
+        /// Returns null when `len == 0`: a zero-length region never expands memory, and its
+        /// offset is ignored even when it lies beyond the u32 memory model.
+        /// Returns OutOfGas (and burns all gas) when a non-empty region ends past
+        /// `max_memory_end`, because its expansion cost exceeds any payable gas.
+        pub fn memoryRange(self: *Self, offset: u256, len: u256) EvmError!?MemoryRange {
+            if (len == 0) return null;
+            if (offset > max_memory_end or len > max_memory_end) {
+                self.gas_remaining = 0;
+                return error.OutOfGas;
+            }
+            const off: u64 = @intCast(offset);
+            const length: u64 = @intCast(len);
+            const end = off + length;
+            if (end > max_memory_end) {
+                self.gas_remaining = 0;
+                return error.OutOfGas;
+            }
+            return .{ .offset = @intCast(off), .len = @intCast(length), .end = end };
+        }
+
+        /// Expansion cost for an optional range (0 for an empty range).
+        pub fn memoryRangeCost(self: *const Self, range: ?MemoryRange) u64 {
+            const r = range orelse return 0;
+            return self.memoryExpansionCost(r.end);
+        }
+
+        /// Grow the logical memory size to cover `end` bytes. Call only after charging gas.
+        pub fn expandMemory(self: *Self, end: u64) EvmError!void {
+            if (end == 0) return;
+            const aligned = try wordAlignedSize(end);
+            if (aligned > self.memory_size) self.memory_size = aligned;
+        }
+
+        /// Grow the backing buffer so `memory.items[0..end]` is addressable, zero-filling new bytes.
+        fn ensureMemoryBacking(self: *Self, end: u64) EvmError!void {
+            if (end <= self.memory.items.len) return;
+            const aligned = try wordAlignedSize(end);
+            const old_len = self.memory.items.len;
+            try self.memory.resize(self.allocator, aligned);
+            @memset(self.memory.items[old_len..], 0);
+        }
+
+        /// Write `bytes` to memory at `dest` and grow the logical size to cover them.
+        pub fn writeMemorySlice(self: *Self, dest: u32, bytes: []const u8) EvmError!void {
+            if (bytes.len == 0) return;
+            const end = @as(u64, dest) + @as(u64, bytes.len);
+            try self.ensureMemoryBacking(end);
+            @memcpy(self.memory.items[dest..][0..bytes.len], bytes);
+            try self.expandMemory(end);
+        }
+
+        /// Copy `src[src_offset..]` into memory `[range.offset, range.end)`, zero-padding
+        /// bytes past the end of `src`. Any `src_offset`, including one past 2^64, is valid.
+        pub fn copyToMemory(self: *Self, range: MemoryRange, src: []const u8, src_offset: u256) EvmError!void {
+            try self.ensureMemoryBacking(range.end);
+            const dst = self.memory.items[range.offset..][0..range.len];
+            const available: usize = if (src_offset >= src.len) 0 else @min(dst.len, src.len - @as(usize, @intCast(src_offset)));
+            if (available > 0) {
+                const start: usize = @intCast(src_offset);
+                @memcpy(dst[0..available], src[start..][0..available]);
+            }
+            @memset(dst[available..], 0);
+            try self.expandMemory(range.end);
+        }
+
+        /// Read memory `[range.offset, range.end)` into a new buffer; bytes past the backing read as zero.
+        pub fn readMemoryAlloc(self: *Self, allocator: std.mem.Allocator, range: MemoryRange) EvmError![]u8 {
+            const buf = try allocator.alloc(u8, range.len);
+            const backing = self.memory.items;
+            const start: usize = range.offset;
+            const available: usize = if (start >= backing.len) 0 else @min(buf.len, backing.len - start);
+            if (available > 0) @memcpy(buf[0..available], backing[start..][0..available]);
+            @memset(buf[available..], 0);
+            return buf;
         }
 
         /// Read byte from memory
@@ -400,92 +468,8 @@ pub fn Frame(comptime config: EvmConfig) type {
                 return handler(self);
             }
 
-            // Default opcode handling
-            switch (opcode) {
-                0x00 => try ControlFlowHandlers.stop(self),
-                0x01 => try ArithmeticHandlers.add(self),
-                0x02 => try ArithmeticHandlers.mul(self),
-                0x03 => try ArithmeticHandlers.sub(self),
-                0x04 => try ArithmeticHandlers.div(self),
-                0x05 => try ArithmeticHandlers.sdiv(self),
-                0x06 => try ArithmeticHandlers.mod(self),
-                0x07 => try ArithmeticHandlers.smod(self),
-                0x08 => try ArithmeticHandlers.addmod(self),
-                0x09 => try ArithmeticHandlers.mulmod(self),
-                0x0a => try ArithmeticHandlers.exp(self),
-                0x0b => try ArithmeticHandlers.signextend(self),
-                0x10 => try ComparisonHandlers.lt(self),
-                0x11 => try ComparisonHandlers.gt(self),
-                0x12 => try ComparisonHandlers.slt(self),
-                0x13 => try ComparisonHandlers.sgt(self),
-                0x14 => try ComparisonHandlers.eq(self),
-                0x15 => try ComparisonHandlers.iszero(self),
-                0x16 => try BitwiseHandlers.op_and(self),
-                0x17 => try BitwiseHandlers.op_or(self),
-                0x18 => try BitwiseHandlers.op_xor(self),
-                0x19 => try BitwiseHandlers.op_not(self),
-                0x1a => try BitwiseHandlers.byte(self),
-                0x1b => try BitwiseHandlers.shl(self),
-                0x1c => try BitwiseHandlers.shr(self),
-                0x1d => try BitwiseHandlers.sar(self),
-                0x20 => try KeccakHandlers.sha3(self),
-                0x30 => try ContextHandlers.address(self),
-                0x31 => try ContextHandlers.balance(self),
-                0x32 => try ContextHandlers.origin(self),
-                0x33 => try ContextHandlers.caller(self),
-                0x34 => try ContextHandlers.callvalue(self),
-                0x35 => try ContextHandlers.calldataload(self),
-                0x36 => try ContextHandlers.calldatasize(self),
-                0x37 => try ContextHandlers.calldatacopy(self),
-                0x38 => try ContextHandlers.codesize(self),
-                0x39 => try ContextHandlers.codecopy(self),
-                0x3a => try ContextHandlers.gasprice(self),
-                0x3b => try ContextHandlers.extcodesize(self),
-                0x3c => try ContextHandlers.extcodecopy(self),
-                0x3d => try ContextHandlers.returndatasize(self),
-                0x3e => try ContextHandlers.returndatacopy(self),
-                0x3f => try ContextHandlers.extcodehash(self),
-                0x40 => try BlockHandlers.blockhash(self),
-                0x41 => try BlockHandlers.coinbase(self),
-                0x42 => try BlockHandlers.timestamp(self),
-                0x43 => try BlockHandlers.number(self),
-                0x44 => try BlockHandlers.difficulty(self),
-                0x45 => try BlockHandlers.gaslimit(self),
-                0x46 => try BlockHandlers.chainid(self),
-                0x47 => try BlockHandlers.selfbalance(self),
-                0x48 => try BlockHandlers.basefee(self),
-                0x49 => try BlockHandlers.blobhash(self),
-                0x4a => try BlockHandlers.blobbasefee(self),
-                0x50 => try StackHandlers.pop(self),
-                0x51 => try MemoryHandlers.mload(self),
-                0x52 => try MemoryHandlers.mstore(self),
-                0x53 => try MemoryHandlers.mstore8(self),
-                0x54 => try StorageHandlers.sload(self),
-                0x55 => try StorageHandlers.sstore(self),
-                0x56 => try ControlFlowHandlers.jump(self),
-                0x57 => try ControlFlowHandlers.jumpi(self),
-                0x58 => try ControlFlowHandlers.pc(self),
-                0x59 => try MemoryHandlers.msize(self),
-                0x5a => try ContextHandlers.gas(self),
-                0x5b => try ControlFlowHandlers.jumpdest(self),
-                0x5c => try StorageHandlers.tload(self),
-                0x5d => try StorageHandlers.tstore(self),
-                0x5e => try MemoryHandlers.mcopy(self),
-                0x5f...0x7f => try StackHandlers.push(self, opcode),
-                0x80...0x8f => try StackHandlers.dup(self, opcode),
-                0x90...0x9f => try StackHandlers.swap(self, opcode),
-                0xa0...0xa4 => try LogHandlers.log(self, opcode),
-                0xf0 => try SystemHandlers.create(self),
-                0xf1 => try SystemHandlers.call(self),
-                0xf2 => try SystemHandlers.callcode(self),
-                0xf3 => try ControlFlowHandlers.ret(self),
-                0xf4 => try SystemHandlers.delegatecall(self),
-                0xf5 => try SystemHandlers.create2(self),
-                0xfa => try SystemHandlers.staticcall(self),
-                0xfd => try ControlFlowHandlers.revert(self),
-                0xff => try SystemHandlers.selfdestruct(self),
-                else => return error.InvalidOpcode,
-            }
+            // Standard opcodes: the Dispatcher is the single opcode table.
+            return Dispatcher.execute(self, opcode);
         }
 
         /// Get memory contents as a slice (for tracing)

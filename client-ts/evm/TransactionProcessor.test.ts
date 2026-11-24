@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import {
   Address,
   Blob,
+  Hardfork,
   Hash,
   Hex,
   Receipt,
@@ -36,6 +37,7 @@ import {
   runInCallFrameBoundary,
   runInTransactionBoundary,
   settlePostExecutionBalances,
+  TransactionGasLimitExceededError,
   TransactionNonceTooHighError,
   TransactionNonceTooLowError,
   TransactionTypeContractCreationError,
@@ -59,6 +61,7 @@ import {
   TransactionBoundaryTest,
 } from "../state/TransactionBoundary";
 import { RefundCalculatorTest } from "./RefundCalculator";
+import { ReleaseSpecLive, ReleaseSpecPrague } from "./ReleaseSpec";
 
 const provideProcessor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(TransactionProcessorTest));
@@ -67,6 +70,7 @@ const TransactionProcessorExecutionTest = Layer.mergeAll(
   TransactionProcessorTest,
   TransactionBoundaryTest,
   RefundCalculatorTest,
+  ReleaseSpecPrague,
 );
 
 const provideExecutionProcessor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -719,6 +723,53 @@ describe("TransactionProcessor.processTransaction", () => {
       }),
     ),
   );
+  it.effect("applies the transaction gas cap starting at Osaka", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xb9);
+        const tx = makeLegacyTx(10n);
+        const gasCap = 16_777_216n;
+        const processAtFork = (
+          gasLimit: bigint,
+          hardfork: Hardfork.HardforkType,
+        ) =>
+          processTransaction(
+            { ...tx, gasLimit },
+            sender,
+            5n,
+            0n,
+            30_000_000n,
+            0n,
+            maxBlobGasPerBlock,
+            0n,
+          ).pipe(Effect.provide(ReleaseSpecLive(hardfork)));
+
+        const senderBalance = 1_000_000_000n;
+        yield* setAccount(
+          sender,
+          makeAccount({ nonce: tx.nonce, balance: senderBalance }),
+        );
+
+        const rejected = yield* Effect.flip(
+          processAtFork(gasCap + 1n, Hardfork.OSAKA),
+        );
+        assert.instanceOf(rejected, TransactionGasLimitExceededError);
+        const senderAfterRejection = yield* getAccountOptional(sender);
+        assert.strictEqual(senderAfterRejection?.nonce, tx.nonce);
+        assert.strictEqual(senderAfterRejection?.balance, senderBalance);
+
+        const osaka = yield* processAtFork(gasCap, Hardfork.OSAKA);
+        assert.strictEqual(osaka.senderNonceAfterIncrement, tx.nonce + 1n);
+
+        yield* setAccount(
+          sender,
+          makeAccount({ nonce: tx.nonce, balance: senderBalance }),
+        );
+        const prague = yield* processAtFork(gasCap + 1n, Hardfork.PRAGUE);
+        assert.strictEqual(prague.senderNonceAfterIncrement, tx.nonce + 1n);
+      }),
+    ),
+  );
 });
 
 describe("TransactionProcessor.checkInclusionAvailabilityAndSenderCode", () => {
@@ -881,6 +932,34 @@ describe("TransactionProcessor.settlePostExecutionBalances", () => {
         const coinbaseAccount = yield* getAccountOptional(coinbase);
         assert.strictEqual(senderAccount?.balance, 1_440_000n);
         assert.strictEqual(coinbaseAccount?.balance, 168_500n);
+      }),
+    ),
+  );
+
+  it.effect("credits both the refund and priority fee when the sender is coinbase", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xe1);
+        const coinbase = makeAddress(0xe1);
+        yield* setAccount(sender, makeAccount({ balance: 1_000_000n }));
+
+        const result = yield* settlePostExecutionBalances(
+          100_000n,
+          30_000n,
+          40_000n,
+          0n,
+          10n,
+          7n,
+          sender,
+          coinbase,
+        );
+
+        assert.strictEqual(result.senderBalanceAfterRefund, 1_440_000n);
+        assert.strictEqual(result.coinbaseBalanceAfterFee, 1_608_000n);
+        assert.strictEqual(
+          (yield* getAccountOptional(sender))?.balance,
+          1_608_000n,
+        );
       }),
     ),
   );

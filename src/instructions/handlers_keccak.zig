@@ -8,17 +8,6 @@ inline fn wordCount(bytes: u64) u64 {
     return (bytes + 31) / 32;
 }
 
-/// Helper function to calculate word-aligned memory size
-inline fn wordAlignedSize(bytes: u64) u32 {
-    const words = wordCount(bytes);
-    return @intCast(words * 32);
-}
-
-/// Helper function for safe u32 addition
-inline fn add_u32(a: u32, b: u32) error{OutOfBounds}!u32 {
-    return std.math.add(u32, a, b) catch return error.OutOfBounds;
-}
-
 /// Calculate KECCAK256 gas cost
 fn keccak256GasCost(data_size: u32) u64 {
     const words = wordCount(@as(u64, data_size));
@@ -35,46 +24,22 @@ pub fn Handlers(FrameType: type) type {
             const offset = try frame.popStack();
             const size = try frame.popStack();
 
-            // Use centralized gas calculation
-            const size_u32 = std.math.cast(u32, size) orelse return error.OutOfBounds;
-            const gas_cost = keccak256GasCost(size_u32);
-            try frame.consumeGas(gas_cost);
+            // Zero-length input charges no expansion and ignores the offset.
+            const range = try frame.memoryRange(offset, size);
+            const size_u32: u32 = if (range) |r| r.len else 0;
+            try frame.consumeGas(keccak256GasCost(size_u32) +| frame.memoryRangeCost(range));
 
-            // Handle empty data case
-            if (size == 0) {
-                // Keccak-256("") = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470
-                const empty_hash: u256 = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
-                try frame.pushStack(empty_hash);
-                frame.pc += 1;
-            } else {
-                const offset_u32 = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-
-                // Charge memory expansion to cover [offset, offset+size)
-                const end_addr = @as(u64, offset_u32) + @as(u64, size_u32);
-                const mem_cost = frame.memoryExpansionCost(end_addr);
-                try frame.consumeGas(mem_cost);
-                const aligned_size = wordAlignedSize(end_addr);
-                if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
-
-                // Read data from memory
-                var data = try frame.allocator.alloc(u8, size_u32);
+            var hash_bytes: [32]u8 = undefined;
+            if (range) |r| {
+                try frame.expandMemory(r.end);
+                const data = try frame.readMemoryAlloc(frame.allocator, r);
                 defer frame.allocator.free(data);
-
-                var i: u32 = 0;
-                while (i < size_u32) : (i += 1) {
-                    const addr = try add_u32(offset_u32, i);
-                    data[i] = frame.readMemory(addr);
-                }
-
-                // Compute Keccak-256 hash using std library
-                var hash_bytes: [32]u8 = undefined;
                 std.crypto.hash.sha3.Keccak256.hash(data, &hash_bytes, .{});
-
-                // Convert hash bytes to u256 (big-endian)
-                const hash_u256 = std.mem.readInt(u256, &hash_bytes, .big);
-                try frame.pushStack(hash_u256);
-                frame.pc += 1;
+            } else {
+                std.crypto.hash.sha3.Keccak256.hash(&[_]u8{}, &hash_bytes, .{});
             }
+            try frame.pushStack(std.mem.readInt(u256, &hash_bytes, .big));
+            frame.pc += 1;
         }
     };
 }

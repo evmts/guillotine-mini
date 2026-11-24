@@ -2,7 +2,14 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: "1.99.0"
 
 jobs:
   build-test:
@@ -10,8 +17,9 @@ jobs:
       fail-fast: false
       matrix:
         # Zig 0.15.x cannot link against newer macOS SDKs.
-        os: [macos-15, ubuntu-latest]
+        os: [macos-15, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: guillotine-mini
@@ -37,6 +45,10 @@ jobs:
         uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a
         with:
           version: 0.15.2
+      - name: Check Zig build formatting
+        run: zig fmt --check build.zig build.zig.zon
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: Cache Cargo downloads
         uses: actions/cache@v5
         with:
@@ -49,6 +61,12 @@ jobs:
         run: cargo build --release --lib
       - name: Build
         run: zig build
+      - name: Build native static library
+        run: zig build native
+      - name: Run Zig examples
+        run: zig build run-examples
+      - name: Test Lean differential harness
+        run: zig build lean-diff-unit
       - name: Unit tests
         run: zig build unit
       - name: Native trace regressions

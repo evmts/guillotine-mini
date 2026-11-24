@@ -656,7 +656,14 @@ describe("TxPool", () => {
       const outcome = yield* Effect.either(
         getPendingCount().pipe(
           Effect.provide(
-            makeTxPoolLayer({ ...TxPoolConfigDefaults, size: -1 }),
+            TxPoolLive({ ...TxPoolConfigDefaults, size: -1 }).pipe(
+              Layer.provide(
+                TxPoolAdmissionValidatorLive(
+                  Schema.decodeSync(TxPoolConfigSchema)(TxPoolConfigDefaults),
+                  TxPoolHeadInfoDefaults,
+                ),
+              ),
+            ),
           ),
         ),
       );

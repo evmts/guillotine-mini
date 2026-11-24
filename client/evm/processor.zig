@@ -50,6 +50,40 @@ inline fn calc_1559_effective(base_fee_per_gas: u256, max_fee_per_gas: u256, max
 // Reuse the single source of truth defined in intrinsic_gas.zig
 const assert_supported_tx_type = intrinsic_gas.assert_supported_tx_type;
 
+/// Version byte every EIP-4844 blob versioned hash must start with.
+/// Mirrors `VERSIONED_HASH_VERSION_KZG` in execution-specs `forks/cancun/fork.py`.
+pub const VERSIONED_HASH_VERSION_KZG: u8 = primitives.Blob.BLOB_COMMITMENT_VERSION_KZG;
+
+/// Maximum blobs one transaction may carry under `hardfork`.
+///
+/// Cancun and Prague bound a transaction only by the block blob-gas cap
+/// (`MAX_BLOB_GAS_PER_BLOCK / GAS_PER_BLOB` = 6 and 9). Osaka adds a fixed
+/// per-transaction `BLOB_COUNT_LIMIT` of 6 (EIP-7594).
+pub fn max_blobs_per_transaction(hardfork: Hardfork) u64 {
+    if (hardfork.isAtLeast(.OSAKA)) return 6;
+    if (hardfork.isAtLeast(.PRAGUE)) return 9;
+    return 6;
+}
+
+/// Static validation errors returned by `validate_transaction`.
+pub const ValidationError = error{
+    InsufficientGas,
+    NonceOverflow,
+    InitCodeTooLarge,
+    UnsupportedTransactionType,
+    TransactionGasLimitExceeded,
+    /// EIP-4844: a blob transaction must carry at least one blob (`NoBlobDataError`).
+    EmptyBlobVersionedHashes,
+    /// EIP-4844: a versioned hash does not start with `VERSIONED_HASH_VERSION_KZG`.
+    InvalidBlobVersionedHash,
+    /// EIP-4844/EIP-7594: more blobs than `max_blobs_per_transaction(hardfork)`.
+    TooManyBlobs,
+    /// EIP-7702: a set-code transaction must carry at least one authorization.
+    EmptyAuthorizationList,
+    /// EIP-7702: a set-code transaction cannot create a contract (`to == null`).
+    SetCodeTransactionCreate,
+};
+
 /// Validate a transaction per execution-specs and return its intrinsic gas.
 ///
 /// This performs the static checks that do not require state access:
@@ -57,14 +91,17 @@ const assert_supported_tx_type = intrinsic_gas.assert_supported_tx_type;
 /// - nonce < 2**64 - 1
 /// - init code size <= MAX_INIT_CODE_SIZE (Shanghai+ contract creation)
 /// - gas limit <= MAX_TX_GAS_LIMIT_OSAKA (Osaka+ EIP-7825)
+/// - EIP-4844: 1..=max_blobs_per_transaction blobs, each with the KZG version byte
+/// - EIP-7702: non-empty authorization list and a non-null `to`
 pub fn validate_transaction(
     tx: anytype,
     hardfork: Hardfork,
-) error{ InsufficientGas, NonceOverflow, InitCodeTooLarge, UnsupportedTransactionType, TransactionGasLimitExceeded }!u64 {
+) ValidationError!u64 {
     const Tx = @TypeOf(tx);
     comptime assert_supported_tx_type(Tx, "validate_transaction");
 
     const required_fork: ?Hardfork = comptime blk: {
+        if (Tx == tx_mod.Eip2930Transaction) break :blk .BERLIN;
         if (Tx == tx_mod.Eip1559Transaction) break :blk .LONDON;
         if (Tx == tx_mod.Eip4844Transaction) break :blk .CANCUN;
         if (Tx == tx_mod.Eip7702Transaction) break :blk .PRAGUE;
@@ -72,6 +109,18 @@ pub fn validate_transaction(
     };
     if (required_fork) |fork| {
         if (hardfork.isBefore(fork)) return error.UnsupportedTransactionType;
+    }
+
+    if (comptime Tx == tx_mod.Eip4844Transaction) {
+        if (tx.blob_versioned_hashes.len == 0) return error.EmptyBlobVersionedHashes;
+        if (tx.blob_versioned_hashes.len > max_blobs_per_transaction(hardfork)) return error.TooManyBlobs;
+        for (tx.blob_versioned_hashes) |hash| {
+            if (hash.bytes[0] != VERSIONED_HASH_VERSION_KZG) return error.InvalidBlobVersionedHash;
+        }
+    }
+    if (comptime Tx == tx_mod.Eip7702Transaction) {
+        if (tx.to == null) return error.SetCodeTransactionCreate;
+        if (tx.authorization_list.len == 0) return error.EmptyAuthorizationList;
     }
 
     const is_create = if (comptime Tx == tx_mod.Eip4844Transaction) false else tx.to == null;
@@ -92,6 +141,11 @@ pub fn validate_transaction(
     return intrinsic;
 }
 
+/// Legacy and EIP-2930 transactions carry a single `gas_price`.
+inline fn uses_gas_price(comptime Tx: type) bool {
+    return Tx == tx_mod.LegacyTransaction or Tx == tx_mod.Eip2930Transaction;
+}
+
 /// Calculate the effective gas price for a transaction, enforcing base fee rules.
 ///
 /// For EIP-1559 style transactions, this applies:
@@ -105,7 +159,7 @@ pub fn calculate_effective_gas_price(
     const Tx = @TypeOf(tx);
     comptime assert_supported_tx_type(Tx, "calculate_effective_gas_price");
 
-    if (comptime (Tx == tx_mod.LegacyTransaction)) {
+    if (comptime uses_gas_price(Tx)) {
         if (tx.gas_price < base_fee_per_gas) return error.GasPriceBelowBaseFee;
         return EffectiveGasPrice.fromU256(EffectiveGasPrice.U256.from_be_bytes(to_bytes_be(tx.gas_price)[0..]));
     }
@@ -117,7 +171,8 @@ pub fn calculate_effective_gas_price(
 }
 
 /// Hardfork-aware variant: applies pre-/post-London rules explicitly.
-/// - Pre-London: legacy/2930 → effective = gas_price (no base fee gating)
+/// - Pre-London: legacy/2930 → effective = gas_price (no base fee gating;
+///   validate_transaction still rejects 2930 before Berlin)
 ///               1559/4844/7702 → UnsupportedTransactionType
 /// - London and later: same rules as .
 pub fn calculate_effective_gas_price_hardfork(
@@ -129,14 +184,14 @@ pub fn calculate_effective_gas_price_hardfork(
     comptime assert_supported_tx_type(Tx, "calculate_effective_gas_price_hardfork");
 
     if (hardfork.isBefore(.LONDON)) {
-        if (comptime (Tx == tx_mod.LegacyTransaction)) {
+        if (comptime uses_gas_price(Tx)) {
             return EffectiveGasPrice.fromU256(EffectiveGasPrice.U256.from_be_bytes(to_bytes_be(tx.gas_price)[0..]));
         }
         return error.UnsupportedTransactionType;
     }
 
     // London+
-    if (comptime (Tx == tx_mod.LegacyTransaction)) {
+    if (comptime uses_gas_price(Tx)) {
         if (tx.gas_price < base_fee_per_gas) return error.GasPriceBelowBaseFee;
         return EffectiveGasPrice.fromU256(EffectiveGasPrice.U256.from_be_bytes(to_bytes_be(tx.gas_price)[0..]));
     }
@@ -681,16 +736,11 @@ pub fn preprice_transaction(
     tx: anytype,
     hardfork: Hardfork,
     base_fee_per_gas: u256,
-) error{
-    InsufficientGas,
-    NonceOverflow,
-    InitCodeTooLarge,
-    UnsupportedTransactionType,
-    TransactionGasLimitExceeded,
+) (ValidationError || error{
     PriorityFeeGreaterThanMaxFee,
     InsufficientMaxFeePerGas,
     GasPriceBelowBaseFee,
-}!struct { intrinsic: u64, effective_gas_price: EffectiveGasPrice } {
+})!struct { intrinsic: u64, effective_gas_price: EffectiveGasPrice } {
     const intrinsic = try validate_transaction(tx, hardfork);
     const effective = try calculate_effective_gas_price_hardfork(tx, hardfork, base_fee_per_gas);
     return .{ .intrinsic = intrinsic, .effective_gas_price = effective };
@@ -902,4 +952,165 @@ test "preprice_transaction — fork gating enforced" {
         .s = [_]u8{0} ** 32,
     };
     try std.testing.expectError(error.UnsupportedTransactionType, preprice_transaction(tx7702, .CANCUN, 0));
+}
+
+// -----------------------------------------------------------------------------
+// Round 1 fixes: EIP-2930 type-1, EIP-4844 blob list, EIP-7702 authorization list
+// -----------------------------------------------------------------------------
+
+fn r1_address(byte: u8) primitives.Address {
+    return .{ .bytes = [_]u8{byte} ++ [_]u8{0} ** 19 };
+}
+
+fn r1_eip2930_tx(gas_price: u256, gas_limit: u64, access_list_items: []const tx_mod.AccessListItem) tx_mod.Eip2930Transaction {
+    return .{
+        .chain_id = 1,
+        .nonce = 0,
+        .gas_price = gas_price,
+        .gas_limit = gas_limit,
+        .to = r1_address(0x50),
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = access_list_items,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+}
+
+fn r1_blob_tx(hashes: []const primitives.Blob.VersionedHash) tx_mod.Eip4844Transaction {
+    return .{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
+        .gas_limit = intrinsic_gas.TX_BASE_COST,
+        .to = r1_address(0x51),
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .max_fee_per_blob_gas = 1,
+        .blob_versioned_hashes = hashes,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+}
+
+fn r1_set_code_tx(to: ?primitives.Address, auths: []const primitives.Authorization.Authorization) tx_mod.Eip7702Transaction {
+    return .{
+        .chain_id = 1,
+        .nonce = 0,
+        .max_priority_fee_per_gas = 0,
+        .max_fee_per_gas = 0,
+        .gas_limit = 100_000,
+        .to = to,
+        .value = 0,
+        .data = &[_]u8{},
+        .access_list = &[_]tx_mod.AccessListItem{},
+        .authorization_list = auths,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+}
+
+const r1_kzg_hash = primitives.Blob.VersionedHash{ .bytes = [_]u8{VERSIONED_HASH_VERSION_KZG} ++ [_]u8{0} ** 31 };
+
+const r1_auth = primitives.Authorization.Authorization{
+    .chain_id = 1,
+    .address = primitives.Address{ .bytes = [_]u8{0x52} ++ [_]u8{0} ** 19 },
+    .nonce = 0,
+    .v = 0,
+    .r = [_]u8{0} ** 32,
+    .s = [_]u8{0} ** 32,
+};
+
+test "validate_transaction — eip2930 accepted on Berlin with access list intrinsic gas" {
+    const keys = [_][32]u8{[_]u8{0x01} ** 32};
+    const list = [_]tx_mod.AccessListItem{.{ .address = r1_address(0x53), .storage_keys = &keys }};
+    const expected: u64 = intrinsic_gas.TX_BASE_COST + intrinsic_gas.TX_ACCESS_LIST_ADDRESS_COST +
+        intrinsic_gas.TX_ACCESS_LIST_STORAGE_KEY_COST;
+    try std.testing.expectEqual(expected, try validate_transaction(r1_eip2930_tx(0, expected, &list), .BERLIN));
+    try std.testing.expectError(error.InsufficientGas, validate_transaction(r1_eip2930_tx(0, expected - 1, &list), .BERLIN));
+}
+
+test "validate_transaction — eip2930 rejected before Berlin" {
+    try std.testing.expectError(
+        error.UnsupportedTransactionType,
+        validate_transaction(r1_eip2930_tx(0, intrinsic_gas.TX_BASE_COST, &.{}), .MUIR_GLACIER),
+    );
+}
+
+test "preprice_transaction — eip2930 uses gas_price before and after London" {
+    const berlin = try preprice_transaction(r1_eip2930_tx(7, intrinsic_gas.TX_BASE_COST, &.{}), .BERLIN, 0);
+    try std.testing.expectEqual(@as(u64, 7), try berlin.effective_gas_price.toU64());
+
+    const london = try preprice_transaction(r1_eip2930_tx(7, intrinsic_gas.TX_BASE_COST, &.{}), .LONDON, 5);
+    try std.testing.expectEqual(@as(u64, 7), try london.effective_gas_price.toU64());
+
+    try std.testing.expectError(
+        error.GasPriceBelowBaseFee,
+        preprice_transaction(r1_eip2930_tx(4, intrinsic_gas.TX_BASE_COST, &.{}), .LONDON, 5),
+    );
+}
+
+test "validate_transaction — eip4844 rejects empty blob_versioned_hashes" {
+    try std.testing.expectError(error.EmptyBlobVersionedHashes, validate_transaction(r1_blob_tx(&.{}), .CANCUN));
+    try std.testing.expectError(error.EmptyBlobVersionedHashes, validate_transaction(r1_blob_tx(&.{}), .OSAKA));
+}
+
+test "validate_transaction — eip4844 rejects non-KZG versioned hash" {
+    const bad = [_]primitives.Blob.VersionedHash{ r1_kzg_hash, .{ .bytes = [_]u8{0x02} ++ [_]u8{0} ** 31 } };
+    try std.testing.expectError(error.InvalidBlobVersionedHash, validate_transaction(r1_blob_tx(&bad), .CANCUN));
+}
+
+test "validate_transaction — eip4844 blob count limit per fork" {
+    const six = [_]primitives.Blob.VersionedHash{r1_kzg_hash} ** 6;
+    const seven = [_]primitives.Blob.VersionedHash{r1_kzg_hash} ** 7;
+    const nine = [_]primitives.Blob.VersionedHash{r1_kzg_hash} ** 9;
+    const ten = [_]primitives.Blob.VersionedHash{r1_kzg_hash} ** 10;
+
+    _ = try validate_transaction(r1_blob_tx(&six), .CANCUN);
+    try std.testing.expectError(error.TooManyBlobs, validate_transaction(r1_blob_tx(&seven), .CANCUN));
+    _ = try validate_transaction(r1_blob_tx(&nine), .PRAGUE);
+    try std.testing.expectError(error.TooManyBlobs, validate_transaction(r1_blob_tx(&ten), .PRAGUE));
+    _ = try validate_transaction(r1_blob_tx(&six), .OSAKA);
+    try std.testing.expectError(error.TooManyBlobs, validate_transaction(r1_blob_tx(&seven), .OSAKA));
+}
+
+test "validate_transaction — eip7702 rejects empty authorization_list" {
+    try std.testing.expectError(
+        error.EmptyAuthorizationList,
+        validate_transaction(r1_set_code_tx(r1_address(0x54), &.{}), .PRAGUE),
+    );
+    const auths = [_]primitives.Authorization.Authorization{r1_auth};
+    _ = try validate_transaction(r1_set_code_tx(r1_address(0x54), &auths), .PRAGUE);
+}
+
+test "validate_transaction — eip7702 rejects contract creation" {
+    const auths = [_]primitives.Authorization.Authorization{r1_auth};
+    try std.testing.expectError(
+        error.SetCodeTransactionCreate,
+        validate_transaction(r1_set_code_tx(null, &auths), .PRAGUE),
+    );
+}
+
+test "validate_transaction — pre-Istanbul legacy uses 68 gas per non-zero byte" {
+    const data = [_]u8{0xFF};
+    var tx = tx_mod.LegacyTransaction{
+        .nonce = 0,
+        .gas_price = 0,
+        .gas_limit = 21_067,
+        .to = r1_address(0x55),
+        .value = 0,
+        .data = &data,
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+    try std.testing.expectError(error.InsufficientGas, validate_transaction(tx, .BYZANTIUM));
+    tx.gas_limit = 21_068;
+    try std.testing.expectEqual(@as(u64, 21_068), try validate_transaction(tx, .BYZANTIUM));
+    try std.testing.expectEqual(@as(u64, 21_016), try validate_transaction(tx, .ISTANBUL));
 }

@@ -8,9 +8,36 @@ const GasConstants = primitives.GasConstants;
 /// and fields: pc, address, is_static
 pub fn Handlers(FrameType: type) type {
     return struct {
+        /// Withdraw a previously granted refund.
+        ///
+        /// With a signed (i64) refund counter the subtraction is unconditional, matching
+        /// execution-specs, where the counter may go negative mid-transaction. With the
+        /// legacy u64 counter it clamps at zero instead of underflowing.
+        inline fn subRefund(evm: anytype, amount: u64) void {
+            if (comptime @TypeOf(evm.gas_refund) == i64) {
+                evm.sub_refund(amount);
+            } else if (evm.gas_refund >= amount) {
+                evm.gas_refund -= amount;
+            } else {
+                evm.gas_refund = 0;
+            }
+        }
+
+        /// Async storage (Contract C): make sure the slot under the stack top is loaded
+        /// BEFORE any pop, warm-up or gas charge, so a `NeedAsyncData` yield leaves the
+        /// frame untouched and the opcode re-executes cleanly on resume.
+        inline fn ensureTopSlotLoaded(frame: *FrameType, evm: anytype, needed: usize) FrameType.EvmError!void {
+            if (frame.stack.items.len < needed) return error.StackUnderflow;
+            if (comptime @hasDecl(@TypeOf(evm.storage), "ensureSlotLoaded")) {
+                const key = try frame.peekStack(0);
+                try evm.storage.ensureSlotLoaded(frame.address, key);
+            }
+        }
+
         /// SLOAD opcode (0x54) - Load word from storage
         pub fn sload(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
+            try ensureTopSlotLoaded(frame, evm, 1);
             const key = try frame.popStack();
 
             // EIP-2929: charge warm/cold storage access cost and warm the slot
@@ -29,6 +56,8 @@ pub fn Handlers(FrameType: type) type {
 
             // EIP-214: SSTORE cannot modify state in static call context
             if (frame.is_static) return error.StaticCallViolation;
+
+            try ensureTopSlotLoaded(frame, evm, 2);
 
             // EIP-2200 (Istanbul+): SSTORE sentry gas check
             // SSTORE requires at least GAS_CALL_STIPEND (2300) gas remaining
@@ -90,9 +119,7 @@ pub fn Handlers(FrameType: type) type {
                     // Case 2: Reversing a previous clear (was cleared earlier, now non-zero)
                     if (original_value != 0 and current_value == 0) {
                         // Subtract the refund that was given earlier
-                        if (evm.gas_refund >= 15000) {
-                            evm.gas_refund -= 15000;
-                        }
+                        subRefund(evm, 15000);
                     }
 
                     // Case 3: Restoring to original value. The refunded amount differs between
@@ -131,9 +158,7 @@ pub fn Handlers(FrameType: type) type {
                     // This is a separate independent check, not else-if
                     if (original_value != 0 and current_value == 0) {
                         // Subtract the refund that was given earlier
-                        if (evm.gas_refund >= GasConstants.SstoreRefundGas) {
-                            evm.gas_refund -= GasConstants.SstoreRefundGas;
-                        }
+                        subRefund(evm, GasConstants.SstoreRefundGas);
                     }
 
                     // Case 3: Restoring to original value (line 115-124)
