@@ -596,12 +596,12 @@ pub fn Evm(comptime config: EvmConfig) type {
         pub fn accountIsEmpty(self: *Self, addr: primitives.Address) bool {
             const balance = if (self.host) |h| h.getBalance(addr) else self.balances.get(addr) orelse 0;
             const nonce = if (self.host) |h| h.getNonce(addr) else self.nonces.get(addr) orelse 0;
-            return balance == 0 and nonce == 0 and self.get_code(addr).len == 0;
+            return balance == 0 and nonce == 0 and self.getRawCode(addr).len == 0;
         }
 
         pub fn accountExists(self: *Self, addr: primitives.Address) bool {
             if (self.host) |h| return h.accountExists(addr);
-            if (self.get_balance(addr) != 0 or (self.nonces.get(addr) orelse 0) != 0 or self.get_code(addr).len != 0) return true;
+            if (self.balances.contains(addr) or self.nonces.contains(addr) or self.code.contains(addr)) return true;
             var storage_it = self.storage.storage.iterator();
             while (storage_it.next()) |entry| {
                 if (std.mem.eql(u8, &entry.key_ptr.*.address, &addr.bytes)) return true;
@@ -2124,9 +2124,13 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// precompile wins over account code at its address, as EELS
         /// `execute_code` checks `PRECOMPILED_CONTRACTS` first. EIP-7702
         /// delegation disables precompiles, so it still resolves to the delegate.
+        /// A precompile override at `address` supersedes the native precompile:
+        /// if the account also has bytecode, that bytecode runs; if not,
+        /// `canExecutePrecompile`/`executePrecompile` will pick up the override.
         fn resolveCallCode(self: *Self, address: Address) ResolvedCode {
             const resolved = self.resolveCode(address);
-            if (!resolved.is_delegated and isPrecompile(address, self.hardfork)) return .{ .code = &.{}, .address = address };
+            if (!resolved.is_delegated and self.getPrecompileOverride(address) == null and isPrecompile(address, self.hardfork))
+                return .{ .code = &.{}, .address = address };
             return resolved;
         }
 

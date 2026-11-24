@@ -169,24 +169,21 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
 
             if (value_arg > 0) {
                 gas_cost += GasConstants.CallValueTransferGas;
+            }
 
-                // EIP-150: Check if target account exists
-                // If calling non-existent account with value, add account creation cost
-                const target_exists = blk: {
-                    if (evm.host) |h| {
-                        const has_balance = h.getBalance(call_address) > 0;
-                        const has_code = h.getCode(call_address).len > 0;
-                        const has_nonce = h.getNonce(call_address) > 0;
-                        break :blk has_balance or has_code or has_nonce;
-                    } else {
-                        const has_balance = (evm.balances.get(call_address) orelse 0) > 0;
-                        const has_code = (evm.code.get(call_address) orelse &[_]u8{}).len > 0;
-                        const has_nonce = (evm.nonces.get(call_address) orelse 0) > 0;
-                        break :blk has_balance or has_code or has_nonce;
-                    }
-                };
-                if (!target_exists) {
-                    gas_cost += GasConstants.CallNewAccountGas; // +25000 for creating new account
+            // New-account gas (25,000):
+            // Pre-Spurious-Dragon: charged whenever the target does NOT exist
+            //   in the state trie, regardless of value (Yellow Paper C_new).
+            //   Uses accountExists (actual trie presence, not emptiness).
+            // Spurious Dragon+ (EIP-161): charged only when value > 0 AND
+            //   target is empty (balance=0, nonce=0, no code).
+            if (evm.hardfork.isBefore(.SPURIOUS_DRAGON)) {
+                if (!evm.accountExists(call_address)) {
+                    gas_cost += GasConstants.CallNewAccountGas;
+                }
+            } else if (value_arg > 0) {
+                if (evm.accountIsEmpty(call_address)) {
+                    gas_cost += GasConstants.CallNewAccountGas;
                 }
             }
             // EIP-2929 (Berlin+): access target account (warm/cold)
@@ -209,20 +206,23 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             // Calculate available gas BEFORE charging (per Python execution-specs)
             // Python: gas = min(gas, max_message_call_gas(gas_left - memory_cost - extra_gas))
             // We simulate the post-charge state to calculate max forwardable gas
-            const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
             const remaining_gas_before_charge = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-            // Subtract the cost we're about to charge to get the "would-be" remaining gas
             const gas_after_charge = if (remaining_gas_before_charge >= gas_cost)
                 remaining_gas_before_charge - gas_cost
             else
                 0;
-            // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
-            // Before EIP-150: forward all remaining gas
-            const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                gas_after_charge - (gas_after_charge / 64)
-            else
-                gas_after_charge;
-            const available_gas_without_stipend = @min(gas_limit, max_gas);
+
+            // Pre-Tangerine-Whistle: requested gas must be affordable — OOG if not.
+            // From Tangerine Whistle (EIP-150): cap at 63/64 of remaining.
+            const available_gas_without_stipend = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) blk: {
+                const gas_limit = std.math.cast(u64, gas) orelse return error.OutOfGas;
+                if (gas_limit > gas_after_charge) return error.OutOfGas;
+                break :blk gas_limit;
+            } else blk: {
+                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
+                const max_gas = gas_after_charge - (gas_after_charge / 64);
+                break :blk @min(gas_limit, max_gas);
+            };
 
             // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
             const available_gas = if (value_arg > 0)
@@ -348,19 +348,23 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             }
 
             // Calculate available gas BEFORE charging (per Python execution-specs)
-            const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
             const remaining_gas_before_charge = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
             const gas_after_charge = if (remaining_gas_before_charge >= gas_cost)
                 remaining_gas_before_charge - gas_cost
             else
                 0;
-            // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
-            // Before EIP-150: forward all remaining gas
-            const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                gas_after_charge - (gas_after_charge / 64)
-            else
-                gas_after_charge;
-            const available_gas_without_stipend = @min(gas_limit, max_gas);
+
+            // Pre-Tangerine-Whistle: requested gas must be affordable — OOG if not.
+            // From Tangerine Whistle (EIP-150): cap at 63/64 of remaining.
+            const available_gas_without_stipend = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) blk: {
+                const gas_limit = std.math.cast(u64, gas) orelse return error.OutOfGas;
+                if (gas_limit > gas_after_charge) return error.OutOfGas;
+                break :blk gas_limit;
+            } else blk: {
+                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
+                const max_gas = gas_after_charge - (gas_after_charge / 64);
+                break :blk @min(gas_limit, max_gas);
+            };
 
             // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
             const available_gas = if (value_arg > 0)
@@ -482,19 +486,25 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             }
 
             // Calculate available gas BEFORE charging (per Python execution-specs)
-            const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
             const remaining_gas_before_charge = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
             const gas_after_charge = if (remaining_gas_before_charge >= gas_cost)
                 remaining_gas_before_charge - gas_cost
             else
                 0;
-            // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
-            // Before EIP-150: forward all remaining gas
-            const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                gas_after_charge - (gas_after_charge / 64)
-            else
-                gas_after_charge;
-            const available_gas = @min(gas_limit, max_gas);
+
+            // Pre-Tangerine-Whistle: requested gas must be affordable — OOG if not.
+            // From Tangerine Whistle (EIP-150): cap at 63/64 of remaining.
+            // Note: DELEGATECALL requires HOMESTEAD so the pre-TW path covers only
+            // HOMESTEAD itself where the opcode exists but EIP-150 isn't active yet.
+            const available_gas = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) blk: {
+                const gas_limit = std.math.cast(u64, gas) orelse return error.OutOfGas;
+                if (gas_limit > gas_after_charge) return error.OutOfGas;
+                break :blk gas_limit;
+            } else blk: {
+                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
+                const max_gas = gas_after_charge - (gas_after_charge / 64);
+                break :blk @min(gas_limit, max_gas);
+            };
 
             // NOW charge the total cost (base cost + forwarded gas)
             // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
@@ -609,18 +619,14 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             }
 
             // Calculate available gas BEFORE charging (per Python execution-specs)
-            const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
             const remaining_gas_before_charge = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
             const gas_after_charge = if (remaining_gas_before_charge >= call_gas_cost)
                 remaining_gas_before_charge - call_gas_cost
             else
                 0;
-            // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
-            // Before EIP-150: forward all remaining gas
-            const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                gas_after_charge - (gas_after_charge / 64)
-            else
-                gas_after_charge;
+            // STATICCALL requires Byzantium (always post-TW), so EIP-150 63/64 always applies.
+            const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
+            const max_gas = gas_after_charge - (gas_after_charge / 64);
             const available_gas = @min(gas_limit, max_gas);
 
             // NOW charge the total cost (base cost + forwarded gas)
@@ -810,24 +816,19 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             else
                 evm_ptr.balances.get(frame.address) orelse 0;
 
-            // Check if beneficiary is alive (has code, balance, or nonce)
-            // Add new account cost if not alive and we have balance
-            if (self_balance > 0) {
-                const beneficiary_is_alive = blk: {
-                    if (evm_ptr.host) |h| {
-                        const has_balance = h.getBalance(beneficiary) > 0;
-                        const has_code = h.getCode(beneficiary).len > 0;
-                        const has_nonce = h.getNonce(beneficiary) > 0;
-                        break :blk has_balance or has_code or has_nonce;
-                    } else {
-                        const has_balance = (evm_ptr.balances.get(beneficiary) orelse 0) > 0;
-                        const has_code = (evm_ptr.code.get(beneficiary) orelse &[_]u8{}).len > 0;
-                        const has_nonce = (evm_ptr.nonces.get(beneficiary) orelse 0) > 0;
-                        break :blk has_balance or has_code or has_nonce;
-                    }
-                };
-                if (!beneficiary_is_alive) {
-                    gas_cost += GasConstants.CallNewAccountGas; // +25000 for creating new account
+            // New-account gas for SELFDESTRUCT beneficiary:
+            // < Tangerine Whistle: never charged.
+            // Tangerine Whistle to < Spurious Dragon: 25k iff beneficiary
+            //   does NOT exist in the state trie (regardless of self_balance).
+            // >= Spurious Dragon (EIP-161): 25k iff self_balance > 0 AND
+            //   beneficiary is empty.
+            if (frame.hardfork.isAtLeast(.SPURIOUS_DRAGON)) {
+                if (self_balance > 0 and evm_ptr.accountIsEmpty(beneficiary)) {
+                    gas_cost += GasConstants.CallNewAccountGas;
+                }
+            } else if (frame.hardfork.isAtLeast(.TANGERINE_WHISTLE)) {
+                if (!evm_ptr.accountExists(beneficiary)) {
+                    gas_cost += GasConstants.CallNewAccountGas;
                 }
             }
 
@@ -857,6 +858,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                 else
                     evm_ptr.balances.get(beneficiary) orelse 0;
                 try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
+                evm_ptr.touched_accounts.put(beneficiary, {}) catch {};
             } else {
                 // Pre-Cancun: Use old balance transfer logic
                 // Per Python reference (Shanghai): Read beneficiary balance BEFORE modifying anything
@@ -868,6 +870,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
 
                 // First Transfer to beneficiary (Python comment)
                 try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
+                evm_ptr.touched_accounts.put(beneficiary, {}) catch {};
 
                 // Next, Zero the balance of the address being deleted (must come after
                 // sending to beneficiary in case the contract named itself as the beneficiary).

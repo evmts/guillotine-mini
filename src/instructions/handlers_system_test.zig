@@ -1292,3 +1292,431 @@ test "SELFDESTRUCT: out of gas error" {
     // Verify error (needs at least 5000 gas)
     try testing.expectError(error.OutOfGas, result);
 }
+
+// ============================================================================
+// Pre-Spurious-Dragon CALL new-account gas tests (EIP-161)
+// ============================================================================
+
+test "CALL: Frontier charges CallNewAccountGas even when value == 0" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .FRONTIER);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf1}; // CALL
+    const gas: i64 = 1_000_000;
+    const frame = try createTestFrame(allocator, evm, bytecode, .FRONTIER, gas);
+    defer frame.deinit();
+
+    const target_addr = try Address.fromHex("0x9999999999999999999999999999999999999999");
+    const target_u256 = addressToU256(target_addr);
+
+    // Push CALL args: gas, address, value=0, inOffset, inSize, outOffset, outSize
+    try frame.pushStack(0); // outSize
+    try frame.pushStack(0); // outOffset
+    try frame.pushStack(0); // inSize
+    try frame.pushStack(0); // inOffset
+    try frame.pushStack(0); // value = 0
+    try frame.pushStack(target_u256);
+    try frame.pushStack(100_000); // gas
+
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.call(frame);
+
+    // Pre-Tangerine Whistle: base = 40, pre-EIP-150 forwards all remaining gas.
+    // Pre-Spurious-Dragon: 25,000 new-account gas charged even with value == 0.
+    // extra_gas = 40 + 25,000 = 25,040
+    // gas_after_charge = 1,000,000 - 25,040 = 974,960
+    // available_gas = min(100,000, 974,960) = 100,000  (pre-EIP-150, no 63/64 rule)
+    // total_cost = 25,040 + 100,000 = 125,040
+    // child call succeeds (empty code) returning all 100,000 gas
+    // final = 1,000,000 - 125,040 + 100,000 = 974,960
+    const gas_used = gas - frame.gas_remaining;
+    try testing.expectEqual(@as(i64, 25_040), gas_used);
+}
+
+test "CALL: Spurious Dragon does NOT charge CallNewAccountGas when value == 0" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .SPURIOUS_DRAGON);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf1}; // CALL
+    const gas: i64 = 1_000_000;
+    const frame = try createTestFrame(allocator, evm, bytecode, .SPURIOUS_DRAGON, gas);
+    defer frame.deinit();
+
+    const target_addr = try Address.fromHex("0x9999999999999999999999999999999999999999");
+    const target_u256 = addressToU256(target_addr);
+
+    // Push CALL args: gas, address, value=0, inOffset, inSize, outOffset, outSize
+    try frame.pushStack(0); // outSize
+    try frame.pushStack(0); // outOffset
+    try frame.pushStack(0); // inSize
+    try frame.pushStack(0); // inOffset
+    try frame.pushStack(0); // value = 0
+    try frame.pushStack(target_u256);
+    try frame.pushStack(100_000); // gas
+
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.call(frame);
+
+    // Spurious Dragon (post-Tangerine Whistle): base = 700, EIP-150 63/64 rule.
+    // value == 0 -> NO new-account gas (EIP-161).
+    // extra_gas = 700
+    // gas_after_charge = 1,000,000 - 700 = 999,300
+    // max_gas = 999,300 - 999,300/64 = 999,300 - 15614 = 983,686
+    // available_gas = min(100,000, 983,686) = 100,000
+    // total_cost = 700 + 100,000 = 100,700
+    // child returns all 100,000 gas
+    // final = 1,000,000 - 100,700 + 100,000 = 999,300
+    const gas_used = gas - frame.gas_remaining;
+    try testing.expectEqual(@as(i64, 700), gas_used);
+}
+
+// ============================================================================
+// Pre-Tangerine-Whistle unaffordable gas OOG tests (Defect R4-04)
+// ============================================================================
+
+test "CALL: Frontier OOGs when requested gas exceeds remaining" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .FRONTIER);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf1};
+    const gas: i64 = 50_000;
+    const frame = try createTestFrame(allocator, evm, bytecode, .FRONTIER, gas);
+    defer frame.deinit();
+
+    const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
+    try evm.balances.put(target_addr, 1);
+
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(addressToU256(target_addr));
+    try frame.pushStack(std.math.maxInt(u64));
+
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.call(frame);
+    try testing.expectError(error.OutOfGas, result);
+}
+
+test "CALL: Homestead OOGs when requested gas > remaining (u256 overflow)" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .HOMESTEAD);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf1};
+    const gas: i64 = 100_000;
+    const frame = try createTestFrame(allocator, evm, bytecode, .HOMESTEAD, gas);
+    defer frame.deinit();
+
+    const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
+    try evm.balances.put(target_addr, 1);
+
+    // Request gas that overflows u64
+    const huge_gas: u256 = @as(u256, std.math.maxInt(u64)) + 1;
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(addressToU256(target_addr));
+    try frame.pushStack(huge_gas);
+
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.call(frame);
+    try testing.expectError(error.OutOfGas, result);
+}
+
+test "CALL: Tangerine Whistle clamps gas instead of OOG" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .TANGERINE_WHISTLE);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf1};
+    const gas: i64 = 100_000;
+    const frame = try createTestFrame(allocator, evm, bytecode, .TANGERINE_WHISTLE, gas);
+    defer frame.deinit();
+
+    const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
+    try evm.balances.put(target_addr, 1);
+
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(addressToU256(target_addr));
+    try frame.pushStack(std.math.maxInt(u64));
+
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    // EIP-150 caps gas, so this succeeds instead of OOG
+    try SystemHandlers.call(frame);
+
+    try testing.expectEqual(@as(usize, 1), frame.stack.items.len);
+}
+
+test "CALLCODE: Frontier OOGs when requested gas exceeds remaining" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .FRONTIER);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf2};
+    const gas: i64 = 50_000;
+    const frame = try createTestFrame(allocator, evm, bytecode, .FRONTIER, gas);
+    defer frame.deinit();
+
+    const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
+
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(addressToU256(target_addr));
+    try frame.pushStack(std.math.maxInt(u64));
+
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.callcode(frame);
+    try testing.expectError(error.OutOfGas, result);
+}
+
+test "DELEGATECALL: Homestead OOGs when requested gas exceeds remaining" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .HOMESTEAD);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf4};
+    const gas: i64 = 50_000;
+    const frame = try createTestFrame(allocator, evm, bytecode, .HOMESTEAD, gas);
+    defer frame.deinit();
+
+    const target_addr = try Address.fromHex("0x3333333333333333333333333333333333333333");
+
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(addressToU256(target_addr));
+    try frame.pushStack(std.math.maxInt(u64));
+
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    const result = SystemHandlers.delegatecall(frame);
+    try testing.expectError(error.OutOfGas, result);
+}
+
+// ============================================================================
+// Pre-Spurious-Dragon CALL existing-empty-account tests (Defect R4-03)
+// ============================================================================
+
+test "CALL: Frontier does NOT charge new-account gas for existing empty account" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .FRONTIER);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf1};
+    const gas: i64 = 1_000_000;
+    const frame = try createTestFrame(allocator, evm, bytecode, .FRONTIER, gas);
+    defer frame.deinit();
+
+    // Create an empty account (exists in state but balance=0, nonce=0, no code)
+    const target_addr = try Address.fromHex("0x9999999999999999999999999999999999999999");
+    try evm.balances.put(target_addr, 0);
+
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(addressToU256(target_addr));
+    try frame.pushStack(1000);
+
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.call(frame);
+
+    // Target exists (in balances map), so NO 25,000 new-account gas.
+    // extra_gas = 40 (base only, no new-account), pre-TW no 63/64 rule.
+    // available = min(1000, 1_000_000-40) = 1000
+    // total_cost = 40 + 1000 = 1040; child returns 1000
+    // gas_used = 1040 - 1000 = 40
+    const gas_used = gas - frame.gas_remaining;
+    try testing.expectEqual(@as(i64, 40), gas_used);
+}
+
+test "CALL: Frontier charges new-account gas for truly absent account" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .FRONTIER);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xf1};
+    const gas: i64 = 1_000_000;
+    const frame = try createTestFrame(allocator, evm, bytecode, .FRONTIER, gas);
+    defer frame.deinit();
+
+    // Do NOT create the target account at all
+    const target_addr = try Address.fromHex("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(0);
+    try frame.pushStack(addressToU256(target_addr));
+    try frame.pushStack(1000);
+
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.call(frame);
+
+    // Target absent -> 25,000 new-account gas charged.
+    // extra_gas = 40 + 25,000 = 25,040; pre-TW no 63/64 rule.
+    // available = min(1000, 1_000_000 - 25,040) = 1000
+    // total_cost = 25,040 + 1000 = 26,040; child returns 1000
+    // gas_used = 26,040 - 1000 = 25,040
+    const gas_used = gas - frame.gas_remaining;
+    try testing.expectEqual(@as(i64, 25_040), gas_used);
+}
+
+// ============================================================================
+// Pre-Spurious-Dragon SELFDESTRUCT new-account gas tests (Defect R4-03)
+// ============================================================================
+
+test "SELFDESTRUCT: Frontier never charges new-account gas" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .FRONTIER);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xff};
+    const frame = try createTestFrame(allocator, evm, bytecode, .FRONTIER, 1_000_000);
+    defer frame.deinit();
+
+    try evm.setBalanceWithSnapshot(frame.address, 1000);
+    // Beneficiary does NOT exist
+    const beneficiary_addr = try Address.fromHex("0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+
+    try frame.pushStack(addressToU256(beneficiary_addr));
+
+    const initial_gas = frame.gas_remaining;
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.selfdestruct(frame);
+
+    // Frontier: base 0 selfdestruct gas, no new-account gas
+    const gas_consumed = initial_gas - frame.gas_remaining;
+    try testing.expect(gas_consumed < GasConstants.CallNewAccountGas);
+}
+
+test "SELFDESTRUCT: Tangerine Whistle charges new-account gas even when balance == 0" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .TANGERINE_WHISTLE);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xff};
+    const frame = try createTestFrame(allocator, evm, bytecode, .TANGERINE_WHISTLE, 1_000_000);
+    defer frame.deinit();
+
+    // Self has ZERO balance
+    try evm.setBalanceWithSnapshot(frame.address, 0);
+    // Beneficiary does NOT exist
+    const beneficiary_addr = try Address.fromHex("0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+
+    try frame.pushStack(addressToU256(beneficiary_addr));
+
+    const initial_gas = frame.gas_remaining;
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.selfdestruct(frame);
+
+    // TW: 5000 base + 25,000 new-account (regardless of self balance)
+    const gas_consumed = initial_gas - frame.gas_remaining;
+    try testing.expect(gas_consumed >= 5000 + GasConstants.CallNewAccountGas);
+}
+
+test "SELFDESTRUCT: Tangerine Whistle skips new-account gas when beneficiary exists" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .TANGERINE_WHISTLE);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xff};
+    const frame = try createTestFrame(allocator, evm, bytecode, .TANGERINE_WHISTLE, 1_000_000);
+    defer frame.deinit();
+
+    try evm.setBalanceWithSnapshot(frame.address, 1000);
+    // Beneficiary exists (even if empty)
+    const beneficiary_addr = try Address.fromHex("0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+    try evm.balances.put(beneficiary_addr, 0);
+
+    try frame.pushStack(addressToU256(beneficiary_addr));
+
+    const initial_gas = frame.gas_remaining;
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.selfdestruct(frame);
+
+    // TW: 5000 base, beneficiary exists so no 25k
+    const gas_consumed = initial_gas - frame.gas_remaining;
+    try testing.expect(gas_consumed >= 5000);
+    try testing.expect(gas_consumed < 5000 + GasConstants.CallNewAccountGas);
+}
+
+test "SELFDESTRUCT: Spurious Dragon does NOT charge new-account gas when balance == 0" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .SPURIOUS_DRAGON);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+
+    const bytecode = &[_]u8{0xff};
+    const frame = try createTestFrame(allocator, evm, bytecode, .SPURIOUS_DRAGON, 1_000_000);
+    defer frame.deinit();
+
+    // Self has ZERO balance
+    try evm.setBalanceWithSnapshot(frame.address, 0);
+    // Beneficiary does NOT exist
+    const beneficiary_addr = try Address.fromHex("0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+
+    try frame.pushStack(addressToU256(beneficiary_addr));
+
+    const initial_gas = frame.gas_remaining;
+    const SystemHandlers = @import("handlers_system.zig").Handlers(Frame);
+    try SystemHandlers.selfdestruct(frame);
+
+    // SD (EIP-161): self_balance == 0 -> no 25k even if beneficiary absent
+    const gas_consumed = initial_gas - frame.gas_remaining;
+    try testing.expect(gas_consumed < GasConstants.CallNewAccountGas);
+}

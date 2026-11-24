@@ -1093,3 +1093,72 @@ test "P256VERIFY STATICCALL from contract verifies gas, EIP-2929 warm access, an
         try testing.expectEqual(osaka_gas_used - 1, 100_000 - res.gas_left);
     }
 }
+
+test "nested STATICCALL executes mock bytecode when precompile override disables native at 0x01" {
+    const testing = std.testing;
+    const evm_config = @import("evm_config.zig");
+
+    const ecrecover_addr = comptime primitives.Address.fromU256(0x01);
+    const moved_addr = comptime primitives.Address.fromU256(0x100);
+    const caller_contract = comptime primitives.Address.fromU256(0xC0);
+    const origin = comptime primitives.Address.fromU256(0xAA);
+
+    const disabled = struct {
+        fn execute(_: ?*anyopaque, _: std.mem.Allocator, _: []const u8, _: u64) !evm_config.PrecompileOutput {
+            return .{ .output = &.{}, .gas_used = 0, .success = true };
+        }
+    }.execute;
+
+    const moved = struct {
+        fn execute(_: ?*anyopaque, alloc: std.mem.Allocator, input: []const u8, gas: u64) !evm_config.PrecompileOutput {
+            const precompile = @import("precompiles");
+            const result = try precompile.execute(alloc, comptime primitives.Address.fromU256(0x01), input, gas, .OSAKA);
+            return .{ .output = result.output, .gas_used = result.gas_used, .success = true };
+        }
+    }.execute;
+
+    const Configured = evm.Evm(.{
+        .precompile_overrides = &.{
+            .{ .address = moved_addr, .execute = moved },
+            .{ .address = ecrecover_addr, .execute = disabled },
+        },
+    });
+
+    // Mock bytecode at 0x01: PUSH1 0x42, PUSH1 0, MSTORE, PUSH1 32, PUSH1 0, RETURN
+    const mock_code = [_]u8{ 0x60, 0x42, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xF3 };
+
+    // Caller bytecode: STATICCALL(gas=0xFFFF, addr=0x01, inOff=0, inSz=0, outOff=0, outSz=32), POP, PUSH1 32, PUSH1 0, RETURN
+    const caller_code = [_]u8{
+        0x60, 0x20, // PUSH1 32 (retSize)
+        0x60, 0x00, // PUSH1 0 (retOffset)
+        0x60, 0x00, // PUSH1 0 (argsSize)
+        0x60, 0x00, // PUSH1 0 (argsOffset)
+        0x60, 0x01, // PUSH1 1 (address = ecrecover)
+        0x61, 0xFF, 0xFF, // PUSH2 65535 (gas)
+        0xFA, // STATICCALL
+        0x50, // POP success flag
+        0x60, 0x20, // PUSH1 32
+        0x60, 0x00, // PUSH1 0
+        0xF3, // RETURN
+    };
+
+    var instance: Configured = undefined;
+    try instance.init(testing.allocator, null, .OSAKA, null, origin, 0, null);
+    defer instance.deinit();
+
+    try instance.code.put(ecrecover_addr, &mock_code);
+    try instance.code.put(caller_contract, &caller_code);
+
+    const result = instance.call(.{ .call = .{
+        .caller = origin,
+        .to = caller_contract,
+        .value = 0,
+        .input = &.{},
+        .gas = 100_000,
+    } });
+
+    try testing.expect(result.success);
+    try testing.expectEqual(@as(usize, 32), result.output.len);
+    // The mock bytecode stores 0x42 at memory word 0 and returns it.
+    try testing.expectEqual(@as(u256, 0x42), std.mem.readInt(u256, result.output[0..32], .big));
+}
