@@ -1,0 +1,11 @@
+name = "evm-lean-spec"
+version = "0.1.0"
+defaultTargets = ["EvmSpec", "evm-lean-spec"]
+
+[[lean_lib]]
+name = "EvmSpec"
+globs = ["EvmSpec.+"]
+
+[[lean_exe]]
+name = "evm-lean-spec"
+root = "EvmSpec.Main"
