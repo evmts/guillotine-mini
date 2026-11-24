@@ -51,6 +51,8 @@ pub const BlockContext = struct {
     block_hashes: []const [32]u8 = &[_][32]u8{},
 };
 
+/// RIPEMD-160 precompile. Its EIP-161 touch survives a reverted call (EELS).
+pub const RIPEMD160_ADDRESS: Address = Address.fromU256(0x03);
 /// EIP-7951 (Osaka): address of the P256VERIFY precompile.
 pub const P256VERIFY_ADDRESS: Address = Address.fromU256(0x0100);
 /// EIP-7951: fixed gas cost for P256VERIFY regardless of input validity.
@@ -177,7 +179,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         };
 
         /// Outcome of the shared precompile dispatch used by `call` and `inner_call`.
-        const PrecompileOutcome = union(enum) {
+        pub const PrecompileOutcome = union(enum) {
             /// No precompile path handles this address.
             none,
             success: struct { gas_left: u64, output: []const u8 },
@@ -191,7 +193,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// has an entry there, so the snapshot costs O(slots written), not O(state). Balances,
         /// nonces and code are copy-on-write through the `*_snapshot_stack` lists, which hold
         /// pointers into this struct, so a live checkpoint must not move.
-        const Checkpoint = struct {
+        pub const Checkpoint = struct {
             refund: i64,
             logs_len: usize,
             touched_len: usize,
@@ -205,6 +207,12 @@ pub fn Evm(comptime config: EvmConfig) type {
             nonces: std.AutoHashMap(primitives.Address, u64),
             code: std.AutoHashMap(primitives.Address, []const u8),
         };
+
+        /// Account field an async transaction can ask the host for.
+        pub const AsyncAccountField = enum(u8) { balance, nonce, code };
+        pub const AsyncKnownKey = struct { field: AsyncAccountField, address: [20]u8 };
+        /// Transaction-scoped account code, owned by `allocator`.
+        pub const AsyncCodeView = struct { address: primitives.Address, bytes: []u8 };
 
         pub const CallParams = call_params.CallParams(config);
         pub const CallResult = call_result.CallResult(config);
@@ -220,7 +228,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         storage: Storage,
         created_accounts: std.AutoHashMap(primitives.Address, void),
         selfdestructed_accounts: std.AutoHashMap(primitives.Address, void), // EIP-6780: Track accounts marked for deletion
-        touched_accounts: std.AutoHashMap(primitives.Address, void), // Pre-Paris: Track touched accounts for deletion if empty
+        touched_accounts: std.AutoHashMap(primitives.Address, void), // EIP-161 (Spurious Dragon+): touched accounts, deleted at transaction end if empty
         balances: std.AutoHashMap(primitives.Address, u256),
         nonces: std.AutoHashMap(primitives.Address, u64),
         code: std.AutoHashMap(primitives.Address, []const u8),
@@ -267,8 +275,25 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         // Async executor (initialized after Self is fully constructed)
         async_executor: ?AsyncExecutorType = null,
-        // Direct async precompile calls have no frame to hold their result across a commit yield.
+        /// Unused: async precompile calls now run through `AsyncExecutor`, which holds the one
+        /// pending result. Kept (always null) so embedders that reset it still compile.
         pending_precompile_result: ?CallResult = null,
+
+        /// True only while `AsyncExecutor` is running a message (not while it is suspended).
+        /// Only then do missing injector data restart the transaction (see
+        /// `requestAsyncRestart`); synchronous `call()` and getters used between
+        /// continuations never request account data.
+        async_active: bool = false,
+        /// A nested frame, constructor or account lookup needs data the host has not supplied.
+        /// The executor rolls the transaction back, asks for `async_restart_request` and
+        /// replays the transaction once the host answers.
+        async_restart_pending: bool = false,
+        async_restart_request: AsyncDataRequest = .none,
+        /// Account fields the host supplied during the async transaction in flight
+        /// (transaction-arena backed). Fetched fields are dropped when it ends.
+        async_known: std.AutoHashMap(AsyncKnownKey, void),
+        /// Code installed at the call target for one async call (see `installAsyncCodeView`).
+        async_code_view: ?AsyncCodeView = null,
 
         // Accumulated logs for current transaction
         logs: std.ArrayList(call_result.Log),
@@ -280,7 +305,8 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         /// Initialize a new EVM instance with every field in a valid empty/default state.
         /// Calling `init` followed immediately by `deinit` (or pre-call accessors) is always safe and leak-free.
-        /// Config provides defaults, but hardfork can be overridden at runtime.
+        /// `hardfork == null` selects `config.hardfork`; a non-null value overrides it at runtime.
+        /// A schedule set with `setForkTransition` then picks the fork per transaction.
         pub fn init(self: *Self, allocator: std.mem.Allocator, h: ?host.HostInterface, hardfork: ?Hardfork, block_context: ?BlockContext, origin: primitives.Address, gas_price: u256, log_level: ?log.LogLevel) !void {
             // Set log level if provided
             if (log_level) |level| {
@@ -303,7 +329,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .balance_snapshot_stack = .empty,
                 .nonce_snapshot_stack = .empty,
                 .code_snapshot_stack = .empty,
-                .hardfork = hardfork orelse Hardfork.DEFAULT,
+                .hardfork = hardfork orelse config.hardfork,
                 .fork_transition = null,
                 .block_context = block_context orelse .{
                     .chain_id = 1,
@@ -334,6 +360,11 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .pending_state_changes = &.{},
                 .async_executor = null, // Initialized when needed
                 .pending_precompile_result = null,
+                .async_active = false,
+                .async_restart_pending = false,
+                .async_restart_request = .none,
+                .async_known = std.AutoHashMap(AsyncKnownKey, void).init(allocator),
+                .async_code_view = null,
                 .logs = .empty,
             };
 
@@ -349,6 +380,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.selfdestructed_accounts = AddressSet.init(tx_alloc);
             self.touched_accounts = AddressSet.init(tx_alloc);
             self.access_list_manager = AccessListManager.init(tx_alloc);
+            self.async_known = std.AutoHashMap(AsyncKnownKey, void).init(tx_alloc);
         }
 
         fn freePendingStateChanges(self: *Self) void {
@@ -385,13 +417,23 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         /// Clean up resources. Safe to call directly after `init`, without `call()`.
         pub fn deinit(self: *Self) void {
+            self.releaseAsyncCodeView();
             self.freePendingStateChanges();
             self.blob_hashes_owned.deinit(self.allocator);
             self.tx_arena.deinit();
             self.arena.deinit();
         }
 
-        /// Get the active fork based on block context (handles fork transitions)
+        /// Attach (or clear) a fork schedule. Every transaction then runs under the fork the
+        /// schedule selects for the current block number and timestamp.
+        pub fn setForkTransition(self: *Self, transition: ?primitives.ForkTransition) void {
+            self.fork_transition = transition;
+            self.hardfork = self.getActiveFork();
+        }
+
+        /// The fork a transaction started now would run under: the `fork_transition`
+        /// schedule applied to the block context, or the configured fork without one.
+        /// `initTransactionState` stores it in `hardfork`, which every rule reads.
         pub fn getActiveFork(self: *const Self) Hardfork {
             if (self.fork_transition) |transition| {
                 return transition.getActiveFork(self.block_context.block_number, self.block_context.block_timestamp);
@@ -408,8 +450,17 @@ pub fn Evm(comptime config: EvmConfig) type {
         ///
         /// `blob_versioned_hashes` is copied; `null` means the transaction carries no blobs.
         pub fn initTransactionState(self: *Self, blob_versioned_hashes: ?[]const [32]u8) !void {
+            // A new transaction supersedes an async one still suspended or awaiting its commit
+            // acknowledgement: its uncommitted writes are rolled back and it can no longer be
+            // continued. Must run before the scratch arena (which holds its checkpoint) resets.
+            if (self.async_executor) |*executor| executor.cancel();
+            self.endAsyncTransaction();
+
             self.freePendingStateChanges();
             self.pending_precompile_result = null;
+
+            // Fork schedule: frames, gas rules and precompile dispatch all read `hardfork`.
+            self.hardfork = self.getActiveFork();
 
             // Copy blob hashes (EIP-4844) before anything is recycled: the caller may free its
             // slice after this call, and may also hand back our own previous copy.
@@ -462,6 +513,132 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.balance_snapshot_stack = .empty;
             self.nonce_snapshot_stack = .empty;
             self.code_snapshot_stack = .empty;
+            self.async_known = std.AutoHashMap(AsyncKnownKey, void).init(tx_alloc);
+        }
+
+        // ---- Async (storage injector) account lookups -------------------------------------
+        //
+        // Exact behavior, for an `AsyncExecutor` transaction on a hostless EVM with a storage
+        // injector attached (in every other configuration lookups are synchronous and final):
+        //
+        //   - `get_balance`, `getNonce` and `get_raw_code` (and so `get_code`,
+        //     `get_delegated_target`, `accountIsEmpty`, value transfers, CALL-family code
+        //     resolution and CREATE collision checks) answer from the local account maps. A
+        //     field that is in neither the local map nor `async_known` is a miss.
+        //   - These getters cannot fail, so a miss is handled by restart: the getter returns
+        //     zero/empty, `requestAsyncRestart` records the first missing field and stops every
+        //     live frame, the executor rolls the transaction back to its root checkpoint,
+        //     yields `.need_balance` / `.need_nonce` / `.need_code`, and replays the
+        //     transaction from the start once the host replies. Zero and empty replies are
+        //     remembered, so each field is requested at most once per transaction.
+        //   - A storage miss in a nested call or constructor takes the same restart path
+        //     (`.need_storage`). A storage miss in the top-level frame suspends and resumes
+        //     that frame in place.
+        //   - Fetched fields live for one transaction and are dropped when it ends; the host
+        //     stays authoritative. Fields the embedder installed locally are never requested.
+        //   - Never requested: the nonce of an account whose code is installed locally (the
+        //     account is locally defined); the nonce and code of an account created by this
+        //     transaction; the destination of a nonce-derived CREATE (its address cannot
+        //     pre-exist short of a hash collision, so EIP-684 is checked on local data);
+        //     the creator's balance for a zero-value creation. CREATE2 destinations, which
+        //     can pre-exist, are requested.
+        //   - Not covered: opcode handlers that read `balances`/`nonces`/`code` directly
+        //     (EXTCODESIZE, EXTCODECOPY, EXTCODEHASH, SELFDESTRUCT and the EIP-161 liveness
+        //     probe of CALL) see only local and already-fetched data.
+
+        /// Record that the transaction in flight cannot finish without `request` and stop
+        /// every live frame. The first request wins; later ones come from execution that
+        /// already ran on missing data. No-op outside an async transaction.
+        pub fn requestAsyncRestart(self: *Self, request: AsyncDataRequest) void {
+            if (!self.async_active or self.async_restart_pending or request == .none) return;
+            self.async_restart_pending = true;
+            self.async_restart_request = request;
+            for (self.frames.items) |*frame| frame.stopped = true;
+        }
+
+        pub fn clearAsyncRestart(self: *Self) void {
+            self.async_restart_pending = false;
+            self.async_restart_request = .none;
+        }
+
+        fn noteAccountMiss(self: *Self, comptime field: AsyncAccountField, address: primitives.Address) void {
+            if (!self.async_active or self.storage.storage_injector == null) return;
+            if (self.async_known.contains(.{ .field = field, .address = address.bytes })) return;
+            if (field != .balance) {
+                // An account created by this transaction has exactly the nonce and code the
+                // transaction gave it.
+                if (self.created_accounts.contains(address)) return;
+            }
+            if (field == .nonce) {
+                // An account whose code the embedder installed (or supplied for this call) is
+                // defined locally, nonce included. Code fetched from the host does not count.
+                const code_is_local = self.code.contains(address) and
+                    !self.async_known.contains(.{ .field = .code, .address = address.bytes });
+                if (code_is_local) return;
+            }
+            self.requestAsyncRestart(switch (field) {
+                .balance => .{ .balance = .{ .address = address } },
+                .nonce => .{ .nonce = .{ .address = address } },
+                .code => .{ .code = .{ .address = address } },
+            });
+        }
+
+        /// Store a host reply for an account field. Fetched values are baseline state, not
+        /// transaction writes, so they bypass the revert journal.
+        pub fn supplyAsyncBalance(self: *Self, address: primitives.Address, balance: u256) !void {
+            try self.async_known.put(.{ .field = .balance, .address = address.bytes }, {});
+            try self.balances.put(address, balance);
+        }
+
+        pub fn supplyAsyncNonce(self: *Self, address: primitives.Address, nonce: u64) !void {
+            try self.async_known.put(.{ .field = .nonce, .address = address.bytes }, {});
+            if (nonce != 0) try self.nonces.put(address, nonce);
+        }
+
+        /// `code` is copied into the transaction arena.
+        pub fn supplyAsyncCode(self: *Self, address: primitives.Address, code: []const u8) !void {
+            try self.async_known.put(.{ .field = .code, .address = address.bytes }, {});
+            if (code.len != 0) try self.code.put(address, try self.tx_arena.allocator().dupe(u8, code));
+        }
+
+        /// Make `bytes` the code of `address` for one async call, so EXTCODE* and re-entrant
+        /// calls see the code the call runs (as the synchronous C entry point does). Hostless
+        /// only. Released by `endAsyncTransaction`.
+        pub fn installAsyncCodeView(self: *Self, address: primitives.Address, bytes: []const u8) ![]const u8 {
+            self.releaseAsyncCodeView();
+            const owned = try self.allocator.dupe(u8, bytes);
+            errdefer self.allocator.free(owned);
+            try self.code.put(address, owned);
+            self.async_code_view = .{ .address = address, .bytes = owned };
+            return owned;
+        }
+
+        fn releaseAsyncCodeView(self: *Self) void {
+            const view = self.async_code_view orelse return;
+            self.async_code_view = null;
+            // Leave the entry alone when the transaction replaced or deleted the code.
+            if (self.code.get(view.address)) |current| {
+                if (current.ptr == view.bytes.ptr) _ = self.code.remove(view.address);
+            }
+            self.allocator.free(view.bytes);
+        }
+
+        /// Drop everything scoped to an async transaction: the restart request, the code view
+        /// and every account field fetched from the host. Idempotent.
+        pub fn endAsyncTransaction(self: *Self) void {
+            self.async_active = false;
+            self.clearAsyncRestart();
+            self.releaseAsyncCodeView();
+            var it = self.async_known.keyIterator();
+            while (it.next()) |key| {
+                const address = primitives.Address{ .bytes = key.address };
+                switch (key.field) {
+                    .balance => _ = self.balances.remove(address),
+                    .nonce => _ = self.nonces.remove(address),
+                    .code => _ = self.code.remove(address),
+                }
+            }
+            self.async_known.clearRetainingCapacity();
         }
 
         /// Set tracer for EIP-3155 trace capture
@@ -586,6 +763,12 @@ pub fn Evm(comptime config: EvmConfig) type {
         fn writeBalanceRaw(self: *Self, addr: primitives.Address, balance: u256) !void {
             if (self.host) |h| {
                 h.setBalance(addr, balance);
+            } else if (balance == 0 and self.storage.storage_injector != null) {
+                // Injector mode: a zero pre-image may be an account whose balance was never
+                // fetched. Leaving an explicit zero would make it look locally known; without
+                // an entry it reads as zero when fetched (`async_known`) and is requested from
+                // the host otherwise.
+                _ = self.balances.remove(addr);
             } else {
                 try self.balances.put(addr, balance);
             }
@@ -603,7 +786,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         /// Move `value` wei from `from` to `to` through the balance journal.
         /// Reads the recipient after debiting the sender, so a self-transfer is a no-op.
-        fn transferValue(self: *Self, from: primitives.Address, to: primitives.Address, value: u256) errors.CallError!void {
+        pub fn transferValue(self: *Self, from: primitives.Address, to: primitives.Address, value: u256) errors.CallError!void {
             const from_balance = self.get_balance(from);
             if (from_balance < value) return error.InsufficientBalance;
             try self.setBalanceWithSnapshot(from, from_balance - value);
@@ -614,7 +797,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Record `addr` as touched (EIP-161). Journaled so a reverted message un-touches it.
-        fn touchAccount(self: *Self, addr: primitives.Address) !void {
+        pub fn touchAccount(self: *Self, addr: primitives.Address) !void {
             const entry = try self.touched_accounts.getOrPut(addr);
             if (entry.found_existing) return;
             self.touched_journal.append(self.tx_arena.allocator(), addr) catch |err| {
@@ -623,7 +806,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             };
         }
 
-        fn touchCallTarget(self: *Self, addr: primitives.Address) !void {
+        pub fn touchCallTarget(self: *Self, addr: primitives.Address) !void {
             try self.touchAccount(addr);
 
             // Before EIP-161, a successful zero-value CALL to an otherwise empty
@@ -645,18 +828,13 @@ pub fn Evm(comptime config: EvmConfig) type {
             return balance == 0 and nonce == 0 and self.get_raw_code(addr).len == 0;
         }
 
+        /// Hostless: an account exists when it has a balance, a nonce, code or a non-zero
+        /// storage slot. Zero-valued storage entries (cleared slots, or slots the async overlay
+        /// holds explicitly) do not make an account exist.
         pub fn accountExists(self: *Self, addr: primitives.Address) bool {
             if (self.host) |h| return h.accountExists(addr);
             if (self.get_balance(addr) != 0 or (self.nonces.get(addr) orelse 0) != 0 or self.get_raw_code(addr).len != 0) return true;
-            var storage_it = self.storage.storage.iterator();
-            while (storage_it.next()) |entry| {
-                if (std.mem.eql(u8, &entry.key_ptr.*.address, &addr.bytes)) return true;
-            }
-            var original_storage_it = self.storage.original_storage.iterator();
-            while (original_storage_it.next()) |entry| {
-                if (std.mem.eql(u8, &entry.key_ptr.*.address, &addr.bytes)) return true;
-            }
-            return false;
+            return self.accountHasStorage(addr);
         }
 
         /// EIP-7610: whether `addr` currently has any non-zero storage slot.
@@ -693,18 +871,41 @@ pub fn Evm(comptime config: EvmConfig) type {
             }
         }
 
+        /// Nonce and code as held right now (host or local map), never requesting async data.
+        fn peekNonce(self: *Self, addr: primitives.Address) u64 {
+            if (self.host) |h| return h.getNonce(addr);
+            return self.nonces.get(addr) orelse 0;
+        }
+
+        fn peekRawCode(self: *Self, addr: primitives.Address) []const u8 {
+            if (self.host) |h| return h.getCode(addr);
+            return self.code.get(addr) orelse &[_]u8{};
+        }
+
+        fn peekBalance(self: *Self, addr: primitives.Address) u256 {
+            if (self.host) |h| return h.getBalance(addr);
+            return self.balances.get(addr) orelse 0;
+        }
+
+        /// Drop a locally held, existing-but-empty destination before a creation. Works on
+        /// the data at hand: it only tidies local entries, so it never requests async data.
         fn clearExistingEmptyAccountForCreate(self: *Self, addr: primitives.Address) void {
-            if (!self.accountIsEmpty(addr) or !self.accountExists(addr)) return;
+            const is_empty = self.peekBalance(addr) == 0 and self.peekNonce(addr) == 0 and self.peekRawCode(addr).len == 0;
+            if (!is_empty) return;
+            const exists = if (self.host) |h| h.accountExists(addr) else self.accountHasStorage(addr);
+            if (!exists) return;
             self.deleteAccountState(addr);
         }
 
+        /// EIP-161: delete every account touched by the transaction that is empty at its end.
         fn cleanup_touched_empty_accounts_end_of_tx(self: *Self) void {
             if (self.hardfork.isBefore(.SPURIOUS_DRAGON)) return;
 
             var it = self.touched_accounts.iterator();
             while (it.next()) |entry| {
                 const addr = entry.key_ptr.*;
-                if (Self.isPrecompileAddress(addr, self.hardfork)) continue;
+                // EELS `destroy_touched_empty_accounts` has no precompile exemption: an empty
+                // account that happens to sit at a precompile address is deleted like any other.
                 if (self.accountIsEmpty(addr)) {
                     self.deleteAccountState(addr);
                 }
@@ -712,7 +913,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Pre-warm addresses for transaction initialization
-        fn pre_warm_addresses(self: *Self, addresses: []const primitives.Address) !void {
+        pub fn pre_warm_addresses(self: *Self, addresses: []const primitives.Address) !void {
             self.access_list_manager.pre_warm_addresses(addresses) catch {
                 return errors.CallError.StorageError;
             };
@@ -723,7 +924,9 @@ pub fn Evm(comptime config: EvmConfig) type {
             if (self.host) |h| {
                 return h.getNonce(address);
             }
-            return self.nonces.get(address) orelse 0;
+            if (self.nonces.get(address)) |nonce| return nonce;
+            self.noteAccountMiss(.nonce, address);
+            return 0;
         }
 
         /// Compute CREATE address: keccak256(rlp([sender, nonce]))[12:]
@@ -850,7 +1053,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         /// Warm the transaction participants: origin, `target` (every real destination,
         /// including the zero address) and, from Shanghai, the coinbase.
-        fn preWarmParticipants(self: *Self, target: primitives.Address) errors.CallError!void {
+        pub fn preWarmParticipants(self: *Self, target: primitives.Address) errors.CallError!void {
             if (!self.hardfork.isAtLeast(.BERLIN)) return;
 
             var warm: [3]primitives.Address = undefined;
@@ -948,16 +1151,9 @@ pub fn Evm(comptime config: EvmConfig) type {
             const result_alloc = self.arena.allocator();
 
             const target = params.get_to();
-            const target_is_precompile = if (target) |addr| Self.isPrecompileAddress(addr, self.hardfork) else false;
 
             // Validate parameters
-            params.validate() catch |err| {
-                // EIP-7951 P256VERIFY rejects any non-160-byte input at fixed gas, even
-                // above the general calldata size cap.
-                if (err != error.InvalidInputSize or !target_is_precompile or !target.?.equals(P256VERIFY_ADDRESS)) {
-                    return failedResult(0);
-                }
-            };
+            params.validate() catch return failedResult(0);
 
             const caller = params.getCaller();
             const gas = params.getGas();
@@ -966,6 +1162,9 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // Initialize transaction state (warms active precompiles on Berlin+)
             self.initTransactionState(blob_versioned_hashes) catch return failedResult(0);
+
+            // Resolved only now: `initTransactionState` selects the fork for this block.
+            const target_is_precompile = if (target) |addr| Self.isPrecompileAddress(addr, self.hardfork) else false;
 
             // Pre-warm access list (EIP-2929/EIP-2930)
             if (access_list) |list| {
@@ -985,14 +1184,23 @@ pub fn Evm(comptime config: EvmConfig) type {
                     .create2 => |p| p.salt,
                     else => null,
                 };
+                // The creation commits only once the result is owned by the caller: a failure
+                // while building it must not leave the new contract behind a failed result.
+                var create_cp: Checkpoint = undefined;
+                self.takeCheckpoint(&create_cp) catch return failedResult(0);
+                defer self.releaseCheckpoint(&create_cp);
+
                 const created = self.createFrom(caller, create_value, calldata, gas, salt, true) catch |err| {
+                    self.revertBestEffort(&create_cp);
                     return CallResult.failure_with_error(result_alloc, 0, @errorName(err)) catch failedResult(0);
                 };
                 if (!created.success) {
                     return CallResult.revert_with_data(result_alloc, created.gas_left, created.output) catch failedResult(created.gas_left);
                 }
 
-                var result = CallResult.success_with_logs(result_alloc, created.gas_left, &.{}, self.logs.items) catch return failedResult(0);
+                var result = CallResult.success_with_logs(result_alloc, created.gas_left, &.{}, self.logs.items) catch {
+                    return self.failAndRevert(&create_cp);
+                };
                 result.refund_counter = self.get_effective_refund();
                 result.created_address = created.address;
                 self.commitTransaction();
@@ -1003,12 +1211,16 @@ pub fn Evm(comptime config: EvmConfig) type {
             //   CALL / STATICCALL: code and storage of `to`; STATICCALL is read-only.
             //   CALLCODE / DELEGATECALL: code of `to` in the caller's storage; no transfer.
             const address = target.?;
+            // CALLVALUE of the frame. DELEGATECALL carries the value it inherits (EIP-7); it is
+            // visible to the code but never checked against a balance or transferred.
             const value: u256 = switch (params) {
                 .call => |p| p.value,
                 .callcode => |p| p.value,
+                .delegatecall => |p| p.value,
                 else => 0,
             };
             const transfers_value = params == .call;
+            const requires_balance = params == .call or params == .callcode;
             const is_static = params == .staticcall;
             const execution_address = switch (params) {
                 .callcode, .delegatecall => caller,
@@ -1036,7 +1248,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.takeCheckpoint(&cp) catch return failedResult(0);
             defer self.releaseCheckpoint(&cp);
 
-            if (value > 0) {
+            if (value > 0 and requires_balance) {
                 if (self.get_balance(caller) < value) return failedResult(0);
                 if (transfers_value) {
                     self.transferValue(caller, address, value) catch return self.failAndRevert(&cp);
@@ -1111,14 +1323,14 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         /// End-of-transaction effects that apply only when the transaction succeeded:
         /// delete self-destructed accounts (EIP-6780) and touched empty accounts (EIP-161).
-        fn commitTransaction(self: *Self) void {
+        pub fn commitTransaction(self: *Self) void {
             self.cleanup_selfdestructed_accounts_end_of_tx();
             self.cleanup_touched_empty_accounts_end_of_tx();
         }
 
         /// Drop everything scoped to the finished transaction so nothing leaks into the next
         /// call on this instance. Runs on every exit path. `gas_refund` is left readable.
-        fn finishTransaction(self: *Self) void {
+        pub fn finishTransaction(self: *Self) void {
             self.access_list_manager.clear();
             self.storage.clear_transient();
             self.logs.clearRetainingCapacity();
@@ -1136,7 +1348,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Shared precompile dispatch for top-level and nested calls: JavaScript handler,
         /// then configured override, then the standard precompile when `is_standard`.
         /// A handler that reports failure, or more gas than it was given, fails the call.
-        fn runPrecompile(
+        pub fn runPrecompile(
             self: *Self,
             out_alloc: std.mem.Allocator,
             address: primitives.Address,
@@ -1182,117 +1394,19 @@ pub fn Evm(comptime config: EvmConfig) type {
             return .none;
         }
 
-        /// Main async execution method - supports yielding for async requests
-        /// CRITICAL: NO defer statements that clean up state!
-        /// This wraps call() but supports yielding for async data requests
+        /// Asynchronous entry point: start a transaction or continue a suspended one.
+        ///
+        /// Every variant (calls to code, precompiles and overrides, CREATE and CREATE2) runs
+        /// through the one `AsyncExecutor`, which owns the root checkpoint, the single pending
+        /// request and the single pending commit acknowledgement. See `async_executor.zig`.
         pub fn callOrContinue(
             self: *Self,
             input: CallOrContinueInput,
         ) !CallOrContinueOutput {
-            switch (input) {
-                .call => |params| dispatch: {
-                    self.pending_precompile_result = null;
-                    const target = params.get_to() orelse break :dispatch;
-                    if (!Self.isPrecompileAddress(target, self.hardfork)) break :dispatch;
-                    if (self.pending_storage_injector orelse self.storage.storage_injector) |injector| {
-                        injector.clearCache();
-                    }
-                    const result = self.call(params);
-                    if (result.success and self.storage.storage_injector != null) {
-                        const json = try self.dumpStateChanges();
-                        self.pending_precompile_result = result;
-                        return .{ .ready_to_commit = .{ .changes_json = json } };
-                    }
-                    return .{ .result = result };
-                },
-                .continue_after_commit => if (self.pending_precompile_result) |result| {
-                    self.pending_precompile_result = null;
-                    return .{ .result = result };
-                },
-                else => {},
-            }
-
-            // Initialize async executor on first use
             if (self.async_executor == null) {
                 self.async_executor = AsyncExecutorType.init(self);
             }
-
-            // Delegate to async executor
             return try self.async_executor.?.callOrContinue(input);
-        }
-
-        /// Execute until we hit a yield point or complete
-        /// NO defer statements!
-        pub fn executeUntilYieldOrComplete(self: *Self) !CallOrContinueOutput {
-            while (self.frames.items.len > 0) {
-                const frame = &self.frames.items[self.frames.items.len - 1];
-
-                // Execute frame - may return error.NeedAsyncData
-                frame.execute() catch |err| {
-                    if (err == error.NeedAsyncData) {
-                        // Read the request from evm.async_data_request
-                        return switch (self.storage.async_data_request) {
-                            .storage => |req| .{ .need_storage = .{
-                                .address = req.address,
-                                .slot = req.slot,
-                            } },
-                            .balance => |req| .{ .need_balance = .{ .address = req.address } },
-                            .code => |req| .{ .need_code = .{ .address = req.address } },
-                            .nonce => |req| .{ .need_nonce = .{ .address = req.address } },
-                            .none => error.InvalidAsyncState,
-                        };
-                    }
-
-                    // Real error - return it (state preserved for debugging)
-                    return err;
-                };
-
-                // Frame completed successfully
-                // Check if this is the last frame AND we have storage injector
-                if (self.frames.items.len == 1 and self.storage.storage_injector != null) {
-                    log.debug("executeUntilYieldOrComplete: Last frame, dumping changes", .{});
-                    // Don't pop yet - need to dump changes first
-                    const changes_json = try self.dumpStateChanges();
-                    log.debug("executeUntilYieldOrComplete: changes_json.len = {}", .{changes_json.len});
-                    return .{ .ready_to_commit = .{ .changes_json = changes_json } };
-                }
-
-                // Pop frame (safe - not returning early)
-                _ = self.frames.pop();
-            }
-
-            // All frames complete, no storage injector
-            return try self.finalizeAndReturnResult();
-        }
-
-        /// Finalize execution and return result
-        /// Called only when we're truly done (after commit if needed)
-        pub fn finalizeAndReturnResult(self: *Self) !CallOrContinueOutput {
-            // At this point frames should be empty OR we have one frame to finalize
-            if (self.frames.items.len > 0) {
-                const frame = self.frames.items[self.frames.items.len - 1];
-                const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-                const result_alloc = self.arena.allocator();
-
-                var result = if (frame.reverted)
-                    try CallResult.revert_with_data(result_alloc, gas_left, frame.output)
-                else
-                    try CallResult.success_with_logs(result_alloc, gas_left, frame.output, self.logs.items);
-                result.refund_counter = if (frame.reverted) 0 else self.get_effective_refund();
-
-                // Same end-of-transaction path as the synchronous `call()`.
-                if (!frame.reverted) self.commitTransaction();
-                self.finishTransaction();
-
-                return .{ .result = result };
-            }
-
-            return .{ .result = CallResult{
-                .success = true,
-                .gas_left = 0,
-                .output = &.{},
-                .refund_counter = self.get_effective_refund(),
-            } };
         }
 
         /// Dump state changes to JSON into a heap-allocated owned slice on `self`
@@ -1323,17 +1437,26 @@ pub fn Evm(comptime config: EvmConfig) type {
                 const addr = entry.key_ptr.*;
                 self.deleteAccountState(addr);
             }
-            self.selfdestructed_accounts.clearRetainingCapacity();
+            // The set is kept until `finishTransaction`: the async commit dump still reports it.
         }
 
         fn currentStorageValue(self: *Self, key: StorageKey) u256 {
+            if (self.storage.storage_injector != null) {
+                if (self.storage.storage.get(key)) |value| return value;
+            }
             if (self.host) |h| return h.getStorage(primitives.Address{ .bytes = key.address }, key.slot);
             return self.storage.storage.get(key) orelse 0;
         }
 
         fn writeStorageRaw(self: *Self, key: StorageKey, value: u256) !void {
-            if (self.host) |h| {
-                h.setStorage(primitives.Address{ .bytes = key.address }, key.slot, value);
+            if (self.host) |h| h.setStorage(primitives.Address{ .bytes = key.address }, key.slot, value);
+            if (self.storage.storage_injector != null) {
+                // Injector mode reads the overlay first, so a rollback must restore it too,
+                // as an explicit entry: a missing one would fall back to the fetch cache,
+                // which still holds the reverted write.
+                try self.storage.storage.put(key, value);
+            } else if (self.host != null) {
+                return;
             } else if (value == 0) {
                 _ = self.storage.storage.remove(key);
             } else {
@@ -1342,7 +1465,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Open a revert point. `cp` must stay at a fixed address until `releaseCheckpoint`.
-        fn takeCheckpoint(self: *Self, cp: *Checkpoint) !void {
+        pub fn takeCheckpoint(self: *Self, cp: *Checkpoint) !void {
             const tx_alloc = self.tx_arena.allocator();
 
             var access_list = try self.access_list_manager.snapshot();
@@ -1379,7 +1502,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Close a revert point (after commit or revert). Checkpoints nest strictly.
-        fn releaseCheckpoint(self: *Self, cp: *Checkpoint) void {
+        pub fn releaseCheckpoint(self: *Self, cp: *Checkpoint) void {
             _ = self.code_snapshot_stack.pop();
             _ = self.nonce_snapshot_stack.pop();
             _ = self.balance_snapshot_stack.pop();
@@ -1390,14 +1513,22 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// refund counter, logs, touched accounts, warm sets, storage, original storage,
         /// transient storage, self-destructed and created sets, balances, nonces and code.
         /// Per EELS `incorporate_child_on_error`, nothing of a failed message survives.
-        fn revertToCheckpoint(self: *Self, cp: *const Checkpoint) !void {
+        pub fn revertToCheckpoint(self: *Self, cp: *const Checkpoint) !void {
             self.gas_refund = cp.refund;
             self.logs.shrinkRetainingCapacity(cp.logs_len);
 
+            // EELS `incorporate_child_on_error`: a reverted message un-touches its accounts,
+            // except RIPEMD-160 (0x03), which stays touched to preserve mainnet block 2675119.
+            var keep_ripemd = false;
             while (self.touched_journal.items.len > cp.touched_len) {
                 const addr = self.touched_journal.pop().?;
+                if (addr.equals(RIPEMD160_ADDRESS)) {
+                    keep_ripemd = true;
+                    continue;
+                }
                 _ = self.touched_accounts.remove(addr);
             }
+            if (keep_ripemd) try self.touched_journal.append(self.tx_arena.allocator(), RIPEMD160_ADDRESS);
 
             // Warm addresses and slots (EIP-2929) propagate to the parent only on success.
             try self.access_list_manager.restore(cp.access_list);
@@ -1455,7 +1586,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Whether another frame may be pushed. Guarantees `frames` never reallocates while
         /// ancestors hold `*Frame`: the depth budget is reserved when no frame is live, and a
         /// list built by other means is never grown past its capacity.
-        fn canPushFrame(self: *Self) bool {
+        pub fn canPushFrame(self: *Self) bool {
             if (self.frames.items.len >= max_frames) return false;
             if (self.frames.items.len == 0 and self.frames.capacity < max_frames) {
                 self.frames.ensureTotalCapacityPrecise(self.tx_arena.allocator(), max_frames) catch return false;
@@ -1467,6 +1598,10 @@ pub fn Evm(comptime config: EvmConfig) type {
         ///
         /// A failed call (REVERT, exceptional halt or precompile failure) rolls back every state
         /// change it made. `output` carries return data on success and revert data on REVERT.
+        ///
+        /// Async transactions: when the callee needs data the host has not supplied, the call
+        /// reports failure, `async_restart_pending` is set and all frames stop; the result is
+        /// discarded and the transaction replayed (see `requestAsyncRestart`).
         pub fn inner_call(
             self: *Self,
             params: CallParams,
@@ -1550,7 +1685,15 @@ pub fn Evm(comptime config: EvmConfig) type {
                 var output: []const u8 = &[_]u8{};
                 switch (self.runPrecompile(tx_alloc, address, input, gas, is_precompile)) {
                     // A failed precompile consumes its gas and undoes the value transfer.
-                    .failure => return self.failAndRevert(&cp),
+                    .failure => {
+                        const failed = self.failAndRevert(&cp);
+                        // EELS touches the target before running it and keeps the touch of
+                        // RIPEMD-160 when the call fails (see `revertToCheckpoint`).
+                        if (call_type == .Call and address.equals(RIPEMD160_ADDRESS)) {
+                            self.touchAccount(address) catch return failedResult(0);
+                        }
+                        return failed;
+                    },
                     .success => |done| {
                         gas_left = done.gas_left;
                         output = done.output;
@@ -1578,15 +1721,27 @@ pub fn Evm(comptime config: EvmConfig) type {
                 self.hardfork,
                 is_static,
             ) catch return self.failAndRevert(&cp);
+            // Resolving the callee already hit missing async data: do not run it on a guess.
+            if (self.async_restart_pending) return self.failAndRevert(&cp);
             // `canPushFrame` reserved the slot: this never reallocates `frames`.
             self.frames.appendAssumeCapacity(child_frame);
             const frame_index = self.frames.items.len - 1;
 
-            self.frames.items[frame_index].execute() catch {
-                // Exceptional halt: all forwarded gas is consumed.
+            self.frames.items[frame_index].execute() catch |err| {
                 self.frames.shrinkRetainingCapacity(frame_index);
+                // Missing async data is not a failure of the callee. This function cannot
+                // return an error, so the request is recorded, every ancestor frame is stopped
+                // and the executor replays the transaction once the host has answered. In a
+                // synchronous `call()` nothing can answer, so the callee fails as before.
+                if (err == error.NeedAsyncData) self.requestAsyncRestart(self.storage.async_data_request);
+                // Exceptional halt: all forwarded gas is consumed.
                 return self.failAndRevert(&cp);
             };
+            if (self.async_restart_pending) {
+                // The callee (or a descendant) was stopped for missing data; its result is void.
+                self.frames.shrinkRetainingCapacity(frame_index);
+                return self.failAndRevert(&cp);
+            }
 
             const frame = &self.frames.items[frame_index];
             const reverted = frame.reverted;
@@ -1619,8 +1774,10 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// and the nonce is not incremented again here.
         ///
         /// Returns `error.OutOfGas` for init code over the EIP-3860 limit, which halts the
-        /// calling frame. Every other failure returns `success = false` with the destination
-        /// account, endowment and all init-code effects rolled back.
+        /// calling frame, and `error.NeedAsyncData` when an async transaction must fetch data
+        /// before the creation can run (the caller's frame unwinds; nothing is committed).
+        /// Every other failure returns `success = false` with the destination account,
+        /// endowment and all init-code effects rolled back.
         pub fn inner_create(
             self: *Self,
             value: u256,
@@ -1635,7 +1792,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         /// Shared creation path for the CREATE/CREATE2 opcodes and creation transactions.
         /// Check order follows EELS `generic_create` and `process_create_message`.
-        fn createFrom(
+        pub fn createFrom(
             self: *Self,
             caller: primitives.Address,
             value: u256,
@@ -1665,8 +1822,11 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // 2. Insufficient balance, nonce overflow or depth limit: fail, gas is returned.
             const sender_nonce = self.getNonce(caller);
-            if (self.get_balance(caller) < value or
-                sender_nonce == std.math.maxInt(u64) or
+            //    The nonce guard belongs to whoever increments it: the opcode does so below,
+            //    while a creation transaction arrives already incremented (possibly to 2^64-1
+            //    from the last valid nonce 2^64-2) and is not incremented again.
+            if ((value > 0 and self.get_balance(caller) < value) or
+                (!is_top_level_create and sender_nonce == std.math.maxInt(u64)) or
                 !self.canPushFrame())
             {
                 return failed_gas_returned;
@@ -1690,8 +1850,13 @@ pub fn Evm(comptime config: EvmConfig) type {
             // 5. Collision (EIP-684, EIP-7610): the destination has a nonce, code or storage.
             //    The creator nonce is still incremented and all forwarded gas is consumed.
             //    Nothing at the destination is modified, so a pre-existing balance is kept.
-            const has_collision = self.getNonce(new_address) > 0 or
-                self.get_raw_code(new_address).len > 0 or
+            //    A CREATE2 address can pre-exist (same salt and init code), so in an async
+            //    transaction its nonce and code are requested from the host. A nonce-derived
+            //    address cannot, short of a hash collision: it is checked on the data at hand.
+            const destination_nonce = if (salt != null) self.getNonce(new_address) else self.peekNonce(new_address);
+            const destination_code = if (salt != null) self.get_raw_code(new_address) else self.peekRawCode(new_address);
+            const has_collision = destination_nonce > 0 or
+                destination_code.len > 0 or
                 self.accountHasStorage(new_address);
             if (has_collision) {
                 if (!is_top_level_create) try self.setNonceWithSnapshot(caller, sender_nonce + 1);
@@ -1738,16 +1903,29 @@ pub fn Evm(comptime config: EvmConfig) type {
                 self.hardfork,
                 false, // creation is never static
             );
+            // The balance, nonce or collision checks above ran on missing async data: unwind
+            // (the `errdefer` rolls back) and let the executor fetch it and replay.
+            if (self.async_restart_pending) return error.NeedAsyncData;
             // `canPushFrame` reserved the slot: this never reallocates `frames`.
             self.frames.appendAssumeCapacity(init_frame);
             const frame_index = self.frames.items.len - 1;
 
-            self.frames.items[frame_index].execute() catch {
-                // Exceptional halt in init code: all gas consumed, no return data.
+            self.frames.items[frame_index].execute() catch |err| {
                 self.frames.shrinkRetainingCapacity(frame_index);
                 try self.revertToCheckpoint(&cp);
+                if (err == error.NeedAsyncData and self.async_active) {
+                    // Init code needs data the host has not supplied: propagate instead of
+                    // failing the creation, so the transaction is replayed with the data.
+                    self.requestAsyncRestart(self.storage.async_data_request);
+                    return error.NeedAsyncData;
+                }
+                // Exceptional halt in init code: all gas consumed, no return data.
                 return failed_all_gas;
             };
+            if (self.async_restart_pending) {
+                self.frames.shrinkRetainingCapacity(frame_index);
+                return error.NeedAsyncData;
+            }
 
             const frame = &self.frames.items[frame_index];
             const reverted = frame.reverted;
@@ -1816,14 +1994,18 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Get balance of an address (called by frame)
         pub fn get_balance(self: *Self, address: primitives.Address) u256 {
             if (self.host) |h| return h.getBalance(address);
-            return self.balances.get(address) orelse 0;
+            if (self.balances.get(address)) |balance| return balance;
+            self.noteAccountMiss(.balance, address);
+            return 0;
         }
 
         /// Code stored at `address`, exactly as stored. An EIP-7702 delegation designator
         /// (`0xef0100 ++ target`) is returned as-is, not followed.
         pub fn get_raw_code(self: *Self, address: primitives.Address) []const u8 {
             if (self.host) |h| return h.getCode(address);
-            return self.code.get(address) orelse &[_]u8{};
+            if (self.code.get(address)) |code| return code;
+            self.noteAccountMiss(.code, address);
+            return &[_]u8{};
         }
 
         /// EIP-7702 (Prague+): the delegation target of `address`, or null when its code is
@@ -1859,10 +2041,10 @@ pub fn Evm(comptime config: EvmConfig) type {
             return 0;
         }
 
-        /// Get current frame's bytecode (for tracer)
+        /// Raw code bytes of the current frame (for tracers); empty when no frame is live.
         pub fn getBytecode(self: *const Self) []const u8 {
             if (self.frames.items.len > 0) {
-                return self.frames.items[self.frames.items.len - 1].bytecode;
+                return self.frames.items[self.frames.items.len - 1].bytecode.code;
             }
             return &[_]u8{};
         }

@@ -1,17 +1,48 @@
-/// Async execution orchestrator for the EVM
-/// Handles yielding for async data requests (storage, balance, code, nonce)
-/// and resuming execution when data is provided
+/// Async execution orchestrator for the EVM.
+///
+/// Runs one transaction-level message and yields to the host whenever it needs
+/// data the host has not supplied (storage slots, balances, code, nonces).
 ///
 /// Protocol state machine:
 ///
-///     idle --call--> awaiting_data --matching continue_with_*--> (resume)
+///     idle --call--> awaiting_data --matching continue_with_*--> (resume or replay)
 ///      ^   \                |
 ///      |    \               +--> awaiting_commit --continue_after_commit--> idle
 ///      |     \                        ^
 ///      |      +--success + injector---+
 ///      +---- revert / exceptional halt / no injector: `.result` directly
 ///
-/// A continuation that does not answer the outstanding request (wrong kind,
+/// Transaction semantics (identical to the synchronous `Evm.call`):
+///
+///   - A root `Checkpoint` is taken before the message runs. REVERT, an
+///     exceptional halt, a host-side error and cancellation all restore it:
+///     storage, balances, nonces, code, logs, self-destruct and touched sets,
+///     warm sets and the refund counter. `ready_to_commit` is never emitted
+///     for a failed transaction.
+///   - On success `Evm.commitTransaction` (self-destruct and EIP-161 deletions)
+///     runs first; only then are the changes serialized or the result returned.
+///   - CALL, CALLCODE, DELEGATECALL, STATICCALL, CREATE and CREATE2 use the
+///     same caller, execution address, CALLVALUE, static flag and value
+///     transfer rules as `Evm.call`, with or without a host. Standard
+///     precompiles, registered overrides and JavaScript handlers dispatch
+///     through the shared `Evm.runPrecompile`.
+///   - Frames, calldata, bytecode copies and results live in `evm.tx_arena`.
+///     A result stays valid until the next transaction starts on the EVM.
+///
+/// Missing data is handled in one of two ways:
+///
+///   - Resume: a storage miss in the top-level frame keeps that frame and the
+///     root checkpoint, and re-runs the interrupted opcode after the reply.
+///   - Restart: a miss in a nested call, a constructor or an account lookup
+///     rolls back to the root checkpoint and replays the whole message after
+///     the reply. Replies are cached for the transaction, so every replay
+///     gets further; execution is deterministic, so the result is the same as
+///     if the data had been present from the start.
+///
+/// There is exactly one pending operation. Starting a new call (async or
+/// synchronous) cancels a suspended transaction, rolls back its writes and
+/// invalidates its outstanding request and commit acknowledgement. A
+/// continuation that does not answer the outstanding request (wrong kind,
 /// address or slot, or no request at all) fails with `error.InvalidAsyncState`
 /// and leaves all state untouched, so the correct reply can still be sent.
 const std = @import("std");
@@ -99,11 +130,34 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
             },
         };
 
-        /// Value moved by the top-level call, kept so a revert or halt can undo it.
-        const Transfer = struct {
+        const MessageKind = enum { call, callcode, delegatecall, staticcall, create, create2 };
+
+        /// The transaction-level message, with every buffer copied into
+        /// `evm.tx_arena` so it survives suspension and can be replayed.
+        const Message = struct {
+            kind: MessageKind,
             caller: primitives.Address,
-            recipient: primitives.Address,
+            /// Call target; unused for creations.
+            to: primitives.Address,
+            /// CALLVALUE (CALL, CALLCODE, inherited for DELEGATECALL) or endowment.
             value: u256,
+            gas: u64,
+            /// Calldata, or init code for creations.
+            input: []const u8,
+            salt: ?u256,
+            /// Code supplied for this call with `Evm.setBytecode`; empty when the
+            /// target's own code runs. On the async path supplied code takes
+            /// precedence over installed code (the C ABI contract of
+            /// `evm_set_bytecode` + `evm_call_ffi`).
+            bytecode: []const u8,
+        };
+
+        /// How a suspended transaction continues once the host replies.
+        const ResumeMode = enum {
+            /// Re-run the interrupted opcode of the kept top-level frame.
+            resume_frame,
+            /// Replay the message from the root checkpoint.
+            restart,
         };
 
         /// Reference to parent EVM instance
@@ -119,8 +173,15 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
         /// Terminal result held back until the host acknowledges the commit.
         pending_result: ?CallResult,
 
-        /// Top-level value transfer of the transaction in flight.
-        transfer: ?Transfer,
+        /// The message in flight. Valid while `phase != .idle` or during a run.
+        message: Message,
+
+        resume_mode: ResumeMode,
+
+        /// Revert point for the whole transaction. The EVM's snapshot stacks
+        /// point into it while `root_open`, so the executor must not move then.
+        root: EvmType.Checkpoint,
+        root_open: bool,
 
         /// Initialize async executor
         pub fn init(evm: *EvmType) Self {
@@ -129,12 +190,14 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
                 .async_data_request = .none,
                 .phase = .idle,
                 .pending_result = null,
-                .transfer = null,
+                .message = undefined,
+                .resume_mode = .resume_frame,
+                .root = undefined,
+                .root_open = false,
             };
         }
 
         /// Main async execution method - supports yielding for async requests
-        /// CRITICAL: NO defer statements that clean up state!
         pub fn callOrContinue(
             self: *Self,
             input: CallOrContinueInput,
@@ -152,10 +215,8 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
                     }
 
                     // Stores the value in the injector cache and the storage overlay.
-                    try self.evm.storage.put_in_cache(data.address, data.slot, data.value);
-
-                    self.clearRequest();
-                    return try self.executeUntilYieldOrComplete();
+                    self.evm.storage.put_in_cache(data.address, data.slot, data.value) catch |err| return self.fail(err);
+                    return self.continueAfterReply();
                 },
 
                 .continue_with_balance => |data| {
@@ -163,14 +224,8 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
                     if (request != .balance) return error.InvalidAsyncState;
                     if (!sameAddress(request.balance.address, data.address)) return error.InvalidAsyncState;
 
-                    if (self.evm.storage.storage_injector) |injector| {
-                        try injector.cacheBalance(data.address, data.balance);
-                        try injector.noteBaselineBalance(data.address, data.balance);
-                    }
-                    try self.evm.balances.put(data.address, data.balance);
-
-                    self.clearRequest();
-                    return try self.executeUntilYieldOrComplete();
+                    self.supplyBalance(data.address, data.balance) catch |err| return self.fail(err);
+                    return self.continueAfterReply();
                 },
 
                 .continue_with_code => |data| {
@@ -178,19 +233,8 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
                     if (request != .code) return error.InvalidAsyncState;
                     if (!sameAddress(request.code.address, data.address)) return error.InvalidAsyncState;
 
-                    if (self.evm.storage.storage_injector) |injector| {
-                        // The cache copies with its own allocator and frees that
-                        // copy itself; it never takes ownership of arena memory.
-                        try injector.cacheCode(data.address, data.code);
-                        try injector.noteBaselineCode(data.address, data.code);
-                    }
-
-                    // The EVM's code map borrows a transaction-arena copy.
-                    const code_copy = try self.evm.arena.allocator().dupe(u8, data.code);
-                    try self.evm.code.put(data.address, code_copy);
-
-                    self.clearRequest();
-                    return try self.executeUntilYieldOrComplete();
+                    self.supplyCode(data.address, data.code) catch |err| return self.fail(err);
+                    return self.continueAfterReply();
                 },
 
                 .continue_with_nonce => |data| {
@@ -198,14 +242,8 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
                     if (request != .nonce) return error.InvalidAsyncState;
                     if (!sameAddress(request.nonce.address, data.address)) return error.InvalidAsyncState;
 
-                    if (self.evm.storage.storage_injector) |injector| {
-                        try injector.cacheNonce(data.address, data.nonce);
-                        try injector.noteBaselineNonce(data.address, data.nonce);
-                    }
-                    try self.evm.nonces.put(data.address, data.nonce);
-
-                    self.clearRequest();
-                    return try self.executeUntilYieldOrComplete();
+                    self.supplyNonce(data.address, data.nonce) catch |err| return self.fail(err);
+                    return self.continueAfterReply();
                 },
 
                 .continue_after_commit => {
@@ -230,12 +268,48 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
             return self.async_data_request;
         }
 
-        /// Clear the outstanding request on the executor and on the live
-        /// `Storage` field the opcode handlers write to.
-        fn clearRequest(self: *Self) void {
+        // Host replies are state the host already holds: they extend the commit
+        // baseline and are never part of the transaction's own changes.
+
+        fn supplyBalance(self: *Self, address: primitives.Address, balance: u256) !void {
+            if (self.evm.storage.storage_injector) |injector| {
+                try injector.cacheBalance(address, balance);
+                try injector.noteBaselineBalance(address, balance);
+            }
+            try self.evm.supplyAsyncBalance(address, balance);
+        }
+
+        fn supplyNonce(self: *Self, address: primitives.Address, nonce: u64) !void {
+            if (self.evm.storage.storage_injector) |injector| {
+                try injector.cacheNonce(address, nonce);
+                try injector.noteBaselineNonce(address, nonce);
+            }
+            try self.evm.supplyAsyncNonce(address, nonce);
+        }
+
+        fn supplyCode(self: *Self, address: primitives.Address, code: []const u8) !void {
+            if (self.evm.storage.storage_injector) |injector| {
+                // The cache copies with its own allocator and frees that copy itself.
+                try injector.cacheCode(address, code);
+                try injector.noteBaselineCode(address, code);
+            }
+            // The EVM's code map borrows a transaction-arena copy for this transaction.
+            try self.evm.supplyAsyncCode(address, code);
+        }
+
+        /// The outstanding request was answered: clear it and carry on.
+        fn continueAfterReply(self: *Self) !CallOrContinueOutput {
             self.async_data_request = .none;
             self.evm.storage.clear_async_request();
             self.phase = .idle;
+
+            switch (self.resume_mode) {
+                .resume_frame => return self.executeUntilYieldOrComplete() catch |err| return self.fail(err),
+                .restart => {
+                    self.openRoot() catch |err| return self.fail(err);
+                    return self.runMessage() catch |err| return self.fail(err);
+                },
+            }
         }
 
         /// Drop every trace of the transaction in flight.
@@ -244,58 +318,105 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
             self.evm.storage.clear_async_request();
             self.phase = .idle;
             self.pending_result = null;
-            self.transfer = null;
+            self.resume_mode = .resume_frame;
+        }
+
+        fn openRoot(self: *Self) !void {
+            try self.evm.takeCheckpoint(&self.root);
+            self.root_open = true;
+        }
+
+        /// Keep the transaction's writes: close the root checkpoint without restoring it.
+        fn closeRoot(self: *Self) void {
+            if (!self.root_open) return;
+            self.evm.releaseCheckpoint(&self.root);
+            self.root_open = false;
+        }
+
+        /// Undo everything the transaction did since the root checkpoint.
+        fn rollbackRoot(self: *Self) void {
+            if (!self.root_open) return;
+            self.evm.revertToCheckpoint(&self.root) catch |err| {
+                log.err("AsyncExecutor: root rollback failed: {s}", .{@errorName(err)});
+            };
+            self.evm.releaseCheckpoint(&self.root);
+            self.root_open = false;
+            // The root checkpoint is taken at a zero refund; no refund survives a failure.
+            self.evm.gas_refund = 0;
+        }
+
+        /// Cancel the transaction in flight, if any: roll back its uncommitted
+        /// writes and invalidate its outstanding request and its pending commit
+        /// acknowledgement. Called when a new transaction (async or synchronous)
+        /// starts on the EVM. A transaction awaiting its commit acknowledgement
+        /// has already been applied; only the acknowledgement is dropped.
+        pub fn cancel(self: *Self) void {
+            if (self.phase == .idle and !self.root_open) return;
+            self.rollbackRoot();
+            self.evm.frames.clearRetainingCapacity();
+            if (self.evm.storage.storage_injector) |injector| injector.clearDirty();
+            self.resetProtocolState();
         }
 
         /// Abandon the transaction after a host-side failure (allocation or
-        /// protocol error): nothing stays suspended and nothing is offered for commit.
+        /// protocol error): everything is rolled back, nothing stays suspended
+        /// and nothing is offered for commit.
         fn abort(self: *Self) void {
-            self.undoTransfer();
+            self.rollbackRoot();
             self.evm.frames.clearRetainingCapacity();
             if (self.evm.storage.storage_injector) |injector| injector.clearDirty();
             self.endTransaction();
             self.resetProtocolState();
         }
 
-        fn effectiveRefund(self: *Self) u64 {
-            // Contract A turns Evm.gas_refund into a signed counter read through
-            // get_effective_refund(); support both shapes.
-            if (@hasDecl(EvmType, "get_effective_refund")) return self.evm.get_effective_refund();
-            return self.evm.gas_refund;
+        fn fail(self: *Self, err: anyerror) anyerror {
+            self.abort();
+            return err;
         }
 
         fn failedResult(self: *Self, error_name: ?[]const u8) CallResult {
-            const arena = self.evm.arena.allocator();
+            const tx_alloc = self.evm.tx_arena.allocator();
             if (error_name) |name| {
-                if (CallResult.failure_with_error(arena, 0, name)) |result| return result else |_| {}
+                if (CallResult.failure_with_error(tx_alloc, 0, name)) |result| return result else |_| {}
             }
             return CallResult{ .success = false, .gas_left = 0, .output = &.{} };
         }
 
-        /// Reverse the top-level value transfer after a revert or halt.
-        fn undoTransfer(self: *Self) void {
-            const transfer = self.transfer orelse return;
-            self.transfer = null;
-            const h = self.evm.host orelse return;
-            h.setBalance(transfer.caller, h.getBalance(transfer.caller) + transfer.value);
-            h.setBalance(transfer.recipient, h.getBalance(transfer.recipient) - transfer.value);
-        }
-
         /// Reset transaction-scoped EVM state, as the synchronous `call()` does
-        /// when it returns.
+        /// when it returns, and drop everything fetched for this transaction.
         fn endTransaction(self: *Self) void {
-            self.evm.access_list_manager.clear();
-            self.evm.storage.clear_transient();
-            self.evm.logs.clearRetainingCapacity();
-            self.evm.created_accounts.clearRetainingCapacity();
-            self.evm.selfdestructed_accounts.clearRetainingCapacity();
-            self.evm.touched_accounts.clearRetainingCapacity();
+            self.evm.finishTransaction();
+            self.evm.endAsyncTransaction();
         }
 
-        /// Hand a successful result to the host: with an injector the changes
-        /// are offered for commit first, otherwise the result is final.
-        fn finishSuccess(self: *Self, result: CallResult, changes_json: ?[]const u8) CallOrContinueOutput {
-            self.transfer = null;
+        /// A successful transaction: apply the end-of-transaction effects, then
+        /// hand the result to the host. With an injector the changes are offered
+        /// for commit first, otherwise the result is final.
+        fn finishSuccess(self: *Self, gas_left: u64, output: []const u8, created_address: ?primitives.Address) !CallOrContinueOutput {
+            const evm = self.evm;
+
+            // Own the result before anything is committed: a failure here still rolls back.
+            var result = try CallResult.success_with_logs(evm.tx_arena.allocator(), gas_left, output, evm.logs.items);
+            result.refund_counter = evm.get_effective_refund();
+            result.created_address = created_address;
+
+            // End-of-transaction reads must not ask the host for anything.
+            evm.async_active = false;
+            // Self-destructed and touched empty accounts are deleted before the
+            // changes are serialized, so the host commits the final state.
+            evm.commitTransaction();
+            self.closeRoot();
+
+            var changes_json: ?[]const u8 = null;
+            if (evm.storage.storage_injector != null) {
+                log.debug("AsyncExecutor: transaction succeeded, dumping changes", .{});
+                // Past the commit point: a failure here leaves the local state
+                // committed and reports the error; no change set is offered.
+                changes_json = try evm.dumpStateChanges();
+            }
+
+            self.endTransaction();
+            self.async_data_request = .none;
             if (changes_json) |json| {
                 self.pending_result = result;
                 self.phase = .awaiting_commit;
@@ -305,10 +426,11 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
             return .{ .result = result };
         }
 
-        /// A reverted or halted transaction: the terminal result is returned
-        /// directly and no change set is ever offered for commit.
+        /// A reverted or halted transaction: every state change is rolled back,
+        /// the terminal result is returned directly and no change set is ever
+        /// offered for commit.
         fn finishFailure(self: *Self, result: CallResult) CallOrContinueOutput {
-            self.undoTransfer();
+            self.rollbackRoot();
             self.evm.frames.clearRetainingCapacity();
             if (self.evm.storage.storage_injector) |injector| injector.clearDirty();
             self.endTransaction();
@@ -316,198 +438,294 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
             return .{ .result = result };
         }
 
-        /// Run a transaction through the synchronous engine. Used for CREATE and
-        /// CREATE2, whose lifecycle (collision checks, constructor context, code
-        /// deposit) lives in `Evm.call`. Storage reads inside cannot suspend.
-        fn runSynchronously(self: *Self, params: CallParams) !CallOrContinueOutput {
-            const injector = self.evm.pending_storage_injector orelse self.evm.storage.storage_injector;
-            if (injector) |inj| {
-                inj.clearCache();
-                try inj.captureBaseline(self.evm);
-            }
+        fn needOutput(request: AsyncDataRequest) ?CallOrContinueOutput {
+            return switch (request) {
+                .storage => |req| .{ .need_storage = .{ .address = req.address, .slot = req.slot } },
+                .balance => |req| .{ .need_balance = .{ .address = req.address } },
+                .code => |req| .{ .need_code = .{ .address = req.address } },
+                .nonce => |req| .{ .need_nonce = .{ .address = req.address } },
+                .none => null,
+            };
+        }
 
-            const result = self.evm.call(params);
-            if (result.success and self.evm.storage.storage_injector != null) {
-                const json = try self.evm.dumpStateChanges();
-                return self.finishSuccess(result, json);
-            }
-            if (self.evm.storage.storage_injector) |inj| inj.clearDirty();
-            return .{ .result = result };
+        /// Restart-on-miss: roll the transaction back to its root checkpoint and
+        /// ask the host for the data the first miss needed. The reply replays
+        /// the message from the start.
+        fn suspendForRestart(self: *Self) !CallOrContinueOutput {
+            const evm = self.evm;
+            const request = evm.async_restart_request;
+
+            self.rollbackRoot();
+            evm.frames.clearRetainingCapacity();
+            // The rollback restored every written slot in the overlay, so the
+            // marks of the abandoned attempt are stale.
+            if (evm.storage.storage_injector) |injector| injector.clearDirty();
+            evm.clearAsyncRestart();
+            // Suspended: reads between continuations must not register requests.
+            evm.async_active = false;
+
+            const output = needOutput(request) orelse return error.InvalidAsyncState;
+            self.async_data_request = request;
+            evm.storage.async_data_request = request;
+            self.phase = .awaiting_data;
+            self.resume_mode = .restart;
+            return output;
         }
 
         /// Start a new call and begin execution
         pub fn startNewCall(self: *Self, params: CallParams) !CallOrContinueOutput {
-            const evm = self.evm;
-
-            // A new call abandons whatever was suspended or awaiting commit.
-            self.resetProtocolState();
-
-            if (params.isCreate()) return try self.runSynchronously(params);
+            // A new call supersedes whatever was suspended or awaiting commit.
+            self.cancel();
 
             params.validate() catch |err| {
                 return .{ .result = self.failedResult(@errorName(err)) };
             };
 
-            // Initialize transaction state in EVM. The blob hashes set for this
-            // call must survive it (an empty list clears the previous ones).
+            self.begin(params) catch |err| return self.fail(err);
+            return self.runMessage() catch |err| return self.fail(err);
+        }
+
+        /// Set up the transaction: scratch state, the message copy, warm sets,
+        /// the commit baseline and the root checkpoint.
+        fn begin(self: *Self, params: CallParams) !void {
+            const evm = self.evm;
+
+            // One-shot inputs apply to this call only, as in `Evm.call`. The
+            // access list is borrowed and consumed here; bytecode is copied.
+            const access_list = evm.pending_access_list;
+            const pending_bytecode = evm.pending_bytecode;
+            evm.pending_access_list = null;
+            evm.pending_bytecode = &.{};
+
+            // The blob hashes set for this call must survive it (an empty list
+            // clears the previous ones).
             const blob_hashes: ?[]const [32]u8 = if (evm.blob_versioned_hashes.len > 0) evm.blob_versioned_hashes else null;
             try evm.initTransactionState(blob_hashes);
-            self.async_data_request = .none;
 
-            if (evm.storage.storage_injector) |injector| {
-                log.debug("callOrContinue: Storage injector enabled, clearing cache", .{});
-                injector.clearCache();
-                try injector.captureBaseline(evm);
-            } else {
-                log.debug("callOrContinue: No storage injector", .{});
-            }
-
-            // Extract common parameters (same as call() method)
-            const caller = params.getCaller();
-            const gas: i64 = @intCast(@min(params.getGas(), @as(u64, std.math.maxInt(i64))));
-            const address: primitives.Address = params.get_to().?;
-
-            const value = switch (params) {
-                .call => |p| p.value,
-                .callcode => |p| p.value,
-                .create => |p| p.value,
-                .create2 => |p| p.value,
-                .delegatecall, .staticcall => 0,
+            // A suspended or replayed message outlives this function, and the
+            // host may replace its buffers meanwhile: keep transaction-arena copies.
+            const tx_alloc = evm.tx_arena.allocator();
+            const is_create = params.isCreate();
+            const to = params.get_to() orelse primitives.ZERO_ADDRESS;
+            self.message = .{
+                .kind = switch (params) {
+                    .call => .call,
+                    .callcode => .callcode,
+                    .delegatecall => .delegatecall,
+                    .staticcall => .staticcall,
+                    .create => .create,
+                    .create2 => .create2,
+                },
+                .caller = params.getCaller(),
+                .to = to,
+                .value = switch (params) {
+                    .call => |p| p.value,
+                    .callcode => |p| p.value,
+                    .delegatecall => |p| p.value,
+                    .staticcall => 0,
+                    .create => |p| p.value,
+                    .create2 => |p| p.value,
+                },
+                .gas = params.getGas(),
+                .input = try tx_alloc.dupe(u8, params.getInput()),
+                .salt = switch (params) {
+                    .create2 => |p| p.salt,
+                    else => null,
+                },
+                .bytecode = &.{},
             };
 
-            // A suspended frame outlives this function, and the host may replace
-            // its buffers before it continues. Give the frame its own copies.
-            const arena = evm.arena.allocator();
-            const calldata = try arena.dupe(u8, params.getInput());
-            const source_code = if (evm.pending_bytecode.len > 0) evm.pending_bytecode else evm.get_code(address);
-            const bytecode = try arena.dupe(u8, source_code);
-
-            try evm.preWarmTransaction(address);
-
-            // Pre-warm access list if present (EIP-2929/EIP-2930). The list is
-            // borrowed for this call only; drop the reference so it cannot leak
-            // into a later transaction or dangle once the caller frees it.
-            if (evm.pending_access_list) |list| {
-                evm.pending_access_list = null;
-                try evm.access_list_manager.pre_warm_from_access_list(list);
-            }
-
-            // Transfer value if needed
-            if (value > 0) {
-                if (evm.host) |h| {
-                    const sender_balance = h.getBalance(caller);
-                    if (sender_balance < value) {
-                        return self.finishFailure(self.failedResult("InsufficientBalance"));
-                    }
-                    h.setBalance(caller, sender_balance - value);
-                    h.setBalance(address, h.getBalance(address) + value);
-                    self.transfer = .{ .caller = caller, .recipient = address, .value = value };
+            if (!is_create and pending_bytecode.len > 0) {
+                // `setBytecode` supplies the code this call runs. When the target
+                // has no code of its own on a hostless EVM, it also becomes the
+                // account's code for this call, so EXTCODE* and re-entrant calls
+                // see it. A host owns its accounts and installed code is never
+                // replaced, so in those cases the frame alone runs it.
+                if (evm.host == null and (evm.code.get(to) orelse &[_]u8{}).len == 0 and
+                    !EvmType.isPrecompileAddress(to, evm.hardfork))
+                {
+                    self.message.bytecode = try evm.installAsyncCodeView(to, pending_bytecode);
+                } else {
+                    self.message.bytecode = try tx_alloc.dupe(u8, pending_bytecode);
                 }
             }
 
-            // Create frame WITHOUT defer (critical!)
-            log.debug("callOrContinue: Creating frame with address={any}", .{address.bytes});
-            const FrameType = @TypeOf(evm.frames.items[0]);
-            const frame = FrameType.init(
-                arena,
-                bytecode,
-                gas,
-                caller,
-                address,
-                value,
-                calldata,
-                @as(*anyopaque, @ptrCast(evm)),
-                evm.hardfork,
-                false, // Top-level is never static
-            ) catch |err| {
-                self.abort();
-                return err;
-            };
-            evm.frames.append(arena, frame) catch |err| {
-                self.abort();
-                return err;
+            if (evm.storage.storage_injector) |injector| {
+                log.debug("AsyncExecutor: storage injector enabled, clearing cache", .{});
+                injector.clearCache();
+                // Captured for every message kind (precompiles and creations
+                // included), after the code view, which is not a state change.
+                try injector.captureBaseline(evm);
+            }
+
+            // Warm sets (EIP-2929, EIP-3651, EIP-2930). A creation warms its
+            // new address itself.
+            try evm.preWarmParticipants(if (is_create) self.message.caller else to);
+            if (access_list) |list| try evm.access_list_manager.pre_warm_from_access_list(list);
+
+            // Everything from here is rolled back on REVERT, halt, error or cancel.
+            try self.openRoot();
+        }
+
+        /// Run the message from the root checkpoint. Called once per attempt:
+        /// at the start and after every restart.
+        fn runMessage(self: *Self) !CallOrContinueOutput {
+            const evm = self.evm;
+            const msg = self.message;
+            evm.clearAsyncRestart();
+            evm.async_active = true;
+
+            if (msg.kind == .create or msg.kind == .create2) return self.runCreate();
+
+            // One builder for every variant, as in `Evm.call`:
+            //   CALL / STATICCALL: code and storage of `to`; STATICCALL is read-only.
+            //   CALLCODE / DELEGATECALL: code of `to` in the caller's storage; no transfer.
+            const is_static = msg.kind == .staticcall;
+            const execution_address = switch (msg.kind) {
+                .callcode, .delegatecall => msg.caller,
+                else => msg.to,
             };
 
-            // Execute (may yield)
-            return try self.executeUntilYieldOrComplete();
+            // Resolve the code to run. Active precompiles always dispatch as precompiles.
+            const target_is_precompile = EvmType.isPrecompileAddress(msg.to, evm.hardfork);
+            var bytecode: []const u8 = &.{};
+            if (!target_is_precompile) {
+                if (msg.bytecode.len > 0) {
+                    // Code supplied for this call (`Evm.setBytecode`) runs as given.
+                    bytecode = msg.bytecode;
+                } else if (evm.get_delegated_target(msg.to)) |delegate| {
+                    // EIP-7702: warm the delegate and run its code.
+                    try evm.pre_warm_addresses(&[_]primitives.Address{delegate});
+                    bytecode = evm.get_raw_code(delegate);
+                } else {
+                    bytecode = evm.get_raw_code(msg.to);
+                }
+            }
+            if (evm.async_restart_pending) return self.suspendForRestart();
+
+            // Only CALL and CALLCODE require the caller to hold `value`; only CALL moves it.
+            if (msg.value > 0 and (msg.kind == .call or msg.kind == .callcode)) {
+                const insufficient = evm.get_balance(msg.caller) < msg.value;
+                if (evm.async_restart_pending) return self.suspendForRestart();
+                if (insufficient) return self.finishFailure(self.failedResult("InsufficientBalance"));
+                if (msg.kind == .call) {
+                    evm.transferValue(msg.caller, msg.to, msg.value) catch |err| {
+                        if (evm.async_restart_pending) return self.suspendForRestart();
+                        if (err == error.OutOfMemory) return err;
+                        return self.finishFailure(self.failedResult(@errorName(err)));
+                    };
+                    if (evm.async_restart_pending) return self.suspendForRestart();
+                }
+            }
+
+            if (bytecode.len == 0) {
+                // No code: JavaScript handler, registered override, standard
+                // precompile, or a plain account (success, no output).
+                var gas_left = msg.gas;
+                var output: []const u8 = &.{};
+                switch (evm.runPrecompile(evm.tx_arena.allocator(), msg.to, msg.input, msg.gas, target_is_precompile)) {
+                    .failure => return self.finishFailure(self.failedResult("PrecompileError")),
+                    .success => |done| {
+                        gas_left = done.gas_left;
+                        output = done.output;
+                    },
+                    .none => {},
+                }
+                if (msg.kind == .call) try evm.touchCallTarget(msg.to);
+                return self.finishSuccess(gas_left, output, null);
+            }
+
+            // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
+            const frame_gas = std.math.cast(i64, msg.gas) orelse std.math.maxInt(i64);
+            if (!evm.canPushFrame()) return error.OutOfMemory;
+            const FrameType = @TypeOf(evm.frames.items[0]);
+            const frame = try FrameType.init(
+                evm.tx_arena.allocator(),
+                bytecode,
+                frame_gas,
+                msg.caller,
+                execution_address,
+                msg.value,
+                msg.input,
+                @as(*anyopaque, @ptrCast(evm)),
+                evm.hardfork,
+                is_static,
+            );
+            // `canPushFrame` reserved the slot: this never reallocates `frames`.
+            evm.frames.appendAssumeCapacity(frame);
+
+            return self.executeUntilYieldOrComplete();
+        }
+
+        /// CREATE / CREATE2 transaction. The constructor runs inside
+        /// `Evm.createFrom`; any data it misses restarts the creation.
+        fn runCreate(self: *Self) !CallOrContinueOutput {
+            const evm = self.evm;
+            const msg = self.message;
+
+            const created = evm.createFrom(msg.caller, msg.value, msg.input, msg.gas, msg.salt, true) catch |err| {
+                if (evm.async_restart_pending) return self.suspendForRestart();
+                if (err == error.OutOfMemory) return err;
+                // For example init code over the EIP-3860 limit.
+                return self.finishFailure(self.failedResult(@errorName(err)));
+            };
+            if (evm.async_restart_pending) return self.suspendForRestart();
+
+            if (!created.success) {
+                const result = try CallResult.revert_with_data(evm.tx_arena.allocator(), created.gas_left, created.output);
+                return self.finishFailure(result);
+            }
+            return self.finishSuccess(created.gas_left, &.{}, created.address);
         }
 
         /// Execute the top-level frame until it suspends, halts or completes.
-        /// NO defer statements!
         ///
         /// Outcomes:
-        ///   - missing data: `.need_*`, frame kept, phase `awaiting_data`
+        ///   - storage miss in this frame: `.need_storage`, frame and root
+        ///     checkpoint kept, phase `awaiting_data` (resume)
+        ///   - miss in a nested frame, constructor or account lookup: `.need_*`,
+        ///     transaction rolled back, phase `awaiting_data` (restart)
         ///   - success with an injector: `.ready_to_commit`, phase `awaiting_commit`
         ///   - success without an injector: `.result` with output, gas, logs and refund
-        ///   - REVERT: `.result` (failure, revert data, remaining gas), nothing to commit
+        ///   - REVERT: `.result` (failure, revert data, remaining gas), rolled back
         ///   - exceptional halt (OutOfGas, InvalidOpcode, ...): `.result` (failure,
-        ///     zero gas, `error_info`), nothing to commit
+        ///     zero gas, `error_info`), rolled back
         ///   - host allocation failure: an error; the transaction is abandoned
         fn executeUntilYieldOrComplete(self: *Self) !CallOrContinueOutput {
             const evm = self.evm;
-            if (evm.frames.items.len == 0) return error.InvalidAsyncState;
+            if (evm.frames.items.len == 0 or !self.root_open) return error.InvalidAsyncState;
+            evm.async_active = true;
 
             // Don't cache the frame pointer across execute(); nested calls may move it.
-            evm.frames.items[evm.frames.items.len - 1].execute() catch |err| {
+            evm.frames.items[0].execute() catch |err| {
+                if (evm.async_restart_pending) return self.suspendForRestart();
                 if (err == error.NeedAsyncData) {
+                    // The top-level frame probed a slot before mutating anything:
+                    // keep it and re-run the opcode after the reply.
                     const request = evm.storage.async_data_request;
+                    const output = needOutput(request) orelse return error.InvalidAsyncState;
                     self.async_data_request = request;
                     self.phase = .awaiting_data;
-                    return switch (request) {
-                        .storage => |req| .{ .need_storage = .{
-                            .address = req.address,
-                            .slot = req.slot,
-                        } },
-                        .balance => |req| .{ .need_balance = .{ .address = req.address } },
-                        .code => |req| .{ .need_code = .{ .address = req.address } },
-                        .nonce => |req| .{ .need_nonce = .{ .address = req.address } },
-                        .none => {
-                            self.abort();
-                            return error.InvalidAsyncState;
-                        },
-                    };
+                    self.resume_mode = .resume_frame;
+                    evm.async_active = false;
+                    return output;
                 }
-                if (err == error.OutOfMemory) {
-                    self.abort();
-                    return err;
-                }
+                if (err == error.OutOfMemory) return err;
 
                 // An exceptional halt is a normal EVM outcome, not a protocol error.
                 return self.finishFailure(self.failedResult(@errorName(err)));
             };
+            if (evm.async_restart_pending) return self.suspendForRestart();
 
-            const arena = evm.arena.allocator();
-            const frame = &evm.frames.items[evm.frames.items.len - 1];
+            const frame = &evm.frames.items[0];
             const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
 
             if (frame.reverted) {
-                const result = CallResult.revert_with_data(arena, gas_left, frame.output) catch |err| {
-                    self.abort();
-                    return err;
-                };
+                const result = try CallResult.revert_with_data(evm.tx_arena.allocator(), gas_left, frame.output);
                 return self.finishFailure(result);
             }
 
-            var result = CallResult.success_with_logs(arena, gas_left, frame.output, evm.logs.items) catch |err| {
-                self.abort();
-                return err;
-            };
-            result.refund_counter = self.effectiveRefund();
-
-            // Dump before the end-of-transaction reset: the dump reads the
-            // self-destruct set and the account maps.
-            var changes_json: ?[]const u8 = null;
-            if (evm.storage.storage_injector != null) {
-                log.debug("executeUntilYieldOrComplete: top frame succeeded, dumping changes", .{});
-                changes_json = evm.dumpStateChanges() catch |err| {
-                    self.abort();
-                    return err;
-                };
-            }
-
-            _ = evm.frames.pop();
-            self.endTransaction();
-            return self.finishSuccess(result, changes_json);
+            return self.finishSuccess(gas_left, frame.output, null);
         }
     };
 }

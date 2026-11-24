@@ -646,7 +646,7 @@ test "pre-warming - initTransactionState and preWarmTransaction match isPrecompi
     }
 }
 
-test "EIP-161 cleanup - touched empty 0x0100 survives on Osaka and is deleted on Prague" {
+test "EIP-161 cleanup - a touched empty account is deleted even at a precompile address" {
     const testing = std.testing;
 
     const RecordingHost = struct {
@@ -698,7 +698,8 @@ test "EIP-161 cleanup - touched empty 0x0100 survives on Osaka and is deleted on
 
     const addr_0101 = primitives.Address.fromU256(0x0101);
 
-    // Osaka: calling 0x0100 preserves it (active precompile), calling 0x0101 deletes it (empty)
+    // Osaka: 0x0100 is an active precompile. EELS `destroy_touched_empty_accounts` has no
+    // precompile exemption, so its empty backing account is deleted like 0x0101.
     var osaka_host = RecordingHost{};
     var osaka_vm: Evm = undefined;
     try osaka_vm.init(testing.allocator, osaka_host.interface(), .OSAKA, null, primitives.ZERO_ADDRESS, 0, null);
@@ -719,7 +720,7 @@ test "EIP-161 cleanup - touched empty 0x0100 survives on Osaka and is deleted on
         .input = &.{},
     } });
     try testing.expect(osaka_0101.success);
-    try testing.expect(!osaka_host.deleted_0100);
+    try testing.expect(osaka_host.deleted_0100);
     try testing.expect(osaka_host.deleted_0101);
 
     // Prague: both 0x0100 and 0x0101 are empty non-precompile accounts and are deleted
@@ -1906,4 +1907,865 @@ test "R1 call: gas above i64 max is capped instead of trapping" {
     try vm.nonces.put(r1_caller, 1);
     const created = try vm.inner_create(0, &stop, std.math.maxInt(u64), null);
     try testing.expect(created.success);
+}
+
+// ============================================================================
+// Round 2 fixes: async root checkpoint, restart-on-miss, transaction arena,
+// fork selection, EIP-161 cleanup, root CREATE and result ownership
+// ============================================================================
+
+const AsyncPhase = @import("async_executor.zig").AsyncPhase;
+const r2_child = primitives.Address{ .bytes = [_]u8{0xc1} ** 20 };
+
+/// PUSH1 ret_size; PUSH1 0; PUSH1 0; PUSH1 0; PUSH1 value; PUSH20 to; PUSH2 gas; CALL
+fn r2Call(comptime to: primitives.Address, comptime value: u8, comptime gas: u16, comptime ret_size: u8) [35]u8 {
+    return [_]u8{ 0x60, ret_size, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, value, 0x73 } ++ to.bytes ++
+        [_]u8{ 0x61, @intCast(gas >> 8), @intCast(gas & 0xff), 0xf1 };
+}
+
+/// What the test host holds. Anything not listed is zero / empty.
+const R2AsyncHost = struct {
+    const Slot = struct { address: primitives.Address, slot: u256, value: u256 };
+    const Balance = struct { address: primitives.Address, balance: u256 };
+    const Nonce = struct { address: primitives.Address, nonce: u64 };
+    const Code = struct { address: primitives.Address, code: []const u8 };
+
+    slots: []const Slot = &.{},
+    balances: []const Balance = &.{},
+    nonces: []const Nonce = &.{},
+    codes: []const Code = &.{},
+
+    storage_requests: usize = 0,
+    balance_requests: usize = 0,
+    nonce_requests: usize = 0,
+    code_requests: usize = 0,
+
+    fn total(self: *const R2AsyncHost) usize {
+        return self.storage_requests + self.balance_requests + self.nonce_requests + self.code_requests;
+    }
+
+    /// Answer every data request until the transaction reaches a terminal output.
+    fn drive(self: *R2AsyncHost, vm: anytype, first: anytype) !@TypeOf(first) {
+        var output = first;
+        while (true) {
+            if (self.total() > 64) return error.TooManyRequests;
+            switch (output) {
+                .need_storage => |request| {
+                    self.storage_requests += 1;
+                    var value: u256 = 0;
+                    for (self.slots) |entry| {
+                        if (entry.address.equals(request.address) and entry.slot == request.slot) value = entry.value;
+                    }
+                    output = try vm.callOrContinue(.{ .continue_with_storage = .{ .address = request.address, .slot = request.slot, .value = value } });
+                },
+                .need_balance => |request| {
+                    self.balance_requests += 1;
+                    var balance: u256 = 0;
+                    for (self.balances) |entry| {
+                        if (entry.address.equals(request.address)) balance = entry.balance;
+                    }
+                    output = try vm.callOrContinue(.{ .continue_with_balance = .{ .address = request.address, .balance = balance } });
+                },
+                .need_nonce => |request| {
+                    self.nonce_requests += 1;
+                    var nonce: u64 = 0;
+                    for (self.nonces) |entry| {
+                        if (entry.address.equals(request.address)) nonce = entry.nonce;
+                    }
+                    output = try vm.callOrContinue(.{ .continue_with_nonce = .{ .address = request.address, .nonce = nonce } });
+                },
+                .need_code => |request| {
+                    self.code_requests += 1;
+                    var code: []const u8 = &.{};
+                    for (self.codes) |entry| {
+                        if (entry.address.equals(request.address)) code = entry.code;
+                    }
+                    output = try vm.callOrContinue(.{ .continue_with_code = .{ .address = request.address, .code = code } });
+                },
+                else => return output,
+            }
+        }
+    }
+};
+
+fn r2CallParams(value: u256) Evm.CallParams {
+    return .{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = value, .input = &.{}, .gas = 200_000 } };
+}
+
+// SSTORE(0,0) clears a set slot (refund); SSTORE(1,7); LOG0(0,0); CALL r1_other with 5 wei; POP
+const r2_effects = [_]u8{ 0x60, 0x00, 0x60, 0x00, 0x55, 0x60, 0x07, 0x60, 0x01, 0x55, 0x60, 0x00, 0x60, 0x00, 0xa0 } ++
+    r2Call(r1_other, 5, 0xffff, 0) ++ [_]u8{0x50};
+
+test "R2 async revert rollback: REVERT and exceptional halt restore the root checkpoint (hostless)" {
+    const testing = std.testing;
+    const reverting = r2_effects ++ [_]u8{ 0x60, 0x01, 0x60, 0x00, 0xfd }; // REVERT(0,1)
+    const halting = r2_effects ++ [_]u8{0xfe}; // INVALID
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.balances.put(r1_caller, 100);
+    try vm.storage.storage.put(.{ .address = r1_contract.bytes, .slot = 0 }, 8);
+
+    inline for (.{ reverting, halting }, 0..) |code, i| {
+        vm.setBytecode(&code);
+        const done = try vm.callOrContinue(.{ .call = r2CallParams(10) });
+        try testing.expect(done == .result);
+        try testing.expect(!done.result.success);
+        try testing.expectEqual(@as(usize, 0), done.result.logs.len);
+        try testing.expectEqual(@as(u64, 0), done.result.refund_counter);
+        if (i == 0) {
+            try testing.expectEqual(@as(usize, 1), done.result.output.len);
+            try testing.expect(done.result.gas_left > 0);
+        } else {
+            try testing.expectEqual(@as(u64, 0), done.result.gas_left);
+            try testing.expect(done.result.error_info != null);
+        }
+
+        // Storage, the refund, the logs, the nested transfer and the top-level transfer are gone.
+        try testing.expectEqual(@as(u256, 8), r1Slot(&vm, r1_contract, 0));
+        try testing.expectEqual(@as(u256, 0), r1Slot(&vm, r1_contract, 1));
+        try testing.expectEqual(@as(i64, 0), vm.gas_refund);
+        try testing.expectEqual(@as(usize, 0), vm.logs.items.len);
+        try testing.expectEqual(@as(u256, 100), r1Balance(&vm, r1_caller));
+        try testing.expectEqual(@as(u256, 0), r1Balance(&vm, r1_contract));
+        try testing.expectEqual(@as(u256, 0), r1Balance(&vm, r1_other));
+        try testing.expectEqual(@as(usize, 0), vm.touched_accounts.count());
+        try testing.expectEqual(@as(usize, 0), vm.frames.items.len);
+        // The code supplied for the call does not outlive it.
+        try testing.expect(!vm.code.contains(r1_contract));
+        try testing.expectError(error.InvalidAsyncState, vm.callOrContinue(.{ .continue_after_commit = {} }));
+    }
+
+    // Control: the same effects commit when the transaction succeeds.
+    const committing = r2_effects ++ [_]u8{0x00};
+    vm.setBytecode(&committing);
+    const committed = try vm.callOrContinue(.{ .call = r2CallParams(10) });
+    try testing.expect(committed.result.success);
+    try testing.expectEqual(@as(usize, 1), committed.result.logs.len);
+    try testing.expect(committed.result.refund_counter > 0);
+    try testing.expectEqual(@as(u256, 0), r1Slot(&vm, r1_contract, 0));
+    try testing.expectEqual(@as(u256, 7), r1Slot(&vm, r1_contract, 1));
+    try testing.expectEqual(@as(u256, 90), r1Balance(&vm, r1_caller));
+    try testing.expectEqual(@as(u256, 5), r1Balance(&vm, r1_contract));
+    try testing.expectEqual(@as(u256, 5), r1Balance(&vm, r1_other));
+}
+
+test "R2 async revert rollback: with an injector nothing is offered for commit and fetched data is dropped" {
+    const testing = std.testing;
+    const reverting = r2_effects ++ [_]u8{ 0x60, 0x00, 0x60, 0x00, 0xfd };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    var injector = try StorageInjector.init(testing.allocator);
+    defer injector.deinit();
+    vm.pending_storage_injector = &injector;
+    try vm.balances.put(r1_caller, 100);
+
+    var host = R2AsyncHost{ .slots = &.{.{ .address = r1_contract, .slot = 0, .value = 8 }} };
+    vm.setBytecode(&reverting);
+    const done = try host.drive(&vm, try vm.callOrContinue(.{ .call = r2CallParams(10) }));
+    try testing.expect(done == .result);
+    try testing.expect(!done.result.success);
+    try testing.expect(host.storage_requests >= 2);
+
+    try testing.expectEqual(@as(usize, 0), vm.getPendingStateChanges().len);
+    try testing.expectEqual(@as(usize, 0), injector.dirty_storage.count());
+    try testing.expectEqual(@as(usize, 0), injector.dirty_balances.count());
+    try testing.expectEqual(@as(i64, 0), vm.gas_refund);
+    // The overlay holds the values the host supplied, not the reverted writes.
+    try testing.expectEqual(@as(u256, 8), vm.storage.peek(r1_contract, 0));
+    try testing.expectEqual(@as(u256, 0), vm.storage.peek(r1_contract, 1));
+    // Locally installed state is restored; host-supplied account data is not kept.
+    try testing.expectEqual(@as(u256, 100), r1Balance(&vm, r1_caller));
+    try testing.expect(!vm.balances.contains(r1_contract));
+    try testing.expect(!vm.balances.contains(r1_other));
+    try testing.expect(!vm.code.contains(r1_other));
+    try testing.expectError(error.InvalidAsyncState, vm.callOrContinue(.{ .continue_after_commit = {} }));
+}
+
+test "R2 async success: SELFDESTRUCT is committed before the result or the change set is produced" {
+    const testing = std.testing;
+    const destructing = [_]u8{ 0x60, 0x00, 0xff }; // SELFDESTRUCT(0)
+    const parent = r2Call(r2_child, 0, 0xffff, 0) ++ [_]u8{0x00};
+
+    // Without an injector the result is final and the account is already gone.
+    {
+        var vm: Evm = undefined;
+        try vm.init(testing.allocator, null, .BERLIN, null, r1_caller, 0, null);
+        defer vm.deinit();
+        try vm.code.put(r2_child, &destructing);
+        try vm.storage.storage.put(.{ .address = r2_child.bytes, .slot = 3 }, 9);
+
+        vm.setBytecode(&parent);
+        const done = try vm.callOrContinue(.{ .call = r2CallParams(0) });
+        try testing.expect(done == .result);
+        try testing.expect(done.result.success);
+        try testing.expect(!vm.code.contains(r2_child));
+        try testing.expectEqual(@as(u256, 0), r1Slot(&vm, r2_child, 3));
+        try testing.expectEqual(@as(usize, 0), vm.selfdestructed_accounts.count());
+
+        // A synchronous EXTCODESIZE on the same instance agrees.
+        const probe = [_]u8{0x73} ++ r2_child.bytes ++ [_]u8{ 0x3b, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+        try vm.code.put(r1_other, &probe);
+        const size = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_other, .value = 0, .input = &.{}, .gas = 100_000 } });
+        try testing.expectEqual(@as(u256, 0), try r1Word(size.output));
+    }
+
+    // With an injector the change set reports the deletion and the local state has it applied.
+    {
+        var vm: Evm = undefined;
+        try vm.init(testing.allocator, null, .BERLIN, null, r1_caller, 0, null);
+        defer vm.deinit();
+        var injector = try StorageInjector.init(testing.allocator);
+        defer injector.deinit();
+        vm.pending_storage_injector = &injector;
+        try vm.code.put(r2_child, &destructing);
+
+        vm.setBytecode(&parent);
+        const committed = try vm.callOrContinue(.{ .call = r2CallParams(0) });
+        try testing.expect(committed == .ready_to_commit);
+        try testing.expect(!vm.code.contains(r2_child));
+
+        var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, committed.ready_to_commit.changes_json, .{});
+        defer parsed.deinit();
+        const destroyed = parsed.value.object.get("selfDestructs").?.array.items;
+        try testing.expectEqual(@as(usize, 1), destroyed.len);
+        try testing.expectEqualStrings("0x" ++ "c1" ** 20, destroyed[0].string);
+        // The deleted account is reported once, not again as a code change.
+        try testing.expectEqual(@as(usize, 0), parsed.value.object.get("codes").?.array.items.len);
+
+        try testing.expect((try vm.callOrContinue(.{ .continue_after_commit = {} })).result.success);
+    }
+}
+
+test "R2 async message semantics: hostless value transfer, STATICCALL, CALLCODE and DELEGATECALL" {
+    const testing = std.testing;
+    const stop = [_]u8{0x00};
+    const store = [_]u8{ 0x60, 0x07, 0x60, 0x00, 0x55, 0x00 }; // SSTORE(0,7)
+    const callvalue = [_]u8{ 0x34, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 }; // RETURN(CALLVALUE)
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+
+    // An unfunded value call fails, exactly as the synchronous call does.
+    vm.setBytecode(&stop);
+    const unfunded = try vm.callOrContinue(.{ .call = r2CallParams(1) });
+    try testing.expect(!unfunded.result.success);
+    vm.setBytecode(&stop);
+    try testing.expect(!vm.call(r2CallParams(1)).success);
+
+    // A funded one moves the value.
+    try vm.balances.put(r1_caller, 10);
+    vm.setBytecode(&stop);
+    const funded = try vm.callOrContinue(.{ .call = r2CallParams(4) });
+    try testing.expect(funded.result.success);
+    try testing.expectEqual(@as(u256, 6), r1Balance(&vm, r1_caller));
+    try testing.expectEqual(@as(u256, 4), r1Balance(&vm, r1_contract));
+
+    // STATICCALL is read-only.
+    vm.setBytecode(&store);
+    const static = try vm.callOrContinue(.{ .call = .{ .staticcall = .{ .caller = r1_caller, .to = r1_contract, .input = &.{}, .gas = 100_000 } } });
+    try testing.expect(!static.result.success);
+    try testing.expectEqual(@as(u256, 0), r1Slot(&vm, r1_contract, 0));
+
+    // CALLCODE and DELEGATECALL run the target's code in the caller's storage and move nothing.
+    try vm.code.put(r1_other, &store);
+    const callcode = try vm.callOrContinue(.{ .call = .{ .callcode = .{ .caller = r1_caller, .to = r1_other, .value = 3, .input = &.{}, .gas = 100_000 } } });
+    try testing.expect(callcode.result.success);
+    try testing.expectEqual(@as(u256, 7), r1Slot(&vm, r1_caller, 0));
+    try testing.expectEqual(@as(u256, 0), r1Slot(&vm, r1_other, 0));
+    try testing.expectEqual(@as(u256, 6), r1Balance(&vm, r1_caller));
+    try testing.expectEqual(@as(u256, 0), r1Balance(&vm, r1_other));
+
+    // CALLCODE still requires the caller to hold the value.
+    const poor_callcode = try vm.callOrContinue(.{ .call = .{ .callcode = .{ .caller = r1_caller, .to = r1_other, .value = 7, .input = &.{}, .gas = 100_000 } } });
+    try testing.expect(!poor_callcode.result.success);
+
+    // DELEGATECALL exposes the inherited value without a balance check or a transfer.
+    try vm.code.put(r1_other, &callvalue);
+    const delegated = try vm.callOrContinue(.{ .call = .{ .delegatecall = .{ .caller = r1_caller, .to = r1_other, .input = &.{}, .gas = 100_000, .value = 42 } } });
+    try testing.expect(delegated.result.success);
+    try testing.expectEqual(@as(u256, 42), try r1Word(delegated.result.output));
+    try testing.expectEqual(@as(u256, 6), r1Balance(&vm, r1_caller));
+}
+
+test "R2 call: top-level DELEGATECALL keeps params.delegatecall.value as CALLVALUE" {
+    const testing = std.testing;
+    const callvalue = [_]u8{ 0x34, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.code.put(r1_contract, &callvalue);
+
+    // The caller holds nothing: the inherited value is neither checked nor moved.
+    const result = vm.call(.{ .delegatecall = .{ .caller = r1_caller, .to = r1_contract, .input = &.{}, .gas = 100_000, .value = 42 } });
+    try testing.expect(result.success);
+    try testing.expectEqual(@as(u256, 42), try r1Word(result.output));
+    try testing.expectEqual(@as(u256, 0), r1Balance(&vm, r1_caller));
+    try testing.expectEqual(@as(u256, 0), r1Balance(&vm, r1_contract));
+}
+
+test "R2 nested async storage fetch: a child SLOAD yields need_storage and the call completes" {
+    const testing = std.testing;
+    // v = SLOAD(0) + 1; SSTORE(0, v); RETURN(v)
+    const child = [_]u8{ 0x60, 0x00, 0x54, 0x60, 0x01, 0x01, 0x80, 0x60, 0x00, 0x55, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    // CALL child into memory[0..32]; MSTORE(32, success); RETURN(0, 64)
+    const parent = r2Call(r2_child, 0, 0xffff, 0x20) ++ [_]u8{ 0x60, 0x20, 0x52, 0x60, 0x40, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .OSAKA, null, r1_caller, 0, null);
+    defer vm.deinit();
+    var injector = try StorageInjector.init(testing.allocator);
+    defer injector.deinit();
+    vm.pending_storage_injector = &injector;
+    try vm.code.put(r2_child, &child);
+
+    vm.setBytecode(&parent);
+    const yielded = try vm.callOrContinue(.{ .call = r2CallParams(0) });
+    // The miss inside the child reaches the host instead of failing the child.
+    try testing.expect(yielded == .need_storage);
+    try testing.expect(yielded.need_storage.address.equals(r2_child));
+    try testing.expectEqual(@as(u256, 0), yielded.need_storage.slot);
+    // Nothing of the interrupted attempt is left behind while the host fetches.
+    try testing.expectEqual(@as(usize, 0), vm.frames.items.len);
+    try testing.expectEqual(@as(usize, 0), injector.dirty_storage.count());
+    try testing.expect(vm.storage.async_data_request == .storage);
+
+    // A reply for another slot is rejected and the request stays outstanding.
+    try testing.expectError(error.InvalidAsyncState, vm.callOrContinue(.{ .continue_with_storage = .{ .address = r2_child, .slot = 1, .value = 1 } }));
+
+    const committed = try vm.callOrContinue(.{ .continue_with_storage = .{ .address = r2_child, .slot = 0, .value = 9 } });
+    try testing.expect(committed == .ready_to_commit);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, committed.ready_to_commit.changes_json, .{});
+    defer parsed.deinit();
+    const slots = parsed.value.object.get("storage").?.array.items;
+    try testing.expectEqual(@as(usize, 1), slots.len);
+    try testing.expectEqualStrings("0x" ++ "c1" ** 20, slots[0].object.get("address").?.string);
+    try testing.expectEqualStrings("0x9", slots[0].object.get("originalValue").?.string);
+    try testing.expectEqualStrings("0xa", slots[0].object.get("newValue").?.string);
+
+    const done = try vm.callOrContinue(.{ .continue_after_commit = {} });
+    try testing.expect(done.result.success);
+    try testing.expectEqual(@as(usize, 64), done.result.output.len);
+    try testing.expectEqual(@as(u256, 10), std.mem.readInt(u256, done.result.output[0..32], .big));
+    try testing.expectEqual(@as(u256, 1), std.mem.readInt(u256, done.result.output[32..64], .big));
+
+    // The replayed transaction reports the same gas as a run with the slot known up front.
+    var reference: Evm = undefined;
+    try reference.init(testing.allocator, null, .OSAKA, null, r1_caller, 0, null);
+    defer reference.deinit();
+    try reference.code.put(r2_child, &child);
+    try reference.code.put(r1_contract, &parent);
+    try reference.storage.storage.put(.{ .address = r2_child.bytes, .slot = 0 }, 9);
+    const expected = reference.call(r2CallParams(0));
+    try testing.expect(expected.success);
+    try testing.expectEqual(expected.gas_left, done.result.gas_left);
+    try testing.expectEqualSlices(u8, expected.output, done.result.output);
+}
+
+test "R2 nested async storage fetch: constructors and CREATE transactions fetch their slots" {
+    const testing = std.testing;
+    // Init code: SSTORE(0, SLOAD(0) + 7); RETURN(0, 0)
+    const init_code = [_]u8{ 0x60, 0x00, 0x54, 0x60, 0x07, 0x01, 0x60, 0x00, 0x55, 0x60, 0x00, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .OSAKA, null, r1_caller, 0, null);
+    defer vm.deinit();
+    var injector = try StorageInjector.init(testing.allocator);
+    defer injector.deinit();
+    vm.pending_storage_injector = &injector;
+
+    var host = R2AsyncHost{ .nonces = &.{.{ .address = r1_caller, .nonce = 1 }} };
+    const first = try vm.callOrContinue(.{ .call = .{ .create = .{ .caller = r1_caller, .value = 0, .init_code = &init_code, .gas = 200_000 } } });
+    const committed = try host.drive(&vm, first);
+    try testing.expect(committed == .ready_to_commit);
+    // The creator's nonce comes from the host. A nonce-derived destination cannot pre-exist,
+    // so nothing is requested for it, and a zero-value creation needs no balance.
+    try testing.expectEqual(@as(usize, 1), host.nonce_requests);
+    try testing.expectEqual(@as(usize, 0), host.code_requests);
+    try testing.expectEqual(@as(usize, 0), host.balance_requests);
+    try testing.expectEqual(@as(usize, 1), host.storage_requests);
+
+    const created = try vm.computeCreateAddress(r1_caller, 0);
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, committed.ready_to_commit.changes_json, .{});
+    defer parsed.deinit();
+    const slots = parsed.value.object.get("storage").?.array.items;
+    try testing.expectEqual(@as(usize, 1), slots.len);
+    try testing.expectEqualStrings("0x7", slots[0].object.get("newValue").?.string);
+    // The new account's nonce is a change; the creator's fetched nonce is not.
+    const nonces = parsed.value.object.get("nonces").?.array.items;
+    try testing.expectEqual(@as(usize, 1), nonces.len);
+    try testing.expectEqualStrings("0x1", nonces[0].object.get("nonce").?.string);
+
+    const done = try vm.callOrContinue(.{ .continue_after_commit = {} });
+    try testing.expect(done.result.success);
+    try testing.expect(done.result.created_address.?.equals(created));
+
+    // A CREATE2 destination can pre-exist: its nonce and code are requested, and a contract
+    // only the host knows is a collision (EIP-684), not a silent redeployment.
+    const destination = try vm.computeCreate2Address(r1_caller, 5, &init_code);
+    var occupied = R2AsyncHost{ .codes = &.{.{ .address = destination, .code = &[_]u8{0x00} }} };
+    const create2_first = try vm.callOrContinue(.{ .call = .{ .create2 = .{ .caller = r1_caller, .value = 0, .init_code = &init_code, .salt = 5, .gas = 200_000 } } });
+    const collided = try occupied.drive(&vm, create2_first);
+    try testing.expect(collided == .result);
+    try testing.expect(!collided.result.success);
+    try testing.expectEqual(@as(usize, 1), occupied.code_requests);
+    try testing.expectEqual(@as(usize, 2), occupied.nonce_requests);
+    try testing.expectEqual(@as(usize, 0), occupied.storage_requests);
+
+    // A nested CREATE from a contract whose code is installed locally requests nothing.
+    // MSTORE(0, 0x6000ff); CREATE(0, 29, 3) x1; STOP  (init code: SELFDESTRUCT(0))
+    const factory = [_]u8{ 0x62, 0x60, 0x00, 0xff, 0x60, 0x00, 0x52, 0x60, 0x03, 0x60, 0x1d, 0x60, 0x00, 0xf0, 0x00 };
+    var silent = R2AsyncHost{};
+    vm.setBytecode(&factory);
+    const nested = try silent.drive(&vm, try vm.callOrContinue(.{ .call = r2CallParams(0) }));
+    try testing.expect(nested == .ready_to_commit);
+    try testing.expectEqual(@as(usize, 0), silent.total());
+    try testing.expect((try vm.callOrContinue(.{ .continue_after_commit = {} })).result.success);
+}
+
+test "R2 async account lookups: balance and code misses are requested, answered once and not committed" {
+    const testing = std.testing;
+    // RETURN(BALANCE(r1_other))
+    const balance_of = [_]u8{0x73} ++ r1_other.bytes ++ [_]u8{ 0x31, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    const answer_42 = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    const parent = r2Call(r2_child, 0, 0xffff, 0x20) ++ [_]u8{ 0x60, 0x20, 0x52, 0x60, 0x40, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .OSAKA, null, r1_caller, 0, null);
+    defer vm.deinit();
+    var injector = try StorageInjector.init(testing.allocator);
+    defer injector.deinit();
+    vm.pending_storage_injector = &injector;
+
+    // BALANCE of an account only the host knows.
+    vm.setBytecode(&balance_of);
+    const need_balance = try vm.callOrContinue(.{ .call = r2CallParams(0) });
+    try testing.expect(need_balance == .need_balance);
+    try testing.expect(need_balance.need_balance.address.equals(r1_other));
+    // A storage reply does not answer a balance request.
+    try testing.expectError(error.InvalidAsyncState, vm.callOrContinue(.{ .continue_with_storage = .{ .address = r1_other, .slot = 0, .value = 1 } }));
+    const with_balance = try vm.callOrContinue(.{ .continue_with_balance = .{ .address = r1_other, .balance = 77 } });
+    try testing.expect(with_balance == .ready_to_commit);
+    {
+        var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, with_balance.ready_to_commit.changes_json, .{});
+        defer parsed.deinit();
+        // Fetched data is baseline, not a change.
+        try testing.expectEqual(@as(usize, 0), parsed.value.object.get("balances").?.array.items.len);
+    }
+    const balance_result = try vm.callOrContinue(.{ .continue_after_commit = {} });
+    try testing.expectEqual(@as(u256, 77), try r1Word(balance_result.result.output));
+    // The host stays authoritative: the fetched balance is not kept for the next transaction.
+    try testing.expect(!vm.balances.contains(r1_other));
+
+    // A zero reply is remembered within the transaction and requested only once.
+    var zero_host = R2AsyncHost{};
+    vm.setBytecode(&balance_of);
+    const zero = try zero_host.drive(&vm, try vm.callOrContinue(.{ .call = r2CallParams(0) }));
+    try testing.expect(zero == .ready_to_commit);
+    try testing.expectEqual(@as(usize, 1), zero_host.balance_requests);
+    try testing.expectEqual(@as(usize, 1), zero_host.total());
+    _ = try vm.callOrContinue(.{ .continue_after_commit = {} });
+
+    // CALL to a contract whose code only the host holds.
+    var code_host = R2AsyncHost{ .codes = &.{.{ .address = r2_child, .code = &answer_42 }} };
+    vm.setBytecode(&parent);
+    const called = try code_host.drive(&vm, try vm.callOrContinue(.{ .call = r2CallParams(0) }));
+    try testing.expect(called == .ready_to_commit);
+    try testing.expectEqual(@as(usize, 1), code_host.code_requests);
+    const call_result = try vm.callOrContinue(.{ .continue_after_commit = {} });
+    try testing.expectEqual(@as(u256, 42), std.mem.readInt(u256, call_result.result.output[0..32], .big));
+    try testing.expectEqual(@as(u256, 1), std.mem.readInt(u256, call_result.result.output[32..64], .big));
+    try testing.expect(!vm.code.contains(r2_child));
+
+    // Locally installed fields are never requested.
+    try vm.balances.put(r1_other, 5);
+    var local_host = R2AsyncHost{};
+    vm.setBytecode(&balance_of);
+    const local = try local_host.drive(&vm, try vm.callOrContinue(.{ .call = r2CallParams(0) }));
+    try testing.expectEqual(@as(usize, 0), local_host.total());
+    try testing.expect(local == .ready_to_commit);
+    try testing.expectEqual(@as(u256, 5), try r1Word((try vm.callOrContinue(.{ .continue_after_commit = {} })).result.output));
+
+    // The synchronous call() never requests anything: an unknown account reads as empty.
+    _ = vm.balances.remove(r1_other);
+    try vm.code.put(r1_contract, &balance_of);
+    const sync = vm.call(r2CallParams(0));
+    try testing.expect(sync.success);
+    try testing.expectEqual(@as(u256, 0), try r1Word(sync.output));
+    try testing.expect(!vm.async_restart_pending);
+}
+
+test "R2 async precompiles: value transfers are committed and overrides at ordinary addresses run" {
+    const testing = std.testing;
+    const identity = primitives.Address.fromU256(4);
+
+    var vm: R1OverrideEvm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    var injector = try StorageInjector.init(testing.allocator);
+    defer injector.deinit();
+    vm.pending_storage_injector = &injector;
+    try vm.balances.put(r1_caller, 100);
+
+    // Identity precompile with value: the change set carries both balances.
+    var host = R2AsyncHost{};
+    const first = try vm.callOrContinue(.{ .call = .{ .call = .{ .caller = r1_caller, .to = identity, .value = 11, .input = "abc", .gas = 1_000 } } });
+    const committed = try host.drive(&vm, first);
+    try testing.expect(committed == .ready_to_commit);
+    {
+        var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, committed.ready_to_commit.changes_json, .{});
+        defer parsed.deinit();
+        const balances = parsed.value.object.get("balances").?.array.items;
+        try testing.expectEqual(@as(usize, 2), balances.len);
+        var saw_caller = false;
+        var saw_precompile = false;
+        for (balances) |entry| {
+            const balance = entry.object.get("balance").?.string;
+            if (std.mem.eql(u8, balance, "0x59")) saw_caller = true; // 100 - 11
+            if (std.mem.eql(u8, balance, "0xb")) saw_precompile = true;
+        }
+        try testing.expect(saw_caller and saw_precompile);
+    }
+    const identity_result = try vm.callOrContinue(.{ .continue_after_commit = {} });
+    try testing.expect(identity_result.result.success);
+    try testing.expectEqualSlices(u8, "abc", identity_result.result.output);
+
+    // A registered override at an ordinary address is dispatched, as in call().
+    var override_host = R2AsyncHost{};
+    const override_first = try vm.callOrContinue(.{ .call = .{ .call = .{ .caller = r1_caller, .to = r1_good_precompile, .value = 0, .input = &.{}, .gas = 1_000 } } });
+    const override_committed = try override_host.drive(&vm, override_first);
+    try testing.expect(override_committed == .ready_to_commit);
+    const override_result = try vm.callOrContinue(.{ .continue_after_commit = {} });
+    try testing.expect(override_result.result.success);
+    try testing.expectEqualSlices(u8, "ok", override_result.result.output);
+    try testing.expectEqual(@as(u64, 990), override_result.result.gas_left);
+
+    // A failing override rolls back its value transfer and offers no commit.
+    const failing_first = try vm.callOrContinue(.{ .call = .{ .call = .{ .caller = r1_caller, .to = r1_failing_precompile, .value = 5, .input = &.{}, .gas = 1_000 } } });
+    var failing_host = R2AsyncHost{};
+    const failed = try failing_host.drive(&vm, failing_first);
+    try testing.expect(failed == .result);
+    try testing.expect(!failed.result.success);
+    try testing.expectEqual(@as(u256, 89), r1Balance(&vm, r1_caller));
+    try testing.expectEqual(@as(usize, 0), vm.getPendingStateChanges().len);
+}
+
+test "R2 async protocol: a new transaction invalidates the suspended request and the pending acknowledgement" {
+    const testing = std.testing;
+    const stop = [_]u8{0x00};
+    const store = [_]u8{ 0x60, 0x07, 0x60, 0x00, 0x55, 0x00 };
+    const identity = primitives.Address.fromU256(4);
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    var injector = try StorageInjector.init(testing.allocator);
+    defer injector.deinit();
+    vm.pending_storage_injector = &injector;
+
+    // Two calls reach ready_to_commit; only one acknowledgement is ever owed.
+    vm.setBytecode(&stop);
+    try testing.expect((try vm.callOrContinue(.{ .call = r2CallParams(0) })) == .ready_to_commit);
+    const second = try vm.callOrContinue(.{ .call = .{ .call = .{ .caller = r1_caller, .to = identity, .value = 0, .input = "x", .gas = 1_000 } } });
+    try testing.expect(second == .ready_to_commit);
+    const acked = try vm.callOrContinue(.{ .continue_after_commit = {} });
+    try testing.expectEqualSlices(u8, "x", acked.result.output);
+    try testing.expectError(error.InvalidAsyncState, vm.callOrContinue(.{ .continue_after_commit = {} }));
+
+    // A suspended transaction is cancelled by a new asynchronous call.
+    vm.setBytecode(&store);
+    try testing.expect((try vm.callOrContinue(.{ .call = r2CallParams(0) })) == .need_storage);
+    vm.setBytecode(&stop);
+    try testing.expect((try vm.callOrContinue(.{ .call = r2CallParams(0) })) == .ready_to_commit);
+    try testing.expectError(error.InvalidAsyncState, vm.callOrContinue(.{ .continue_with_storage = .{ .address = r1_contract, .slot = 0, .value = 1 } }));
+    _ = try vm.callOrContinue(.{ .continue_after_commit = {} });
+
+    // ...and by a synchronous call(), which also rolls back what it had written.
+    const store_after_load = [_]u8{ 0x60, 0x07, 0x60, 0x01, 0x55, 0x60, 0x00, 0x54, 0x00 }; // SSTORE(1,7); SLOAD(0)
+    vm.setBytecode(&store_after_load);
+    const suspended = try vm.callOrContinue(.{ .call = r2CallParams(0) });
+    try testing.expect(suspended == .need_storage);
+    const answered = try vm.callOrContinue(.{ .continue_with_storage = .{ .address = r1_contract, .slot = 1, .value = 0 } });
+    try testing.expect(answered == .need_storage);
+    try testing.expectEqual(@as(u256, 0), answered.need_storage.slot);
+    try testing.expectEqual(@as(u256, 7), vm.storage.peek(r1_contract, 1));
+
+    try vm.code.put(r1_other, &stop);
+    try testing.expect(vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_other, .value = 0, .input = &.{}, .gas = 10_000 } }).success);
+    try testing.expectEqual(AsyncPhase.idle, vm.async_executor.?.phase);
+    try testing.expectError(error.InvalidAsyncState, vm.callOrContinue(.{ .continue_with_storage = .{ .address = r1_contract, .slot = 0, .value = 1 } }));
+    try testing.expectError(error.InvalidAsyncState, vm.callOrContinue(.{ .continue_after_commit = {} }));
+    try testing.expectEqual(@as(usize, 0), injector.dirty_storage.count());
+}
+
+test "R2 async memory: completed calls do not grow the long-lived arena" {
+    const testing = std.testing;
+    // MSTORE(0, 42); LOG0(0, 32); RETURN(0, 32)
+    const code = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xa0, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+
+    var after_warmup: usize = 0;
+    var i: usize = 0;
+    while (i < 200) : (i += 1) {
+        vm.setBytecode(&code);
+        const done = try vm.callOrContinue(.{ .call = .{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = "calldata", .gas = 100_000 } } });
+        try testing.expect(done.result.success);
+        try testing.expectEqual(@as(u8, 42), done.result.output[31]);
+        // The frame, its stack, the calldata and bytecode copies and the result come from
+        // the transaction arena, which the next call recycles.
+        const frame_stack_bytes = 1024 * @sizeOf(u256);
+        if (i == 8) after_warmup = vm.arena.queryCapacity();
+        if (i > 8) try testing.expect(vm.arena.queryCapacity() < after_warmup + frame_stack_bytes);
+    }
+}
+
+test "R2 getBytecode: returns the raw code of the current frame" {
+    const testing = std.testing;
+    const code = [_]u8{ 0x60, 0x01, 0x00 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.initTransactionState(null);
+
+    try testing.expectEqual(@as(usize, 0), vm.getBytecode().len);
+    try testing.expectEqual(@as(u32, 0), vm.getPC());
+
+    const FrameType = @TypeOf(vm.frames.items[0]);
+    const frame = try FrameType.init(vm.tx_arena.allocator(), &code, 1_000, r1_caller, r1_contract, 0, &.{}, @as(*anyopaque, @ptrCast(&vm)), vm.hardfork, false);
+    vm.frames.appendAssumeCapacity(frame);
+
+    const bytecode: []const u8 = vm.getBytecode();
+    try testing.expectEqualSlices(u8, &code, bytecode);
+    try vm.step();
+    try testing.expectEqual(@as(u32, 2), vm.getPC());
+}
+
+test "R2 fork selection: config.hardfork applies when no override is given, and fork_transition picks per block" {
+    const testing = std.testing;
+    const push0 = [_]u8{ 0x5f, 0x00 }; // PUSH0 is Shanghai+
+
+    const BerlinEvm = evm.Evm(.{ .hardfork = .BERLIN });
+    var configured: BerlinEvm = undefined;
+    try configured.init(testing.allocator, null, null, null, r1_caller, 0, null);
+    defer configured.deinit();
+    try testing.expectEqual(primitives.Hardfork.BERLIN, configured.hardfork);
+    try configured.code.put(r1_contract, &push0);
+    try testing.expect(!configured.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 10_000 } }).success);
+
+    // A runtime argument still overrides the configured fork.
+    var overridden: BerlinEvm = undefined;
+    try overridden.init(testing.allocator, null, .SHANGHAI, null, r1_caller, 0, null);
+    defer overridden.deinit();
+    try testing.expectEqual(primitives.Hardfork.SHANGHAI, overridden.hardfork);
+    try overridden.code.put(r1_contract, &push0);
+    try testing.expect(overridden.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 10_000 } }).success);
+
+    // The default configuration still selects Hardfork.DEFAULT.
+    var default_vm: Evm = undefined;
+    try default_vm.init(testing.allocator, null, null, null, r1_caller, 0, null);
+    defer default_vm.deinit();
+    try testing.expectEqual(primitives.Hardfork.DEFAULT, default_vm.hardfork);
+
+    // A schedule selects the fork from the block context at every transaction, on both entry points.
+    var scheduled: Evm = undefined;
+    try scheduled.init(testing.allocator, null, .BERLIN, null, r1_caller, 0, null);
+    defer scheduled.deinit();
+    try scheduled.code.put(r1_contract, &push0);
+    scheduled.block_context.block_timestamp = 99;
+    scheduled.setForkTransition(.{ .from_fork = .BERLIN, .to_fork = .SHANGHAI, .at_block = null, .at_timestamp = 100 });
+    try testing.expectEqual(primitives.Hardfork.BERLIN, scheduled.getActiveFork());
+    try testing.expect(!scheduled.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 10_000 } }).success);
+    try testing.expect(!(try scheduled.callOrContinue(.{ .call = .{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 10_000 } } })).result.success);
+
+    scheduled.block_context.block_timestamp = 100;
+    try testing.expectEqual(primitives.Hardfork.SHANGHAI, scheduled.getActiveFork());
+    try testing.expect(scheduled.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 10_000 } }).success);
+    try testing.expectEqual(primitives.Hardfork.SHANGHAI, scheduled.hardfork);
+    try testing.expect((try scheduled.callOrContinue(.{ .call = .{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 10_000 } } })).result.success);
+
+    // Moving back before the activation restores the earlier rules.
+    scheduled.block_context.block_timestamp = 5;
+    try testing.expect(!scheduled.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 10_000 } }).success);
+    try testing.expectEqual(primitives.Hardfork.BERLIN, scheduled.hardfork);
+}
+
+test "R2 root CREATE: the last valid sender nonce (2^64 - 2) creates; the opcode guard stays" {
+    const testing = std.testing;
+    const max_nonce = std.math.maxInt(u64);
+    const init_code = [_]u8{ 0x60, 0x01, 0x60, 0x00, 0xf3 }; // deploys one zero byte
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    // The transaction processor admitted nonce 2^64 - 2 and incremented it.
+    try vm.nonces.put(r1_caller, max_nonce);
+
+    const result = vm.call(.{ .create = .{ .caller = r1_caller, .value = 0, .init_code = &init_code, .gas = 200_000 } });
+    try testing.expect(result.success);
+    const expected = try vm.computeCreateAddress(r1_caller, max_nonce - 1);
+    try testing.expect(result.created_address.?.equals(expected));
+    try testing.expectEqual(@as(usize, 1), vm.get_raw_code(expected).len);
+    // A creation transaction does not increment the sender nonce again.
+    try testing.expectEqual(@as(u64, max_nonce), vm.getNonce(r1_caller));
+
+    // The CREATE opcode increments the nonce itself, so it still refuses 2^64 - 1.
+    // CREATE(0, 0, 0); MSTORE(0); RETURN(0, 32)
+    const creator = [_]u8{ 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0xf0, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    try vm.code.put(r1_contract, &creator);
+    try vm.nonces.put(r1_contract, max_nonce);
+    const from_opcode = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 200_000 } });
+    try testing.expect(from_opcode.success);
+    try testing.expectEqual(@as(u256, 0), try r1Word(from_opcode.output));
+    try testing.expectEqual(@as(u64, max_nonce), vm.getNonce(r1_contract));
+}
+
+test "R2 accountExists: zero-valued storage entries do not make an account exist" {
+    const testing = std.testing;
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+
+    try testing.expect(!vm.accountExists(r1_empty));
+    try vm.storage.storage.put(.{ .address = r1_empty.bytes, .slot = 1 }, 0);
+    try vm.storage.original_storage.put(.{ .address = r1_empty.bytes, .slot = 1 }, 0);
+    try testing.expect(!vm.accountExists(r1_empty));
+    try testing.expect(!vm.accountHasStorage(r1_empty));
+
+    try vm.storage.storage.put(.{ .address = r1_empty.bytes, .slot = 2 }, 5);
+    try testing.expect(vm.accountExists(r1_empty));
+    try testing.expect(vm.accountHasStorage(r1_empty));
+
+    // Another account's storage does not count.
+    try testing.expect(!vm.accountExists(r1_other));
+}
+
+test "R2 EIP-161: empty accounts at precompile addresses are deleted; RIPEMD-160 stays touched after a failed call" {
+    const testing = std.testing;
+    const sha256 = primitives.Address{ .bytes = [_]u8{0} ** 19 ++ [_]u8{2} };
+    const ripemd = primitives.Address{ .bytes = [_]u8{0} ** 19 ++ [_]u8{3} };
+
+    // A successful call to a precompile with an empty backing account deletes that account.
+    {
+        var vm: Evm = undefined;
+        try vm.init(testing.allocator, null, .OSAKA, null, r1_caller, 0, null);
+        defer vm.deinit();
+        try vm.balances.put(ripemd, 0);
+        const result = vm.call(.{ .call = .{ .caller = r1_caller, .to = ripemd, .value = 0, .input = &.{}, .gas = 10_000 } });
+        try testing.expect(result.success);
+        try testing.expect(!vm.balances.contains(ripemd));
+    }
+
+    // A precompile account that holds a balance is not empty and survives.
+    {
+        var vm: Evm = undefined;
+        try vm.init(testing.allocator, null, .OSAKA, null, r1_caller, 0, null);
+        defer vm.deinit();
+        try vm.balances.put(ripemd, 1);
+        try testing.expect(vm.call(.{ .call = .{ .caller = r1_caller, .to = ripemd, .value = 0, .input = &.{}, .gas = 10_000 } }).success);
+        try testing.expectEqual(@as(u256, 1), r1Balance(&vm, ripemd));
+    }
+
+    // A nested call that runs out of gas un-touches its target, except RIPEMD-160.
+    inline for (.{ sha256, ripemd }) |precompile| {
+        const starved = r2Call(precompile, 0, 1, 0) ++ [_]u8{ 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+        var vm: Evm = undefined;
+        try vm.init(testing.allocator, null, .SPURIOUS_DRAGON, null, r1_caller, 0, null);
+        defer vm.deinit();
+        try vm.balances.put(precompile, 0);
+        try vm.code.put(r1_contract, &starved);
+        const result = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 100_000 } });
+        try testing.expect(result.success);
+        try testing.expectEqual(@as(u256, 0), try r1Word(result.output)); // the precompile call failed
+        try testing.expectEqual(!precompile.equals(ripemd), vm.balances.contains(precompile));
+    }
+}
+
+/// Fails exactly one allocator request (allocation, resize or remap), then behaves normally.
+const R2SingleFaultAllocator = struct {
+    child: std.mem.Allocator,
+    fail_at: usize,
+    requests: usize = 0,
+    faulted: bool = false,
+
+    fn allocator(self: *R2SingleFaultAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn shouldFail(self: *R2SingleFaultAllocator) bool {
+        const index = self.requests;
+        self.requests += 1;
+        if (index != self.fail_at) return false;
+        self.faulted = true;
+        return true;
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *R2SingleFaultAllocator = @ptrCast(@alignCast(ctx));
+        if (self.shouldFail()) return null;
+        return self.child.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *R2SingleFaultAllocator = @ptrCast(@alignCast(ctx));
+        if (self.shouldFail()) return false;
+        return self.child.rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *R2SingleFaultAllocator = @ptrCast(@alignCast(ctx));
+        if (self.shouldFail()) return null;
+        return self.child.rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *R2SingleFaultAllocator = @ptrCast(@alignCast(ctx));
+        self.child.rawFree(memory, alignment, ret_addr);
+    }
+};
+
+test "R2 create: a CREATE that reports failure has committed nothing, whichever allocation fails" {
+    const testing = std.testing;
+    // LOG0(0, 70000) forces the result's log copy to need fresh memory; then deploy one byte.
+    const init_code = [_]u8{ 0x62, 0x01, 0x11, 0x70, 0x60, 0x00, 0xa0, 0x60, 0x01, 0x60, 0x00, 0xf3 };
+
+    var failures_seen: usize = 0;
+    var fail_at: usize = 0;
+    while (true) : (fail_at += 1) {
+        try testing.expect(fail_at < 5_000);
+        var faulty = R2SingleFaultAllocator{ .child = testing.allocator, .fail_at = fail_at };
+
+        var vm: Evm = undefined;
+        vm.init(faulty.allocator(), null, .CANCUN, null, r1_caller, 0, null) catch continue;
+        defer vm.deinit();
+        vm.balances.put(r1_caller, 100) catch continue;
+        vm.nonces.put(r1_caller, 1) catch continue;
+
+        const result = vm.call(.{ .create = .{ .caller = r1_caller, .value = 5, .init_code = &init_code, .gas = 3_000_000 } });
+        const created = try vm.computeCreateAddress(r1_caller, 0);
+        if (result.success) {
+            try testing.expectEqual(@as(usize, 1), vm.get_raw_code(created).len);
+            try testing.expectEqual(@as(u256, 5), r1Balance(&vm, created));
+            try testing.expectEqual(@as(usize, 1), result.logs.len);
+        } else {
+            // No code, no nonce, no endowment and no burned ETH behind a failed result.
+            failures_seen += 1;
+            try testing.expectEqual(@as(usize, 0), vm.get_raw_code(created).len);
+            try testing.expectEqual(@as(u64, 0), vm.getNonce(created));
+            try testing.expectEqual(@as(u256, 0), r1Balance(&vm, created));
+            try testing.expectEqual(@as(u256, 100), r1Balance(&vm, r1_caller));
+        }
+        if (!faulty.faulted) break;
+    }
+    try testing.expect(failures_seen > 0);
 }

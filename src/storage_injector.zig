@@ -376,8 +376,10 @@ pub const StorageInjector = struct {
     }
 
     /// Mark every account whose balance, nonce or code differs from the
-    /// baseline. A missing baseline entry means zero balance, zero nonce and
-    /// empty code. Accounts scheduled for deletion are left to "selfDestructs".
+    /// baseline. A missing entry, in the baseline or in the live maps, means
+    /// zero balance, zero nonce and empty code, so a value cleared to zero or
+    /// empty is reported too. Accounts scheduled for deletion are left to
+    /// "selfDestructs".
     fn markChangedAccounts(self: *StorageInjector, evm: anytype) !void {
         if (!self.baseline_active) return;
 
@@ -404,6 +406,32 @@ pub const StorageInjector = struct {
             else
                 code.len != 0;
             if (changed) try self.markCodeDirty(entry.key_ptr.*);
+        }
+
+        // The EVM removes a map entry when a nonce returns to zero, when code is
+        // cleared (for example an EIP-7702 delegation reset) and when an account
+        // is deleted. Such an account is absent from the live maps above, so walk
+        // the baseline for values that are now gone.
+        var baseline_balance_it = self.baseline_balances.iterator();
+        while (baseline_balance_it.next()) |entry| {
+            if (entry.value_ptr.* == 0 or evm.balances.contains(entry.key_ptr.*)) continue;
+            if (isSelfDestructed(evm, entry.key_ptr.*)) continue;
+            try self.markBalanceDirty(entry.key_ptr.*);
+        }
+
+        var baseline_nonce_it = self.baseline_nonces.iterator();
+        while (baseline_nonce_it.next()) |entry| {
+            if (entry.value_ptr.* == 0 or evm.nonces.contains(entry.key_ptr.*)) continue;
+            if (isSelfDestructed(evm, entry.key_ptr.*)) continue;
+            try self.markNonceDirty(entry.key_ptr.*);
+        }
+
+        const empty_code_hash = codeHash(&.{});
+        var baseline_code_it = self.baseline_codes.iterator();
+        while (baseline_code_it.next()) |entry| {
+            if (entry.value_ptr.* == empty_code_hash or evm.code.contains(entry.key_ptr.*)) continue;
+            if (isSelfDestructed(evm, entry.key_ptr.*)) continue;
+            try self.markCodeDirty(entry.key_ptr.*);
         }
     }
 
@@ -1023,4 +1051,46 @@ test "StorageInjector - clearDirty drops pending changes and keeps fetched value
     try testing.expectEqual(@as(usize, 0), injector.dirty_nonces.count());
     try testing.expectEqual(@as(usize, 0), injector.dirty_codes.count());
     try testing.expectEqual(@as(u256, 7), injector.getStorageFromCache(addr, 1).?);
+}
+
+test "StorageInjector - nonce, code and balance cleared to zero or empty are reported" {
+    const testing = std.testing;
+    var injector = try StorageInjector.init(testing.allocator);
+    defer injector.deinit();
+    var accounts = TestAccounts.init(testing.allocator);
+    defer accounts.deinit();
+
+    const cleared = primitives.Address.fromHex("0x00000000000000000000000000000000000000c1") catch unreachable;
+    const kept = primitives.Address.fromHex("0x00000000000000000000000000000000000000c2") catch unreachable;
+    const never_set = primitives.Address.fromHex("0x00000000000000000000000000000000000000c3") catch unreachable;
+
+    // Pre-state: `cleared` holds a balance, a nonce and an EIP-7702 designator.
+    const designator = [_]u8{ 0xef, 0x01, 0x00 } ++ [_]u8{0x11} ** 20;
+    try accounts.balances.put(cleared, 9);
+    try accounts.nonces.put(cleared, 4);
+    try accounts.code.put(cleared, &designator);
+    try accounts.nonces.put(kept, 1);
+    try accounts.code.put(kept, &[_]u8{0x00});
+    // A host reply of zero / empty is baseline too and is not a change.
+    try injector.captureBaseline(&accounts);
+    try injector.noteBaselineNonce(never_set, 0);
+    try injector.noteBaselineCode(never_set, &.{});
+    try injector.noteBaselineBalance(never_set, 0);
+
+    // The EVM drops the map entry when a value returns to zero or empty.
+    _ = accounts.balances.remove(cleared);
+    _ = accounts.nonces.remove(cleared);
+    _ = accounts.code.remove(cleared);
+
+    const json = try injector.dumpChanges(&accounts);
+    defer testing.allocator.free(json);
+
+    try testing.expectEqualStrings(
+        "{\"storage\":[]," ++
+            "\"balances\":[{\"address\":\"0x00000000000000000000000000000000000000c1\",\"balance\":\"0x0\"}]," ++
+            "\"nonces\":[{\"address\":\"0x00000000000000000000000000000000000000c1\",\"nonce\":\"0x0\"}]," ++
+            "\"codes\":[{\"address\":\"0x00000000000000000000000000000000000000c1\",\"code\":\"0x\"}]," ++
+            "\"selfDestructs\":[]}",
+        json,
+    );
 }
