@@ -63,7 +63,10 @@ pub const HostInterface = struct {
         if (self.vtable.accountExists) |exists| {
             return exists(self.ptr, address);
         }
-        return self.getBalance(address) != 0 or self.getNonce(address) != 0 or self.getCode(address).len != 0;
+        return self.getBalance(address) != 0 or
+            self.getNonce(address) != 0 or
+            self.getCode(address).len != 0 or
+            self.accountHasStorage(address);
     }
 
     pub fn accountHasStorage(self: HostInterface, address: Address) bool {
@@ -73,6 +76,11 @@ pub const HostInterface = struct {
         return false;
     }
 
+    /// Remove an account: balance, nonce, code, and every storage slot.
+    ///
+    /// The fallback cannot enumerate storage, so it only zeroes balance, nonce,
+    /// and code. A host that stores slots must provide `VTable.deleteAccount`;
+    /// otherwise a destroyed-then-recreated account reads its old storage.
     pub fn deleteAccount(self: HostInterface, address: Address) void {
         if (self.vtable.deleteAccount) |delete| {
             delete(self.ptr, address);

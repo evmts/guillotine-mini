@@ -13,8 +13,10 @@
 ///
 /// ```
 /// intrinsic_gas = TX_BASE_COST (21000)
-///               + data_cost (4 per zero byte, 16 per non-zero byte)
-///               + create_cost (32000 + init_code_word_cost if contract creation)
+///               + data_cost (4 per zero byte; 68 per non-zero byte before
+///                 Istanbul, 16 from Istanbul on per EIP-2028)
+///               + create_cost (Homestead+ per EIP-2: 32000 + init_code_word_cost
+///                 if contract creation; Frontier charges nothing extra)
 ///               + access_list_cost (2400 per address + 1900 per storage key)
 /// ```
 ///
@@ -38,10 +40,14 @@ pub const TX_BASE_COST: u64 = GasConstants.TxGas;
 /// Gas cost per zero byte in transaction data.
 pub const TX_DATA_COST_PER_ZERO: u64 = GasConstants.TxDataZeroGas;
 
-/// Gas cost per non-zero byte in transaction data (EIP-2028).
+/// Gas cost per non-zero byte in transaction data (EIP-2028, Istanbul+).
 pub const TX_DATA_COST_PER_NON_ZERO: u64 = GasConstants.TxDataNonZeroGas;
 
-/// Additional gas cost for contract creation transactions (EIP-2).
+/// Gas cost per non-zero byte in transaction data before Istanbul.
+/// EIP-2028 lowered it to 16; Voltaire only exports the current value.
+pub const TX_DATA_COST_PER_NON_ZERO_PRE_ISTANBUL: u64 = 68;
+
+/// Additional gas cost for contract creation transactions (EIP-2, Homestead+).
 pub const TX_CREATE_COST: u64 = GasConstants.TxGasContractCreation - GasConstants.TxGas;
 
 /// Gas cost per address in an EIP-2930 access list.
@@ -69,6 +75,7 @@ pub const MAX_INIT_CODE_SIZE: u64 = GasConstants.MaxInitcodeSize;
 pub fn assert_supported_tx_type(comptime Tx: type, comptime context: []const u8) void {
     comptime {
         if (Tx != tx_mod.LegacyTransaction and
+            Tx != tx_mod.Eip2930Transaction and
             Tx != tx_mod.Eip1559Transaction and
             Tx != tx_mod.Eip4844Transaction and
             Tx != tx_mod.Eip7702Transaction)
@@ -97,7 +104,7 @@ pub fn calculate_intrinsic_gas(tx: anytype, hardfork: Hardfork) u64 {
 
     var access_list_address_count: u64 = 0;
     var access_list_storage_key_count: u64 = 0;
-    if (comptime (Tx == tx_mod.Eip1559Transaction or Tx == tx_mod.Eip4844Transaction or Tx == tx_mod.Eip7702Transaction)) {
+    if (comptime Tx != tx_mod.LegacyTransaction) {
         access_list_address_count = @intCast(tx.access_list.len);
         for (tx.access_list) |entry| {
             access_list_storage_key_count += @intCast(entry.storage_keys.len);
@@ -127,19 +134,25 @@ fn calculate_intrinsic_gas_parts(
     authorization_count: u64,
     hardfork: Hardfork,
 ) u64 {
-    // 1. Data cost: 4 gas per zero byte, 16 gas per non-zero byte
+    // 1. Data cost: 4 gas per zero byte; 68 (pre-Istanbul) or 16 (EIP-2028)
+    //    gas per non-zero byte
+    const non_zero_cost: u64 = if (hardfork.isAtLeast(.ISTANBUL))
+        TX_DATA_COST_PER_NON_ZERO
+    else
+        TX_DATA_COST_PER_NON_ZERO_PRE_ISTANBUL;
     var data_cost: u64 = 0;
     for (data) |byte| {
         if (byte == 0) {
             data_cost += TX_DATA_COST_PER_ZERO;
         } else {
-            data_cost += TX_DATA_COST_PER_NON_ZERO;
+            data_cost += non_zero_cost;
         }
     }
 
-    // 2. Create cost: 32000 for contract creation + init code word cost (EIP-3860)
+    // 2. Create cost: 32000 for contract creation (EIP-2, Homestead+) +
+    //    init code word cost (EIP-3860, Shanghai+)
     var create_cost: u64 = 0;
-    if (is_create) {
+    if (is_create and hardfork.isAtLeast(.HOMESTEAD)) {
         create_cost = TX_CREATE_COST;
         // EIP-3860 (Shanghai+): charge 2 gas per 32-byte word of init code
         if (hardfork.isAtLeast(.SHANGHAI)) {
@@ -405,4 +418,73 @@ test "init_code_cost — max init code size" {
     // 49152 bytes = 1536 words → 3072 gas
     const max_size: usize = @intCast(MAX_INIT_CODE_SIZE);
     try std.testing.expectEqual(@as(u64, 3_072), init_code_cost(max_size));
+}
+
+fn eip2930_tx(data: []const u8, to: ?Address, access_list_items: []const AccessListItem) tx_mod.Eip2930Transaction {
+    return .{
+        .chain_id = 1,
+        .nonce = 0,
+        .gas_price = 0,
+        .gas_limit = 0,
+        .to = to,
+        .value = 0,
+        .data = data,
+        .access_list = access_list_items,
+        .y_parity = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+}
+
+test "intrinsic gas — non-zero calldata byte costs 68 before Istanbul (EIP-2028)" {
+    const data = [_]u8{0xFF};
+    const tx = legacy_tx(&data, make_address(0x30));
+    try std.testing.expectEqual(@as(u64, 21_068), calculate_intrinsic_gas(tx, .FRONTIER));
+    try std.testing.expectEqual(@as(u64, 21_068), calculate_intrinsic_gas(tx, .BYZANTIUM));
+    try std.testing.expectEqual(@as(u64, 21_068), calculate_intrinsic_gas(tx, .PETERSBURG));
+}
+
+test "intrinsic gas — non-zero calldata byte costs 16 from Istanbul (EIP-2028)" {
+    const data = [_]u8{0xFF};
+    const tx = legacy_tx(&data, make_address(0x31));
+    try std.testing.expectEqual(@as(u64, 21_016), calculate_intrinsic_gas(tx, .ISTANBUL));
+    try std.testing.expectEqual(@as(u64, 21_016), calculate_intrinsic_gas(tx, .MUIR_GLACIER));
+}
+
+test "intrinsic gas — zero calldata byte costs 4 on every fork" {
+    const data = [_]u8{ 0x00, 0x00 };
+    const tx = legacy_tx(&data, make_address(0x32));
+    try std.testing.expectEqual(@as(u64, 21_008), calculate_intrinsic_gas(tx, .FRONTIER));
+    try std.testing.expectEqual(@as(u64, 21_008), calculate_intrinsic_gas(tx, .ISTANBUL));
+}
+
+test "intrinsic gas — Frontier contract creation has no create surcharge (EIP-2)" {
+    const empty = legacy_tx(&.{}, null);
+    try std.testing.expectEqual(@as(u64, 21_000), calculate_intrinsic_gas(empty, .FRONTIER));
+    try std.testing.expectEqual(@as(u64, 53_000), calculate_intrinsic_gas(empty, .HOMESTEAD));
+
+    const init_code = [_]u8{ 0x60, 0x00 };
+    const with_code = legacy_tx(&init_code, null);
+    // 21000 + 68 + 4
+    try std.testing.expectEqual(@as(u64, 21_072), calculate_intrinsic_gas(with_code, .FRONTIER));
+    // 21000 + 32000 + 68 + 4
+    try std.testing.expectEqual(@as(u64, 53_072), calculate_intrinsic_gas(with_code, .HOMESTEAD));
+}
+
+test "intrinsic gas — EIP-2930 type-1 access list cost (Berlin)" {
+    const key = [_]u8{0x01} ** 32;
+    const keys = [_][32]u8{ key, key };
+    const list = [_]AccessListItem{
+        .{ .address = make_address(0x40), .storage_keys = &keys },
+        .{ .address = make_address(0x41), .storage_keys = &.{} },
+    };
+    const data = [_]u8{ 0x00, 0x01 };
+    const tx = eip2930_tx(&data, make_address(0x42), &list);
+    // 21000 + 4 + 16 + 2*2400 + 2*1900 = 29620
+    try std.testing.expectEqual(@as(u64, 29_620), calculate_intrinsic_gas(tx, .BERLIN));
+}
+
+test "intrinsic gas — EIP-2930 type-1 contract creation" {
+    const tx = eip2930_tx(&.{}, null, &.{});
+    try std.testing.expectEqual(@as(u64, 53_000), calculate_intrinsic_gas(tx, .BERLIN));
 }

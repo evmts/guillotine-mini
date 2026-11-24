@@ -69,6 +69,8 @@ pub const HostAdapter = struct {
         .setStorage = set_storage,
         .getNonce = get_nonce,
         .setNonce = set_nonce,
+        .accountHasStorage = account_has_storage,
+        .deleteAccount = delete_account,
     };
 
     const log = std.log.scoped(.host_adapter);
@@ -142,6 +144,43 @@ pub const HostAdapter = struct {
             "{s} failed for {any}: {any}",
             .{ "getNonce", address, err },
         );
+    }
+
+    /// Storage slots of `address` held in the journaled (local) storage cache.
+    fn cached_slots(self: *Self, address: Address) ?*std.AutoHashMap(u256, u256) {
+        return self.state.journaled_state.storage_cache.cache.getPtr(address);
+    }
+
+    fn account_has_storage(ptr: *anyopaque, address: Address) bool {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        const slots = self.cached_slots(address) orelse return false;
+        var it = slots.valueIterator();
+        while (it.next()) |value| {
+            if (value.* != 0) return true;
+        }
+        return false;
+    }
+
+    /// Delete an account: zero every cached storage slot, then reset balance,
+    /// nonce, and code.
+    ///
+    /// Slots are zeroed in place instead of removed so a fork backend cannot
+    /// refill them from the remote chain. Checkpoints deep-copy the storage
+    /// map, so `StateManager.revert` restores the slots. Limitation: with a
+    /// fork backend, a remote slot that was never read into the cache can still
+    /// be fetched after deletion; closing that needs a storage-wipe marker in
+    /// Voltaire's `JournaledState`.
+    fn delete_account(ptr: *anyopaque, address: Address) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        if (self.cached_slots(address)) |slots| {
+            var it = slots.valueIterator();
+            while (it.next()) |value| value.* = 0;
+        }
+        self.state.journaled_state.putAccount(address, state_manager_mod.AccountState.init()) catch |err| panic_state_error(
+            "{s} failed for {any}: {any}",
+            .{ "deleteAccount", address, err },
+        );
+        set_code(ptr, address, &[_]u8{});
     }
 
     fn set_nonce(ptr: *anyopaque, address: Address, nonce: u64) void {
@@ -334,4 +373,77 @@ test "HostAdapter — setters panic on failure (policy check)" {
     try std.testing.expectEqual(@as(u64, 10), host.getNonce(addr));
     try std.testing.expectEqual(@as(u256, 77), host.getStorage(addr, 7));
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x60, 0x00 }, host.getCode(addr));
+}
+
+test "HostAdapter — deleteAccount removes storage, balance, nonce, and code" {
+    const allocator = std.testing.allocator;
+    var state = try StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    const host = adapter.host_interface();
+
+    const victim = make_address(0x51);
+    const bystander = make_address(0x52);
+
+    host.setBalance(victim, 500);
+    host.setNonce(victim, 4);
+    host.setCode(victim, &[_]u8{ 0x60, 0x01 });
+    host.setStorage(victim, 1, 11);
+    host.setStorage(victim, 2, 22);
+    host.setStorage(victim, std.math.maxInt(u256), 33);
+    host.setStorage(bystander, 1, 99);
+
+    try std.testing.expect(host.accountHasStorage(victim));
+    host.deleteAccount(victim);
+
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(victim, 1));
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(victim, 2));
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(victim, std.math.maxInt(u256)));
+    try std.testing.expectEqual(@as(u256, 0), host.getBalance(victim));
+    try std.testing.expectEqual(@as(u64, 0), host.getNonce(victim));
+    try std.testing.expectEqual(@as(usize, 0), host.getCode(victim).len);
+    try std.testing.expect(!host.accountHasStorage(victim));
+    try std.testing.expect(!host.accountExists(victim));
+
+    try std.testing.expectEqual(@as(u256, 99), host.getStorage(bystander, 1));
+    try std.testing.expect(host.accountHasStorage(bystander));
+}
+
+test "HostAdapter — recreated account does not see previous incarnation's storage" {
+    const allocator = std.testing.allocator;
+    var state = try StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    const host = adapter.host_interface();
+    const addr = make_address(0x53);
+
+    host.setStorage(addr, 7, 0xdead);
+    host.deleteAccount(addr);
+    host.setNonce(addr, 1);
+    host.setCode(addr, &[_]u8{0x00});
+
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(addr, 7));
+}
+
+test "HostAdapter — revert restores storage removed by deleteAccount" {
+    const allocator = std.testing.allocator;
+    var state = try StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    const host = adapter.host_interface();
+    const addr = make_address(0x54);
+
+    host.setBalance(addr, 10);
+    host.setStorage(addr, 3, 33);
+
+    try state.checkpoint();
+    host.deleteAccount(addr);
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(addr, 3));
+    state.revert();
+
+    try std.testing.expectEqual(@as(u256, 33), host.getStorage(addr, 3));
+    try std.testing.expectEqual(@as(u256, 10), host.getBalance(addr));
 }
