@@ -4,7 +4,7 @@ Thanks for helping improve Guillotine Mini. This guide covers setup, workflows, 
 
 ## Prerequisites
 
-- Zig `0.15.1` or later
+- Zig `0.15.2`
 - Cargo (Rust build tool) - required for cryptographic dependencies
 - Python `3.10+`
 - uv (Python package manager): `brew install uv`
@@ -30,7 +30,7 @@ cd scripts && bun install && cd -
 # Build library + modules
 zig build
 
-# Run all tests (unit + spec tests)
+# Run tests, including state fixtures after a completed fill
 zig build test
 
 # Run execution-spec tests (generation happens automatically)
@@ -55,11 +55,16 @@ Run the TypeScript client suite from `client-ts/` with
 `ethereum-tests` submodule. `EvmExecutorLive` is a placeholder that returns
 `EvmExecutionError` for every call.
 
-The CI workflow can be dispatched manually to run Lean differential fuzzing.
+CI runs Lean differential fuzzing on pull requests, pushes to main, and manual dispatches.
 With Elan installed, run the same check locally with
 `LEAN_DIFF_REQUIRE=1 zig build lean-diff -Doptimize=ReleaseFast`.
 
 ## Running Spec Subsets (fast iteration)
+
+A successful full state fill records `execution-specs/tests/eest/static/state_tests/.filled`.
+Use `-Drefresh-specs=true` to refresh it. If you filled only a subset, pass
+`-Dspecs-use-existing=true` with the corresponding named target, as CI does
+for the PUSH0 smoke test.
 
 We provide granular targets to iterate quickly:
 

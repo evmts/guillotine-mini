@@ -35,9 +35,8 @@ pub fn registerLeanDiff(
     if (b.args) |args| run.addArgs(args);
     // A missing oracle fails the step instead of exiting 0 with a SKIP. Set
     // LEAN_DIFF_REQUIRE=0 in the environment to opt back into skipping.
-    if (std.process.getEnvVarOwned(b.allocator, "LEAN_DIFF_REQUIRE")) |_| {} else |_| {
-        run.setEnvironmentVariable("LEAN_DIFF_REQUIRE", "1");
-    }
+    const require = b.graph.env_map.get("LEAN_DIFF_REQUIRE") orelse "";
+    if (require.len == 0) run.setEnvironmentVariable("LEAN_DIFF_REQUIRE", "1");
 
     const has_lean_project = pathExists(b, "spec/lean/lakefile.lean") or pathExists(b, "spec/lean/lakefile.toml");
     const lake = b.option(bool, "lean-diff-lake", "Run `lake build` in spec/lean before lean-diff (default: when spec/lean exists)") orelse has_lean_project;
