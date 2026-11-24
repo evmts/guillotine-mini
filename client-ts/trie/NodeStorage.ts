@@ -18,7 +18,11 @@ import type { DbError } from "../db/DbError";
 import type { EncodedNode } from "./Node";
 import type { BytesType, RlpType } from "./Node";
 import { coerceEffect } from "./internal/effect";
-import { makeBytesHelpers, makeHashHelpers } from "./internal/primitives";
+import {
+  hashEquals,
+  makeBytesHelpers,
+  makeHashHelpers,
+} from "./internal/primitives";
 import { EMPTY_TRIE_ROOT } from "./root";
 
 /** Error raised when trie node storage operations fail. */
@@ -274,7 +278,7 @@ export const EmptyNodePath: TrieNodePath = {
 };
 
 const isEmptyTrieRoot = (nodeHash: Hash.HashType): boolean =>
-  Hash.equals(nodeHash, EMPTY_TRIE_ROOT);
+  hashEquals(nodeHash, EMPTY_TRIE_ROOT);
 
 const decodeRlp = (encodedNode: BytesType) =>
   coerceEffect<{ data: RlpType; remainder: Uint8Array }, unknown>(

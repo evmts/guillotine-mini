@@ -35,3 +35,17 @@ export const makeHashHelpers = (onError: (message: string) => Error) => {
 
   return { hashFromHex };
 };
+
+/**
+ * Compare two hashes synchronously.
+ *
+ * voltaire-effect's `Hash.equals` returns an `Effect<boolean>`. An Effect is an
+ * object, so using it as a condition is always true.
+ */
+export const hashEquals = (left: HashType, right: HashType): boolean => {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+};

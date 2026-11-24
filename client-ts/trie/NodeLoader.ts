@@ -40,14 +40,14 @@ const wrapRlpEncodeError = (cause: unknown) =>
     cause,
   });
 
-import { makeBytesHelpers } from "./internal/primitives";
+import { hashEquals, makeBytesHelpers } from "./internal/primitives";
 
 const { bytesFromUint8Array } = makeBytesHelpers(
   (message) => new TrieNodeLoaderError({ message }),
 );
 
-const isEmptyTrieRoot = (hash: Hash.HashType) =>
-  Hash.equals(hash, EMPTY_TRIE_ROOT);
+const isEmptyTrieRoot = (hash: Hash.HashType): boolean =>
+  hashEquals(hash, EMPTY_TRIE_ROOT);
 
 const encodeRlp = (
   data: Parameters<typeof import("voltaire-effect/primitives").Rlp.encode>[0],
