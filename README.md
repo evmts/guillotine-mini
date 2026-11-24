@@ -90,6 +90,9 @@ your code constructs `Address` values or uses other Voltaire primitives directly
 
 ## Quick Start
 
+Run a value-transferring contract call with `zig build run-simple-call`.
+The [Zig examples](examples/README.md) include nine more runnable programs and their expected output.
+
 ```bash
 zig build
 zig build test

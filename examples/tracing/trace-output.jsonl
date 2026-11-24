@@ -1,0 +1,4 @@
+{"pc":0,"op":96,"gas":"0x186a0","gasCost":"0x3","memSize":0,"stack":[],"depth":1,"returnData":"0x","refund":0,"opName":"PUSH1"}
+{"pc":2,"op":80,"gas":"0x1869d","gasCost":"0x2","memSize":0,"stack":["0x2a"],"depth":1,"returnData":"0x","refund":0,"opName":"POP"}
+{"pc":3,"op":0,"gas":"0x1869b","gasCost":"0x0","memSize":0,"stack":[],"depth":1,"returnData":"0x","refund":0,"opName":"STOP"}
+{"output":"0x","gasUsed":"0x5","pass":true}

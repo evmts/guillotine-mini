@@ -126,6 +126,21 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const examples = b.addExecutable(.{
+        .name = "guillotine-examples",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "guillotine_mini", .module = evm_mod },
+                .{ .name = "voltaire", .module = primitives_mod },
+            },
+        }),
+    });
+    linkRustSupport(examples);
+    @import("examples/build.zig").addRunSteps(b, examples);
+
     const osaka_properties = b.addTest(.{
         .name = "osaka-properties",
         .root_module = b.createModule(.{

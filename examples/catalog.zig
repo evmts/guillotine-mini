@@ -1,0 +1,10 @@
+pub const @"simple-call" = @import("simple-call/main.zig");
+pub const @"access-list" = @import("access-list/main.zig");
+pub const @"call-types" = @import("call-types/main.zig");
+pub const @"direct-frame" = @import("direct-frame/main.zig");
+pub const @"nested-calls" = @import("nested-calls/main.zig");
+pub const precompiles = @import("precompiles/main.zig");
+pub const tracing = @import("tracing/main.zig");
+pub const @"transient-storage" = @import("transient-storage/main.zig");
+pub const @"hardfork-features" = @import("hardfork-features/main.zig");
+pub const @"host-interface" = @import("host-interface/main.zig");

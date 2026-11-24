@@ -56,7 +56,7 @@
         "test",
         "test_runner.zig",
         "test_trace.zig",
-        "examples/wasm.mjs",
+        "examples",
         "wasm",
         "CHANGELOG.md",
         "LICENSE",

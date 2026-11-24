@@ -46,6 +46,8 @@ jobs:
       - name: Build native crypto archive
         working-directory: voltaire
         run: cargo build --release --lib
+      - name: Run all Zig examples and compare the EIP-3155 trace
+        run: sh test/examples.sh
       - name: Build
         run: zig build
       - name: Test
