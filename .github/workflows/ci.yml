@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,6 +14,7 @@ env:
 
 jobs:
   build-test:
+    if: github.event_name != 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -24,39 +26,48 @@ jobs:
       run:
         working-directory: guillotine-mini
     steps:
-      - uses: actions/checkout@v5
+      - &checkout_project
+        uses: actions/checkout@v5
         with:
           path: guillotine-mini
-      - name: Check out native test fixtures
+      - &checkout_fixtures
+        name: Check out native test fixtures
         run: git submodule update --init --depth 1 -- execution-specs ethereum-tests
-      - name: Read native dependency pin
+      - &read_native_pin
+        name: Read native dependency pin
         id: native
         working-directory: .
         run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v5
+      - &checkout_voltaire
+        uses: actions/checkout@v5
         with:
           repository: evmts/voltaire
           ref: ${{ steps.native.outputs.voltaire }}
           path: voltaire
-      - name: Check out Voltaire HTTPS submodules
+      - &checkout_voltaire_submodules
+        name: Check out Voltaire HTTPS submodules
         working-directory: voltaire
         run: git submodule update --init --depth 1 -- packages/voltaire-zig/lib/libwally-core vendor/execution-apis
-      - name: Install Zig 0.15.2
+      - &install_zig
+        name: Install Zig 0.15.2
         uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a
         with:
           version: 0.15.2
       - name: Check Zig build formatting
         run: zig fmt --check build.zig build.zig.zon
-      - name: Install pinned Rust toolchain
+      - &install_rust
+        name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - name: Cache Cargo downloads
+      - &cache_cargo
+        name: Cache Cargo downloads
         uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-${{ hashFiles('voltaire/Cargo.lock') }}
-      - name: Build native crypto archive
+      - &build_native_crypto
+        name: Build native crypto archive
         working-directory: voltaire
         run: cargo build --release --lib
       - name: Build
@@ -71,5 +82,73 @@ jobs:
         run: zig build unit
       - name: Native trace regressions
         run: zig build test-trace -Doptimize=ReleaseSafe
-      - name: Full test suite
-        run: zig build test -Dnethermind-diff=false
+      - name: Native test suite
+        run: zig build test -Dspecs=false -Dnethermind-diff=false
+      - name: Install uv for spec fixtures
+        if: runner.os == 'Linux'
+        uses: astral-sh/setup-uv@v7
+      - name: Fill PUSH0 state fixtures
+        if: runner.os == 'Linux'
+        working-directory: guillotine-mini/execution-specs
+        run: |
+          uv run --python 3.12 --extra fill --extra test fill tests/eest/shanghai/eip3855_push0 \
+            -m state_test --output tests/eest/static/state_tests --clean
+      - name: Run execution-specs smoke tests
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TEST_FORMAT: json
+        run: |
+          zig build specs-shanghai-push0 | tee "$RUNNER_TEMP/spec-smoke.log"
+          sed -n '/^{/p' "$RUNNER_TEMP/spec-smoke.log" | jq -es 'any(.[]; .success and .passed > 0)'
+      - name: Compile EVM benchmarks
+        run: zig build check-bench-evm
+
+  client-ts:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: guillotine-mini
+    steps:
+      - *checkout_project
+      - *checkout_fixtures
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.12.0'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - name: Run TypeScript client tests
+        working-directory: guillotine-mini/client-ts
+        run: |
+          bun install --frozen-lockfile
+          bun run test
+          bun run build
+
+  lean-diff:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: guillotine-mini
+    steps:
+      - *checkout_project
+      - *read_native_pin
+      - *checkout_voltaire
+      - *checkout_voltaire_submodules
+      - *install_zig
+      - *install_rust
+      - *cache_cargo
+      - *build_native_crypto
+      - name: Install the pinned Lean 4 toolchain
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: guillotine-mini/spec/lean
+          auto-config: 'false'
+          use-mathlib-cache: 'false'
+          use-github-cache: 'false'
+      - name: Fuzz EVM execution against the Lean oracle
+        run: LEAN_DIFF_REQUIRE=1 zig build lean-diff -Doptimize=ReleaseFast

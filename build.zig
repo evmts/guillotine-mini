@@ -103,6 +103,19 @@ pub fn build(b: *std.Build) void {
     const unit_test_step = b.step("unit", "Run unit tests only (fast)");
     unit_test_step.dependOn(&run_mod_tests.step);
 
+    const utils_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/utils.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_utils_tests = b.addRunArtifact(utils_tests);
+    const utils_test_step = b.step("test-utils", "Run test runner utility tests");
+    utils_test_step.dependOn(&run_utils_tests.step);
+    unit_test_step.dependOn(utils_test_step);
+    test_step.dependOn(utils_test_step);
+
     // Keep the public "evm" name as an alias so both imports share the same types.
     b.modules.put("evm", mod) catch @panic("OOM");
 
@@ -188,7 +201,7 @@ pub fn build(b: *std.Build) void {
     const run_nethermind_trie_diff = b.addRunArtifact(nethermind_trie_diff_exe);
     const nethermind_diff_step = b.step("nethermind-diff", "Run Nethermind trie differential test");
     nethermind_diff_step.dependOn(&run_nethermind_trie_diff.step);
-    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test (requires .NET and the nethermind submodule)") orelse false;
+    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test (requires .NET and a Nethermind checkout at nethermind/)") orelse false;
     if (include_nethermind_diff) {
         test_step.dependOn(&run_nethermind_trie_diff.step);
     }
@@ -467,6 +480,9 @@ pub fn build(b: *std.Build) void {
         .root_module = client_evm_bench_mod,
     });
     linkRustSupport(client_evm_bench);
+
+    const check_bench_evm_step = b.step("check-bench-evm", "Compile and link EVM benchmarks");
+    check_bench_evm_step.dependOn(&client_evm_bench.step);
 
     const run_client_evm_bench = b.addRunArtifact(client_evm_bench);
     const bench_evm_step = b.step("bench-evm", "Run EVM ↔ WorldState integration benchmarks");
