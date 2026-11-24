@@ -121,7 +121,7 @@ const ExecutionContext = struct {
 
 /// Create a new Evm instance with optional hardfork name (null/empty = default from config)
 /// log_level: 0=none, 1=err, 2=warn, 3=info, 4=debug
-export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize, log_level: u8) ?*EvmHandle {
+pub export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize, log_level: u8) ?*EvmHandle {
     const ctx = allocator.create(ExecutionContext) catch return null;
 
     const evm_ptr = allocator.create(Evm) catch {
@@ -160,7 +160,7 @@ export fn evm_create(hardfork_name: [*]const u8, hardfork_len: usize, log_level:
 }
 
 /// Destroy an EVM instance
-export fn evm_destroy(handle: ?*EvmHandle) void {
+pub export fn evm_destroy(handle: ?*EvmHandle) void {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
         ctx.evm.deinit();
@@ -175,7 +175,7 @@ export fn evm_destroy(handle: ?*EvmHandle) void {
 }
 
 /// Set bytecode for execution
-export fn evm_set_bytecode(handle: ?*EvmHandle, bytecode: [*]const u8, bytecode_len: usize) bool {
+pub export fn evm_set_bytecode(handle: ?*EvmHandle, bytecode: [*]const u8, bytecode_len: usize) bool {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
 
@@ -195,7 +195,7 @@ export fn evm_set_bytecode(handle: ?*EvmHandle, bytecode: [*]const u8, bytecode_
 }
 
 /// Set execution context
-export fn evm_set_execution_context(
+pub export fn evm_set_execution_context(
     handle: ?*EvmHandle,
     gas: i64,
     caller_bytes: [*]const u8,
@@ -390,7 +390,7 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
 
-        if (ctx.bytecode.len == 0) return false;
+        if (ctx.bytecode.len == 0 and !evm.isPrecompileAddress(ctx.address, ctx.evm.hardfork)) return false;
 
         // Build EIP-2930 access list from flat C API format
         var access_list_entries = std.array_list.AlignedManaged(primitives.AccessList.AccessListEntry, null).init(allocator);
@@ -660,15 +660,60 @@ export fn evm_set_nonce(
 
 // ===== Async Protocol FFI Functions =====
 
-/// Output structure for async requests
+/// Inline fast-path capacity of `AsyncRequest.json_data`.
+pub const ASYNC_JSON_INLINE_CAPACITY: usize = 16384;
+
+/// Output structure for async requests.
+///
+/// For `output_type == 5` (`ready_to_commit`):
+/// - `json_len` ALWAYS holds the true, untruncated byte length of the state-changes JSON.
+/// - Fast path (`json_len <= ASYNC_JSON_INLINE_CAPACITY`): `json_data[0..json_len]` holds the
+///   complete JSON (trailing bytes zeroed), backwards-compatible with existing callers.
+/// - Overflow (`json_len > ASYNC_JSON_INLINE_CAPACITY`): `json_data` is zero-filled (never a
+///   truncated prefix). Callers fetch all bytes via `evm_get_state_changes_len` / `evm_get_state_changes`.
 pub const AsyncRequest = extern struct {
-    output_type: u8, // 0=result, 1=need_storage, 2=need_balance, 5=ready_to_commit
+    output_type: u8, // 0=result, 1=need_storage, 2=need_balance, 3=need_code, 4=need_nonce, 5=ready_to_commit
     address: [20]u8,
     slot: [32]u8, // Only used for storage requests
-    // For ready_to_commit: JSON length and data
+    // For ready_to_commit: full JSON byte length and inline fast-path buffer
     json_len: u32,
-    json_data: [16384]u8, // State changes JSON (inline)
+    json_data: [ASYNC_JSON_INLINE_CAPACITY]u8,
 };
+
+/// Pack state-changes JSON into a `ready_to_commit` request without ever truncating it.
+/// Sets `json_len` to the full byte length; inlines bytes when `json.len <= 16384` (zeroing
+/// trailing bytes), otherwise zero-fills `json_data`. Returns `false` (and sets `output_type = 255`)
+/// only if `json.len` exceeds `maxInt(u32)` on 64-bit native hosts.
+pub fn packStateChangesJson(json: []const u8, request_out: *AsyncRequest) bool {
+    const full_len = std.math.cast(u32, json.len) orelse {
+        request_out.output_type = 255;
+        request_out.json_len = 0;
+        @memset(&request_out.json_data, 0);
+        return false;
+    };
+    request_out.output_type = 5;
+    request_out.json_len = full_len;
+    if (json.len <= request_out.json_data.len) {
+        if (json.len > 0) {
+            @memcpy(request_out.json_data[0..json.len], json);
+        }
+        if (json.len < request_out.json_data.len) {
+            @memset(request_out.json_data[json.len..], 0);
+        }
+    } else {
+        @memset(&request_out.json_data, 0);
+    }
+    return true;
+}
+
+/// All-or-nothing copy used by `evm_get_state_changes`: always returns `json.len`, and copies
+/// every byte iff `buffer != null` and `buffer_len >= json.len`.
+pub fn copyStateChanges(json: []const u8, buffer: ?[*]u8, buffer_len: usize) usize {
+    if (json.len > 0 and buffer_len >= json.len) {
+        if (buffer) |out| @memcpy(out[0..json.len], json);
+    }
+    return json.len;
+}
 
 /// Helper: Pack CallOrContinueOutput into AsyncRequest
 fn packOutput(output: Evm.CallOrContinueOutput, ctx: *ExecutionContext, request_out: *AsyncRequest) bool {
@@ -704,14 +749,7 @@ fn packOutput(output: Evm.CallOrContinueOutput, ctx: *ExecutionContext, request_
             return true;
         },
         .ready_to_commit => |data| {
-            request_out.output_type = 5;
-            // Pack JSON directly into AsyncRequest
-            const json_len = @min(data.changes_json.len, request_out.json_data.len);
-            if (json_len > 0) {
-                @memcpy(request_out.json_data[0..json_len], data.changes_json[0..json_len]);
-            }
-            request_out.json_len = @intCast(json_len);
-            return true;
+            return packStateChangesJson(data.changes_json, request_out);
         },
     }
 }
@@ -731,14 +769,14 @@ fn buildCallParams(ctx: *ExecutionContext) CallParams {
 
 /// Start EVM execution (async protocol)
 /// Returns request in request_out, or sets output_type=0 if done
-export fn evm_call_ffi(
+pub export fn evm_call_ffi(
     handle: ?*EvmHandle,
     request_out: *AsyncRequest,
 ) bool {
     if (handle) |h| {
         const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
 
-        if (ctx.bytecode.len == 0) {
+        if (ctx.bytecode.len == 0 and !evm.isPrecompileAddress(ctx.address, ctx.evm.hardfork)) {
             request_out.output_type = 255;
             return false;
         }
@@ -811,7 +849,7 @@ export fn evm_call_ffi(
 
 /// Continue execution with async response
 /// Returns next request in request_out, or output_type=0 if done
-export fn evm_continue_ffi(
+pub export fn evm_continue_ffi(
     handle: ?*EvmHandle,
     continue_type: u8, // 1=storage, 2=balance, 3=code, 4=nonce, 5=after_commit
     data_ptr: [*]const u8,
@@ -885,42 +923,51 @@ export fn evm_continue_ffi(
     return false;
 }
 
-/// Get state changes JSON (only when output_type = ReadyToCommit)
-export fn evm_get_state_changes(
-    handle: ?*EvmHandle,
-    buffer: [*]u8,
-    buffer_len: usize,
-) usize {
-    if (handle) |h| {
-        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
-
-        // Read from evm struct
-        const copy_len = @min(ctx.evm.pending_state_changes_len, buffer_len);
-        if (copy_len > 0) {
-            @memcpy(buffer[0..copy_len], ctx.evm.pending_state_changes[0..copy_len]);
-        }
-        return copy_len;
+// The WASI reactor build passes an explicit linker export list in build.zig.
+// Mark this new export in the object file as well so the reactor exposes it immediately
+// (and remains idempotent once build.zig also lists "evm_get_state_changes_len").
+comptime {
+    if (builtin.target.cpu.arch.isWasm()) {
+        asm (".export_name evm_get_state_changes_len, evm_get_state_changes_len");
     }
-    return 0;
 }
 
-/// Enable async storage injection
-/// Must be called before evm_call_ffi if using StateInterface
-export fn evm_enable_storage_injector(handle: ?*EvmHandle) bool {
-    if (handle) |h| {
-        const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+/// Get the full byte length of the pending state-changes JSON (valid when output_type == 5).
+pub export fn evm_get_state_changes_len(handle: ?*EvmHandle) usize {
+    const h = handle orelse return 0;
+    const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+    return ctx.evm.getPendingStateChanges().len;
+}
 
-        // Create storage injector with arena allocator
-        const injector_ptr = ctx.evm.allocator.create(StorageInjector) catch return false;
-        injector_ptr.* = StorageInjector.init(ctx.evm.arena.allocator()) catch {
-            ctx.evm.allocator.destroy(injector_ptr);
-            return false;
-        };
+/// Get the full state-changes JSON (valid when output_type == 5 / ready_to_commit).
+/// Always returns the full required byte length (`full_len`).
+/// Copies all `full_len` bytes into `buffer` iff `buffer != null` and `buffer_len >= full_len`;
+/// otherwise leaves `buffer` untouched (never writes half-truncated JSON).
+pub export fn evm_get_state_changes(
+    handle: ?*EvmHandle,
+    buffer: ?[*]u8,
+    buffer_len: usize,
+) usize {
+    const h = handle orelse return 0;
+    const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+    return copyStateChanges(ctx.evm.getPendingStateChanges(), buffer, buffer_len);
+}
 
-        ctx.evm.storage.storage_injector = injector_ptr;
-        return true;
-    }
-    return false;
+/// Enable async storage injection.
+/// Must be called before evm_call_ffi if using StateInterface. Idempotent if already enabled.
+pub export fn evm_enable_storage_injector(handle: ?*EvmHandle) bool {
+    const h = handle orelse return false;
+    const ctx: *ExecutionContext = @ptrCast(@alignCast(h));
+    if (ctx.evm.pending_storage_injector != null) return true;
+
+    // Allocate storage injector in the EVM arena so it is released cleanly on evm_destroy().
+    const arena_alloc = ctx.evm.arena.allocator();
+    const injector_ptr = arena_alloc.create(StorageInjector) catch return false;
+    injector_ptr.* = StorageInjector.init(arena_alloc) catch return false;
+
+    ctx.evm.pending_storage_injector = injector_ptr;
+    ctx.evm.storage.storage_injector = injector_ptr;
+    return true;
 }
 
 // ===== Result Introspection FFI (logs, refunds, storage changes) =====

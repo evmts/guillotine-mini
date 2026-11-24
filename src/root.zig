@@ -53,6 +53,9 @@ pub const opcode = @import("opcode.zig");
 pub const getOpName = opcode.getOpName;
 
 // Export instruction dispatcher
+// Export Glamsterdam/Osaka hardfork readiness hooks
+pub const hardfork_hooks = @import("hardfork_hooks.zig");
+
 pub const dispatcher = @import("instructions/dispatcher.zig");
 pub const Dispatcher = dispatcher.Dispatcher;
 
@@ -60,6 +63,8 @@ test {
     std.testing.refAllDecls(@This());
     _ = @import("evm_test.zig");
     _ = @import("instructions/handlers_stack_test.zig");
+    _ = @import("instructions/handlers_bitwise_test.zig");
+    _ = @import("instructions/clz_test.zig");
     _ = @import("instructions/handlers_arithmetic_test.zig");
     _ = @import("instructions/handlers_comparison_test.zig");
     _ = @import("instructions/handlers_keccak_test.zig");

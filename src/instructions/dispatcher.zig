@@ -76,7 +76,7 @@ pub fn Dispatcher(comptime FrameType: type) type {
         ///   - StackOverflow: If stack exceeds 1024 items
         ///   - InvalidJumpDestination: If JUMP/JUMPI targets invalid location
         ///   - StaticCallViolation: If state-modifying op in static context
-        ///   - InvalidOpcode: If opcode is not recognized (0x0c-0x0f, 0x1e-0x1f, etc.)
+        ///   - InvalidOpcode: If opcode is not recognized (0x0c-0x0f, 0x1f, etc.)
         ///   - Other errors: Depending on specific opcode requirements
         pub fn execute(frame: *FrameType, opcode: u8) EvmError!void {
             switch (opcode) {
@@ -110,7 +110,8 @@ pub fn Dispatcher(comptime FrameType: type) type {
                 0x1b => try BitwiseHandlers.shl(frame),
                 0x1c => try BitwiseHandlers.shr(frame),
                 0x1d => try BitwiseHandlers.sar(frame),
-                // 0x1e-0x1f: Invalid opcodes
+                0x1e => try BitwiseHandlers.clz(frame),
+                // 0x1f: Invalid opcode
 
                 // 0x20: Keccak256
                 0x20 => try KeccakHandlers.sha3(frame),
@@ -205,7 +206,7 @@ pub fn Dispatcher(comptime FrameType: type) type {
             return switch (opcode) {
                 0x01...0x0b => "arithmetic",
                 0x10...0x15 => "comparison",
-                0x16...0x1d => "bitwise",
+                0x16...0x1e => "bitwise",
                 0x20 => "keccak",
                 0x30...0x3f => "context",
                 0x40...0x4a => "block",
@@ -265,7 +266,8 @@ test "Dispatcher - opcode routing" {
 
     // Test invalid opcodes
     try testing.expect(!dispatcher.isValidOpcode(0x0c));
-    try testing.expect(!dispatcher.isValidOpcode(0x1e));
+    try testing.expect(dispatcher.isValidOpcode(0x1e));
+    try testing.expect(!dispatcher.isValidOpcode(0x1f));
     try testing.expect(!dispatcher.isValidOpcode(0x21));
     try testing.expect(!dispatcher.isValidOpcode(0xa5));
 }
@@ -288,6 +290,7 @@ test "Dispatcher - handler module names" {
     // Test bitwise opcodes
     try testing.expectEqualStrings("bitwise", dispatcher.getHandlerModuleName(0x16).?);
     try testing.expectEqualStrings("bitwise", dispatcher.getHandlerModuleName(0x1d).?);
+    try testing.expectEqualStrings("bitwise", dispatcher.getHandlerModuleName(0x1e).?);
 
     // Test keccak opcode
     try testing.expectEqualStrings("keccak", dispatcher.getHandlerModuleName(0x20).?);

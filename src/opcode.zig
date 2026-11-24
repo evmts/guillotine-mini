@@ -29,6 +29,7 @@ pub fn getOpName(opcode: u8) []const u8 {
         0x1b => "SHL",
         0x1c => "SHR",
         0x1d => "SAR",
+        0x1e => "CLZ",
         0x20 => "KECCAK256",
         0x30 => "ADDRESS",
         0x31 => "BALANCE",
@@ -193,6 +194,7 @@ test "getOpName: bitwise opcodes" {
     try testing.expectEqualStrings("SHL", getOpName(0x1b));
     try testing.expectEqualStrings("SHR", getOpName(0x1c));
     try testing.expectEqualStrings("SAR", getOpName(0x1d));
+    try testing.expectEqualStrings("CLZ", getOpName(0x1e));
 }
 
 test "getOpName: hash opcodes" {

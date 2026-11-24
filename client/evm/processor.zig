@@ -18,6 +18,10 @@ const intrinsic_gas = @import("intrinsic_gas.zig");
 const calculate_intrinsic_gas = intrinsic_gas.calculate_intrinsic_gas;
 const MAX_INIT_CODE_SIZE = intrinsic_gas.MAX_INIT_CODE_SIZE;
 
+/// EIP-7825 (Osaka+): maximum gas limit a single transaction may declare (2^24).
+/// Mirrors `TX_MAX_GAS_LIMIT` in execution-specs `forks/osaka/transactions.py`.
+pub const MAX_TX_GAS_LIMIT_OSAKA: u64 = 1 << 24;
+
 inline fn to_bytes_be(x: u256) [32]u8 {
     var out: [32]u8 = undefined;
     std.mem.writeInt(u256, &out, x, .big);
@@ -52,10 +56,11 @@ const assert_supported_tx_type = intrinsic_gas.assert_supported_tx_type;
 /// - gas limit >= max(intrinsic gas, calldata floor) (Prague+ EIP-7623)
 /// - nonce < 2**64 - 1
 /// - init code size <= MAX_INIT_CODE_SIZE (Shanghai+ contract creation)
+/// - gas limit <= MAX_TX_GAS_LIMIT_OSAKA (Osaka+ EIP-7825)
 pub fn validate_transaction(
     tx: anytype,
     hardfork: Hardfork,
-) error{ InsufficientGas, NonceOverflow, InitCodeTooLarge, UnsupportedTransactionType }!u64 {
+) error{ InsufficientGas, NonceOverflow, InitCodeTooLarge, UnsupportedTransactionType, TransactionGasLimitExceeded }!u64 {
     const Tx = @TypeOf(tx);
     comptime assert_supported_tx_type(Tx, "validate_transaction");
 
@@ -79,6 +84,9 @@ pub fn validate_transaction(
     if (is_create and hardfork.isAtLeast(.SHANGHAI)) {
         const max_init_code_size: usize = @intCast(MAX_INIT_CODE_SIZE);
         if (tx.data.len > max_init_code_size) return error.InitCodeTooLarge;
+    }
+    if (hardfork.isAtLeast(.OSAKA) and tx.gas_limit > MAX_TX_GAS_LIMIT_OSAKA) {
+        return error.TransactionGasLimitExceeded;
     }
 
     return intrinsic;
@@ -220,6 +228,43 @@ test "validate_transaction — init code size limit (Shanghai+)" {
     tx.gas_limit = intrinsic;
 
     try std.testing.expectError(error.InitCodeTooLarge, validate_transaction(tx, .SHANGHAI));
+}
+
+fn eip7825_test_tx(gas_limit: u64) tx_mod.LegacyTransaction {
+    return .{
+        .nonce = 0,
+        .gas_price = 0,
+        .gas_limit = gas_limit,
+        .to = primitives.Address{ .bytes = [_]u8{0x78} ++ [_]u8{0} ** 19 },
+        .value = 0,
+        .data = &[_]u8{},
+        .v = 0,
+        .r = [_]u8{0} ** 32,
+        .s = [_]u8{0} ** 32,
+    };
+}
+
+test "validate_transaction — EIP-7825 cap not enforced before Osaka" {
+    const intrinsic = try validate_transaction(eip7825_test_tx(MAX_TX_GAS_LIMIT_OSAKA + 1), .PRAGUE);
+    try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), intrinsic);
+    _ = try validate_transaction(eip7825_test_tx(30_000_000), .PRAGUE);
+}
+
+test "validate_transaction — EIP-7825 cap allows exactly 2^24 on Osaka" {
+    try std.testing.expectEqual(@as(u64, 16_777_216), MAX_TX_GAS_LIMIT_OSAKA);
+    const intrinsic = try validate_transaction(eip7825_test_tx(16_777_216), .OSAKA);
+    try std.testing.expectEqual(@as(u64, intrinsic_gas.TX_BASE_COST), intrinsic);
+}
+
+test "validate_transaction — EIP-7825 cap rejects 2^24 + 1 on Osaka" {
+    try std.testing.expectError(
+        error.TransactionGasLimitExceeded,
+        validate_transaction(eip7825_test_tx(16_777_217), .OSAKA),
+    );
+    try std.testing.expectError(
+        error.TransactionGasLimitExceeded,
+        preprice_transaction(eip7825_test_tx(16_777_217), .OSAKA, 0),
+    );
 }
 
 test "validate_transaction — eip1559 access list intrinsic gas" {
@@ -641,6 +686,7 @@ pub fn preprice_transaction(
     NonceOverflow,
     InitCodeTooLarge,
     UnsupportedTransactionType,
+    TransactionGasLimitExceeded,
     PriorityFeeGreaterThanMaxFee,
     InsufficientMaxFeePerGas,
     GasPriceBelowBaseFee,

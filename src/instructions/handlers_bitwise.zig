@@ -116,5 +116,22 @@ pub fn Handlers(FrameType: type) type {
             try frame.pushStack(result);
             frame.pc += 1;
         }
+
+        /// CLZ opcode (0x1e) - Count leading zero bits (EIP-7939, Osaka+)
+        pub fn clz(frame: *FrameType) FrameType.EvmError!void {
+            const evm = frame.getEvm();
+            if (evm.hardfork.isBefore(.OSAKA)) return error.InvalidOpcode;
+
+            try frame.consumeGas(GasConstants.GasFastStep);
+            const x = try frame.popStack();
+            // @clz(0) on u256 already yields 256; keep the branch explicit to mirror the EIP.
+            const result: u256 = if (x == 0) 256 else @as(u256, @clz(x));
+            try frame.pushStack(result);
+            frame.pc += 1;
+        }
     };
+}
+
+test {
+    _ = @import("clz_test.zig");
 }
