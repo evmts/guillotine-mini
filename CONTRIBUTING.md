@@ -46,8 +46,9 @@ zig build native
 
 # Build and exercise the WASM artifact (Node 22+ for tests)
 rustup target add wasm32-unknown-unknown
+npm install --global --ignore-scripts binaryen@132.0.0
 zig build wasm
-zig build test-wasm
+zig build test-wasm test-wasm-size
 
 # Build the documentation site (Vocs)
 cd docs && npm ci && npm run build && cd -

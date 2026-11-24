@@ -17,7 +17,7 @@ export const Workspace = S.Workspace("guillotine-mini", {
       write: S.Secret("SMITHERS_CACHE_WRITE_TOKEN"),
     }),
   }),
-  host: S.Host({ bins: ["zig", "bun", "node", "sh"] }),
+  host: S.Host({ bins: ["zig", "bun", "node", "sh", "wasm-opt"] }),
   sandboxes: S.Sandboxes({
     default: S.Sandbox.None(),
   }),

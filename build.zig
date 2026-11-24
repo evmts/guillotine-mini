@@ -1171,8 +1171,135 @@ pub fn build(b: *std.Build) void {
     const wasm_crypto_mod = wasm_primitives_dep.module("crypto");
     const wasm_precompiles_mod = wasm_primitives_dep.module("precompiles");
 
-    // Create WASM module with all necessary dependencies
-    const wasm_mod = b.addModule("guillotine_mini_wasm", .{
+    const external = b.createModule(.{
+        .root_source_file = b.path("src/precompiles/wasm_host.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "voltaire", .module = wasm_primitives_mod },
+            .{ .name = "builtins", .module = wasm_precompiles_mod },
+        },
+    });
+    const wasm_lib = addWasmEvm(b, "guillotine_mini", wasm_target, evm_options_mod, wasm_primitives_mod, wasm_crypto_mod, wasm_precompiles_mod);
+    const core = addWasmEvm(b, "guillotine_mini_core", wasm_target, evm_options_mod, wasm_primitives_mod, wasm_crypto_mod, external);
+    const core_binary = optimizeWasm(b, core);
+    const full_binary = optimizeWasm(b, wasm_lib);
+
+    const wasm_step = b.step("wasm", "Build the WASI reactor library");
+    wasm_step.dependOn(&b.addInstallBinFile(full_binary, "guillotine_mini.wasm").step);
+
+    // Exercise the real artifact with Node's WASI implementation, including
+    // its linked crypto precompiles. No npm dependencies or external fixtures.
+    const wasm_test = b.addSystemCommand(&.{"node"});
+    wasm_test.addFileArg(b.path("test/wasm.test.mjs"));
+    wasm_test.addFileArg(full_binary);
+    const wasm_test_step = b.step("test-wasm", "Run WASM execution and crypto regression tests (Node 22+)");
+    wasm_test_step.dependOn(&wasm_test.step);
+
+    const core_step = b.step("wasm-core", "Build the small reactor with host-loaded precompiles");
+    core_step.dependOn(&b.addInstallBinFile(core_binary, "guillotine_mini_core.wasm").step);
+    core_step.dependOn(&b.addInstallBinFile(b.path("wasm/precompiles.mjs"), "precompiles.mjs").step);
+    const modular = b.step("wasm-modular", "Build the core and all separately loadable precompiles");
+    modular.dependOn(core_step);
+
+    const modular_test = b.addSystemCommand(&.{"node"});
+    modular_test.addFileArg(b.path("test/wasm.test.mjs"));
+    modular_test.addFileArg(core_binary);
+    modular_test.addFileArg(full_binary);
+    wasm_test_step.dependOn(&modular_test.step);
+    const size_check = b.addSystemCommand(&.{"node"});
+    size_check.addFileArg(b.path("test/wasm-size.mjs"));
+    size_check.addFileArg(core_binary);
+    size_check.addFileArg(full_binary);
+    b.step("test-wasm-size", "Check the raw byte budgets of the WASM artifacts").dependOn(&size_check.step);
+
+    const addresses = [_]u16{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 0x100 };
+    for (addresses) |address| {
+        const options = b.addOptions();
+        options.addOption(u16, "address", address);
+        const mod_name = b.fmt("precompile-{x:0>2}", .{address});
+        const addon = b.addExecutable(.{
+            .name = mod_name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/precompiles/wasm_module.zig"),
+                .target = wasm_target,
+                .optimize = .ReleaseSmall,
+                .imports = &.{
+                    .{ .name = "voltaire", .module = wasm_primitives_mod },
+                    .{ .name = "builtins", .module = wasm_precompiles_mod },
+                    .{ .name = "options", .module = options.createModule() },
+                },
+            }),
+        });
+        addon.entry = .disabled;
+        addon.wasi_exec_model = .reactor;
+        addon.root_module.export_symbol_names = &.{ "address", "prepare", "execute", "output_ptr", "gas_used" };
+        const step = b.step(b.fmt("wasm-{s}", .{mod_name}), "Build this precompile reactor");
+        step.dependOn(&b.addInstallArtifact(addon, .{}).step);
+        modular_test.addArtifactArg(addon);
+        size_check.addArtifactArg(addon);
+        modular.dependOn(step);
+    }
+
+    // WASM is an explicit cross-compilation target; native installs do not need
+    // the Rust WASM standard library. Use `zig build wasm` to build the reactor.
+
+    // Native C library build for Rust FFI integration
+    const native_mod = b.addModule("guillotine_mini_native", .{
+        .root_source_file = b.path("src/root_c.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = evm_options_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "precompiles", .module = precompiles_mod },
+        },
+    });
+
+    const native_lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "guillotine_mini",
+        .root_module = native_mod,
+    });
+    linkRustSupport(native_lib);
+
+    const native_install = b.addInstallArtifact(native_lib, .{});
+
+    const native_step = b.step("native", "Build native static library for FFI");
+    native_step.dependOn(&native_install.step);
+
+    // Just like flags, top level steps are also listed in the `--help` menu.
+    //
+    // The Zig build system is entirely implemented in userland, which means
+    // that it cannot hook into private compiler APIs. All compilation work
+    // orchestrated by the build system will result in other Zig compiler
+    // subcommands being invoked with the right flags defined. You can observe
+    // these invocations when one fails (or you pass a flag to increase
+    // verbosity) to validate assumptions and diagnose problems.
+    //
+    // Lastly, the Zig build system is relatively simple and self-contained,
+    // and reading its source code will allow you to master it.
+}
+
+fn optimizeWasm(b: *std.Build, exe: *std.Build.Step.Compile) std.Build.LazyPath {
+    exe.lto = .full;
+    const shrink = b.addSystemCommand(&.{ "wasm-opt", "-Oz", "--converge", "--enable-bulk-memory", "--enable-sign-ext", "--enable-nontrapping-float-to-int" });
+    shrink.addArtifactArg(exe);
+    shrink.addArg("-o");
+    return shrink.addOutputFileArg(b.fmt("{s}.wasm", .{exe.name}));
+}
+
+fn addWasmEvm(
+    b: *std.Build,
+    name: []const u8,
+    wasm_target: std.Build.ResolvedTarget,
+    evm_options_mod: *std.Build.Module,
+    wasm_primitives_mod: *std.Build.Module,
+    wasm_crypto_mod: *std.Build.Module,
+    wasm_precompiles_mod: *std.Build.Module,
+) *std.Build.Step.Compile {
+    const wasm_mod = b.addModule(b.fmt("{s}_wasm", .{name}), .{
         .root_source_file = b.path("src/root_c.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
@@ -1185,7 +1312,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const wasm_lib = b.addExecutable(.{
-        .name = "guillotine_mini",
+        .name = name,
         .root_module = wasm_mod,
     });
     wasm_lib.entry = .disabled;
@@ -1239,58 +1366,7 @@ pub fn build(b: *std.Build) void {
         "evm_get_access_list_json",
     };
 
-    const wasm_install = b.addInstallArtifact(wasm_lib, .{});
-
-    const wasm_step = b.step("wasm", "Build the WASI reactor library");
-    wasm_step.dependOn(&wasm_install.step);
-
-    // Exercise the real artifact with Node's WASI implementation, including
-    // its linked crypto precompiles. No npm dependencies or external fixtures.
-    const wasm_test = b.addSystemCommand(&.{"node"});
-    wasm_test.addFileArg(b.path("test/wasm.test.mjs"));
-    wasm_test.addArtifactArg(wasm_lib);
-    const wasm_test_step = b.step("test-wasm", "Run WASM execution and crypto regression tests (Node 22+)");
-    wasm_test_step.dependOn(&wasm_test.step);
-
-    // WASM is an explicit cross-compilation target; native installs do not need
-    // the Rust WASM standard library. Use `zig build wasm` to build the reactor.
-
-    // Native C library build for Rust FFI integration
-    const native_mod = b.addModule("guillotine_mini_native", .{
-        .root_source_file = b.path("src/root_c.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "build_options", .module = evm_options_mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-            .{ .name = "precompiles", .module = precompiles_mod },
-        },
-    });
-
-    const native_lib = b.addLibrary(.{
-        .linkage = .static,
-        .name = "guillotine_mini",
-        .root_module = native_mod,
-    });
-    linkRustSupport(native_lib);
-
-    const native_install = b.addInstallArtifact(native_lib, .{});
-
-    const native_step = b.step("native", "Build native static library for FFI");
-    native_step.dependOn(&native_install.step);
-
-    // Just like flags, top level steps are also listed in the `--help` menu.
-    //
-    // The Zig build system is entirely implemented in userland, which means
-    // that it cannot hook into private compiler APIs. All compilation work
-    // orchestrated by the build system will result in other Zig compiler
-    // subcommands being invoked with the right flags defined. You can observe
-    // these invocations when one fails (or you pass a flag to increase
-    // verbosity) to validate assumptions and diagnose problems.
-    //
-    // Lastly, the Zig build system is relatively simple and self-contained,
-    // and reading its source code will allow you to master it.
+    return wasm_lib;
 }
 
 /// Voltaire's exported crypto/primitives/precompiles modules carry the Rust

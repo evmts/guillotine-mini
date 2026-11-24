@@ -3,15 +3,26 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { WASI } from 'node:wasi'
+import { precompileImports } from '../wasm/precompiles.mjs'
 
 const bytes = await readFile(process.argv[2] ?? new URL('../zig-out/bin/guillotine_mini.wasm', import.meta.url))
 const module = await WebAssembly.compile(bytes)
 
-async function fixture(js_opcode_callback = () => 0) {
+// The modular run also receives the all-in-one reactor as a behavior oracle.
+const reference = process.argv[3] && await WebAssembly.compile(await readFile(process.argv[3]))
+const addons = await Promise.all(process.argv.slice(4).map(async path => {
   const wasi = new WASI({ version: 'preview1' })
-  const instance = await WebAssembly.instantiate(module, {
+  const { instance } = await WebAssembly.instantiate(await readFile(path), { wasi_snapshot_preview1: wasi.wasiImport })
+  wasi.initialize(instance)
+  return instance
+}))
+
+async function fixture(js_opcode_callback = () => 0, hardfork = 'prague', reactor = module, selected = addons) {
+  const wasi = new WASI({ version: 'preview1' })
+  const instance = await WebAssembly.instantiate(reactor, {
     wasi_snapshot_preview1: wasi.wasiImport,
     env: { js_opcode_callback, js_precompile_callback: () => 0 },
+    precompiles: precompileImports(() => instance.exports.memory, selected),
   })
   wasi.initialize(instance)
   const api = instance.exports
@@ -24,11 +35,12 @@ async function fixture(js_opcode_callback = () => 0) {
     allocations.push([ptr, data.length])
     return ptr
   }
-  const fork = new TextEncoder().encode('prague')
+  const fork = new TextEncoder().encode(hardfork)
   const handle = api.evm_create(alloc(fork), fork.length, 0)
   assert.ok(handle, 'EVM initialization succeeds')
   const addressBytes = new Uint8Array(20)
-  addressBytes[18] = 1 // 0x100 is not a precompile.
+  addressBytes[18] = 1
+  addressBytes[19] = 1 // 0x101 stays outside the precompile range through Osaka.
   const address = alloc(addressBytes)
   const zero = alloc(32)
   const caller = alloc(20)
@@ -64,7 +76,7 @@ async function fixture(js_opcode_callback = () => 0) {
   return { api, alloc, handle, address, zero, configure, execute, readJsonText, close }
 }
 
-test('WASI reactor contains crypto implementations and exports its complete C API', () => {
+test('WASI reactor imports its declared host functions and exports its complete C API', () => {
   const exports = new Set(WebAssembly.Module.exports(module).map(({ name }) => name))
   assert.deepEqual(new Set([...exports].filter(name => name.startsWith('evm_'))), new Set([
     'evm_alloc', 'evm_free', 'evm_create', 'evm_destroy', 'evm_set_bytecode', 'evm_set_execution_context',
@@ -82,7 +94,10 @@ test('WASI reactor contains crypto implementations and exports its complete C AP
   assert.equal(exports.has('_start'), false)
   assert.equal(exports.has('main'), false)
   assert.deepEqual(WebAssembly.Module.imports(module).filter(({ module }) => module !== 'wasi_snapshot_preview1')
-    .map(({ module, name }) => `${module}.${name}`).sort(), ['env.js_opcode_callback', 'env.js_precompile_callback'])
+    .map(({ module, name }) => `${module}.${name}`).sort(), [
+      'env.js_opcode_callback', 'env.js_precompile_callback',
+      ...(addons.length ? ['precompiles.copy_output', 'precompiles.run'] : []),
+    ])
 })
 
 test('executes arithmetic bytecode and returns output and gas', async () => {
@@ -262,7 +277,8 @@ test('exposes storage writes and logs through the WASM C API', async () => {
 
 // CALLDATACOPY; STATICCALL a precompile; return its output and success flag.
 function precompileCall(address, outputLength) {
-  return `36600060003760${outputLength.toString(16).padStart(2, '0')}600036600060${address.toString(16).padStart(2, '0')}5afa60${outputLength.toString(16).padStart(2, '0')}5260${(outputLength + 32).toString(16).padStart(2, '0')}6000f3`
+  const target = address < 256 ? '60' + address.toString(16).padStart(2, '0') : '61' + address.toString(16).padStart(4, '0')
+  return `36600060003760${outputLength.toString(16).padStart(2, '0')}6000366000${target}5afa60${outputLength.toString(16).padStart(2, '0')}5260${(outputLength + 32).toString(16).padStart(2, '0')}6000f3`
 }
 
 test('executes SHA256, BN254 pairing, and BLS12-381 precompiles inside WASM', async () => {
@@ -286,6 +302,48 @@ test('executes SHA256, BN254 pairing, and BLS12-381 precompiles inside WASM', as
     assert.equal(bls.output.toString('hex'), '00'.repeat(159) + '01')
   } finally { f.close() }
 })
+
+test('uses the EVM hardfork for activation and BN254 gas, and fails invalid input', async () => {
+  const before = await fixture(undefined, 'byzantium')
+  const after = await fixture(undefined, 'istanbul')
+  try {
+    const pairing = precompileCall(8, 32)
+    const oldPrice = before.execute(pairing)
+    const newPrice = after.execute(pairing)
+    assert.equal(oldPrice.output[63], 1)
+    assert.equal(newPrice.output[63], 1)
+    assert.equal(oldPrice.gasUsed - newPrice.gasUsed, 55_000n)
+    const invalid = after.execute(pairing, { input: Uint8Array.of(1) })
+    assert.equal(invalid.output[63], 0)
+    // BLS G1ADD is still an empty account before Prague.
+    assert.equal(after.execute(precompileCall(11, 128)).output[159], 1)
+  } finally { before.close(); after.close() }
+})
+
+if (reference) {
+  test('all standalone precompiles match the full reactor for gas, status and output', async () => {
+    const full = await fixture(undefined, 'osaka', reference)
+    const core = await fixture(undefined, 'osaka')
+    try {
+      const cases = [[1, 128], [2, 3], [3, 3], [4, 32], [5, 96], [6, 128], [7, 96], [8, 192],
+        [9, 213], [10, 192], [11, 256], [12, 160], [13, 512], [14, 288], [15, 384], [16, 64], [17, 128], [0x100, 160]]
+      for (const [address, len] of cases) {
+        const code = precompileCall(address, 32)
+        const options = { input: new Uint8Array(len) }
+        assert.deepEqual(core.execute(code, options), full.execute(code, options), `precompile 0x${address.toString(16)}`)
+      }
+    } finally { core.close(); full.close() }
+  })
+
+  test('loads SHA-256 alone and reports an omitted active precompile to the host', async () => {
+    const f = await fixture(undefined, 'prague', module, addons.filter(m => m.exports.address() === 2))
+    try {
+      const sha = f.execute(precompileCall(2, 32))
+      assert.equal(sha.output.subarray(0, 32).toString('hex'), createHash('sha256').digest('hex'))
+      assert.throws(() => f.execute(precompileCall(3, 32)), /Missing WASM precompile 0x3/)
+    } finally { f.close() }
+  })
+}
 
 test('transfer buffers support memory growth and reuse', async () => {
   const f = await fixture()

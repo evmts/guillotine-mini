@@ -377,7 +377,9 @@ Includes PC, opcode, gas remaining, stack, memory, storage changes. Compare trac
 
 ```bash
 zig build wasm
-# Output: zig-out/bin/guillotine_mini.wasm (ReleaseSmall WASI reactor, ~620 KB with linked crypto)
+# zig-out/bin/guillotine_mini.wasm includes all precompiles.
+zig build wasm-core wasm-precompile-02  # Small core plus SHA-256
+zig build test-wasm-size                # Raw byte budgets for every artifact
 ```
 
 <details>

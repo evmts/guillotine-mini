@@ -25,6 +25,7 @@
 - Cargo (Voltaire builds its Rust crypto archive)
 - A `../voltaire` checkout at the revision pinned in `native-dependencies.json`
 - Python 3 and [uv](https://docs.astral.sh/uv/) for `zig build test` and `zig build specs` (execution-specs fills fixtures with Python 3.11+)
+- Binaryen `wasm-opt` for building either WASM EVM reactor (CI uses 132.0.0)
 - Node 22+ for `zig build test-wasm` and `examples/wasm.mjs`
 
 ## Install
@@ -104,10 +105,11 @@ TEST_FILTER="push0" zig build specs
 ## WebAssembly
 
 The WASM build uses the adjacent `../voltaire` checkout and the same Zig and
-Cargo toolchain as the native build. Install Rust's WASM standard library once:
+Cargo toolchain as the native build. Install Rust's WASM standard library and Binaryen once:
 
 ```bash
 rustup target add wasm32-unknown-unknown
+npm install --global --ignore-scripts binaryen@132.0.0
 zig build wasm
 zig build test-wasm
 node examples/wasm.mjs
@@ -131,6 +133,48 @@ copy buffers, so the host can release them after the call. Recreate typed-array
 views after allocations or EVM calls because WebAssembly memory may grow.
 Call `evm_destroy(handle)` when finished with an instance. See the complete
 [Node example](examples/wasm.mjs) and [execution regression tests](test/wasm.test.mjs).
+
+### Small bundle with optional precompiles
+
+Ship `guillotine_mini_core.wasm` and only the precompile modules your workload
+uses. To build the core and SHA-256 (Ethereum address `0x02`), run:
+
+```bash
+zig build wasm-core wasm-precompile-02
+```
+
+The files are installed in `zig-out/bin/`. Targets use lowercase hex addresses
+(`01` through `11`, plus `100`). `zig build wasm-modular` builds all 18 modules.
+The core keeps the same EVM C API, custom callbacks and hardfork activation rules.
+Calling an active precompile whose module was omitted throws a host error. For
+arbitrary contracts, supply all modules or use the all-in-one reactor.
+
+For example, run this ES module from the output directory with Node 22+:
+
+```js
+import { readFile } from 'node:fs/promises'
+import { WASI } from 'node:wasi'
+import { precompileImports } from './precompiles.mjs'
+
+async function reactor(file, imports = {}) {
+  const wasi = new WASI({ version: 'preview1' })
+  const { instance } = await WebAssembly.instantiate(await readFile(file), {
+    wasi_snapshot_preview1: wasi.wasiImport, ...imports,
+  })
+  wasi.initialize(instance)
+  return instance
+}
+
+const sha256 = await reactor('precompile-02.wasm')
+const core = await reactor('guillotine_mini_core.wasm', {
+  env: { js_opcode_callback: () => 0, js_precompile_callback: () => 0 },
+  precompiles: precompileImports(() => core.exports.memory, [sha256]),
+})
+```
+
+`zig build test-wasm-size` checks the uncompressed byte lengths of the core,
+the all-in-one reactor and each precompile before CI publishes the artifacts.
+The core budget is 230,721 bytes, the size recorded in the October 2025 report.
 
 ## Architecture
 

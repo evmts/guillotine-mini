@@ -147,6 +147,7 @@ const bench_ffi = S.Shell.Test({
 })
 
 const bench_wasm = S.Shell.Test({
+  tools: [S.Host.bin("zig"), S.Host.bin("node"), S.Host.bin("wasm-opt")],
   shell: "zig build wasm && node test/wasm.bench.mjs",
   env: { BENCH_JSON_OUT: ".bench-results/wasm.json" },
   data: [build_files, ffi_srcs, S.file("test/wasm.bench.mjs")],
@@ -207,9 +208,12 @@ const test_runner = S.Shell.Test({
 
 const test_wasm = S.Shell.Test({
   bin: S.Host.bin("sh"),
-  tools: [S.Host.bin("zig")],
-  args: [".smithers/run-zig.sh", "build", "test-wasm"],
-  data: [S.file("//.smithers/run-zig.sh"), build_files, ffi_srcs, S.file("test/wasm.test.mjs")],
+  tools: [S.Host.bin("zig"), S.Host.bin("node"), S.Host.bin("wasm-opt")],
+  args: [".smithers/run-zig.sh", "build", "test-wasm", "test-wasm-size"],
+  data: [
+    S.file("//.smithers/run-zig.sh"), build_files, ffi_srcs, S.file("native-dependencies.json"),
+    S.file("test/wasm.test.mjs"), S.file("test/wasm-size.mjs"), S.file("wasm/precompiles.mjs"),
+  ],
   sandbox: "none",
 })
 

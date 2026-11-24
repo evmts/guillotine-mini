@@ -104,5 +104,9 @@ jobs:
       - name: Install client-ts dependencies
         run: bun install --frozen-lockfile
         working-directory: guillotine-mini/client-ts
+      - name: Install WASM optimizer
+        run: npm install --global --ignore-scripts binaryen@132.0.0
+      - name: Install Rust WASM target
+        run: rustup target add wasm32-unknown-unknown
       - name: smthrs ci
         run: npx -y smthrs@next ci '//...' --verbose

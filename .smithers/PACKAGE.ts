@@ -33,7 +33,7 @@ const fmtCheck = S.Shell.Test({
 // native-dependencies.json. run-zig.sh serializes Zig across targets.
 const build = S.Shell.Build({
   bin: S.Host.bin("sh"),
-  tools: [S.Host.bin("zig")],
+  tools: [S.Host.bin("zig"), S.Host.bin("wasm-opt")],
   args: [".smithers/run-zig.sh", "build", "native", "wasm", "-p", "zig-out/smithers"],
   sandbox: "none",
   timeout: "30m",

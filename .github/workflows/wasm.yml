@@ -33,14 +33,26 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24.12.0'
+      - name: Install WASM optimizer
+        run: npm install --global --ignore-scripts binaryen@132.0.0
       - name: Install Rust WASM target
         run: rustup target add wasm32-unknown-unknown
       - name: Build WASM from source
-        run: zig build wasm --summary all
+        run: zig build wasm wasm-modular --summary all
+      - name: Enforce WASM byte budgets
+        run: zig build test-wasm-size --summary all
       - name: Test WASM execution
         run: zig build test-wasm --summary all
       - uses: actions/upload-artifact@v6
         with:
           name: guillotine-mini-wasm
           path: guillotine-mini/zig-out/bin/guillotine_mini.wasm
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: guillotine-mini-wasm-modular
+          path: |
+            guillotine-mini/zig-out/bin/guillotine_mini_core.wasm
+            guillotine-mini/zig-out/bin/precompile-*.wasm
+            guillotine-mini/zig-out/bin/precompiles.mjs
           if-no-files-found: error

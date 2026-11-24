@@ -14,7 +14,10 @@ Transcribed from `build.zig`. Run `zig build --help` for the live list on your c
 | `zig build` | Runs the default `install` step. `build.zig` attaches no artifact to it, so it produces no library; use `native` or `wasm` |
 | `zig build native` | Builds `zig-out/lib/libguillotine_mini.a` (static C ABI archive) |
 | `zig build wasm` | Builds `zig-out/bin/guillotine_mini.wasm` (`wasm32-wasi`, `ReleaseSmall`, reactor) |
-| `zig build test-wasm` | Runs `node test/wasm.test.mjs` against the built WASM artifact (Node 22+) |
+| `zig build wasm-core wasm-precompile-02` | Builds the modular core and SHA-256. Select other precompiles by hex address |
+| `zig build wasm-modular` | Builds the core and all 18 standalone WASI precompile modules |
+| `zig build test-wasm` | Runs execution and crypto tests against both reactor builds (Node 22+) |
+| `zig build test-wasm-size` | Enforces raw byte budgets on the core, full reactor and individual precompiles |
 | `zig build test-trace` | Runs `test_trace.zig` deterministic EIP-3155 native trace regression |
 | `zig build unit` | Runs EVM and client module unit tests, `test-osaka-properties`, and `test-spec-runner` |
 | `zig build test` | Runs everything in `unit`, plus the `specs` state tests and `nethermind-diff` (skip with `-Dnethermind-diff=false`) |
