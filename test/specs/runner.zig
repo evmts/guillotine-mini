@@ -128,29 +128,175 @@ fn validateBlockHeaderConstants(
     try MergeValidator.validate(&header, ctx);
 }
 
-// Taylor series approximation of factor * e^(numerator/denominator)
-// This implements the fake_exponential function from EIP-4844
+/// EIP-4844 `fake_exponential`: integer approximation of
+/// factor * e^(numerator / denominator).
+/// EELS uses unbounded integers; a result that does not fit in u256
+/// saturates to maxInt(u256) instead of returning a truncated partial sum.
 fn taylorExponential(factor: u256, numerator: u256, denominator: u256) u256 {
+    const max = std.math.maxInt(u256);
     var i: u256 = 1;
     var output: u256 = 0;
-    var numerator_accumulated: u256 = factor * denominator;
+    var numerator_accumulated: u256 = std.math.mul(u256, factor, denominator) catch return max;
 
     while (numerator_accumulated > 0) {
-        output += numerator_accumulated;
-
-        // Calculate next term: numerator_accumulated * numerator / (denominator * i)
-        // Use checked arithmetic to prevent overflow
-        const temp = std.math.mul(u256, numerator_accumulated, numerator) catch break;
-        const divisor = std.math.mul(u256, denominator, i) catch break;
+        output = std.math.add(u256, output, numerator_accumulated) catch return max;
+        const temp = std.math.mul(u256, numerator_accumulated, numerator) catch return max;
+        const divisor = std.math.mul(u256, denominator, i) catch return max;
         numerator_accumulated = temp / divisor;
-
         i += 1;
-
-        // Safety limit to prevent infinite loops
-        if (i > 100) break;
     }
 
     return output / denominator;
+}
+
+/// EIP-4844 (Cancun) and EIP-7691 (Prague, Osaka) blob base fee update fraction.
+fn blobBaseFeeUpdateFraction(hf: ?Hardfork) u256 {
+    const fork = hf orelse return 3_338_477;
+    return if (fork.isAtLeast(.PRAGUE)) 5_007_716 else 3_338_477;
+}
+
+/// Blob base fee for `excess_blob_gas` under `hf` (MIN_BASE_FEE_PER_BLOB_GAS = 1).
+fn blobBaseFee(hf: ?Hardfork, excess_blob_gas: u64) u256 {
+    return taylorExponential(1, excess_blob_gas, blobBaseFeeUpdateFraction(hf));
+}
+
+/// Gas settlement for one transaction, following EELS `process_transaction`.
+const TxGasSettlement = struct {
+    /// Gas charged to the sender after refunds and the EIP-7623 floor.
+    gas_used: u64,
+    /// Gas returned to the sender: gas_limit - gas_used.
+    unused_gas: u64,
+};
+
+/// Settles gas for a transaction. `refund_counter` is the non-negative refund
+/// counter; it is capped at 1/2 (pre-London) or 1/5 (London+) of gas used.
+/// Every fork, Frontier included, returns unused gas to the sender. From
+/// Prague, EIP-7623 raises gas_used to at least `calldata_floor`. gas_used
+/// never exceeds gas_limit, so unused_gas cannot underflow.
+fn settleTxGas(hf: Hardfork, gas_limit: u64, gas_used_before_refunds: u64, refund_counter: u64, calldata_floor: u64) TxGasSettlement {
+    const refund_quotient: u64 = if (hf.isBefore(.LONDON)) 2 else 5;
+    const capped_refund = @min(refund_counter, gas_used_before_refunds / refund_quotient);
+    var gas_used = gas_used_before_refunds - capped_refund;
+    if (hf.isAtLeast(.PRAGUE)) gas_used = @max(gas_used, calldata_floor);
+    gas_used = @min(gas_used, gas_limit);
+    return .{ .gas_used = gas_used, .unused_gas = gas_limit - gas_used };
+}
+
+/// EIP-7623: a transaction is valid only if gas_limit covers both the
+/// intrinsic cost and the calldata floor (`floor` is 0 before Prague).
+fn txGasLimitTooLow(gas_limit: u64, intrinsic_gas: u64, calldata_floor: u64) bool {
+    return gas_limit < @max(intrinsic_gas, calldata_floor);
+}
+
+/// A state fixture that names `expectException` passes only if the runner
+/// rejected at least one transaction. Otherwise the invalid transaction was
+/// accepted and the fixture must fail.
+fn checkExpectedException(expects_exception: bool, rejected_tx_count: usize) error{ExpectedExceptionNotRaised}!void {
+    if (expects_exception and rejected_tx_count == 0) return error.ExpectedExceptionNotRaised;
+}
+
+/// EIP-7702 delegation designator prefix.
+const DELEGATION_PREFIX = [3]u8{ 0xef, 0x01, 0x00 };
+
+fn isDelegationDesignator(code: []const u8) bool {
+    return code.len == 23 and std.mem.eql(u8, code[0..3], &DELEGATION_PREFIX);
+}
+
+/// Replaces `address`'s code in the test host, freeing the previous code.
+/// Empty `code` removes the entry.
+fn replaceHostCode(host: *TestHost, address: Address, code: []const u8) !void {
+    if (host.code.fetchRemove(address)) |old| host.allocator.free(old.value);
+    if (code.len == 0) return;
+    const owned = try host.allocator.dupe(u8, code);
+    errdefer host.allocator.free(owned);
+    try host.code.put(address, owned);
+}
+
+/// EELS `account_exists` over the test host: any balance, nonce, code or storage.
+fn hostAccountExists(host: *TestHost, address: Address) bool {
+    if ((host.balances.get(address) orelse 0) != 0) return true;
+    if (host.getNonce(address) != 0) return true;
+    if ((host.code.get(address) orelse &[_]u8{}).len != 0) return true;
+    var it = host.storage.keyIterator();
+    while (it.next()) |key| {
+        if (key.address.equals(address)) return true;
+    }
+    return false;
+}
+
+/// One EIP-7702 authorization tuple after signature recovery.
+/// `authority` is null when the signature does not recover.
+const AuthorizationTuple = struct {
+    chain_id: u256,
+    address: Address,
+    nonce: u256,
+    authority: ?Address,
+};
+
+const AuthorizationOutcome = enum {
+    /// Invalid tuple: no state change.
+    skipped,
+    /// Delegation written to an account that did not exist.
+    applied_to_new_account,
+    /// Delegation written to an existing account (refund 25000 - 12500).
+    applied_to_existing_account,
+};
+
+/// Applies one authorization following EELS `set_delegation` (EIP-7702):
+/// chain id 0 or tx chain, nonce < 2^64 - 1, recoverable authority whose code
+/// is empty or already a delegation, matching nonce. A zero target address
+/// clears the delegation. The authority nonce is incremented.
+fn applyAuthorization(host: *TestHost, tx_chain_id: u256, auth: AuthorizationTuple) !AuthorizationOutcome {
+    if (!authorizationChainIdValid(auth.chain_id, tx_chain_id)) return .skipped;
+    if (auth.nonce >= std.math.maxInt(u64)) return .skipped;
+    const authority = auth.authority orelse return .skipped;
+
+    const authority_code = host.code.get(authority) orelse &[_]u8{};
+    if (authority_code.len != 0 and !isDelegationDesignator(authority_code)) return .skipped;
+
+    const authority_nonce = host.getNonce(authority);
+    if (authority_nonce != auth.nonce) return .skipped;
+
+    const existed = hostAccountExists(host, authority);
+
+    if (auth.address.isZero()) {
+        try replaceHostCode(host, authority, &.{});
+    } else {
+        var designator: [23]u8 = undefined;
+        @memcpy(designator[0..3], &DELEGATION_PREFIX);
+        @memcpy(designator[3..23], &auth.address.bytes);
+        try replaceHostCode(host, authority, &designator);
+    }
+    try host.setNonce(authority, authority_nonce + 1);
+
+    return if (existed) .applied_to_existing_account else .applied_to_new_account;
+}
+
+/// secp256k1 group order.
+const SECP256K1N: u256 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+
+/// Recovers an EIP-7702 authority from the tuple's signature. Returns null on
+/// any invalid signature (y_parity > 1, r or s out of range, high s, or no
+/// recovery), which makes EELS skip the tuple.
+fn recoverAuthority(chain_id: u256, address: Address, nonce: u256, y_parity: u256, r: u256, s: u256) ?Address {
+    if (y_parity > 1) return null;
+    if (r == 0 or r >= SECP256K1N) return null;
+    if (s == 0 or s > SECP256K1N / 2) return null;
+    // Voltaire's signing hash takes u64 fields; larger values cannot match a
+    // valid tuple here (chain id and nonce are range-checked by the caller).
+    const chain_id_u64 = std.math.cast(u64, chain_id) orelse return null;
+    const nonce_u64 = std.math.cast(u64, nonce) orelse return null;
+    var auth = primitives.Authorization.Authorization{
+        .chain_id = chain_id_u64,
+        .address = address,
+        .nonce = nonce_u64,
+        .v = @intCast(y_parity),
+        .r = undefined,
+        .s = undefined,
+    };
+    std.mem.writeInt(u256, &auth.r, r, .big);
+    std.mem.writeInt(u256, &auth.s, s, .big);
+    return auth.authority() catch null;
 }
 
 // Run a single test case from JSON
@@ -248,7 +394,9 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
     tracer.enable();
 
     // Capture our trace (ignore errors since we're already in error state)
-    runJsonTestImpl(allocator, test_case, &tracer) catch {};
+    runJsonTestImpl(allocator, test_case, &tracer) catch |err| {
+        std.debug.print("  Traced re-run failed as expected: {}\n", .{err});
+    };
 
     if (tracer.entries.items.len == 0) {
         std.debug.print("\n  No trace captured (test may have failed before execution)\n", .{});
@@ -291,7 +439,9 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
 
     // Generate reference trace using Python ethereum-spec-evm
     const ref_trace_path = "trace_ref.jsonl";
-    defer std.fs.cwd().deleteFile(ref_trace_path) catch {};
+    defer std.fs.cwd().deleteFile(ref_trace_path) catch |err| {
+        std.debug.print("Warning: failed to delete {s}: {}\n", .{ ref_trace_path, err });
+    };
 
     const python_cmd = try std.fmt.allocPrint(
         allocator,
@@ -818,16 +968,12 @@ fn processRlpTransaction(
         const execution_gas_used = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
         const gas_used_before_refunds: u64 = intrinsic_gas + execution_gas_used;
 
-        // Apply gas refunds (EIP-3529: capped at 1/2 pre-London, 1/5 post-London)
-        const gas_refund_value = evm_instance.gas_refund;
-        const capped_refund = if (evm_instance.hardfork.isBefore(.LONDON))
-            @min(gas_refund_value, gas_used_before_refunds / 2)
-        else
-            @min(gas_refund_value, gas_used_before_refunds / 5);
-
-        const gas_used: u64 = gas_used_before_refunds - capped_refund;
-        const gas_to_refund = gas_limit - gas_used;
-        const gas_refund_amount = @as(u256, gas_to_refund) * gas_price;
+        // Apply gas refunds (EIP-3529: capped at 1/2 pre-London, 1/5 post-London).
+        // The refund counter may be signed; only a positive balance refunds gas.
+        const refund_counter: u64 = if (evm_instance.gas_refund > 0) @intCast(evm_instance.gas_refund) else 0;
+        const settlement = settleTxGas(evm_instance.hardfork, gas_limit, gas_used_before_refunds, refund_counter, 0);
+        const gas_used = settlement.gas_used;
+        const gas_refund_amount = @as(u256, settlement.unused_gas) * gas_price;
         const new_balance = test_host.balances.get(sender) orelse 0;
         try test_host.balances.put(sender, new_balance + gas_refund_amount);
 
@@ -853,16 +999,12 @@ fn processRlpTransaction(
         const execution_gas_used = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
         const gas_used_before_refunds: u64 = intrinsic_gas + execution_gas_used;
 
-        // Apply gas refunds (EIP-3529: capped at 1/2 pre-London, 1/5 post-London)
-        const gas_refund_value = evm_instance.gas_refund;
-        const capped_refund = if (evm_instance.hardfork.isBefore(.LONDON))
-            @min(gas_refund_value, gas_used_before_refunds / 2)
-        else
-            @min(gas_refund_value, gas_used_before_refunds / 5);
-
-        const gas_used: u64 = gas_used_before_refunds - capped_refund;
-        const gas_to_refund = gas_limit - gas_used;
-        const gas_refund_amount = @as(u256, gas_to_refund) * gas_price;
+        // Apply gas refunds (EIP-3529: capped at 1/2 pre-London, 1/5 post-London).
+        // The refund counter may be signed; only a positive balance refunds gas.
+        const refund_counter: u64 = if (evm_instance.gas_refund > 0) @intCast(evm_instance.gas_refund) else 0;
+        const settlement = settleTxGas(evm_instance.hardfork, gas_limit, gas_used_before_refunds, refund_counter, 0);
+        const gas_used = settlement.gas_used;
+        const gas_refund_amount = @as(u256, settlement.unused_gas) * gas_price;
         const new_balance = test_host.balances.get(sender) orelse 0;
         try test_host.balances.put(sender, new_balance + gas_refund_amount);
 
@@ -1025,15 +1167,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
     // Extract hardfork from test JSON (or use forced hardfork for multi-fork tests)
     const hardfork = if (forced_hardfork) |hf| hf else extractHardfork(test_case);
 
-    // Debug: print hardfork for shift tests
-    if (test_case.object.get("_info")) |info| {
-        if (info.object.get("test-name")) |name| {
-            if (std.mem.indexOf(u8, name.string, "shift") != null or std.mem.indexOf(u8, name.string, "SHL") != null) {
-                std.debug.print("DEBUG SHIFT TEST: hardfork={?}\n", .{hardfork});
-            }
-        }
-    }
-
     // Build block context from env section or engine payload
     const block_ctx: ?evm_mod.BlockContext = if (test_case.object.get("env")) |env| blk: {
         break :blk .{
@@ -1066,16 +1199,10 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 try parseIntFromJson(bf)
             else
                 0,
-            .blob_base_fee = if (env.object.get("currentExcessBlobGas")) |excess| blk2: {
-                const excess_blob_gas = try parseIntFromJson(excess);
-                // Calculate blob base fee from excess blob gas (EIP-4844)
-                const MIN_BLOB_GASPRICE: u256 = 1;
-                const BLOB_BASE_FEE_UPDATE_FRACTION: u256 = 3338477;
-                break :blk2 if (excess_blob_gas == 0)
-                    MIN_BLOB_GASPRICE
-                else
-                    taylorExponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION);
-            } else 0,
+            .blob_base_fee = if (env.object.get("currentExcessBlobGas")) |excess|
+                blobBaseFee(hardfork, try parseIntFromJson(excess))
+            else
+                0,
         };
     } else if (has_engine_for_coinbase) blk: {
         // Build block context from engine payload if no env
@@ -1106,15 +1233,10 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                             else
                                 30_000_000,
                             .block_base_fee = if (block_header_base_fee) |bhf| bhf else 0,
-                            .blob_base_fee = if (block_params.object.get("excessBlobGas")) |excess| blk2: {
-                                const excess_blob_gas = try parseIntFromJson(excess);
-                                const MIN_BLOB_GASPRICE: u256 = 1;
-                                const BLOB_BASE_FEE_UPDATE_FRACTION: u256 = 3338477;
-                                break :blk2 if (excess_blob_gas == 0)
-                                    MIN_BLOB_GASPRICE
-                                else
-                                    taylorExponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION);
-                            } else 0,
+                            .blob_base_fee = if (block_params.object.get("excessBlobGas")) |excess|
+                                blobBaseFee(hardfork, try parseIntFromJson(excess))
+                            else
+                                0,
                         };
                     }
                 }
@@ -1157,16 +1279,10 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                             try parseIntFromJson(bf)
                         else
                             0,
-                        .blob_base_fee = if (block_header.object.get("excessBlobGas")) |excess| blk2: {
-                            const excess_blob_gas = try parseIntFromJson(excess);
-                            // Calculate blob base fee from excess blob gas (EIP-4844)
-                            const MIN_BLOB_GASPRICE: u256 = 1;
-                            const BLOB_BASE_FEE_UPDATE_FRACTION: u256 = 3338477;
-                            break :blk2 if (excess_blob_gas == 0)
-                                MIN_BLOB_GASPRICE
-                            else
-                                taylorExponential(MIN_BLOB_GASPRICE, excess_blob_gas, BLOB_BASE_FEE_UPDATE_FRACTION);
-                        } else 0,
+                        .blob_base_fee = if (block_header.object.get("excessBlobGas")) |excess|
+                            blobBaseFee(hardfork, try parseIntFromJson(excess))
+                        else
+                            0,
                     };
                 }
             }
@@ -1405,8 +1521,12 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         }
     }
 
+    // Transactions the runner rejected as invalid (not included). A fixture
+    // expecting an exception must see at least one rejection.
+    var rejected_tx_count: usize = 0;
+
     if (transactions_list.items.len > 0) {
-        for (transactions_list.items) |tx| {
+        tx_loop: for (transactions_list.items) |tx| {
             // Handle RLP-encoded transactions (Engine API format)
             if (tx == .string) {
                 // Process RLP-encoded transaction
@@ -1584,6 +1704,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                     // If test expects TYPE_3_TX_CONTRACT_CREATION, skip execution
                                     if (std.mem.indexOf(u8, exception_str, "TYPE_3_TX_CONTRACT_CREATION") != null) {
                                         // Transaction is invalid as expected, don't execute
+                                        rejected_tx_count += 1;
                                         continue;
                                     }
                                 }
@@ -1624,6 +1745,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                     // If test expects TYPE_3_TX_BLOB_COUNT_EXCEEDED, skip execution
                                     if (std.mem.indexOf(u8, exception_str, "TYPE_3_TX_BLOB_COUNT_EXCEEDED") != null) {
                                         // Transaction is invalid as expected, don't execute
+                                        rejected_tx_count += 1;
                                         continue;
                                     }
                                 }
@@ -1660,20 +1782,18 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                         const exception_str = exception.string;
                                         // If test expects TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH, skip execution
                                         if (std.mem.indexOf(u8, exception_str, "TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH") != null) {
-                                            // Transaction is invalid as expected, don't execute
-                                            std.debug.print("DEBUG: Test expects TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH, skipping execution\n", .{});
-                                            // Set blob_hashes_storage so defer can clean it up
-                                            blob_hashes_storage = blob_hashes_array;
-                                            continue;
-                                        } else {
-                                            std.debug.print("DEBUG: Test expects exception: {s}\n", .{exception_str});
+                                            // Transaction is invalid as expected: skip the whole
+                                            // transaction, not just this hash.
+                                            allocator.free(blob_hashes_array);
+                                            rejected_tx_count += 1;
+                                            continue :tx_loop;
                                         }
                                     }
                                 }
                             }
                         }
                         // If we get here, the test doesn't expect this exception, so fail
-                        blob_hashes_storage = blob_hashes_array;
+                        allocator.free(blob_hashes_array);
                         return error.InvalidBlobHashVersion;
                     }
                 }
@@ -1796,6 +1916,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                             // If test expects INITCODE_SIZE_EXCEEDED exception, skip execution
                                             if (std.mem.indexOf(u8, exception_str, "INITCODE_SIZE_EXCEEDED") != null) {
                                                 // Transaction is invalid as expected, don't execute
+                                                rejected_tx_count += 1;
                                                 continue;
                                             }
                                         }
@@ -1813,8 +1934,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // add to intrinsic gas. The BLOBHASH opcode costs 3 gas when executed, but
             // this is charged during EVM execution, not as part of intrinsic cost.
 
-            // Ensure we have enough gas for intrinsic cost
-            if (gas_limit < intrinsic_gas) {
+            // Ensure gas_limit covers the intrinsic cost and, from Prague, the
+            // EIP-7623 calldata floor (EELS: max(intrinsic, floor) > tx.gas).
+            if (txGasLimitTooLow(gas_limit, intrinsic_gas, calldata_floor_gas_cost)) {
                 // Transaction is invalid - check if test expects this
                 if (test_case.object.get("post")) |post| {
                     const fork_data = if (hardfork) |hf| postForkEntries(post, hf) else null;
@@ -1829,6 +1951,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                     std.mem.indexOf(u8, exception_str, "INTRINSIC_GAS_BELOW_FLOOR_GAS_COST") != null)
                                 {
                                     // Transaction is invalid as expected, don't execute
+                                    rejected_tx_count += 1;
                                     continue;
                                 }
                             }
@@ -1842,7 +1965,10 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // EIP-7825 (Osaka+): reject transactions above the per-tx gas cap.
             if (hardfork) |hf| {
                 if (exceedsTxGasLimitCap(hf, gas_limit)) {
-                    if (postExpectsException(test_case, hf, "GAS_LIMIT_EXCEEDS_MAXIMUM")) continue;
+                    if (postExpectsException(test_case, hf, "GAS_LIMIT_EXCEEDS_MAXIMUM")) {
+                        rejected_tx_count += 1;
+                        continue;
+                    }
                     return error.TransactionGasLimitExceedsMaximum;
                 }
             }
@@ -1878,6 +2004,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const sender_balance = test_host.balances.get(sender) orelse 0;
             const total_required = upfront_gas_cost_for_validation + blob_gas_fee_for_validation + value;
             if (sender_balance < total_required) {
+                // INSUFFICIENT_ACCOUNT_FUNDS: the transaction is not included.
+                rejected_tx_count += 1;
                 continue;
             }
 
@@ -1892,27 +2020,10 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const new_balance = sender_balance - upfront_gas_cost - blob_gas_fee;
             try test_host.setBalance(sender, new_balance);
 
-            // Handle value transfer for transactions with zero execution gas
-            // When execution_gas=0, the EVM call will fail validation, so we must
-            // transfer value here in the test runner before attempting the call
+            // The EVM transfers value inside the call's own checkpoint, so a
+            // call that fails (for example out of gas at exactly intrinsic gas)
+            // also reverts the transfer. The runner never pre-transfers value.
             const target_addr = to orelse primitives.ZERO_ADDRESS;
-            var value_for_evm_call = value; // Value to pass to EVM (0 if we transfer here)
-
-            if (value > 0 and to != null and execution_gas == 0) {
-                // Execution gas is 0, so EVM call will fail validation.
-                // Transfer value here in test runner.
-                const sender_balance_after_gas = test_host.balances.get(sender) orelse 0;
-                if (sender_balance_after_gas < value) {
-                    // This should never happen since we already checked total balance,
-                    // but handle it gracefully
-                    continue;
-                }
-                // Transfer value
-                try test_host.setBalance(sender, sender_balance_after_gas - value);
-                const recipient_balance = test_host.balances.get(target_addr) orelse 0;
-                try test_host.setBalance(target_addr, recipient_balance + value);
-                value_for_evm_call = 0; // Don't let EVM transfer value again
-            }
 
             // Get contract code
             const bytecode = test_host.code.get(target_addr) orelse &[_]u8{};
@@ -1930,7 +2041,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // Parse access list from either "accessList" (blockchain tests) or "accessLists" (state tests)
             const has_access_list_singular = tx.object.get("accessList") != null;
             const access_list_json_opt = tx.object.get("accessList") orelse tx.object.get("accessLists");
-            const access_list_param: ?primitives.AccessList.AccessList = if (access_list_json_opt) |access_list_data| blk: {
+            var access_list_param: ?primitives.AccessList.AccessList = if (access_list_json_opt) |access_list_data| blk: {
                 // Determine which format we have
                 const access_list_array = if (has_access_list_singular) blk2: {
                     // Handle accessList (singular) - direct array
@@ -1998,9 +2109,11 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 break :blk entries;
             } else null;
 
-            // Process authorization list for EIP-7702 (Prague+)
-            // Track which authorities get refunds (for existing accounts)
+            // Process authorization list for EIP-7702 (Prague+), following
+            // EELS `set_delegation`. Authorities are warm for the transaction.
             var auth_refund_count: u64 = 0;
+            var warm_authorities: std.ArrayList(Address) = .{};
+            defer warm_authorities.deinit(allocator);
             if (tx.object.get("authorizationList")) |auth_list_json| {
                 if (auth_list_json == .array) {
                     // The transaction's chain ID: explicit on the tx, else the env's.
@@ -2008,57 +2121,59 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                         try parseU256FromJson(cid)
                     else if (block_ctx) |ctx| ctx.chain_id else 1;
                     for (auth_list_json.array.items) |auth_json| {
-                        // Parse authorization: {chainId, address, nonce, v, r, s}
-                        // Chain IDs and nonces are u256 on the wire; parse wide so
-                        // out-of-range values are skipped instead of failing the test.
                         const auth_chain_id = try parseU256FromJson(auth_json.object.get("chainId").?);
-                        if (!authorizationChainIdValid(auth_chain_id, tx_chain_id)) continue;
+                        const auth_addr = try parseAddress(auth_json.object.get("address").?.string);
+                        const auth_nonce = try parseU256FromJson(auth_json.object.get("nonce").?);
 
-                        const auth_addr_str = auth_json.object.get("address").?.string;
-                        const auth_addr = try parseAddress(auth_addr_str);
-                        const auth_nonce_wide = try parseU256FromJson(auth_json.object.get("nonce").?);
-                        // EIP-7702: skip authorizations whose nonce is >= 2^64 - 1.
-                        if (auth_nonce_wide >= std.math.maxInt(u64)) continue;
-                        const auth_nonce: u64 = @intCast(auth_nonce_wide);
+                        // Recover the authority from the signature. Fixtures
+                        // without a signature fall back to the "signer" annotation.
+                        const y_parity_json = auth_json.object.get("yParity") orelse auth_json.object.get("v");
+                        const authority: ?Address = if (y_parity_json != null and
+                            auth_json.object.get("r") != null and auth_json.object.get("s") != null)
+                            recoverAuthority(
+                                auth_chain_id,
+                                auth_addr,
+                                auth_nonce,
+                                try parseU256FromJson(y_parity_json.?),
+                                try parseU256FromJson(auth_json.object.get("r").?),
+                                try parseU256FromJson(auth_json.object.get("s").?),
+                            )
+                        else if (auth_json.object.get("signer")) |signer_json|
+                            try parseAddress(signer_json.string)
+                        else
+                            null;
 
-                        // Get authority (signer) if available
-                        var authority: ?Address = null;
-                        if (auth_json.object.get("signer")) |signer_json| {
-                            authority = try parseAddress(signer_json.string);
-                        }
-
-                        // If we have the authority, set delegation designation code
-                        if (authority) |auth| {
-                            // Check if authority nonce matches
-                            const auth_current_nonce = test_host.getNonce(auth);
-                            if (auth_current_nonce == auth_nonce) {
-                                // Check if authority account exists (has balance or code)
-                                // Per EIP-7702: refund PER_AUTH_BASE_COST (12500) for existing accounts
-                                const auth_balance = test_host.balances.get(auth) orelse 0;
-                                const auth_code = test_host.code.get(auth);
-                                const account_exists = auth_balance > 0 or (auth_code != null and auth_code.?.len > 0);
-
-                                if (account_exists) {
-                                    auth_refund_count += 1;
-                                }
-
-                                // Set delegation designation code: 0xef0100 + address (20 bytes)
-                                var delegation_code: [23]u8 = undefined;
-                                delegation_code[0] = 0xef;
-                                delegation_code[1] = 0x01;
-                                delegation_code[2] = 0x00;
-                                @memcpy(delegation_code[3..23], &auth_addr.bytes);
-
-                                const code_copy = try allocator.alloc(u8, 23);
-                                @memcpy(code_copy, &delegation_code);
-                                try test_host.code.put(auth, code_copy);
-
-                                // Increment authority nonce (EIP-7702 requirement)
-                                try test_host.setNonce(auth, auth_current_nonce + 1);
+                        // EELS warms the authority once the tuple passes the
+                        // chain id, nonce bound and signature checks.
+                        if (authority) |a| {
+                            if (authorizationChainIdValid(auth_chain_id, tx_chain_id) and auth_nonce < std.math.maxInt(u64)) {
+                                try warm_authorities.append(allocator, a);
                             }
                         }
+
+                        const outcome = try applyAuthorization(&test_host, tx_chain_id, .{
+                            .chain_id = auth_chain_id,
+                            .address = auth_addr,
+                            .nonce = auth_nonce,
+                            .authority = authority,
+                        });
+                        if (outcome == .applied_to_existing_account) auth_refund_count += 1;
                     }
                 }
+            }
+
+            // Warm authorities by appending them to the EIP-2930 access list
+            // handed to the EVM. Intrinsic gas was computed from the original list.
+            if (warm_authorities.items.len > 0) {
+                const old_entries: []primitives.AccessList.AccessListEntry = access_list_entries_storage orelse &.{};
+                const entries = try allocator.alloc(primitives.AccessList.AccessListEntry, old_entries.len + warm_authorities.items.len);
+                @memcpy(entries[0..old_entries.len], old_entries);
+                for (warm_authorities.items, old_entries.len..) |authority, i| {
+                    entries[i] = .{ .address = authority, .storage_keys = try allocator.alloc([32]u8, 0) };
+                }
+                if (access_list_entries_storage) |old| allocator.free(old);
+                access_list_entries_storage = entries;
+                access_list_param = entries;
             }
 
             // Execute transaction
@@ -2098,7 +2213,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 const call_result = evm_instance.call(.{ .call = .{
                     .caller = sender,
                     .to = target_addr,
-                    .value = value_for_evm_call,
+                    .value = value,
                     .input = tx_data,
                     .gas = @intCast(execution_gas),
                 } });
@@ -2113,56 +2228,25 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const execution_gas_used = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
             const gas_used_before_refunds = intrinsic_gas + execution_gas_used;
 
-            // Add authorization list refunds (EIP-7702, Prague+)
-            // Per EIP-7702: refund PER_AUTH_BASE_COST (12500) per existing account
-            // NOTE: This must be done AFTER initTransactionState (which resets gas_refund to 0)
+            // Add authorization list refunds (EIP-7702, Prague+):
+            // PER_EMPTY_ACCOUNT_COST - PER_AUTH_BASE_COST per existing authority.
             if (auth_refund_count > 0 and evm_instance.hardfork.isAtLeast(.PRAGUE)) {
-                const auth_refund = auth_refund_count * primitives.Authorization.PER_AUTH_BASE_COST;
-                evm_instance.gas_refund += auth_refund;
+                evm_instance.add_refund(auth_refund_count * primitives.Authorization.PER_AUTH_BASE_COST);
             }
 
-            // Apply gas refunds (EIP-3529: capped at 1/2 of gas used pre-London, 1/5 post-London)
-            // NOTE: The refund cap is based on TOTAL gas used (including intrinsic gas), not just execution gas
-            const gas_refund = evm_instance.gas_refund;
-            const capped_refund = if (evm_instance.hardfork.isBefore(.LONDON))
-                @min(gas_refund, gas_used_before_refunds / 2)
-            else
-                @min(gas_refund, gas_used_before_refunds / 5);
+            // The refund counter may be signed; only a positive balance refunds gas.
+            const refund_counter: u64 = if (evm_instance.gas_refund > 0) @intCast(evm_instance.gas_refund) else 0;
+            const settlement = settleTxGas(evm_instance.hardfork, gas_limit, gas_used_before_refunds, refund_counter, calldata_floor_gas_cost);
 
-            // Calculate final gas used (after applying capped refunds)
-            var gas_used = gas_used_before_refunds - capped_refund;
-
-            // EIP-7623 (Prague+): Apply calldata floor - transactions must pay at least the floor cost
-            if (evm_instance.hardfork.isAtLeast(.PRAGUE)) {
-                gas_used = @max(gas_used, calldata_floor_gas_cost);
-            }
-
-            // Refund unused gas to sender
-            // Note: The capped_refund has already been subtracted from gas_used above.
-            // We only refund the gas that was NOT used (gas_limit - gas_used).
-            // The sender initially paid: gas_limit * gas_price
-            // The sender should get back: (gas_limit - gas_used) * gas_price
-            // HOWEVER: For very early forks (Frontier/Homestead), it appears NO unused gas is refunded.
-            // The coinbase keeps ALL the gas up to gas_limit.
-            const gas_to_refund = if (evm_instance.hardfork.isBefore(.TANGERINE_WHISTLE))
-                0 // No unused gas refund in early forks
-            else
-                gas_limit - gas_used;
-            const gas_refund_amount = gas_to_refund * evm_instance.gas_price;
+            // Refund unused gas to the sender (every fork, Frontier included).
+            const gas_refund_amount = @as(u256, settlement.unused_gas) * evm_instance.gas_price;
             const sender_balance_after_exec = test_host.balances.get(sender) orelse 0;
             try test_host.setBalance(sender, sender_balance_after_exec + gas_refund_amount);
 
-            // Pay coinbase their reward
-            // For EIP-1559/EIP-4844 transactions, only the priority fee goes to coinbase
-            // (base fee is burned, not given to coinbase)
-            //
-            // IMPORTANT: In early forks (Frontier/Homestead), the coinbase gets paid for the FULL gas_limit,
-            // not just gas consumed. Later forks (Tangerine Whistle+) only pay for gas actually consumed.
-            const gas_for_coinbase = if (evm_instance.hardfork.isBefore(.TANGERINE_WHISTLE))
-                gas_limit // Early forks: coinbase gets paid for full gas_limit
-            else
-                gas_used;
-            const coinbase_reward = gas_for_coinbase * priority_fee_per_gas;
+            // Pay the coinbase the priority fee for gas actually used. The base
+            // fee (EIP-1559) is burned.
+            const gas_for_coinbase = settlement.gas_used;
+            const coinbase_reward = @as(u256, gas_for_coinbase) * priority_fee_per_gas;
             const coinbase_balance = test_host.balances.get(coinbase) orelse 0;
             try test_host.setBalance(coinbase, coinbase_balance + coinbase_reward);
         }
@@ -2244,9 +2328,10 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 if (fork_data) |fd| {
                     if (fd == .array and fd.array.items.len > 0) {
                         const first_item = fd.array.items[0];
-                        // If test expects an exception, skip post-state validation
+                        // A fixture expecting an exception passes only if the
+                        // runner rejected the transaction.
                         if (first_item.object.get("expectException")) |_| {
-                            // Transaction should have failed, no state changes expected
+                            try checkExpectedException(true, rejected_tx_count);
                             return;
                         }
                         if (first_item.object.get("state")) |state| {
@@ -2298,13 +2383,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     const exp = try parseIntFromJson(expected_nonce);
                     const actual = test_host.getNonce(address);
                     if (exp != actual) {
-                        if ((exp == 100 and actual == 99) or
-                            (exp == 37 and actual == 48) or
-                            (exp == 0 and actual == 23) or
-                            (exp == 0 and actual == 2))
-                        {
-                            std.debug.print("INVESTIGATE NONCE: addr={any} expected {}, found {}\n", .{ address.bytes, exp, actual });
-                        }
+                        std.debug.print("NONCE MISMATCH: addr={any} expected {}, found {}\n", .{ address.bytes, exp, actual });
                     }
                     try testing.expectEqual(exp, actual);
                 }
@@ -2384,13 +2463,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                 const exp = try parseIntFromJson(expected_nonce);
                                 const actual = test_host.getNonce(address);
                                 if (exp != actual) {
-                                    if ((exp == 100 and actual == 99) or
-                                        (exp == 37 and actual == 48) or
-                                        (exp == 0 and actual == 23) or
-                                        (exp == 0 and actual == 2))
-                                    {
-                                        std.debug.print("INVESTIGATE NONCE(expect): addr={any} expected {}, found {}\n", .{ address.bytes, exp, actual });
-                                    }
+                                    std.debug.print("NONCE MISMATCH: addr={any} expected {}, found {}\n", .{ address.bytes, exp, actual });
                                 }
                                 try testing.expectEqual(exp, actual);
                             }
@@ -2433,7 +2506,7 @@ fn parseIntFromJson(value: std.json.Value) !u64 {
         .string => |s| if (s.len == 0) 0 else try std.fmt.parseInt(u64, s, 0),
         .integer => |i| @intCast(i),
         .number_string => |s| if (s.len == 0) 0 else try std.fmt.parseInt(u64, s, 0),
-        else => 1,
+        else => error.InvalidJsonNumber,
     };
 }
 
@@ -2442,7 +2515,7 @@ fn parseU256FromJson(value: std.json.Value) !u256 {
         .string => |s| if (s.len == 0) 0 else try std.fmt.parseInt(u256, s, 0),
         .integer => |i| @intCast(i),
         .number_string => |s| if (s.len == 0) 0 else try std.fmt.parseInt(u256, s, 0),
-        else => 1,
+        else => error.InvalidJsonNumber,
     };
 }
 
@@ -2639,4 +2712,272 @@ test "postForkEntries resolves fixture fork aliases" {
 test {
     // Compile every runner path, not just the helpers above.
     std.testing.refAllDecls(@This());
+}
+
+test "blob base fee update fraction follows EIP-7691 on Prague and Osaka" {
+    try testing.expectEqual(@as(u256, 3_338_477), blobBaseFeeUpdateFraction(.CANCUN));
+    try testing.expectEqual(@as(u256, 5_007_716), blobBaseFeeUpdateFraction(.PRAGUE));
+    try testing.expectEqual(@as(u256, 5_007_716), blobBaseFeeUpdateFraction(.OSAKA));
+    try testing.expectEqual(@as(u256, 3_338_477), blobBaseFeeUpdateFraction(null));
+
+    // Zero excess is the minimum fee on every fork.
+    try testing.expectEqual(@as(u256, 1), blobBaseFee(.CANCUN, 0));
+    try testing.expectEqual(@as(u256, 1), blobBaseFee(.PRAGUE, 0));
+    // Values from the EELS fake_exponential with unbounded integers.
+    try testing.expectEqual(@as(u256, 19), blobBaseFee(.CANCUN, 10_000_000));
+    try testing.expectEqual(@as(u256, 7), blobBaseFee(.PRAGUE, 10_000_000));
+    try testing.expectEqual(@as(u256, 7), blobBaseFee(.OSAKA, 10_000_000));
+    try testing.expectEqual(@as(u256, 4), blobBaseFee(.CANCUN, 5_000_000));
+    try testing.expectEqual(@as(u256, 2), blobBaseFee(.PRAGUE, 5_000_000));
+}
+
+test "taylorExponential saturates instead of returning a partial sum" {
+    try testing.expectEqual(std.math.maxInt(u256), taylorExponential(1, std.math.maxInt(u64), 3_338_477));
+}
+
+test "EIP-7623 floor makes a gas limit between intrinsic and floor invalid" {
+    // 1000 non-zero calldata bytes: intrinsic 21000 + 16000, floor 21000 + 4000 * 10.
+    const intrinsic: u64 = 37_000;
+    const floor: u64 = 61_000;
+    try testing.expect(txGasLimitTooLow(intrinsic, intrinsic, floor));
+    try testing.expect(txGasLimitTooLow(floor - 1, intrinsic, floor));
+    try testing.expect(!txGasLimitTooLow(floor, intrinsic, floor));
+    // Before Prague the floor is 0 and only intrinsic gas matters.
+    try testing.expect(!txGasLimitTooLow(intrinsic, intrinsic, 0));
+    try testing.expect(txGasLimitTooLow(intrinsic - 1, intrinsic, 0));
+}
+
+test "settleTxGas never underflows and applies the floor after refunds" {
+    // gas_limit below the floor (rejected upstream) still settles without panicking.
+    const under = settleTxGas(.PRAGUE, 37_000, 37_000, 0, 61_000);
+    try testing.expectEqual(@as(u64, 37_000), under.gas_used);
+    try testing.expectEqual(@as(u64, 0), under.unused_gas);
+
+    // Execution below the floor is charged the floor.
+    const floored = settleTxGas(.PRAGUE, 100_000, 40_000, 0, 61_000);
+    try testing.expectEqual(@as(u64, 61_000), floored.gas_used);
+    try testing.expectEqual(@as(u64, 39_000), floored.unused_gas);
+
+    // Refund capped at 1/5 first (70000 - 14000 = 56000), then the floor wins.
+    try testing.expectEqual(@as(u64, 61_000), settleTxGas(.OSAKA, 100_000, 70_000, 20_000, 61_000).gas_used);
+    // Refund capped at 1/5 (80000 - 16000 = 64000) stays above the floor.
+    try testing.expectEqual(@as(u64, 64_000), settleTxGas(.PRAGUE, 100_000, 80_000, 50_000, 61_000).gas_used);
+
+    // Cancun ignores the floor.
+    try testing.expectEqual(@as(u64, 40_000), settleTxGas(.CANCUN, 100_000, 40_000, 0, 61_000).gas_used);
+    // Pre-London refunds cap at 1/2.
+    try testing.expectEqual(@as(u64, 25_000), settleTxGas(.BERLIN, 100_000, 50_000, 30_000, 0).gas_used);
+}
+
+test "settleTxGas refunds unused gas on Frontier and Homestead" {
+    inline for (.{ Hardfork.FRONTIER, Hardfork.HOMESTEAD }) |hf| {
+        const s = settleTxGas(hf, 50_000, 21_000, 0, 0);
+        try testing.expectEqual(@as(u64, 21_000), s.gas_used);
+        try testing.expectEqual(@as(u64, 29_000), s.unused_gas);
+    }
+}
+
+test "checkExpectedException fails when no transaction was rejected" {
+    try testing.expectError(error.ExpectedExceptionNotRaised, checkExpectedException(true, 0));
+    try checkExpectedException(true, 1);
+    try checkExpectedException(false, 0);
+}
+
+fn testAddress(byte: u8) Address {
+    var a = primitives.ZERO_ADDRESS;
+    a.bytes[19] = byte;
+    return a;
+}
+
+test "applyAuthorization to the zero address clears an existing delegation" {
+    var host = try TestHost.init(testing.allocator);
+    defer host.deinit();
+
+    const authority = testAddress(0xaa);
+    const old_target = testAddress(0xbb);
+    var designator: [23]u8 = undefined;
+    @memcpy(designator[0..3], &DELEGATION_PREFIX);
+    @memcpy(designator[3..23], &old_target.bytes);
+    try host.setCode(authority, &designator);
+    try host.setNonce(authority, 5);
+
+    const outcome = try applyAuthorization(&host, 1, .{
+        .chain_id = 1,
+        .address = primitives.ZERO_ADDRESS,
+        .nonce = 5,
+        .authority = authority,
+    });
+    try testing.expectEqual(AuthorizationOutcome.applied_to_existing_account, outcome);
+    try testing.expect(host.code.get(authority) == null);
+    try testing.expectEqual(@as(u64, 6), host.getNonce(authority));
+}
+
+test "applyAuthorization writes a designator for a new account and redelegates" {
+    var host = try TestHost.init(testing.allocator);
+    defer host.deinit();
+
+    const authority = testAddress(0xaa);
+    const target = testAddress(0xcc);
+    try testing.expectEqual(AuthorizationOutcome.applied_to_new_account, try applyAuthorization(&host, 1, .{
+        .chain_id = 0,
+        .address = target,
+        .nonce = 0,
+        .authority = authority,
+    }));
+    const code = host.code.get(authority).?;
+    try testing.expect(isDelegationDesignator(code));
+    try testing.expectEqualSlices(u8, &target.bytes, code[3..23]);
+    try testing.expectEqual(@as(u64, 1), host.getNonce(authority));
+
+    // An existing delegation may be replaced (old code is freed by replaceHostCode).
+    try testing.expectEqual(AuthorizationOutcome.applied_to_existing_account, try applyAuthorization(&host, 1, .{
+        .chain_id = 1,
+        .address = testAddress(0xdd),
+        .nonce = 1,
+        .authority = authority,
+    }));
+    try testing.expectEqual(@as(u8, 0xdd), host.code.get(authority).?[22]);
+}
+
+test "applyAuthorization skips invalid tuples without changing state" {
+    var host = try TestHost.init(testing.allocator);
+    defer host.deinit();
+
+    const contract = testAddress(0xaa);
+    try host.setCode(contract, &[_]u8{ 0x60, 0x00 });
+    const eoa = testAddress(0xab);
+    try host.setNonce(eoa, 3);
+    const target = testAddress(0xcc);
+
+    // Authority with non-delegation code.
+    try testing.expectEqual(AuthorizationOutcome.skipped, try applyAuthorization(&host, 1, .{ .chain_id = 1, .address = target, .nonce = 0, .authority = contract }));
+    try testing.expectEqualSlices(u8, &[_]u8{ 0x60, 0x00 }, host.code.get(contract).?);
+    // Nonce mismatch.
+    try testing.expectEqual(AuthorizationOutcome.skipped, try applyAuthorization(&host, 1, .{ .chain_id = 1, .address = target, .nonce = 2, .authority = eoa }));
+    // Wrong chain.
+    try testing.expectEqual(AuthorizationOutcome.skipped, try applyAuthorization(&host, 1, .{ .chain_id = 2, .address = target, .nonce = 3, .authority = eoa }));
+    // Nonce at 2^64 - 1.
+    try testing.expectEqual(AuthorizationOutcome.skipped, try applyAuthorization(&host, 1, .{ .chain_id = 1, .address = target, .nonce = std.math.maxInt(u64), .authority = eoa }));
+    // Unrecoverable signature.
+    try testing.expectEqual(AuthorizationOutcome.skipped, try applyAuthorization(&host, 1, .{ .chain_id = 1, .address = target, .nonce = 3, .authority = null }));
+
+    try testing.expect(host.code.get(eoa) == null);
+    try testing.expectEqual(@as(u64, 3), host.getNonce(eoa));
+}
+
+test "recoverAuthority recovers the signer and rejects malformed signatures" {
+    // Well-known test key for 0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b.
+    var key: [32]u8 = undefined;
+    std.mem.writeInt(u256, &key, 0x45a915e4d060149eb4365960e6a7a45f334393093061116b197e3240065ff2d8, .big);
+    const expected = try Address.fromHex("0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    const target = testAddress(0xcc);
+
+    const signed = try primitives.Authorization.createAuthorization(testing.allocator, 1, target, 7, key);
+    const y_parity: u256 = if (signed.v >= 27) (signed.v - 27) % 2 else signed.v;
+    const r = std.mem.readInt(u256, &signed.r, .big);
+    const s = std.mem.readInt(u256, &signed.s, .big);
+
+    try testing.expect(recoverAuthority(1, target, 7, y_parity, r, s).?.equals(expected));
+    // A different nonce signs a different message.
+    if (recoverAuthority(1, target, 8, y_parity, r, s)) |other| try testing.expect(!other.equals(expected));
+
+    try testing.expect(recoverAuthority(1, target, 7, 2, r, s) == null);
+    try testing.expect(recoverAuthority(1, target, 7, y_parity, 0, s) == null);
+    try testing.expect(recoverAuthority(1, target, 7, y_parity, r, 0) == null);
+    try testing.expect(recoverAuthority(1, target, 7, y_parity, r, SECP256K1N / 2 + 1) == null);
+}
+
+/// Runs a fixture JSON through the runner with a forced fork.
+fn runFixtureForTest(json: []const u8) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+    try runJsonTestImpl(testing.allocator, parsed.value, null);
+}
+
+const fixture_sender = "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b";
+const fixture_env =
+    \\"env": {"currentCoinbase": "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba", "currentGasLimit": "0x05f5e100",
+    \\  "currentNumber": "0x01", "currentTimestamp": "0x03e8", "currentDifficulty": "0x00", "currentBaseFee": "0x00"}
+;
+
+test "fixture expecting an exception fails when the transaction succeeds" {
+    const json = "{" ++ fixture_env ++
+        \\,"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}}},
+        \\"transaction": {"data": ["0x"], "gasLimit": ["0x5208"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"]},
+        \\"post": {"Cancun": [{"expectException": "TransactionException.INTRINSIC_GAS_TOO_LOW"}]}}
+    ;
+    try testing.expectError(error.ExpectedExceptionNotRaised, runFixtureForTest(json));
+}
+
+test "fixture expecting an exception passes when the transaction is rejected" {
+    const json = "{" ++ fixture_env ++
+        \\,"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}}},
+        \\"transaction": {"data": ["0x"], "gasLimit": ["0x5207"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"]},
+        \\"post": {"Cancun": [{"expectException": "TransactionException.INTRINSIC_GAS_TOO_LOW"}]}}
+    ;
+    try runFixtureForTest(json);
+}
+
+fn floorFixture(comptime post: []const u8) []const u8 {
+    // 1000 non-zero bytes: intrinsic 37000, EIP-7623 floor 61000; gas limit 37000 (0x9088).
+    return "{" ++ fixture_env ++
+        \\,"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}}},
+        \\"transaction": {"data": ["0x
+    ++ ("ff" ** 1000) ++
+        \\"], "gasLimit": ["0x9088"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"]},
+        \\"post": {"Prague": [
+    ++ post ++ "]}}";
+}
+
+test "EIP-7623: gas limit below the calldata floor is rejected, not a panic" {
+    @setEvalBranchQuota(10_000);
+    try runFixtureForTest(floorFixture(
+        \\{"expectException": "TransactionException.INTRINSIC_GAS_BELOW_FLOOR_GAS_COST"}
+    ));
+    try testing.expectError(error.IntrinsicGasTooLow, runFixtureForTest(floorFixture(
+        \\{"state": {}}
+    )));
+}
+
+test "zero execution gas: a failing call keeps the value with the sender" {
+    // Exactly intrinsic gas (21000) leaves no gas for JUMPDEST (1 gas), so the
+    // call fails and the value transfer reverts. Sender pays 21000 * 10.
+    const json = "{" ++ fixture_env ++
+        \\,"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}},
+        \\  "0x1000000000000000000000000000000000000000": {"balance": "0x00", "nonce": "0x01", "code": "0x5b00", "storage": {}}},
+        \\"transaction": {"data": ["0x"], "gasLimit": ["0x5208"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x01"]},
+        \\"post": {"Cancun": [{"state": {
+        \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a760cbb0", "nonce": "0x01"},
+        \\  "0x1000000000000000000000000000000000000000": {"balance": "0x00"}}}]}}
+    ;
+    try runFixtureForTest(json);
+}
+
+test "zero execution gas: a transfer to an empty account moves the value" {
+    const json = "{" ++ fixture_env ++
+        \\,"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}}},
+        \\"transaction": {"data": ["0x"], "gasLimit": ["0x5208"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x01"]},
+        \\"post": {"Cancun": [{"state": {
+        \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a760cbaf", "nonce": "0x01"},
+        \\  "0x1000000000000000000000000000000000000000": {"balance": "0x01"}}}]}}
+    ;
+    try runFixtureForTest(json);
+}
+
+test "Frontier settlement refunds unused gas and pays the miner for gas used" {
+    // gasLimit 50000, 21000 used, gasPrice 10: sender pays 210000, miner gets 210000.
+    const json = "{\"network\": \"Frontier\"," ++ fixture_env ++
+        \\,"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}}},
+        \\"transaction": {"data": ["0x"], "gasLimit": ["0xc350"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"]},
+        \\"postState": {
+        \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a760cbb0", "nonce": "0x01"},
+        \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {"balance": "0x033450"}}}
+    ;
+    try runFixtureForTest(json);
 }

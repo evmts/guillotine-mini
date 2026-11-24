@@ -805,6 +805,7 @@ fn getOpcode(name: []const u8) !u8 {
     if (std.mem.eql(u8, name, "SHL")) return 0x1b;
     if (std.mem.eql(u8, name, "SHR")) return 0x1c;
     if (std.mem.eql(u8, name, "SAR")) return 0x1d;
+    if (std.mem.eql(u8, name, "CLZ")) return 0x1e; // EIP-7939 (Osaka)
 
     // SHA3
     if (std.mem.eql(u8, name, "SHA3") or std.mem.eql(u8, name, "KECCAK256")) return 0x20;
@@ -837,6 +838,8 @@ fn getOpcode(name: []const u8) !u8 {
     if (std.mem.eql(u8, name, "CHAINID")) return 0x46;
     if (std.mem.eql(u8, name, "SELFBALANCE")) return 0x47;
     if (std.mem.eql(u8, name, "BASEFEE")) return 0x48;
+    if (std.mem.eql(u8, name, "BLOBHASH")) return 0x49; // EIP-4844 (Cancun)
+    if (std.mem.eql(u8, name, "BLOBBASEFEE")) return 0x4a; // EIP-7516 (Cancun)
 
     // Memory
     if (std.mem.eql(u8, name, "POP")) return 0x50;
@@ -851,6 +854,9 @@ fn getOpcode(name: []const u8) !u8 {
     if (std.mem.eql(u8, name, "MSIZE")) return 0x59;
     if (std.mem.eql(u8, name, "GAS")) return 0x5a;
     if (std.mem.eql(u8, name, "JUMPDEST")) return 0x5b;
+    if (std.mem.eql(u8, name, "TLOAD")) return 0x5c; // EIP-1153 (Cancun)
+    if (std.mem.eql(u8, name, "TSTORE")) return 0x5d; // EIP-1153 (Cancun)
+    if (std.mem.eql(u8, name, "MCOPY")) return 0x5e; // EIP-5656 (Cancun)
 
     // Push operations
     if (std.mem.eql(u8, name, "PUSH0")) return 0x5f;
@@ -988,4 +994,44 @@ test "LLL (PUSHn value) uses value as the immediate" {
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x61, 0x01, 0x02, 0x00 }, bytecode);
 
     try std.testing.expectError(error.PushValueTooLarge, compileAssembly(allocator, "{ (PUSH1 0x0100) }"));
+}
+
+test "getOpcode knows Shanghai, Cancun and Osaka opcodes" {
+    try std.testing.expectEqual(@as(u8, 0x5f), try getOpcode("PUSH0"));
+    try std.testing.expectEqual(@as(u8, 0x5c), try getOpcode("TLOAD"));
+    try std.testing.expectEqual(@as(u8, 0x5d), try getOpcode("TSTORE"));
+    try std.testing.expectEqual(@as(u8, 0x5e), try getOpcode("MCOPY"));
+    try std.testing.expectEqual(@as(u8, 0x49), try getOpcode("BLOBHASH"));
+    try std.testing.expectEqual(@as(u8, 0x4a), try getOpcode("BLOBBASEFEE"));
+    try std.testing.expectEqual(@as(u8, 0x1e), try getOpcode("CLZ"));
+    try std.testing.expectError(error.UnknownOpcode, getOpcode("NOTANOPCODE"));
+}
+
+test "compile assembly using Shanghai, Cancun and Osaka opcodes" {
+    const allocator = std.testing.allocator;
+
+    // TSTORE(0, 1); TLOAD(0); MCOPY(0, 0, 32); BLOBHASH(0); BLOBBASEFEE; CLZ(1); PUSH0
+    const code = "(asm 1 0 TSTORE 0 TLOAD 32 0 0 MCOPY 0 BLOBHASH BLOBBASEFEE 1 CLZ PUSH0)";
+    const bytecode = try compileAssembly(allocator, code);
+    defer allocator.free(bytecode);
+
+    const expected = [_]u8{
+        0x60, 0x01, 0x60, 0x00, 0x5d, // TSTORE
+        0x60, 0x00, 0x5c, // TLOAD
+        0x60, 0x20, 0x60, 0x00, 0x60, 0x00, 0x5e, // MCOPY
+        0x60, 0x00, 0x49, // BLOBHASH
+        0x4a, // BLOBBASEFEE
+        0x60, 0x01, 0x1e, // CLZ
+        0x5f, // PUSH0
+    };
+    try std.testing.expectEqualSlices(u8, &expected, bytecode);
+}
+
+test "compile LLL using Cancun and Osaka opcodes" {
+    const allocator = std.testing.allocator;
+
+    const bytecode = try compileAssembly(allocator, "{ (TSTORE 0 1) (CLZ 1) }");
+    defer allocator.free(bytecode);
+    // Arguments are pushed in reverse so the first argument is on top.
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x60, 0x01, 0x60, 0x00, 0x5d, 0x60, 0x01, 0x1e, 0x00 }, bytecode);
 }

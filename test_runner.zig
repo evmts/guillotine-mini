@@ -38,17 +38,14 @@ pub fn main() !void {
         break :blk .pretty;
     };
 
-    // Check for parallel execution (default ON, disable with TEST_SEQUENTIAL=1)
-    const parallel = std.posix.getenv("TEST_SEQUENTIAL") == null;
-    const max_workers = blk: {
-        if (std.posix.getenv("TEST_WORKERS")) |workers_str| {
-            const workers = std.fmt.parseInt(usize, workers_str, 10) catch 4;
-            break :blk workers;
-        }
-        // Default to CPU count - each test runs an isolated EVM instance
-        const cpu_count = std.Thread.getCpuCount() catch 4;
-        break :blk cpu_count;
-    };
+    // Check for parallel execution (default ON, disable with TEST_SEQUENTIAL=1).
+    // TEST_NOFORK=1 runs tests in this process, which shares the testing
+    // allocator, so it always runs sequentially.
+    const parallel = std.posix.getenv("TEST_SEQUENTIAL") == null and std.posix.getenv("TEST_NOFORK") == null;
+    // Default to CPU count - each test runs an isolated EVM instance.
+    // TEST_WORKERS=0 is clamped to 1 so a nonempty selection always runs.
+    const cpu_count = std.Thread.getCpuCount() catch 4;
+    const max_workers = utils.parseWorkerCount(std.posix.getenv("TEST_WORKERS"), cpu_count);
 
     const total_tests = builtin.test_functions.len;
     const start_time = std.time.nanoTimestamp();
@@ -59,16 +56,20 @@ pub fn main() !void {
     // Only print header for pretty format
     if (output_format == .pretty) {
         try std.fmt.format(stdout, "\n", .{});
-        try std.fmt.format(stdout, " {s}{s} RUN {s} {s}v0.15.1{s}\n", .{
+        try std.fmt.format(stdout, " {s}{s} RUN {s} {s}zig {s}{s}\n", .{
             Color.bg_blue,
             Color.white,
             Color.reset,
             Color.gray,
+            builtin.zig_version_string,
             Color.reset,
         });
-        try std.fmt.format(stdout, " {s}{s}~/guillotine{s}\n\n", .{
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd = std.process.getCwd(&cwd_buf) catch ".";
+        try std.fmt.format(stdout, " {s}{s}{s}{s}\n\n", .{
             Color.cyan,
             Icons.arrow,
+            cwd,
             Color.reset,
         });
         try stdout_file.writeAll(stdout_buffer.items);
@@ -170,10 +171,13 @@ fn printPrettySummary(writer: anytype, results: []TestResult, duration_ns: u64, 
     var passed_count: u32 = 0;
     var failed_count: u32 = 0;
     var todo_count: u32 = 0;
+    var skipped_count: u32 = 0;
 
     for (results) |result| {
         if (result.todo) {
             todo_count += 1;
+        } else if (result.skipped) {
+            skipped_count += 1;
         } else if (result.passed) {
             passed_count += 1;
         } else {
@@ -279,6 +283,16 @@ fn printPrettySummary(writer: anytype, results: []TestResult, duration_ns: u64, 
         }
     }
 
+    if (skipped_count > 0) {
+        try writer.print("    {s}Skipped  {s}{s}{d}{s}\n", .{
+            Color.bold,
+            Color.reset,
+            Color.gray,
+            skipped_count,
+            Color.reset,
+        });
+    }
+
     // Duration with icon
     try writer.print("  {s}Start at  {s}", .{
         Color.bold,
@@ -286,10 +300,10 @@ fn printPrettySummary(writer: anytype, results: []TestResult, duration_ns: u64, 
     });
     const now_ms = std.time.milliTimestamp();
     const now_s = @divTrunc(now_ms, 1000);
-    const hours: u32 = @intCast(@mod(@divTrunc(now_s, 3600) - 8, 24)); // PST
+    const hours: u32 = @intCast(@mod(@divTrunc(now_s, 3600), 24));
     const minutes: u32 = @intCast(@mod(@divTrunc(now_s, 60), 60));
     const seconds: u32 = @intCast(@mod(now_s, 60));
-    try writer.print("{s}{d:0>2}:{d:0>2}:{d:0>2}{s}\n", .{
+    try writer.print("{s}{d:0>2}:{d:0>2}:{d:0>2} UTC{s}\n", .{
         Color.gray,
         hours,
         minutes,
