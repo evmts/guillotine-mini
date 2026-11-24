@@ -3,7 +3,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import { Hash } from "voltaire-effect/primitives";
+import type { Hash } from "voltaire-effect/primitives";
 import type { EncodedNode, TrieNode } from "./Node";
 import type { BytesType } from "./Node";
 import type { TrieNodePath } from "./NodeStorage";
@@ -12,7 +12,7 @@ import { ReadFlags } from "../db/Db";
 import { TrieNodeCodec, TrieNodeCodecError } from "./NodeCodec";
 import { encodeRlp as encodeRlpGeneric } from "./internal/rlp";
 import { coerceEffect } from "./internal/effect";
-import { EMPTY_TRIE_ROOT } from "./root";
+import { isEmptyTrieRoot } from "./root";
 
 /** Error raised when loading trie nodes via storage + codec fails. */
 export class TrieNodeLoaderError extends Data.TaggedError(
@@ -45,9 +45,6 @@ import { makeBytesHelpers } from "./internal/primitives";
 const { bytesFromUint8Array } = makeBytesHelpers(
   (message) => new TrieNodeLoaderError({ message }),
 );
-
-const isEmptyTrieRoot = (hash: Hash.HashType) =>
-  Hash.equals(hash, EMPTY_TRIE_ROOT);
 
 const encodeRlp = (
   data: Parameters<typeof import("voltaire-effect/primitives").Rlp.encode>[0],

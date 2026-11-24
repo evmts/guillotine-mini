@@ -19,7 +19,7 @@ import type { EncodedNode } from "./Node";
 import type { BytesType, RlpType } from "./Node";
 import { coerceEffect } from "./internal/effect";
 import { makeBytesHelpers, makeHashHelpers } from "./internal/primitives";
-import { EMPTY_TRIE_ROOT } from "./root";
+import { EMPTY_TRIE_ROOT, isEmptyTrieRoot } from "./root";
 
 /** Error raised when trie node storage operations fail. */
 export class TrieNodeStorageError extends Data.TaggedError(
@@ -272,9 +272,6 @@ export const EmptyNodePath: TrieNodePath = {
   bytes: EmptyPathHash,
   length: 0,
 };
-
-const isEmptyTrieRoot = (nodeHash: Hash.HashType): boolean =>
-  Hash.equals(nodeHash, EMPTY_TRIE_ROOT);
 
 const decodeRlp = (encodedNode: BytesType) =>
   coerceEffect<{ data: RlpType; remainder: Uint8Array }, unknown>(
