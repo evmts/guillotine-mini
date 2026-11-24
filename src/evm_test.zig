@@ -2124,8 +2124,11 @@ test "R2 async success: SELFDESTRUCT is committed before the result or the chang
         try vm.code.put(r2_child, &destructing);
 
         vm.setBytecode(&parent);
-        const committed = try vm.callOrContinue(.{ .call = r2CallParams(0) });
+        // SELFDESTRUCT fetches the originator and beneficiary balances before moving value.
+        var host = R2AsyncHost{};
+        const committed = try host.drive(&vm, try vm.callOrContinue(.{ .call = r2CallParams(0) }));
         try testing.expect(committed == .ready_to_commit);
+        try testing.expectEqual(@as(usize, 2), host.balance_requests);
         try testing.expect(!vm.code.contains(r2_child));
 
         var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, committed.ready_to_commit.changes_json, .{});
@@ -2318,14 +2321,16 @@ test "R2 nested async storage fetch: constructors and CREATE transactions fetch 
     try testing.expectEqual(@as(usize, 2), occupied.nonce_requests);
     try testing.expectEqual(@as(usize, 0), occupied.storage_requests);
 
-    // A nested CREATE from a contract whose code is installed locally requests nothing.
+    // A nested CREATE from a contract whose code is installed locally requests no storage,
+    // nonce or code. Its init code SELFDESTRUCT(0) fetches the balances it moves.
     // MSTORE(0, 0x6000ff); CREATE(0, 29, 3) x1; STOP  (init code: SELFDESTRUCT(0))
     const factory = [_]u8{ 0x62, 0x60, 0x00, 0xff, 0x60, 0x00, 0x52, 0x60, 0x03, 0x60, 0x1d, 0x60, 0x00, 0xf0, 0x00 };
     var silent = R2AsyncHost{};
     vm.setBytecode(&factory);
     const nested = try silent.drive(&vm, try vm.callOrContinue(.{ .call = r2CallParams(0) }));
     try testing.expect(nested == .ready_to_commit);
-    try testing.expectEqual(@as(usize, 0), silent.total());
+    try testing.expectEqual(@as(usize, 2), silent.total());
+    try testing.expectEqual(@as(usize, 2), silent.balance_requests);
     try testing.expect((try vm.callOrContinue(.{ .continue_after_commit = {} })).result.success);
 }
 

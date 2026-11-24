@@ -154,8 +154,8 @@ pub fn Handlers(FrameType: type) type {
                 @as(u64, 20);
             try frame.consumeGas(access_cost);
 
-            // Get the code from the external address
-            const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
+            const code = evm.get_raw_code(ext_addr);
+            if (evm.async_restart_pending) return error.NeedAsyncData;
             try frame.pushStack(code.len);
             frame.pc += 1;
         }
@@ -182,7 +182,8 @@ pub fn Handlers(FrameType: type) type {
             else
                 @as(u64, 20);
 
-            const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
+            const code = evm.get_raw_code(ext_addr);
+            if (evm.async_restart_pending) return error.NeedAsyncData;
             try copyPadded(frame, access_cost, dest_offset, offset, size, code);
         }
 
@@ -244,11 +245,14 @@ pub fn Handlers(FrameType: type) type {
                 @as(u64, 400);
             try frame.consumeGas(access_cost);
 
-            // Get the code from the external address
-            const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
+            const code = evm.get_raw_code(ext_addr);
+            if (evm.async_restart_pending) return error.NeedAsyncData;
 
             if (code.len == 0) {
-                if (evm.accountIsEmpty(ext_addr)) {
+                // EIP-161 emptiness reads balance and nonce through the miss-aware getters.
+                const is_empty = evm.accountIsEmpty(ext_addr);
+                if (evm.async_restart_pending) return error.NeedAsyncData;
+                if (is_empty) {
                     try frame.pushStack(0);
                 } else if (evm.accountExists(ext_addr)) {
                     var empty_hash: [32]u8 = undefined;

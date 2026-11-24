@@ -40,13 +40,16 @@ pub fn Handlers(FrameType: type) type {
         }
 
         /// EIP-161 "alive": the account has a balance, code, or a nonce.
-        fn accountIsAlive(evm: anytype, address: Address) bool {
-            if (evm.host) |h| {
-                return h.getBalance(address) > 0 or h.getCode(address).len > 0 or h.getNonce(address) > 0;
-            }
-            return (evm.balances.get(address) orelse 0) > 0 or
-                (evm.code.get(address) orelse &[_]u8{}).len > 0 or
-                (evm.nonces.get(address) orelse 0) > 0;
+        ///
+        /// Reads go through the miss-aware `Evm` getters. In an async transaction a field the
+        /// host has not supplied yet is `error.NeedAsyncData`, never a guessed zero: a wrong
+        /// guess changes the 25,000 new-account charge.
+        fn accountIsAlive(evm: anytype, address: Address) error{NeedAsyncData}!bool {
+            const alive = evm.get_balance(address) > 0 or
+                evm.get_raw_code(address).len > 0 or
+                evm.getNonce(address) > 0;
+            if (evm.async_restart_pending) return error.NeedAsyncData;
+            return alive;
         }
 
         /// Shared CREATE / CREATE2 implementation.
@@ -173,7 +176,9 @@ pub fn Handlers(FrameType: type) type {
                 const charge_new_account = if (evm.hardfork.isBefore(.SPURIOUS_DRAGON))
                     !evm.accountExists(call_address)
                 else
-                    value_arg > 0 and !accountIsAlive(evm, call_address);
+                    value_arg > 0 and !(try accountIsAlive(evm, call_address));
+                // `accountExists` reads balance and code through the miss-aware getters too.
+                if (evm.async_restart_pending) return error.NeedAsyncData;
                 if (charge_new_account) gas_cost +|= GasConstants.CallNewAccountGas;
             }
 
@@ -332,23 +337,24 @@ pub fn Handlers(FrameType: type) type {
                 }
             }
 
-            const self_balance = if (evm_ptr.host) |h|
-                h.getBalance(frame.address)
-            else
-                evm_ptr.balances.get(frame.address) orelse 0;
+            // Miss-aware reads: an async transaction fetches both balances before pricing or
+            // moving value, so an unfetched beneficiary balance is never overwritten.
+            const self_balance = evm_ptr.get_balance(frame.address);
+            const beneficiary_balance_before = evm_ptr.get_balance(beneficiary);
+            if (evm_ptr.async_restart_pending) return error.NeedAsyncData;
 
             // New-beneficiary surcharge (25000) by fork:
             // - before Tangerine Whistle: none
             // - Tangerine Whistle (EIP-150): beneficiary does not exist
             // - Spurious Dragon+ (EIP-161): beneficiary is dead and the balance is non-zero
             if (frame.hardfork.isAtLeast(.SPURIOUS_DRAGON)) {
-                if (self_balance > 0 and !accountIsAlive(evm_ptr, beneficiary)) {
+                if (self_balance > 0 and !(try accountIsAlive(evm_ptr, beneficiary))) {
                     gas_cost += GasConstants.CallNewAccountGas;
                 }
             } else if (frame.hardfork.isAtLeast(.TANGERINE_WHISTLE)) {
-                if (!evm_ptr.accountExists(beneficiary)) {
-                    gas_cost += GasConstants.CallNewAccountGas;
-                }
+                const exists = evm_ptr.accountExists(beneficiary);
+                if (evm_ptr.async_restart_pending) return error.NeedAsyncData;
+                if (!exists) gas_cost += GasConstants.CallNewAccountGas;
             }
 
             try frame.consumeGas(gas_cost);
@@ -369,20 +375,12 @@ pub fn Handlers(FrameType: type) type {
                 try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
 
                 // Read beneficiary balance AFTER zeroing the originator (sender == recipient case)
-                const beneficiary_balance = if (evm_ptr.host) |h|
-                    h.getBalance(beneficiary)
-                else
-                    evm_ptr.balances.get(beneficiary) orelse 0;
+                const beneficiary_balance = evm_ptr.get_balance(beneficiary);
                 try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
             } else {
                 // Pre-Cancun: read beneficiary balance BEFORE modifying anything so a
                 // self-beneficiary ends with zero balance.
-                const beneficiary_balance = if (evm_ptr.host) |h|
-                    h.getBalance(beneficiary)
-                else
-                    evm_ptr.balances.get(beneficiary) orelse 0;
-
-                try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
+                try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance_before + self_balance);
                 try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
             }
 

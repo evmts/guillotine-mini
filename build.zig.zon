@@ -53,6 +53,8 @@
         "test_runner.zig",
         "test_trace.zig",
         "examples",
+        "scripts",
+        "native-dependencies.json",
         "CHANGELOG.md",
         "LICENSE",
         "README.md",

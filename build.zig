@@ -594,61 +594,27 @@ pub fn build(b: *std.Build) void {
     const install_client_txpool_bench = b.addInstallArtifact(client_txpool_bench, .{});
     bench_txpool_step.dependOn(&install_client_txpool_bench.step);
 
-    // Add execution-specs tests
-    // Build option to force refreshing the generated Python fixtures
-    const refresh_specs_opt = b.option(bool, "refresh-specs", "Force refresh of execution-specs fixtures");
-    const force_refresh = refresh_specs_opt orelse false;
-
-    // First, add a build step to generate test fixtures using Python fill command
-    const fill_specs = if (force_refresh)
-        b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            // Force refresh: always run fill (with --clean) for all deployed forks
-            "cd execution-specs && " ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean",
-        })
-    else
-        b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            // No-op only if all fork fixtures are present; otherwise fill all
-            "OUT_DIR=execution-specs/tests/eest/static/state_tests; " ++ "if [ -d \"$OUT_DIR\" ] && find \"$OUT_DIR\" -type f -name '*.json' | grep -q .; then " ++ "echo 'Specs already built, skipping fill'; " ++ "else cd execution-specs && " ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean; fi",
-        });
-
-    // Generate Zig test wrappers from JSON fixtures for STATE TESTS
-    const generate_zig_state_tests = b.addSystemCommand(&.{
-        "python3",
-        "scripts/generate_spec_tests.py",
-        "state",
+    const state_fixture_stamp = "execution-specs/tests/eest/static/state_tests/.filled";
+    const force_refresh = b.option(bool, "refresh-specs", "Force refresh of execution-specs state fixtures") orelse false;
+    const use_existing = b.option(bool, "specs-use-existing", "Run against an already filled, possibly scoped state fixture directory") orelse false;
+    const fill_specs = b.addSystemCommand(&.{
+        "sh",               "-eu",               "-c",
+        \\if [ "$2" = false ] && [ -f "$1" ]; then
+        \\    exit 0
+        \\fi
+        \\rm -f "$1"
+        \\(cd execution-specs && uv run --extra fill --extra test fill tests/eest -m state_test \
+        \\    --output tests/eest/static/state_tests --clean)
+        \\touch "$1"
+        ,
+        "fill-state-specs", state_fixture_stamp,
+        if (force_refresh) "true" else "false",
     });
-    generate_zig_state_tests.step.dependOn(&fill_specs.step);
 
-    // Generate Zig test wrappers from JSON fixtures for BLOCKCHAIN TESTS
-    const generate_zig_blockchain_tests = b.addSystemCommand(&.{
-        "python3",
-        "scripts/generate_spec_tests.py",
-        "blockchain",
-    });
-    generate_zig_blockchain_tests.step.dependOn(&fill_specs.step);
+    fill_specs.setCwd(b.path("."));
 
-    // Update test/specs/root.zig with generated test imports for STATE TESTS
-    const update_spec_root_state = b.addSystemCommand(&.{
-        "python3",
-        "scripts/update_spec_root.py",
-        "state",
-    });
-    update_spec_root_state.step.dependOn(&generate_zig_state_tests.step);
-
-    // Update test/specs/root.zig with generated test imports for BLOCKCHAIN TESTS
-    const update_spec_root_blockchain = b.addSystemCommand(&.{
-        "python3",
-        "scripts/update_spec_root.py",
-        "blockchain",
-    });
-    update_spec_root_blockchain.step.dependOn(&generate_zig_blockchain_tests.step);
-
-    const spec_runner_mod = b.addModule("spec_runner", .{
-        .root_source_file = b.path("test/specs/root.zig"),
+    const spec_runner_options: std.Build.Module.CreateOptions = .{
+        .root_source_file = b.path("test/specs/runner.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -656,71 +622,37 @@ pub fn build(b: *std.Build) void {
             .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "client_blockchain", .module = client_blockchain_mod },
         },
-    });
+    };
+    const spec_runner_mod = b.createModule(spec_runner_options);
+    // Preserve the package module and its public runner declaration.
+    var exported_spec_runner = spec_runner_options;
+    exported_spec_runner.root_source_file = b.path("test/specs/root.zig");
+    _ = b.addModule("spec_runner", exported_spec_runner);
 
-    // Create separate test executables for state tests and blockchain tests
-    const spec_tests_state = b.addTest(.{
-        .root_module = spec_runner_mod,
-        .test_runner = .{
-            .path = b.path("test_runner.zig"),
-            .mode = .simple,
-        },
-    });
-    linkRustSupport(spec_tests_state);
+    const state_root = generateSpecRoot(b, "state");
+    if (force_refresh or !use_existing) state_root.step.dependOn(&fill_specs.step);
+    const blockchain_root = generateSpecRoot(b, "blockchain");
+    const spec_tests_state = addSpecTests(b, state_root.root, spec_runner_mod, target, optimize);
+    const spec_tests_blockchain = addSpecTests(b, blockchain_root.root, spec_runner_mod, target, optimize);
 
-    const spec_tests_blockchain = b.addTest(.{
-        .root_module = spec_runner_mod,
-        .test_runner = .{
-            .path = b.path("test_runner.zig"),
-            .mode = .simple,
-        },
-    });
-    linkRustSupport(spec_tests_blockchain);
-
-    // Make spec test compilation depend on test generation pipeline
-    spec_tests_state.step.dependOn(&update_spec_root_state.step);
-    spec_tests_blockchain.step.dependOn(&update_spec_root_blockchain.step);
-
-    // Run artifacts for state tests
     const run_spec_tests_state = b.addRunArtifact(spec_tests_state);
-    run_spec_tests_state.setCwd(b.path(".")); // Set working directory to project root for test file paths
+    run_spec_tests_state.setCwd(b.path("."));
 
-    // Run artifacts for blockchain tests
     const run_spec_tests_blockchain = b.addRunArtifact(spec_tests_blockchain);
-    run_spec_tests_blockchain.setCwd(b.path(".")); // Set working directory to project root for test file paths
+    run_spec_tests_blockchain.setCwd(b.path("."));
 
-    // Main spec test step - runs STATE TESTS ONLY by default
     const spec_test_step = b.step("specs", "Run execution-specs STATE tests");
     spec_test_step.dependOn(&run_spec_tests_state.step);
 
-    // Blockchain test step - runs BLOCKCHAIN TESTS ONLY
     const spec_blockchain_test_step = b.step("specs-blockchain", "Run execution-specs BLOCKCHAIN tests");
     spec_blockchain_test_step.dependOn(&run_spec_tests_blockchain.step);
 
-    // Spec state tests read filled fixtures from the execution-specs submodule
-    // and regenerate them with uv when missing. A standard clone has neither,
-    // so `test` includes them only when the fixtures exist or -Dspecs=true.
-    // `zig build specs` always runs them.
-    const has_state_fixtures = pathExists(b, "execution-specs/tests/eest/static/state_tests");
-    const include_specs = b.option(bool, "specs", "Run execution-specs state tests during zig build test (default: when filled fixtures exist)") orelse has_state_fixtures;
-    if (include_specs) {
-        test_step.dependOn(&run_spec_tests_state.step);
-    }
+    // The default test suite can run before either fixture submodule is checked out.
+    const has_state_fixtures = pathExists(b, state_fixture_stamp);
+    const include_specs = b.option(bool, "specs", "Run state fixtures during zig build test (default: after a completed fill)") orelse (force_refresh or has_state_fixtures);
+    if (include_specs) test_step.dependOn(&run_spec_tests_state.step);
 
-    // The spec runner's own unit tests need no fixtures. They also compile the
-    // runner, so `test` catches runner regressions in a standard clone.
-    const spec_runner_unit_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test/specs/runner.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "evm", .module = mod },
-                .{ .name = "voltaire", .module = primitives_mod },
-                .{ .name = "client_blockchain", .module = client_blockchain_mod },
-            },
-        }),
-    });
+    const spec_runner_unit_tests = b.addTest(.{ .root_module = spec_runner_mod });
     linkRustSupport(spec_runner_unit_tests);
     const run_spec_runner_unit_tests = b.addRunArtifact(spec_runner_unit_tests);
     test_step.dependOn(&run_spec_runner_unit_tests.step);
@@ -889,18 +821,7 @@ pub fn build(b: *std.Build) void {
         const steps = fork_sub_steps_map.getPtr(config.fork_name).?;
 
         for (config.targets) |sub_target| {
-            const sub_tests = b.addTest(.{
-                .root_module = spec_runner_mod,
-                .test_runner = .{
-                    .path = b.path("test_runner.zig"),
-                    .mode = .simple,
-                },
-            });
-            linkRustSupport(sub_tests);
-
-            sub_tests.step.dependOn(&update_spec_root_state.step);
-
-            const run_sub_tests = b.addRunArtifact(sub_tests);
+            const run_sub_tests = b.addRunArtifact(spec_tests_state);
             run_sub_tests.setCwd(b.path("."));
             run_sub_tests.setEnvironmentVariable("TEST_FILTER", sub_target.filter);
 
@@ -913,18 +834,7 @@ pub fn build(b: *std.Build) void {
     }
 
     for (hardforks) |fork| {
-        const fork_tests = b.addTest(.{
-            .root_module = spec_runner_mod,
-            .test_runner = .{
-                .path = b.path("test_runner.zig"),
-                .mode = .simple,
-            },
-        });
-        linkRustSupport(fork_tests);
-
-        fork_tests.step.dependOn(&update_spec_root_state.step);
-
-        const run_fork_tests = b.addRunArtifact(fork_tests);
+        const run_fork_tests = b.addRunArtifact(spec_tests_state);
         run_fork_tests.setCwd(b.path("."));
         run_fork_tests.setEnvironmentVariable("TEST_FILTER", fork.name);
 
@@ -947,18 +857,7 @@ pub fn build(b: *std.Build) void {
     const eip_suites = [_]struct { name: []const u8, filter: []const u8, desc: []const u8 }{};
 
     for (eip_suites) |suite| {
-        const eip_tests = b.addTest(.{
-            .root_module = spec_runner_mod,
-            .test_runner = .{
-                .path = b.path("test_runner.zig"),
-                .mode = .simple,
-            },
-        });
-        linkRustSupport(eip_tests);
-
-        eip_tests.step.dependOn(&update_spec_root_state.step);
-
-        const run_eip_tests = b.addRunArtifact(eip_tests);
+        const run_eip_tests = b.addRunArtifact(spec_tests_state);
         run_eip_tests.setCwd(b.path("."));
         run_eip_tests.setEnvironmentVariable("TEST_FILTER", suite.filter);
 
@@ -1124,6 +1023,79 @@ pub fn build(b: *std.Build) void {
 /// unwinder (`_Unwind_*`), which Zig does not link implicitly. Link libgcc_s on
 /// Linux and libgcc_eh on Windows GNU. macOS gets the unwinder from libSystem;
 /// wasm32 has none and needs none.
+fn generateSpecRoot(b: *std.Build, family: []const u8) struct { step: *std.Build.Step, root: std.Build.LazyPath } {
+    const generate = b.addSystemCommand(&.{
+        "python3", "-B", "-c",
+        \\import json
+        \\import runpy
+        \\import sys
+        \\from pathlib import Path
+        \\
+        \\family, script, output, depfile = sys.argv[1:]
+        \\repo = Path.cwd()
+        \\generator = runpy.run_path(script)
+        \\output = Path(output)
+        \\wrappers = output / "generated"
+        \\if family == "state":
+        \\    fixtures = repo / "execution-specs/tests/eest/static/state_tests"
+        \\else:
+        \\    fixtures = repo / "execution-spec-tests/fixtures/blockchain_tests"
+        \\    legacy = repo / "ethereum-tests/BlockchainTests"
+        \\    if not any(fixtures.rglob("*.json")):
+        \\        if any(legacy.rglob("*.json")):
+        \\            fixtures = legacy
+        \\        elif (repo / "ethereum-tests/fixtures_blockchain_tests.tgz").is_file():
+        \\            generator["ensure_blockchain_fixtures"](fixtures, repo)
+        \\
+        \\imports = []
+        \\inputs = []
+        \\for fixture in sorted(fixtures.rglob("*.json")):
+        \\    if ".meta" in fixture.relative_to(fixtures).parts:
+        \\        continue
+        \\    if not generator["generate_test_file"](fixture, wrappers, fixtures, repo):
+        \\        raise SystemExit(f"No tests could be generated from {fixture}")
+        \\    wrapper = (wrappers / fixture.relative_to(fixtures).with_suffix(".zig")).relative_to(output)
+        \\    imports.append(f'test {{ _ = @import({json.dumps(wrapper.as_posix())}); }}')
+        \\    inputs.append(str(fixture))
+        \\if not imports:
+        \\    raise SystemExit(f"No {family} fixture JSON found in {fixtures}")
+        \\
+        \\root = 'pub const runner = @import("spec_runner");\n' + "\n".join(imports) + "\n"
+        \\(output / "root.zig").write_text(root, encoding="utf-8")
+        \\# Track fixture inputs and publish the generated tree through Zig's cache.
+        \\Path(depfile).write_text("root.zig: " + " ".join(path.replace(" ", "\\ ") for path in inputs) + "\n")
+        ,
+        family,
+    });
+    generate.setCwd(b.path("."));
+    generate.addFileArg(b.path("scripts/generate_spec_tests.py"));
+    const output = generate.addOutputDirectoryArg(b.fmt("specs-{s}", .{family}));
+    _ = generate.addDepFileOutputArg("fixtures.d");
+    // Rescan the fixture directory so additions and deletions are picked up.
+    generate.has_side_effects = true;
+    return .{ .step = &generate.step, .root = output.path(b, "root.zig") };
+}
+
+fn addSpecTests(
+    b: *std.Build,
+    root: std.Build.LazyPath,
+    runner: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Compile {
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = root,
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "spec_runner", .module = runner }},
+        }),
+        .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
+    });
+    linkRustSupport(tests);
+    return tests;
+}
+
 fn linkRustSupport(compile: *std.Build.Step.Compile) void {
     const t = compile.rootModuleTarget();
     switch (t.os.tag) {

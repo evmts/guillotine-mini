@@ -14,8 +14,7 @@
  * - Testing and development environments
  */
 
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { loadWasm } from './basic-usage.ts';
 
 // Helper functions
 function hexToAddress(hex: string): Uint8Array {
@@ -103,87 +102,26 @@ class PrecompileRegistry {
 /**
  * Load WASM with custom precompile callback
  */
-async function loadWasmWithPrecompiles(registry: PrecompileRegistry) {
-  const wasmPath = resolve(__dirname, '../../zig-out/bin/guillotine_mini.wasm');
-  const wasmBuffer = readFileSync(wasmPath);
-  const wasmModule = await WebAssembly.compile(wasmBuffer);
+function loadWasmWithPrecompiles(registry: PrecompileRegistry) {
+  return loadWasm((memory, alloc, addressPtr, inputPtr, inputLength, gasLimit, outputLengthPtr, outputPtrPtr, gasUsedPtr) => {
+    try {
+      const address = new Uint8Array(memory.buffer, addressPtr, 20).slice();
+      const input = new Uint8Array(memory.buffer, inputPtr, inputLength).slice();
+      const result = registry.handle(address, input, gasLimit);
+      if (!result?.success) return 0;
 
-  const imports = {
-    env: {
-      js_opcode_callback: () => 0,
-
-      /**
-       * JavaScript precompile callback
-       * Called by WASM when a CALL targets a precompile address
-       *
-       * Parameters:
-       * - address_ptr: pointer to 20-byte address
-       * - input_ptr: pointer to input data
-       * - input_len: length of input data
-       * - gas_limit: available gas
-       * - output_len: pointer to write output length
-       * - output_ptr: pointer to write output data pointer
-       * - gas_used: pointer to write gas used
-       *
-       * Returns: 1 if handled, 0 if not handled (use default)
-       */
-      js_precompile_callback: (
-        address_ptr: number,
-        input_ptr: number,
-        input_len: number,
-        gas_limit: number,
-        output_len_ptr: number,
-        output_ptr_ptr: number,
-        gas_used_ptr: number
-      ): number => {
-        try {
-          const memory = new Uint8Array((instance.exports as any).memory.buffer);
-
-          // Read address
-          const address = memory.slice(address_ptr, address_ptr + 20);
-
-          // Read input
-          const input = memory.slice(input_ptr, input_ptr + input_len);
-
-          // Try to handle
-          const result = registry.handle(address, input, BigInt(gas_limit));
-
-          if (!result) {
-            return 0; // Not handled, use default precompiles
-          }
-
-          if (!result.success) {
-            return 0; // Failed, let EVM handle error
-          }
-
-          // Allocate output buffer in WASM memory
-          const outputPtr = (instance.exports as any).malloc?.(result.output.length) ?? 0;
-          if (outputPtr === 0 && result.output.length > 0) {
-            console.error('Failed to allocate output buffer');
-            return 0;
-          }
-
-          // Write output data
-          const outputMemory = new Uint8Array((instance.exports as any).memory.buffer);
-          outputMemory.set(result.output, outputPtr);
-
-          // Write output metadata
-          const metadata = new DataView((instance.exports as any).memory.buffer);
-          metadata.setUint32(output_len_ptr, result.output.length, true);
-          metadata.setUint32(output_ptr_ptr, outputPtr, true);
-          metadata.setBigUint64(gas_used_ptr, result.gasUsed, true);
-
-          return 1; // Handled successfully
-        } catch (e) {
-          console.error('Error in precompile callback:', e);
-          return 0;
-        }
-      },
+      // The EVM copies the callback result before returning to the caller.
+      const outputPtr = alloc(result.output);
+      const metadata = new DataView(memory.buffer);
+      metadata.setUint32(outputLengthPtr, result.output.length, true);
+      metadata.setUint32(outputPtrPtr, outputPtr, true);
+      metadata.setBigUint64(gasUsedPtr, result.gasUsed, true);
+      return 1;
+    } catch (error) {
+      console.error('Error in precompile callback:', error);
+      return 0;
     }
-  };
-
-  const instance = await WebAssembly.instantiate(wasmModule, imports);
-  return instance.exports;
+  });
 }
 
 /**
@@ -226,15 +164,9 @@ async function example1_stringReverser() {
     };
   });
 
-  const wasm = await loadWasmWithPrecompiles(registry);
+  const { api: wasm, alloc, release, createEvm, readOutput } = await loadWasmWithPrecompiles(registry);
 
-  const hardforkName = 'Cancun';
-  const hardforkBytes = new TextEncoder().encode(hardforkName);
-  const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
-
-  if (!evmHandle) {
-    throw new Error('Failed to create EVM instance');
-  }
+  const evmHandle = createEvm('Cancun');
 
   try {
     // Store "Hello World!" in memory and call precompile
@@ -271,7 +203,7 @@ async function example1_stringReverser() {
     console.log(`Input: "${inputText}"`);
     console.log(`Expected output: "${inputText.split('').reverse().join('')}"\n`);
 
-    (wasm as any).evm_set_bytecode(evmHandle, bytecode, bytecode.length);
+    wasm.evm_set_bytecode(evmHandle, alloc(bytecode), bytecode.length);
 
     const gas = 1000000n;
     const caller = hexToAddress('0x1000000000000000000000000000000000000001');
@@ -279,13 +211,13 @@ async function example1_stringReverser() {
     const value = u256ToBytes(0n);
     const calldata = new Uint8Array(0);
 
-    (wasm as any).evm_set_execution_context(
+    wasm.evm_set_execution_context(
       evmHandle,
-      Number(gas),
-      caller,
-      address,
-      value,
-      calldata,
+      gas,
+      alloc(caller),
+      alloc(address),
+      alloc(value),
+      alloc(calldata),
       calldata.length
     );
 
@@ -299,36 +231,33 @@ async function example1_stringReverser() {
     const blockBaseFee = u256ToBytes(1000000000n);
     const blobBaseFee = u256ToBytes(1n);
 
-    (wasm as any).evm_set_blockchain_context(
+    wasm.evm_set_blockchain_context(
       evmHandle,
-      chainId,
-      Number(blockNumber),
-      Number(blockTimestamp),
-      blockDifficulty,
-      blockPrevrandao,
-      blockCoinbase,
-      Number(blockGasLimit),
-      blockBaseFee,
-      blobBaseFee
+      alloc(chainId),
+      blockNumber,
+      blockTimestamp,
+      alloc(blockDifficulty),
+      alloc(blockPrevrandao),
+      alloc(blockCoinbase),
+      blockGasLimit,
+      alloc(blockBaseFee),
+      alloc(blobBaseFee)
     );
 
     // Execute
     console.log('🚀 Executing bytecode...\n');
-    const success = (wasm as any).evm_execute(evmHandle);
+    const success = wasm.evm_execute(evmHandle);
 
     console.log('\n✅ Execution:', success ? 'SUCCESS' : 'FAILED');
 
-    const gasUsed = (wasm as any).evm_get_gas_used(evmHandle);
+    const gasUsed = wasm.evm_get_gas_used(evmHandle);
     console.log(`⛽ Gas used: ${gasUsed}\n`);
 
     // Get output
-    const outputLen = (wasm as any).evm_get_output_len(evmHandle);
-    if (outputLen > 0) {
-      const outputBuffer = new Uint8Array(outputLen);
-      (wasm as any).evm_get_output(evmHandle, outputBuffer, outputLen);
+    const outputBuffer = readOutput(evmHandle);
+    if (outputBuffer.length > 0) {
 
       // Decode as string (remove padding)
-      const decoder = new TextDecoder();
       let text = '';
       for (let i = 0; i < outputBuffer.length; i++) {
         if (outputBuffer[i] === 0) break; // Stop at null terminator/padding
@@ -343,7 +272,8 @@ async function example1_stringReverser() {
     console.log('');
 
   } finally {
-    (wasm as any).evm_destroy(evmHandle);
+    wasm.evm_destroy(evmHandle);
+    release();
   }
 }
 
@@ -411,15 +341,9 @@ async function example2_fibonacci() {
     };
   });
 
-  const wasm = await loadWasmWithPrecompiles(registry);
+  const { api: wasm, alloc, release, createEvm, readOutput } = await loadWasmWithPrecompiles(registry);
 
-  const hardforkName = 'Cancun';
-  const hardforkBytes = new TextEncoder().encode(hardforkName);
-  const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
-
-  if (!evmHandle) {
-    throw new Error('Failed to create EVM instance');
-  }
+  const evmHandle = createEvm('Cancun');
 
   try {
     const n = 10n;
@@ -450,7 +374,7 @@ async function example2_fibonacci() {
       0xf3              // RETURN
     ]);
 
-    (wasm as any).evm_set_bytecode(evmHandle, bytecode, bytecode.length);
+    wasm.evm_set_bytecode(evmHandle, alloc(bytecode), bytecode.length);
 
     const gas = 1000000n;
     const caller = hexToAddress('0x1000000000000000000000000000000000000001');
@@ -458,13 +382,13 @@ async function example2_fibonacci() {
     const value = u256ToBytes(0n);
     const calldata = new Uint8Array(0);
 
-    (wasm as any).evm_set_execution_context(
+    wasm.evm_set_execution_context(
       evmHandle,
-      Number(gas),
-      caller,
-      address,
-      value,
-      calldata,
+      gas,
+      alloc(caller),
+      alloc(address),
+      alloc(value),
+      alloc(calldata),
       calldata.length
     );
 
@@ -478,33 +402,31 @@ async function example2_fibonacci() {
     const blockBaseFee = u256ToBytes(1000000000n);
     const blobBaseFee = u256ToBytes(1n);
 
-    (wasm as any).evm_set_blockchain_context(
+    wasm.evm_set_blockchain_context(
       evmHandle,
-      chainId,
-      Number(blockNumber),
-      Number(blockTimestamp),
-      blockDifficulty,
-      blockPrevrandao,
-      blockCoinbase,
-      Number(blockGasLimit),
-      blockBaseFee,
-      blobBaseFee
+      alloc(chainId),
+      blockNumber,
+      blockTimestamp,
+      alloc(blockDifficulty),
+      alloc(blockPrevrandao),
+      alloc(blockCoinbase),
+      blockGasLimit,
+      alloc(blockBaseFee),
+      alloc(blobBaseFee)
     );
 
     // Execute
     console.log('🚀 Executing bytecode...\n');
-    const success = (wasm as any).evm_execute(evmHandle);
+    const success = wasm.evm_execute(evmHandle);
 
     console.log('\n✅ Execution:', success ? 'SUCCESS' : 'FAILED');
 
-    const gasUsed = (wasm as any).evm_get_gas_used(evmHandle);
+    const gasUsed = wasm.evm_get_gas_used(evmHandle);
     console.log(`⛽ Gas used: ${gasUsed}\n`);
 
     // Get output
-    const outputLen = (wasm as any).evm_get_output_len(evmHandle);
-    if (outputLen > 0) {
-      const outputBuffer = new Uint8Array(outputLen);
-      (wasm as any).evm_get_output(evmHandle, outputBuffer, outputLen);
+    const outputBuffer = readOutput(evmHandle);
+    if (outputBuffer.length > 0) {
 
       const result = bytesToU256(outputBuffer);
       console.log(`📤 fibonacci(${n}) = ${result}`);
@@ -517,7 +439,8 @@ async function example2_fibonacci() {
     console.log('');
 
   } finally {
-    (wasm as any).evm_destroy(evmHandle);
+    wasm.evm_destroy(evmHandle);
+    release();
   }
 }
 

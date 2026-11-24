@@ -18,7 +18,7 @@ bun scripts/test-subset.ts "pattern"     # Filter test categories
 
 ## Prerequisites
 
-- Zig 0.15.1+ (core build system)
+- Zig 0.15.2 (core build system)
 - Cargo (required for BN254/ARK cryptographic dependencies)
 - Python 3.8+ (test generation and reference implementation)
 - uv (Python package manager for spec fixture generation): `brew install uv`

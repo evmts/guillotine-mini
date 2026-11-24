@@ -1566,32 +1566,48 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         /// Open a revert point. `cp` must stay at a fixed address until `releaseCheckpoint`.
         pub fn takeCheckpoint(self: *Self, cp: *Checkpoint) !void {
+            const alloc = self.allocator;
             const tx_alloc = self.tx_arena.allocator();
 
             var access_list = try self.access_list_manager.snapshot();
             errdefer access_list.deinit();
 
             // Current value of every slot written so far in this transaction.
-            var storage_values = SlotMap.init(tx_alloc);
+            var storage_values = SlotMap.init(alloc);
+            errdefer storage_values.deinit();
             var written_it = self.storage.original_storage.keyIterator();
             while (written_it.next()) |key| {
                 try storage_values.put(key.*, self.currentStorageValue(key.*));
             }
+
+            var original_storage = try self.storage.original_storage.cloneWithAllocator(alloc);
+            errdefer original_storage.deinit();
+            var transient = try self.storage.transient.cloneWithAllocator(alloc);
+            errdefer transient.deinit();
+            var selfdestructed = try self.selfdestructed_accounts.cloneWithAllocator(alloc);
+            errdefer selfdestructed.deinit();
+            var created = try self.created_accounts.cloneWithAllocator(alloc);
+            errdefer created.deinit();
 
             cp.* = .{
                 .refund = self.gas_refund,
                 .logs_len = self.logs.items.len,
                 .touched_len = self.touched_journal.items.len,
                 .access_list = access_list,
-                .original_storage = try self.storage.original_storage.cloneWithAllocator(tx_alloc),
+                .original_storage = original_storage,
                 .storage = storage_values,
-                .transient = try self.storage.transient.cloneWithAllocator(tx_alloc),
-                .selfdestructed = try self.selfdestructed_accounts.cloneWithAllocator(tx_alloc),
-                .created = try self.created_accounts.cloneWithAllocator(tx_alloc),
-                .balances = std.AutoHashMap(primitives.Address, u256).init(tx_alloc),
-                .nonces = std.AutoHashMap(primitives.Address, u64).init(tx_alloc),
-                .code = std.AutoHashMap(primitives.Address, []const u8).init(tx_alloc),
+                .transient = transient,
+                .selfdestructed = selfdestructed,
+                .created = created,
+                .balances = std.AutoHashMap(primitives.Address, u256).init(alloc),
+                .nonces = std.AutoHashMap(primitives.Address, u64).init(alloc),
+                .code = std.AutoHashMap(primitives.Address, []const u8).init(alloc),
             };
+            errdefer {
+                cp.balances.deinit();
+                cp.nonces.deinit();
+                cp.code.deinit();
+            }
 
             // Register the copy-on-write maps so nested writes record their pre-images here.
             try self.balance_snapshot_stack.append(tx_alloc, &cp.balances);
@@ -1606,6 +1622,14 @@ pub fn Evm(comptime config: EvmConfig) type {
             _ = self.code_snapshot_stack.pop();
             _ = self.nonce_snapshot_stack.pop();
             _ = self.balance_snapshot_stack.pop();
+            cp.code.deinit();
+            cp.nonces.deinit();
+            cp.balances.deinit();
+            cp.created.deinit();
+            cp.selfdestructed.deinit();
+            cp.transient.deinit();
+            cp.storage.deinit();
+            cp.original_storage.deinit();
             cp.access_list.deinit();
         }
 
@@ -1807,10 +1831,12 @@ pub fn Evm(comptime config: EvmConfig) type {
                 return CallResult{ .success = true, .gas_left = gas_left, .output = output };
             }
 
+            // Resolving the callee already hit missing async data: do not run it on a guess.
+            if (self.async_restart_pending) return self.failAndRevert(&cp);
             // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
             const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
             const child_frame = FrameType.init(
-                tx_alloc,
+                self.allocator,
                 code,
                 frame_gas,
                 execution_caller,
@@ -1821,14 +1847,15 @@ pub fn Evm(comptime config: EvmConfig) type {
                 self.hardfork,
                 is_static,
             ) catch return self.failAndRevert(&cp);
-            // Resolving the callee already hit missing async data: do not run it on a guess.
-            if (self.async_restart_pending) return self.failAndRevert(&cp);
             // `canPushFrame` reserved the slot: this never reallocates `frames`.
             self.frames.appendAssumeCapacity(child_frame);
             const frame_index = self.frames.items.len - 1;
+            defer {
+                self.frames.items[frame_index].deinit();
+                self.frames.shrinkRetainingCapacity(frame_index);
+            }
 
             self.frames.items[frame_index].execute() catch |err| {
-                self.frames.shrinkRetainingCapacity(frame_index);
                 // Missing async data is not a failure of the callee. This function cannot
                 // return an error, so the request is recorded, every ancestor frame is stopped
                 // and the executor replays the transaction once the host has answered. In a
@@ -1839,7 +1866,6 @@ pub fn Evm(comptime config: EvmConfig) type {
             };
             if (self.async_restart_pending) {
                 // The callee (or a descendant) was stopped for missing data; its result is void.
-                self.frames.shrinkRetainingCapacity(frame_index);
                 return self.failAndRevert(&cp);
             }
 
@@ -1847,13 +1873,9 @@ pub fn Evm(comptime config: EvmConfig) type {
             const reverted = frame.reverted;
             const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
             const output: []const u8 = if (frame.output.len > 0)
-                (tx_alloc.dupe(u8, frame.output) catch {
-                    self.frames.shrinkRetainingCapacity(frame_index);
-                    return self.failAndRevert(&cp);
-                })
+                (tx_alloc.dupe(u8, frame.output) catch return self.failAndRevert(&cp))
             else
                 &[_]u8{};
-            self.frames.shrinkRetainingCapacity(frame_index);
 
             if (reverted) {
                 self.revertToCheckpoint(&cp) catch return failedResult(0);
@@ -1989,10 +2011,13 @@ pub fn Evm(comptime config: EvmConfig) type {
             }
             if (value > 0) try self.transferValue(caller, new_address, value);
 
+            // The balance, nonce or collision checks above ran on missing async data: unwind
+            // (the `errdefer` rolls back) and let the executor fetch it and replay.
+            if (self.async_restart_pending) return error.NeedAsyncData;
             // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
             const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
             const init_frame = try FrameType.init(
-                self.tx_arena.allocator(),
+                self.allocator,
                 init_code,
                 frame_gas,
                 caller,
@@ -2003,35 +2028,45 @@ pub fn Evm(comptime config: EvmConfig) type {
                 self.hardfork,
                 false, // creation is never static
             );
-            // The balance, nonce or collision checks above ran on missing async data: unwind
-            // (the `errdefer` rolls back) and let the executor fetch it and replay.
-            if (self.async_restart_pending) return error.NeedAsyncData;
             // `canPushFrame` reserved the slot: this never reallocates `frames`.
             self.frames.appendAssumeCapacity(init_frame);
             const frame_index = self.frames.items.len - 1;
+            const frame_outcome = blk: {
+                defer {
+                    self.frames.items[frame_index].deinit();
+                    self.frames.shrinkRetainingCapacity(frame_index);
+                }
 
-            self.frames.items[frame_index].execute() catch |err| {
-                self.frames.shrinkRetainingCapacity(frame_index);
-                try self.revertToCheckpoint(&cp);
-                if (err == error.NeedAsyncData and self.async_active) {
-                    // Init code needs data the host has not supplied: propagate instead of
-                    // failing the creation, so the transaction is replayed with the data.
-                    self.requestAsyncRestart(self.storage.async_data_request);
+                self.frames.items[frame_index].execute() catch |err| {
+                    try self.revertToCheckpoint(&cp);
+                    if (err == error.NeedAsyncData and self.async_active) {
+                        // Init code needs data the host has not supplied: propagate instead of
+                        // failing the creation, so the transaction is replayed with the data.
+                        self.requestAsyncRestart(self.storage.async_data_request);
+                        return error.NeedAsyncData;
+                    }
+                    // Exceptional halt in init code: all gas consumed, no return data.
+                    return failed_all_gas;
+                };
+                if (self.async_restart_pending) {
                     return error.NeedAsyncData;
                 }
-                // Exceptional halt in init code: all gas consumed, no return data.
-                return failed_all_gas;
-            };
-            if (self.async_restart_pending) {
-                self.frames.shrinkRetainingCapacity(frame_index);
-                return error.NeedAsyncData;
-            }
 
-            const frame = &self.frames.items[frame_index];
-            const reverted = frame.reverted;
-            var gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-            const frame_output = frame.output;
-            self.frames.shrinkRetainingCapacity(frame_index);
+                const frame = &self.frames.items[frame_index];
+                const out: []const u8 = if (frame.output.len > 0)
+                    try self.tx_arena.allocator().dupe(u8, frame.output)
+                else
+                    &[_]u8{};
+                break :blk .{
+                    .reverted = frame.reverted,
+                    .gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0))),
+                    .output = out,
+                };
+            };
+
+            const reverted = frame_outcome.reverted;
+            var gas_left = frame_outcome.gas_left;
+            const frame_output = frame_outcome.output;
 
             if (reverted) {
                 // REVERT is the only failure that returns data and unused gas.

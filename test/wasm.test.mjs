@@ -366,11 +366,25 @@ test('async WASI ready_to_commit handles inline fast-path, >20 KiB overflow, and
     assert.equal(api.evm_enable_storage_injector(handle), 1, 'idempotent enable')
     const request = f.alloc(new Uint8Array(REQUEST.size).fill(0xa5))
 
+    const balanceReply = f.alloc(52)
+    const driveToCommit = () => {
+      assert.equal(api.evm_call_ffi(handle, request), 1)
+      let hops = 0
+      while (tag(request) === 2) {
+        // AsyncRequest layout: tag(1) @0, address(20) @1, slot(32) @21, pad(3) @53, json_len(4) @56
+        bytesAt(balanceReply, 20).set(bytesAt(request + 1, 20))
+        bytesAt(balanceReply + 20, 32).fill(0)
+        assert.equal(api.evm_continue_ffi(handle, 2, balanceReply, 52, request), 1)
+        hops++
+        assert.ok(hops <= 1024, `too many NEED_BALANCE hops: ${hops}`)
+      }
+      assert.equal(tag(request), 5, 'ready_to_commit')
+    }
+
     // 1. Overflow path: 500 self-destructed contracts -> >22 KiB (> 16384 inline cap)
     const accounts = 500
     f.setCall(selfDestructLoop(accounts), { gas: 30_000_000n })
-    assert.equal(api.evm_call_ffi(handle, request), 1)
-    assert.equal(tag(request), 5, 'ready_to_commit')
+    driveToCommit()
 
     const largeLen = readLen(request)
     assert.ok(largeLen > 20 * 1024 && largeLen > REQUEST.inlineCapacity, `expected >20 KiB, got ${largeLen}`)
@@ -398,8 +412,7 @@ test('async WASI ready_to_commit handles inline fast-path, >20 KiB overflow, and
     // 2. Subsequent small call replaces the dump and delivers complete JSON inline
     bytesAt(request + REQUEST.jsonData, REQUEST.inlineCapacity).fill(0xee)
     f.setCall(selfDestructLoop(3), { gas: 1_000_000n })
-    assert.equal(api.evm_call_ffi(handle, request), 1)
-    assert.equal(tag(request), 5)
+    driveToCommit()
     const smallLen = readLen(request)
     assert.ok(smallLen > 0 && smallLen <= REQUEST.inlineCapacity)
     assert.equal(api.evm_get_state_changes_len(handle), smallLen)

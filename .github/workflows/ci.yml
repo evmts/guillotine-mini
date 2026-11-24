@@ -91,6 +91,7 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: guillotine-mini/execution-specs
         run: |
+          rm -f tests/eest/static/state_tests/.filled
           uv run --python 3.12 --extra fill --extra test fill tests/eest/shanghai/eip3855_push0 \
             -m state_test --output tests/eest/static/state_tests --clean
       - name: Run execution-specs smoke tests
@@ -99,7 +100,7 @@ jobs:
         env:
           TEST_FORMAT: json
         run: |
-          zig build specs-shanghai-push0 | tee "$RUNNER_TEMP/spec-smoke.log"
+          zig build specs-shanghai-push0 -Dspecs-use-existing=true | tee "$RUNNER_TEMP/spec-smoke.log"
           sed -n '/^{/p' "$RUNNER_TEMP/spec-smoke.log" | jq -es 'any(.[]; .success and .passed > 0)'
       - name: Compile EVM benchmarks
         run: zig build check-bench-evm
@@ -126,9 +127,10 @@ jobs:
           bun install --frozen-lockfile
           bun run test
           bun run build
+      - name: Run ExEx manager tests
+        run: bun test ./ts/exex/manager.test.ts
 
   lean-diff:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
