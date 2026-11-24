@@ -27,6 +27,11 @@ pub fn Handlers(FrameType: type) type {
             const offset = try frame.popStack();
             const length = try frame.popStack();
 
+            // Pop every operand first (execution-specs order), so a short stack is a
+            // StackUnderflow even when the memory range is unpayable.
+            var topics_tmp: [4]u256 = undefined;
+            for (topics_tmp[0..topic_count]) |*topic| topic.* = try frame.popStack();
+
             // Gas cost + memory expansion for log data. Zero-length data ignores the offset.
             const range = try frame.memoryRange(offset, length);
             const length_u32: u32 = if (range) |r| r.len else 0;
@@ -34,40 +39,20 @@ pub fn Handlers(FrameType: type) type {
             if (range) |r| try frame.expandMemory(r.end);
 
             const evm = frame.getEvm();
+            // Logs live for one transaction: allocate them in the transaction arena.
+            const alloc = if (comptime @hasField(@TypeOf(evm.*), "tx_arena"))
+                evm.tx_arena.allocator()
+            else
+                evm.arena.allocator();
 
-            // Read topics (store them so we can add to log)
-            const topics_len: usize = topic_count;
-            var topics_tmp: [4]u256 = undefined; // max 4 topics
-            var ti: usize = 0;
-            while (ti < topics_len) : (ti += 1) {
-                topics_tmp[ti] = try frame.popStack();
-            }
+            const data_slice: []u8 = if (range) |r| try frame.readMemoryAlloc(alloc, r) else &[_]u8{};
+            const topics_slice: []u256 = if (topic_count > 0) try alloc.dupe(u256, topics_tmp[0..topic_count]) else &[_]u256{};
 
-            // Read data from memory
-            var data_slice: []u8 = &[_]u8{};
-            if (range) |r| {
-                data_slice = try frame.readMemoryAlloc(evm.arena.allocator(), r);
-            }
-
-            // Allocate topics in arena and copy (reverse order if needed)
-            var topics_slice: []u256 = &[_]u256{};
-            if (topics_len > 0) {
-                const alloc = evm.arena.allocator();
-                const topics_buf = try alloc.alloc(u256, topics_len);
-                var k: usize = 0;
-                while (k < topics_len) : (k += 1) {
-                    topics_buf[k] = topics_tmp[k];
-                }
-                topics_slice = topics_buf;
-            }
-
-            // Append log to EVM logs buffer
-            const log_entry = call_result.Log{
+            try evm.logs.append(alloc, call_result.Log{
                 .address = frame.address,
                 .topics = topics_slice,
                 .data = data_slice,
-            };
-            try evm.logs.append(evm.arena.allocator(), log_entry);
+            });
 
             frame.pc += 1;
         }

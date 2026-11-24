@@ -49,6 +49,17 @@ pub fn Handlers(FrameType: type) type {
                 (evm.nonces.get(address) orelse 0) > 0;
         }
 
+        /// Record `address` as touched (EIP-161) through the journal that message
+        /// checkpoints roll back, mirroring `Evm.touchAccount`.
+        fn touchAccount(evm: anytype, address: Address) !void {
+            const entry = try evm.touched_accounts.getOrPut(address);
+            if (entry.found_existing) return;
+            evm.touched_journal.append(evm.tx_arena.allocator(), address) catch |err| {
+                _ = evm.touched_accounts.remove(address);
+                return err;
+            };
+        }
+
         /// Shared CREATE / CREATE2 implementation.
         fn createCommon(frame: *FrameType, comptime is_create2: bool) FrameType.EvmError!void {
             const evm = frame.getEvm();
@@ -66,6 +77,13 @@ pub fn Handlers(FrameType: type) type {
             const offset = try frame.popStack();
             const length = try frame.popStack();
             const salt: u256 = if (is_create2) try frame.popStack() else 0;
+
+            // EIP-3860 (Shanghai+): reject oversize initcode before expanding or copying
+            // memory. Exceptional halt: all gas is consumed.
+            if (evm.hardfork.isAtLeast(.SHANGHAI) and length > GasConstants.MaxInitcodeSize) {
+                frame.gas_remaining = 0;
+                return error.OutOfGas;
+            }
 
             // A zero-length init code never touches memory, whatever its offset.
             const range = try frame.memoryRange(offset, length);
@@ -349,6 +367,10 @@ pub fn Handlers(FrameType: type) type {
             // EIP-214: SELFDESTRUCT cannot be executed in static call context
             // This check must happen AFTER gas charging (Python reference line 525)
             if (frame.is_static) return error.StaticCallViolation;
+
+            // EIP-161: SELFDESTRUCT touches the beneficiary, so an existing empty
+            // beneficiary is deleted at transaction end even for a 0-wei transfer.
+            try touchAccount(evm_ptr, beneficiary);
 
             // Transfer balance from originator to beneficiary
             // Pre-Cancun vs Cancun+ have different balance transfer semantics

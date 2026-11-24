@@ -27,23 +27,15 @@ pub fn Handlers(FrameType: type) type {
         /// MLOAD opcode (0x51) - Load word from memory
         pub fn mload(frame: *FrameType) FrameType.EvmError!void {
             const offset = try frame.popStack();
-            const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
+            // An offset past the u32 memory model is an exceptional halt (OutOfGas, gas burned).
+            const range = (try frame.memoryRange(offset, 32)).?;
+            try frame.consumeGas(GasConstants.GasFastestStep +| frame.memoryRangeCost(range));
+            try frame.expandMemory(range.end);
 
-            // Charge base + memory expansion for reading 32 bytes
-            const end_bytes: u64 = @as(u64, off) + 32;
-            const mem_cost = frame.memoryExpansionCost(end_bytes);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost);
-            const aligned_size = wordAlignedSize(end_bytes);
-            const aligned_size_u32 = std.math.cast(u32, aligned_size) orelse return error.OutOfBounds;
-            if (aligned_size_u32 > frame.memory_size) frame.memory_size = aligned_size_u32;
-
-            // Read word from memory
             var result: u256 = 0;
             var idx: u32 = 0;
             while (idx < 32) : (idx += 1) {
-                const addr = try add_u32(off, idx);
-                const byte = frame.readMemory(addr);
-                result = (result << 8) | byte;
+                result = (result << 8) | frame.readMemory(range.offset + idx);
             }
             try frame.pushStack(result);
             frame.pc += 1;
@@ -53,26 +45,12 @@ pub fn Handlers(FrameType: type) type {
         pub fn mstore(frame: *FrameType) FrameType.EvmError!void {
             const offset = try frame.popStack();
             const value = try frame.popStack();
+            const range = (try frame.memoryRange(offset, 32)).?;
+            try frame.consumeGas(GasConstants.GasFastestStep +| frame.memoryRangeCost(range));
 
-            const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-
-            // Charge base + memory expansion for writing 32 bytes
-            const end_bytes: u64 = @as(u64, off) + 32;
-            const mem_cost = frame.memoryExpansionCost(end_bytes);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost);
-
-            // Update memory size after charging expansion (spec-compliant)
-            const aligned_size = wordAlignedSize(end_bytes);
-            const aligned_size_u32 = std.math.cast(u32, aligned_size) orelse return error.OutOfBounds;
-            if (aligned_size_u32 > frame.memory_size) frame.memory_size = aligned_size_u32;
-
-            // Write word to memory
-            var idx: u32 = 0;
-            while (idx < 32) : (idx += 1) {
-                const byte = @as(u8, @truncate(value >> @intCast((31 - idx) * 8)));
-                const addr = try add_u32(off, idx);
-                try frame.writeMemory(addr, byte);
-            }
+            var word: [32]u8 = undefined;
+            std.mem.writeInt(u256, &word, value, .big);
+            try frame.writeMemorySlice(range.offset, &word);
             frame.pc += 1;
         }
 
@@ -80,18 +58,11 @@ pub fn Handlers(FrameType: type) type {
         pub fn mstore8(frame: *FrameType) FrameType.EvmError!void {
             const offset = try frame.popStack();
             const value = try frame.popStack();
+            const range = (try frame.memoryRange(offset, 1)).?;
+            try frame.consumeGas(GasConstants.GasFastestStep +| frame.memoryRangeCost(range));
 
-            const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-            const end_bytes: u64 = @as(u64, off) + 1;
-            const mem_cost = frame.memoryExpansionCost(end_bytes);
-            try frame.consumeGas(GasConstants.GasFastestStep + mem_cost);
-
-            // Update memory size after charging expansion
-            const aligned_size = wordAlignedSize(end_bytes);
-            const aligned_size_u32 = std.math.cast(u32, aligned_size) orelse return error.OutOfBounds;
-            if (aligned_size_u32 > frame.memory_size) frame.memory_size = aligned_size_u32;
-            const byte_value = @as(u8, @truncate(value));
-            try frame.writeMemory(off, byte_value);
+            const byte = [1]u8{@truncate(value)};
+            try frame.writeMemorySlice(range.offset, &byte);
             frame.pc += 1;
         }
 

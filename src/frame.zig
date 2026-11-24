@@ -407,26 +407,6 @@ pub fn Frame(comptime config: EvmConfig) type {
             return gas_cost;
         }
 
-        /// Calculate KECCAK256 gas cost (replaces manual calculation)
-        fn keccak256GasCost(data_size: u32) u64 {
-            const words = wordCount(@as(u64, data_size));
-            return GasConstants.Keccak256Gas + words * GasConstants.Keccak256WordGas;
-        }
-
-        /// Calculate copy operation gas cost (replaces manual calculations)
-        fn copyGasCost(size: u32) u64 {
-            const words = wordCount(@as(u64, size));
-            return GasConstants.CopyGas * words;
-        }
-
-        /// Calculate LOG operation gas cost (replaces manual calculation)
-        fn logGasCost(topic_count: u8, data_size: u32) u64 {
-            const base_cost = GasConstants.LogGas;
-            const topic_cost = @as(u64, topic_count) * GasConstants.LogTopicGas;
-            const data_cost = @as(u64, data_size) * GasConstants.LogDataGas;
-            return base_cost + topic_cost + data_cost;
-        }
-
         /// ----------------------------------- OPCODES ---------------------------------- ///
         /// Execute a single opcode - delegates to Evm for external ops
         ///
@@ -505,8 +485,18 @@ pub fn Frame(comptime config: EvmConfig) type {
                 const entry_index = tracer.entries.items.len;
                 // Capture before execution: nested calls may reallocate frames,
                 // and RPC stack/memory snapshots describe the entering opcode.
-                try tracer.captureState(@as(u64, self.pc), opcode, gas_before, 0, mem_slice, self.stack.items, self.return_data, evm.frames.items.len, @as(i64, @intCast(evm.gas_refund)), opcode_utils.getOpName(opcode));
+                try tracer.captureState(@as(u64, self.pc), opcode, gas_before, 0, mem_slice, self.stack.items, self.return_data, evm.frames.items.len, evm.gas_refund, opcode_utils.getOpName(opcode));
+                // Logical memory size, independent of whether memory bytes are captured.
+                tracer.entries.items[entry_index].memSize = self.memory_size;
                 const execution_result = self.executeOpcode(opcode);
+                if (execution_result) |_| {} else |err| {
+                    if (err == error.NeedAsyncData) {
+                        // A suspension is not a fault: the opcode re-executes on resume and
+                        // records its own entry then. Drop this one if nothing followed it.
+                        if (tracer.entries.items.len == entry_index + 1) discardTraceEntry(tracer, tracer.entries.pop().?);
+                        return err;
+                    }
+                }
                 const gas_after = @as(u64, @intCast(@max(evm.frames.items[frame_index].gas_remaining, 0)));
                 tracer.entries.items[entry_index].gasCost = gas_before -| gas_after;
                 if (execution_result) |_| {} else |err| {
@@ -517,6 +507,15 @@ pub fn Frame(comptime config: EvmConfig) type {
             }
 
             try self.executeOpcode(opcode);
+        }
+
+        /// Free the buffers `Tracer.captureState` duplicated for an entry that was removed.
+        fn discardTraceEntry(tracer: anytype, entry: anytype) void {
+            if (entry.memory) |m| if (m.len > 0) tracer.allocator.free(m);
+            if (entry.returnData) |r| if (r.len > 0) tracer.allocator.free(r);
+            if (entry.stack.len > 0) tracer.allocator.free(entry.stack);
+            tracer.allocator.free(entry.opName);
+            if (entry.error_msg) |msg| tracer.allocator.free(msg);
         }
 
         /// Main execution loop

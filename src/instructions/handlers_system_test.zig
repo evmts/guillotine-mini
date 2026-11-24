@@ -1305,4 +1305,5 @@ test "SELFDESTRUCT: out of gas error" {
 
 test {
     _ = @import("r1_regression_test.zig");
+    _ = @import("r2_regression_test.zig");
 }

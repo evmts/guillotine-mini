@@ -57,15 +57,19 @@ pub fn Handlers(FrameType: type) type {
             // EIP-214: SSTORE cannot modify state in static call context
             if (frame.is_static) return error.StaticCallViolation;
 
-            try ensureTopSlotLoaded(frame, evm, 2);
+            if (frame.stack.items.len < 2) return error.StackUnderflow;
 
-            // EIP-2200 (Istanbul+): SSTORE sentry gas check
-            // SSTORE requires at least GAS_CALL_STIPEND (2300) gas remaining
+            // EIP-2200 (Istanbul+): SSTORE requires more than GAS_CALL_STIPEND (2300) gas.
+            // Checked before any async slot request: the halt needs no storage data.
+            // An exceptional halt burns all remaining gas.
             if (evm.hardfork.isAtLeast(.ISTANBUL)) {
                 if (frame.gas_remaining <= GasConstants.SstoreSentryGas) {
+                    frame.gas_remaining = 0;
                     return error.OutOfGas;
                 }
             }
+
+            try ensureTopSlotLoaded(frame, evm, 2);
 
             const key = try frame.popStack();
             const value = try frame.popStack();

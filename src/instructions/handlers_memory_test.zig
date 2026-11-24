@@ -235,8 +235,9 @@ test "MLOAD: offset out of bounds error" {
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mload(&frame);
 
-    // Verify error
-    try testing.expectError(error.OutOfBounds, result);
+    // Past the u32 memory model: exceptional halt, all gas burned (execution-specs, Lean spec)
+    try testing.expectError(error.OutOfGas, result);
+    try testing.expectEqual(@as(i64, 0), frame.gas_remaining);
 }
 
 // ============================================================================
@@ -431,8 +432,9 @@ test "MSTORE: offset out of bounds error" {
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mstore(&frame);
 
-    // Verify error
-    try testing.expectError(error.OutOfBounds, result);
+    // Past the u32 memory model: exceptional halt, all gas burned (execution-specs, Lean spec)
+    try testing.expectError(error.OutOfGas, result);
+    try testing.expectEqual(@as(i64, 0), frame.gas_remaining);
 }
 
 // ============================================================================
@@ -617,8 +619,9 @@ test "MSTORE8: offset out of bounds error" {
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mstore8(&frame);
 
-    // Verify error
-    try testing.expectError(error.OutOfBounds, result);
+    // Past the u32 memory model: exceptional halt, all gas burned (execution-specs, Lean spec)
+    try testing.expectError(error.OutOfGas, result);
+    try testing.expectEqual(@as(i64, 0), frame.gas_remaining);
 }
 
 // ============================================================================
