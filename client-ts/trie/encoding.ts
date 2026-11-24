@@ -1,7 +1,7 @@
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import type { BytesType } from "./Node";
+import type { BytesType, NibbleList } from "./Node";
 export type { NibbleList } from "./Node";
 import { makeBytesHelpers } from "./internal/primitives";
 

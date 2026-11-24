@@ -465,6 +465,63 @@ describe("WorldState", () => {
     ),
   );
 
+  it.effect("deletes slots and code when setting an account to null, and restores them on rollback", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const address = makeAddress(0x74);
+        const slot = makeSlot(1);
+        const value = makeStorageValue(7);
+        yield* setAccount(address, makeAccount({ nonce: 1n }));
+        yield* setCode(address, SAMPLE_CODE);
+        yield* setStorage(address, slot, value);
+        const before = yield* getAccount(address);
+
+        const snapshot = yield* takeSnapshot();
+        yield* setAccount(address, null);
+        assert.isNull(yield* getAccountOptional(address));
+        yield* setAccount(address, makeAccount());
+        assert.deepEqual(yield* getStorage(address, slot), ZERO_STORAGE_VALUE);
+        assert.deepEqual(yield* getCode(address), EMPTY_CODE);
+        assert.deepEqual((yield* getAccount(address)).storageRoot, EMPTY_STORAGE_ROOT);
+
+        yield* restoreSnapshot(snapshot);
+        assert.deepEqual(yield* getAccount(address), before);
+        assert.deepEqual(yield* getStorage(address, slot), value);
+        assert.deepEqual(yield* getCode(address), SAMPLE_CODE);
+      }),
+    ),
+  );
+
+  it.effect("restores a dirty storage root after it was read inside a snapshot", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const address = makeAddress(0x75);
+        const reference = makeAddress(0x76);
+        const slot = makeSlot(1);
+        const original = makeStorageValue(7);
+        for (const account of [address, reference]) {
+          yield* setAccount(account, makeAccount());
+          yield* setStorage(account, slot, original);
+        }
+        const expected = (yield* getAccount(reference)).storageRoot;
+
+        const outer = yield* takeSnapshot();
+        yield* setStorage(address, slot, makeStorageValue(8));
+        const inner = yield* takeSnapshot();
+        yield* setStorage(address, makeSlot(2), makeStorageValue(9));
+        yield* setCode(address, SAMPLE_CODE);
+        const account = yield* getAccount(address);
+        assert.notDeepEqual(account.storageRoot, expected);
+        yield* commitSnapshot(inner);
+        yield* restoreSnapshot(outer);
+
+        assert.deepEqual((yield* getAccount(address)).storageRoot, expected);
+        assert.deepEqual(yield* getStorage(address, slot), original);
+        assert.deepEqual(yield* getStorage(address, makeSlot(2)), ZERO_STORAGE_VALUE);
+      }),
+    ),
+  );
+
   it.effect("restores storage snapshot changes", () =>
     provideWorldState(
       Effect.gen(function* () {
