@@ -1,6 +1,6 @@
-/// EVM implementation for tracing and validation
-/// This is a simplified, unoptimized EVM that orchestrates execution.
-/// Architecture mirrors evm.zig - Evm orchestrates, Frame executes
+/// EVM orchestrator: world state, storage, gas refunds, warm/cold tracking and nested calls.
+/// `Evm` owns transaction and message lifecycle (checkpoints, rollback, end-of-transaction
+/// cleanup); `Frame` interprets bytecode for one message.
 const std = @import("std");
 const log = @import("logger.zig");
 const primitives = @import("voltaire");
@@ -157,6 +157,55 @@ pub fn Evm(comptime config: EvmConfig) type {
     return struct {
         const Self = @This();
 
+        const AddressSet = std.AutoHashMap(primitives.Address, void);
+        const SlotMap = std.AutoHashMap(StorageKey, u256);
+
+        /// EVM stack depth limit: a message at depth 1024 cannot call or create.
+        pub const stack_depth_limit: usize = 1024;
+        /// Most frames alive at once: the top-level frame (depth 0) plus depths 1..1024.
+        /// `frames` reserves exactly this capacity per transaction and never grows past it.
+        pub const max_frames: usize = stack_depth_limit + 1;
+        /// Scratch memory kept between transactions; anything above this is returned to the OS.
+        const tx_arena_retain_limit: usize = 8 * 1024 * 1024;
+
+        /// Result of `inner_create`. `output` is non-empty only when init code ended in REVERT.
+        pub const CreateResult = struct {
+            address: primitives.Address,
+            success: bool,
+            gas_left: u64,
+            output: []const u8,
+        };
+
+        /// Outcome of the shared precompile dispatch used by `call` and `inner_call`.
+        const PrecompileOutcome = union(enum) {
+            /// No precompile path handles this address.
+            none,
+            success: struct { gas_left: u64, output: []const u8 },
+            /// The precompile failed; all forwarded gas is consumed.
+            failure,
+        };
+
+        /// Revert point for one message (top-level call, nested call or create).
+        ///
+        /// Storage is captured through `original_storage`: every slot written this transaction
+        /// has an entry there, so the snapshot costs O(slots written), not O(state). Balances,
+        /// nonces and code are copy-on-write through the `*_snapshot_stack` lists, which hold
+        /// pointers into this struct, so a live checkpoint must not move.
+        const Checkpoint = struct {
+            refund: i64,
+            logs_len: usize,
+            touched_len: usize,
+            access_list: AccessListSnapshot,
+            original_storage: SlotMap,
+            storage: SlotMap,
+            transient: SlotMap,
+            selfdestructed: AddressSet,
+            created: AddressSet,
+            balances: std.AutoHashMap(primitives.Address, u256),
+            nonces: std.AutoHashMap(primitives.Address, u64),
+            code: std.AutoHashMap(primitives.Address, []const u8),
+        };
+
         pub const CallParams = call_params.CallParams(config);
         pub const CallResult = call_result.CallResult(config);
 
@@ -176,7 +225,9 @@ pub fn Evm(comptime config: EvmConfig) type {
         nonces: std.AutoHashMap(primitives.Address, u64),
         code: std.AutoHashMap(primitives.Address, []const u8),
         access_list_manager: AccessListManager,
-        gas_refund: u64,
+        /// Signed refund counter (EELS `refund_counter`). It may go negative mid-transaction;
+        /// read the committed value through `get_effective_refund()`.
+        gas_refund: i64,
         // Stack of balance snapshots for nested calls (for SELFDESTRUCT revert handling)
         // Each call pushes a snapshot, and on revert we restore from that snapshot
         balance_snapshot_stack: std.ArrayList(*std.AutoHashMap(primitives.Address, u256)),
@@ -187,7 +238,15 @@ pub fn Evm(comptime config: EvmConfig) type {
         origin: primitives.Address,
         gas_price: u256,
         host: ?host.HostInterface,
+        /// Long-lived arena: world state (balances, nonces, code, storage) and returned results.
         arena: std.heap.ArenaAllocator,
+        /// Per-transaction scratch arena: frames, stacks, checkpoints and warm sets. Recycled at
+        /// the start of every transaction by `initTransactionState`.
+        tx_arena: std.heap.ArenaAllocator,
+        /// Insertion-ordered journal of `touched_accounts`, so a checkpoint is one length.
+        touched_journal: std.ArrayList(primitives.Address),
+        /// Owned copy (backed by `allocator`) of the current transaction's blob hashes.
+        blob_hashes_owned: std.ArrayList([32]u8),
         allocator: std.mem.Allocator,
         tracer: ?*trace.Tracer = null,
         block_context: BlockContext,
@@ -261,6 +320,9 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .gas_price = gas_price,
                 .host = h,
                 .arena = std.heap.ArenaAllocator.init(allocator),
+                .tx_arena = std.heap.ArenaAllocator.init(allocator),
+                .touched_journal = .empty,
+                .blob_hashes_owned = .empty,
                 .allocator = allocator,
                 .tracer = null,
                 .blob_versioned_hashes = &[_][32]u8{},
@@ -275,15 +337,18 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .logs = .empty,
             };
 
+            // World state lives in the long-lived arena so it survives across transactions;
+            // per-transaction sets are bound to the scratch arena.
             const arena_alloc = self.arena.allocator();
+            const tx_alloc = self.tx_arena.allocator();
             self.storage = Storage.init(arena_alloc, h, null);
-            self.created_accounts = std.AutoHashMap(primitives.Address, void).init(arena_alloc);
-            self.selfdestructed_accounts = std.AutoHashMap(primitives.Address, void).init(arena_alloc);
-            self.touched_accounts = std.AutoHashMap(primitives.Address, void).init(arena_alloc);
             self.balances = std.AutoHashMap(primitives.Address, u256).init(arena_alloc);
             self.nonces = std.AutoHashMap(primitives.Address, u64).init(arena_alloc);
             self.code = std.AutoHashMap(primitives.Address, []const u8).init(arena_alloc);
-            self.access_list_manager = AccessListManager.init(arena_alloc);
+            self.created_accounts = AddressSet.init(tx_alloc);
+            self.selfdestructed_accounts = AddressSet.init(tx_alloc);
+            self.touched_accounts = AddressSet.init(tx_alloc);
+            self.access_list_manager = AccessListManager.init(tx_alloc);
         }
 
         fn freePendingStateChanges(self: *Self) void {
@@ -321,6 +386,8 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Clean up resources. Safe to call directly after `init`, without `call()`.
         pub fn deinit(self: *Self) void {
             self.freePendingStateChanges();
+            self.blob_hashes_owned.deinit(self.allocator);
+            self.tx_arena.deinit();
             self.arena.deinit();
         }
 
@@ -332,45 +399,69 @@ pub fn Evm(comptime config: EvmConfig) type {
             return self.hardfork;
         }
 
-        /// Initialize internal state (hash maps, lists, etc.) for transaction execution
-        /// Must be called before any transaction execution (call or inner_create)
+        /// Begin a transaction: reset every transaction-scoped structure and recycle the scratch arena.
+        ///
+        /// World state installed before the call (`balances`, `nonces`, `code`, and hostless
+        /// `storage`) is preserved. Reset: refund counter, warm sets, frames, logs, created,
+        /// self-destructed and touched sets, original and transient storage, checkpoints.
+        /// Must run before `inner_create`/`inner_call` are used directly; `call()` runs it itself.
+        ///
+        /// `blob_versioned_hashes` is copied; `null` means the transaction carries no blobs.
         pub fn initTransactionState(self: *Self, blob_versioned_hashes: ?[]const [32]u8) !void {
             self.freePendingStateChanges();
             self.pending_precompile_result = null;
-            const arena_allocator = self.arena.allocator();
-            // Keep an injector installed directly on storage if none is pending.
-            const injector = self.pending_storage_injector orelse self.storage.storage_injector;
-            self.storage = Storage.init(arena_allocator, self.host, injector);
-            // Clear existing HashMaps instead of creating new ones (allows pre-state setup)
-            self.balances.clearRetainingCapacity();
-            self.nonces.clearRetainingCapacity();
-            self.code.clearRetainingCapacity();
-            self.access_list_manager = AccessListManager.init(arena_allocator);
-            try self.preWarmPrecompiles();
-            self.frames = std.ArrayList(FrameType){};
-            try self.frames.ensureTotalCapacity(arena_allocator, 1024);
-            self.logs = std.ArrayList(call_result.Log){};
-            self.created_accounts = std.AutoHashMap(primitives.Address, void).init(arena_allocator);
-            self.selfdestructed_accounts = std.AutoHashMap(primitives.Address, void).init(arena_allocator);
-            self.touched_accounts = std.AutoHashMap(primitives.Address, void).init(arena_allocator);
-            self.balance_snapshot_stack = std.ArrayList(*std.AutoHashMap(primitives.Address, u256)){};
-            self.nonce_snapshot_stack = std.ArrayList(*std.AutoHashMap(primitives.Address, u64)){};
-            self.code_snapshot_stack = std.ArrayList(*std.AutoHashMap(primitives.Address, []const u8)){};
 
-            // Set blob versioned hashes for EIP-4844
-            // CRITICAL: Must copy blob hashes into arena to ensure correct lifetime
-            // The caller may free the hashes after passing them to us, so we need our own copy
+            // Copy blob hashes (EIP-4844) before anything is recycled: the caller may free its
+            // slice after this call, and may also hand back our own previous copy.
             if (blob_versioned_hashes) |hashes| {
-                // Allocate space in arena for blob hashes
-                const hashes_copy = try arena_allocator.alloc([32]u8, hashes.len);
-                // Copy each hash
-                for (hashes, 0..) |hash, i| {
-                    hashes_copy[i] = hash;
+                const buf = &self.blob_hashes_owned;
+                const buf_start = @intFromPtr(buf.items.ptr);
+                const aliases_own_buffer = hashes.len > 0 and buf.capacity > 0 and
+                    @intFromPtr(hashes.ptr) >= buf_start and
+                    @intFromPtr(hashes.ptr) < buf_start + buf.capacity * @sizeOf([32]u8);
+                if (aliases_own_buffer) {
+                    std.mem.copyForwards([32]u8, buf.items.ptr[0..hashes.len], hashes);
+                    buf.items.len = hashes.len;
+                } else {
+                    buf.clearRetainingCapacity();
+                    try buf.appendSlice(self.allocator, hashes);
                 }
-                self.blob_versioned_hashes = hashes_copy;
+                self.blob_versioned_hashes = buf.items;
             } else {
+                self.blob_hashes_owned.clearRetainingCapacity();
                 self.blob_versioned_hashes = &[_][32]u8{};
             }
+
+            _ = self.tx_arena.reset(.{ .retain_with_limit = tx_arena_retain_limit });
+            const tx_alloc = self.tx_arena.allocator();
+
+            // Storage: keep the persistent map, drop transaction-scoped tracking. With a host or
+            // an injector the backing store is external and the local map is only a per-tx cache.
+            const injector = self.pending_storage_injector orelse self.storage.storage_injector;
+            self.storage.host = self.host;
+            self.storage.storage_injector = injector;
+            self.storage.async_data_request = .none;
+            self.storage.original_storage.clearRetainingCapacity();
+            self.storage.transient.clearRetainingCapacity();
+            if (self.host != null or injector != null) self.storage.storage.clearRetainingCapacity();
+
+            self.gas_refund = 0;
+            self.access_list_manager = AccessListManager.init(tx_alloc);
+            try self.preWarmPrecompiles();
+
+            // Frames never reallocate during a transaction: ancestors hold `*Frame` across nested
+            // calls, so the full depth budget is reserved up front.
+            self.frames = .empty;
+            try self.frames.ensureTotalCapacityPrecise(tx_alloc, max_frames);
+
+            self.logs = .empty;
+            self.created_accounts = AddressSet.init(tx_alloc);
+            self.selfdestructed_accounts = AddressSet.init(tx_alloc);
+            self.touched_accounts = AddressSet.init(tx_alloc);
+            self.touched_journal = .empty;
+            self.balance_snapshot_stack = .empty;
+            self.nonce_snapshot_stack = .empty;
+            self.code_snapshot_stack = .empty;
         }
 
         /// Set tracer for EIP-3155 trace capture
@@ -463,48 +554,100 @@ pub fn Evm(comptime config: EvmConfig) type {
         pub fn setCodeWithSnapshot(self: *Self, addr: primitives.Address, new_code: []const u8) !void {
             for (self.code_snapshot_stack.items) |snapshot| {
                 if (!snapshot.contains(addr)) {
-                    const current_code = self.get_code(addr);
-                    const current_copy = if (current_code.len > 0)
+                    // Snapshot the account's own code. Following an EIP-7702 designator here
+                    // would restore the delegate's code into the delegating account.
+                    const current_code = self.get_raw_code(addr);
+                    // A host may free its slice when the code is replaced; hostless code slices
+                    // are immutable and long-lived.
+                    const current_copy = if (current_code.len > 0 and self.host != null)
                         try self.arena.allocator().dupe(u8, current_code)
                     else
-                        &[_]u8{};
+                        current_code;
                     try snapshot.put(addr, current_copy);
                 }
             }
 
+            try self.writeCodeRaw(addr, new_code, true);
+        }
+
+        /// Write account code without journaling. `copy` duplicates the bytes into the
+        /// long-lived arena for the hostless map (hosts own their copy).
+        fn writeCodeRaw(self: *Self, addr: primitives.Address, bytes: []const u8, copy: bool) !void {
             if (self.host) |h| {
-                h.setCode(addr, new_code);
-            } else if (new_code.len == 0) {
+                h.setCode(addr, bytes);
+            } else if (bytes.len == 0) {
                 _ = self.code.remove(addr);
             } else {
-                const code_copy = try self.arena.allocator().dupe(u8, new_code);
-                try self.code.put(addr, code_copy);
+                const stored = if (copy) try self.arena.allocator().dupe(u8, bytes) else bytes;
+                try self.code.put(addr, stored);
             }
         }
 
-        fn touchCallTarget(self: *Self, addr: primitives.Address) void {
-            self.touched_accounts.put(addr, {}) catch {};
+        fn writeBalanceRaw(self: *Self, addr: primitives.Address, balance: u256) !void {
+            if (self.host) |h| {
+                h.setBalance(addr, balance);
+            } else {
+                try self.balances.put(addr, balance);
+            }
+        }
+
+        fn writeNonceRaw(self: *Self, addr: primitives.Address, nonce: u64) !void {
+            if (self.host) |h| {
+                h.setNonce(addr, nonce);
+            } else if (nonce == 0) {
+                _ = self.nonces.remove(addr);
+            } else {
+                try self.nonces.put(addr, nonce);
+            }
+        }
+
+        /// Move `value` wei from `from` to `to` through the balance journal.
+        /// Reads the recipient after debiting the sender, so a self-transfer is a no-op.
+        fn transferValue(self: *Self, from: primitives.Address, to: primitives.Address, value: u256) errors.CallError!void {
+            const from_balance = self.get_balance(from);
+            if (from_balance < value) return error.InsufficientBalance;
+            try self.setBalanceWithSnapshot(from, from_balance - value);
+            const to_balance = self.get_balance(to);
+            // A credit that overflows u256 cannot occur with a real supply; fail the message.
+            const credited = std.math.add(u256, to_balance, value) catch return error.StorageError;
+            try self.setBalanceWithSnapshot(to, credited);
+        }
+
+        /// Record `addr` as touched (EIP-161). Journaled so a reverted message un-touches it.
+        fn touchAccount(self: *Self, addr: primitives.Address) !void {
+            const entry = try self.touched_accounts.getOrPut(addr);
+            if (entry.found_existing) return;
+            self.touched_journal.append(self.tx_arena.allocator(), addr) catch |err| {
+                _ = self.touched_accounts.remove(addr);
+                return err;
+            };
+        }
+
+        fn touchCallTarget(self: *Self, addr: primitives.Address) !void {
+            try self.touchAccount(addr);
 
             // Before EIP-161, a successful zero-value CALL to an otherwise empty
             // account leaves that empty account in the state trie.
             if (self.hardfork.isBefore(.SPURIOUS_DRAGON)) {
                 if (self.host) |h| {
-                    h.setBalance(addr, h.getBalance(addr));
+                    try self.setBalanceWithSnapshot(addr, h.getBalance(addr));
                 } else if (!self.balances.contains(addr)) {
-                    self.balances.put(addr, 0) catch {};
+                    try self.setBalanceWithSnapshot(addr, 0);
                 }
             }
         }
 
         pub fn accountIsEmpty(self: *Self, addr: primitives.Address) bool {
-            const balance = if (self.host) |h| h.getBalance(addr) else self.balances.get(addr) orelse 0;
-            const nonce = if (self.host) |h| h.getNonce(addr) else self.nonces.get(addr) orelse 0;
-            return balance == 0 and nonce == 0 and self.get_code(addr).len == 0;
+            const balance = self.get_balance(addr);
+            const nonce = self.getNonce(addr);
+            // Raw code: an account holding an EIP-7702 designator is not empty even when its
+            // delegate has no code.
+            return balance == 0 and nonce == 0 and self.get_raw_code(addr).len == 0;
         }
 
         pub fn accountExists(self: *Self, addr: primitives.Address) bool {
             if (self.host) |h| return h.accountExists(addr);
-            if (self.get_balance(addr) != 0 or (self.nonces.get(addr) orelse 0) != 0 or self.get_code(addr).len != 0) return true;
+            if (self.get_balance(addr) != 0 or (self.nonces.get(addr) orelse 0) != 0 or self.get_raw_code(addr).len != 0) return true;
             var storage_it = self.storage.storage.iterator();
             while (storage_it.next()) |entry| {
                 if (std.mem.eql(u8, &entry.key_ptr.*.address, &addr.bytes)) return true;
@@ -512,6 +655,16 @@ pub fn Evm(comptime config: EvmConfig) type {
             var original_storage_it = self.storage.original_storage.iterator();
             while (original_storage_it.next()) |entry| {
                 if (std.mem.eql(u8, &entry.key_ptr.*.address, &addr.bytes)) return true;
+            }
+            return false;
+        }
+
+        /// EIP-7610: whether `addr` currently has any non-zero storage slot.
+        pub fn accountHasStorage(self: *Self, addr: primitives.Address) bool {
+            if (self.host) |h| return h.accountHasStorage(addr);
+            var storage_it = self.storage.storage.iterator();
+            while (storage_it.next()) |entry| {
+                if (entry.value_ptr.* != 0 and std.mem.eql(u8, &entry.key_ptr.*.address, &addr.bytes)) return true;
             }
             return false;
         }
@@ -555,25 +708,6 @@ pub fn Evm(comptime config: EvmConfig) type {
                 if (self.accountIsEmpty(addr)) {
                     self.deleteAccountState(addr);
                 }
-            }
-        }
-
-        fn restore_created_accounts_after_create_failure(
-            self: *Self,
-            created_snapshot: *const std.AutoHashMap(primitives.Address, void),
-        ) !void {
-            var created_it = self.created_accounts.iterator();
-            while (created_it.next()) |entry| {
-                const addr = entry.key_ptr.*;
-                if (!created_snapshot.contains(addr)) {
-                    self.deleteAccountState(addr);
-                }
-            }
-
-            self.created_accounts.clearRetainingCapacity();
-            var restore_it = created_snapshot.iterator();
-            while (restore_it.next()) |entry| {
-                try self.created_accounts.put(entry.key_ptr.*, {});
             }
         }
 
@@ -714,6 +848,8 @@ pub fn Evm(comptime config: EvmConfig) type {
             try self.pre_warm_addresses(precompile_addrs[0..count]);
         }
 
+        /// Warm the transaction participants: origin, `target` (every real destination,
+        /// including the zero address) and, from Shanghai, the coinbase.
         fn preWarmParticipants(self: *Self, target: primitives.Address) errors.CallError!void {
             if (!self.hardfork.isAtLeast(.BERLIN)) return;
 
@@ -723,10 +859,8 @@ pub fn Evm(comptime config: EvmConfig) type {
             warm[count] = self.origin;
             count += 1;
 
-            if (!target.equals(primitives.ZERO_ADDRESS)) {
-                warm[count] = target;
-                count += 1;
-            }
+            warm[count] = target;
+            count += 1;
 
             if (self.hardfork.isAtLeast(.SHANGHAI)) {
                 @branchHint(.likely);
@@ -762,297 +896,290 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.blob_versioned_hashes = hashes;
         }
 
-        /// Execute bytecode (main entry point like evm.execute)
+        /// Execute one transaction-level message (the main entry point).
+        ///
+        /// `gas` is execution gas: the caller charges intrinsic gas and applies refunds. State
+        /// installed before the call is preserved; on REVERT or an exceptional halt every state
+        /// change made by the message, including the value transfer, is rolled back.
+        ///
+        /// Inputs registered with `setBytecode`, `setAccessList` and `setBlobVersionedHashes`
+        /// apply to this call only and are cleared when it returns. `setBytecode` supplies the
+        /// code for a target that has none installed. `gas_refund` stays readable after the call
+        /// and is reset when the next transaction starts.
+        ///
+        /// CREATE convention: like `inner_create` at depth 0, the transaction processor has
+        /// already incremented the sender nonce, so the address derives from `nonce - 1`.
         pub fn call(
             self: *Self,
             params: CallParams,
         ) CallResult {
-            // Helper to return failure - if allocation fails, return static failure
-            const makeFailure = struct {
-                fn call(allocator: std.mem.Allocator, gas_left: u64) CallResult {
-                    return CallResult.failure(allocator, gas_left) catch CallResult{
-                        .success = false,
-                        .gas_left = gas_left,
-                        .output = &.{},
-                    };
-                }
-            }.call;
+            const access_list = self.pending_access_list;
+            const pending_bytecode = self.pending_bytecode;
+            self.pending_access_list = null;
+            self.pending_bytecode = &[_]u8{};
+            defer self.finishTransaction();
+
+            return self.executeTransaction(params, access_list, pending_bytecode);
+        }
+
+        fn failedResult(gas_left: u64) CallResult {
+            return CallResult{ .success = false, .gas_left = gas_left, .output = &.{} };
+        }
+
+        /// Roll back to `cp`, logging (not hiding) a rollback that itself fails.
+        fn revertBestEffort(self: *Self, cp: *const Checkpoint) void {
+            self.revertToCheckpoint(cp) catch |err| {
+                log.err("EVM: state rollback failed: {s}", .{@errorName(err)});
+            };
+        }
+
+        /// Roll back to `cp` and report a failed message that consumed all of its gas.
+        fn failAndRevert(self: *Self, cp: *const Checkpoint) CallResult {
+            self.revertBestEffort(cp);
+            return failedResult(0);
+        }
+
+        fn executeTransaction(
+            self: *Self,
+            params: CallParams,
+            access_list: ?primitives.AccessList.AccessList,
+            pending_bytecode: []const u8,
+        ) CallResult {
+            const result_alloc = self.arena.allocator();
 
             const target = params.get_to();
-            const is_precompile = if (target) |addr| Self.isPrecompileAddress(addr, self.hardfork) else false;
+            const target_is_precompile = if (target) |addr| Self.isPrecompileAddress(addr, self.hardfork) else false;
 
             // Validate parameters
             params.validate() catch |err| {
                 // EIP-7951 P256VERIFY rejects any non-160-byte input at fixed gas, even
                 // above the general calldata size cap.
-                if (err != error.InvalidInputSize or !is_precompile or !target.?.equals(P256VERIFY_ADDRESS)) {
-                    return makeFailure(self.arena.allocator(), 0);
+                if (err != error.InvalidInputSize or !target_is_precompile or !target.?.equals(P256VERIFY_ADDRESS)) {
+                    return failedResult(0);
                 }
             };
 
-            // Extract common parameters
             const caller = params.getCaller();
             const gas = params.getGas();
-            const is_create = params.isCreate();
-
-            // Determine target address and value
-            const address: primitives.Address = if (is_create) blk: {
-                // For CREATE operations, compute the new contract address
-                if (params == .create2) {
-                    // CREATE2: address = keccak256(0xff ++ caller ++ salt ++ keccak256(init_code))[12:]
-                    const init_code = params.getInput();
-                    const salt = params.create2.salt;
-                    break :blk self.computeCreate2Address(caller, salt, init_code) catch {
-                        return makeFailure(self.arena.allocator(), 0);
-                    };
-                } else {
-                    // CREATE: address = keccak256(rlp([caller, nonce]))[12:]
-                    const nonce = self.getNonce(caller);
-                    break :blk self.computeCreateAddress(caller, nonce) catch {
-                        return makeFailure(self.arena.allocator(), 0);
-                    };
-                }
-            } else params.get_to().?;
-
-            const value = switch (params) {
-                .call => |p| p.value,
-                .callcode => |p| p.value,
-                .create => |p| p.value,
-                .create2 => |p| p.value,
-                .delegatecall, .staticcall => 0,
-            };
-
             const calldata = params.getInput();
-            const bytecode = if (is_create or is_precompile) &[_]u8{} else self.get_code(address);
-            const blob_versioned_hashes = if (self.blob_versioned_hashes.len > 0) self.blob_versioned_hashes else null;
-            const access_list = self.pending_access_list;
+            const blob_versioned_hashes: ?[]const [32]u8 = if (self.blob_versioned_hashes.len > 0) self.blob_versioned_hashes else null;
 
             // Initialize transaction state (warms active precompiles on Berlin+)
-            self.initTransactionState(blob_versioned_hashes) catch {
-                return makeFailure(self.arena.allocator(), 0);
-            };
-
-            self.preWarmParticipants(address) catch {
-                return makeFailure(self.arena.allocator(), 0);
-            };
+            self.initTransactionState(blob_versioned_hashes) catch return failedResult(0);
 
             // Pre-warm access list (EIP-2929/EIP-2930)
             if (access_list) |list| {
-                self.access_list_manager.pre_warm_from_access_list(list) catch {
-                    return makeFailure(self.arena.allocator(), 0);
-                };
+                self.access_list_manager.pre_warm_from_access_list(list) catch return failedResult(0);
             }
 
-            if (is_create) {
+            if (params.isCreate()) {
+                // The new address is warmed by the create itself, from the single derivation.
+                self.preWarmParticipants(caller) catch return failedResult(0);
+
+                const create_value: u256 = switch (params) {
+                    .create => |p| p.value,
+                    .create2 => |p| p.value,
+                    else => 0,
+                };
                 const salt: ?u256 = switch (params) {
                     .create2 => |p| p.salt,
                     else => null,
                 };
-                const create_result = self.inner_create(value, calldata, gas, salt) catch {
-                    return makeFailure(self.arena.allocator(), 0);
+                const created = self.createFrom(caller, create_value, calldata, gas, salt, true) catch |err| {
+                    return CallResult.failure_with_error(result_alloc, 0, @errorName(err)) catch failedResult(0);
                 };
-
-                var result = if (create_result.success)
-                    CallResult.success_with_logs(self.arena.allocator(), create_result.gas_left, create_result.output, self.logs.items) catch {
-                        return makeFailure(self.arena.allocator(), 0);
-                    }
-                else
-                    CallResult.revert_with_data(self.arena.allocator(), create_result.gas_left, create_result.output) catch {
-                        return makeFailure(self.arena.allocator(), create_result.gas_left);
-                    };
-                result.refund_counter = self.gas_refund;
-                if (create_result.success) {
-                    result.created_address = create_result.address;
+                if (!created.success) {
+                    return CallResult.revert_with_data(result_alloc, created.gas_left, created.output) catch failedResult(created.gas_left);
                 }
 
-                self.access_list_manager.clear();
-                self.storage.clear_transient();
-                self.logs.clearRetainingCapacity();
-                self.cleanup_selfdestructed_accounts_end_of_tx();
-                self.cleanup_touched_empty_accounts_end_of_tx();
-                self.created_accounts.clearRetainingCapacity();
-                self.selfdestructed_accounts.clearRetainingCapacity();
-                self.touched_accounts.clearRetainingCapacity();
-
+                var result = CallResult.success_with_logs(result_alloc, created.gas_left, &.{}, self.logs.items) catch return failedResult(0);
+                result.refund_counter = self.get_effective_refund();
+                result.created_address = created.address;
+                self.commitTransaction();
                 return result;
             }
 
-            // Transfer value from caller to recipient (if value > 0)
-            if (value > 0 and self.host != null) {
-                const sender_balance = if (self.host) |h| h.getBalance(caller) else 0;
-                if (sender_balance < value) {
-                    return makeFailure(self.arena.allocator(), 0);
-                }
-                if (self.host) |h| {
-                    h.setBalance(caller, sender_balance - value);
-                    const recipient_balance = h.getBalance(address);
-                    h.setBalance(address, recipient_balance + value);
+            // Message call. One builder for every public variant:
+            //   CALL / STATICCALL: code and storage of `to`; STATICCALL is read-only.
+            //   CALLCODE / DELEGATECALL: code of `to` in the caller's storage; no transfer.
+            const address = target.?;
+            const value: u256 = switch (params) {
+                .call => |p| p.value,
+                .callcode => |p| p.value,
+                else => 0,
+            };
+            const transfers_value = params == .call;
+            const is_static = params == .staticcall;
+            const execution_address = switch (params) {
+                .callcode, .delegatecall => caller,
+                else => address,
+            };
+
+            self.preWarmParticipants(address) catch return failedResult(0);
+
+            // Resolve the code to run. Active precompiles always dispatch as precompiles.
+            var bytecode: []const u8 = &[_]u8{};
+            if (!target_is_precompile) {
+                if (self.get_delegated_target(address)) |delegate| {
+                    // EIP-7702: a transaction to a delegating account warms the delegate and
+                    // runs its code with precompile dispatch disabled.
+                    self.pre_warm_addresses(&[_]primitives.Address{delegate}) catch return failedResult(0);
+                    bytecode = self.get_raw_code(delegate);
+                } else {
+                    bytecode = self.get_raw_code(address);
+                    if (bytecode.len == 0) bytecode = pending_bytecode;
                 }
             }
 
-            // Note: intrinsic gas should be deducted by the caller (e.g., test runner)
-            // before calling this function. This function receives gas that's already
-            // net of intrinsic costs, similar to inner_call().
+            // Everything from here is rolled back on REVERT or an exceptional halt.
+            var cp: Checkpoint = undefined;
+            self.takeCheckpoint(&cp) catch return failedResult(0);
+            defer self.releaseCheckpoint(&cp);
 
-            // Check if this is a precompile address or empty account (like inner_call)
-            if (bytecode.len == 0) {
-                if (is_precompile) {
-                    const result = executePrecompile(
-                        self.arena.allocator(),
-                        address,
-                        calldata,
-                        gas,
-                        self.hardfork,
-                    ) catch {
-                        // On error, return failure
-                        // Reverse value transfer on error
-                        if (value > 0 and self.host != null) {
-                            if (self.host) |h| {
-                                const sender_balance = h.getBalance(caller);
-                                const recipient_balance = h.getBalance(address);
-                                h.setBalance(caller, sender_balance + value);
-                                h.setBalance(address, recipient_balance - value);
-                            }
-                        }
-                        return CallResult{
-                            .success = false,
-                            .gas_left = 0,
-                            .output = &[_]u8{},
-                            .refund_counter = self.gas_refund,
-                        };
-                    };
-
-                    // Reset transaction-scoped caches
-                    self.access_list_manager.clear();
-
-                    // Clear transient storage at end of transaction (EIP-1153)
-                    self.storage.clear_transient();
-
-                    self.touchCallTarget(address);
-                    // Delete selfdestructed and touched empty accounts at end of transaction.
-                    self.cleanup_selfdestructed_accounts_end_of_tx();
-                    self.cleanup_touched_empty_accounts_end_of_tx();
-                    self.touched_accounts.clearRetainingCapacity();
-
-                    return CallResult{
-                        .success = true,
-                        .gas_left = gas - result.gas_used,
-                        .output = result.output,
-                        .refund_counter = self.gas_refund,
-                    };
+            if (value > 0) {
+                if (self.get_balance(caller) < value) return failedResult(0);
+                if (transfers_value) {
+                    self.transferValue(caller, address, value) catch return self.failAndRevert(&cp);
                 }
+            }
 
-                // For non-precompile empty accounts, return success with no output
-                // Reset transaction-scoped caches
-                self.access_list_manager.clear();
-                self.storage.clear_transient();
-                self.selfdestructed_accounts.clearRetainingCapacity();
-                self.touchCallTarget(address);
-                self.cleanup_touched_empty_accounts_end_of_tx();
-                self.touched_accounts.clearRetainingCapacity();
+            // Note: intrinsic gas is deducted by the caller before this function runs.
 
+            if (bytecode.len == 0) {
+                var gas_left = gas;
+                var output: []const u8 = &[_]u8{};
+                switch (self.runPrecompile(result_alloc, address, calldata, gas, target_is_precompile)) {
+                    .failure => return self.failAndRevert(&cp),
+                    .success => |done| {
+                        gas_left = done.gas_left;
+                        output = done.output;
+                    },
+                    // A plain account without code: the call succeeds with no output.
+                    .none => {},
+                }
+                if (transfers_value) {
+                    self.touchCallTarget(address) catch return self.failAndRevert(&cp);
+                }
+                self.commitTransaction();
                 return CallResult{
                     .success = true,
-                    .gas_left = gas,
-                    .output = &[_]u8{},
-                    .refund_counter = self.gas_refund,
+                    .gas_left = gas_left,
+                    .output = output,
+                    .refund_counter = self.get_effective_refund(),
                 };
             }
 
-            // Create and push frame onto stack
-            self.frames.append(self.arena.allocator(), FrameType.init(
-                self.arena.allocator(),
+            // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
+            const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
+            const top_frame = FrameType.init(
+                self.tx_arena.allocator(),
                 bytecode,
-                @intCast(gas),
+                frame_gas,
                 caller,
-                address,
+                execution_address,
                 value,
                 calldata,
                 @as(*anyopaque, @ptrCast(self)),
                 self.hardfork,
-                false, // Top-level transaction is never static
-            ) catch {
-                return makeFailure(self.arena.allocator(), 0);
-            }) catch {
-                return makeFailure(self.arena.allocator(), 0);
-            };
-            defer _ = self.frames.pop();
+                is_static,
+            ) catch return self.failAndRevert(&cp);
+            self.frames.appendAssumeCapacity(top_frame);
 
-            // Execute the frame (don't cache pointer - it may become invalid during nested calls)
-            self.frames.items[self.frames.items.len - 1].execute() catch |err| {
-                // Error case - reverse value transfer if needed
-                if (value > 0 and self.host != null) {
-                    if (self.host) |h| {
-                        const sender_balance = h.getBalance(caller);
-                        const recipient_balance = h.getBalance(address);
-                        h.setBalance(caller, sender_balance + value);
-                        h.setBalance(address, recipient_balance - value);
-                    }
-                }
-                // Return failure (arena will clean up)
-                return CallResult.failure_with_error(self.arena.allocator(), 0, @errorName(err)) catch makeFailure(self.arena.allocator(), 0);
+            self.frames.items[0].execute() catch |err| {
+                // Exceptional halt: all gas is consumed and every state change is undone.
+                self.revertBestEffort(&cp);
+                return CallResult.failure_with_error(result_alloc, 0, @errorName(err)) catch failedResult(0);
             };
 
-            // Get frame results (refetch pointer after execution)
-            const frame = &self.frames.items[self.frames.items.len - 1];
-            const output = self.arena.allocator().alloc(u8, frame.output.len) catch {
-                return makeFailure(self.arena.allocator(), 0);
-            };
-            @memcpy(output, frame.output);
-
+            const frame = &self.frames.items[0];
             const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-            // Note: Gas refunds are NOT applied here. They should be applied by the caller
-            // (test runner) after calculating coinbase payment based on gas actually consumed.
-            // The refund counter is NOT reset here - caller needs access to it.
 
-            // Reverse value transfer if transaction reverted
-            if (frame.reverted and value > 0 and self.host != null) {
-                if (self.host) |h| {
-                    const sender_balance = h.getBalance(caller);
-                    const recipient_balance = h.getBalance(address);
-                    h.setBalance(caller, sender_balance + value);
-                    h.setBalance(address, recipient_balance - value);
-                }
+            if (frame.reverted) {
+                self.revertToCheckpoint(&cp) catch return failedResult(0);
+                return CallResult.revert_with_data(result_alloc, gas_left, frame.output) catch failedResult(gas_left);
             }
 
-            // Return result (execution gas left; intrinsic gas handled by caller)
-            var result = if (frame.reverted)
-                CallResult.revert_with_data(self.arena.allocator(), gas_left, output) catch unreachable
-            else
-                CallResult.success_with_logs(self.arena.allocator(), gas_left, output, self.logs.items) catch unreachable;
-            if (!frame.reverted) {
-                result.refund_counter = self.gas_refund;
-            }
+            // Gas refunds are not applied here: the caller applies them after computing the
+            // gas actually consumed, reading `refund_counter` (or `get_effective_refund()`).
+            var result = CallResult.success_with_logs(result_alloc, gas_left, frame.output, self.logs.items) catch {
+                return self.failAndRevert(&cp);
+            };
+            result.refund_counter = self.get_effective_refund();
+            self.commitTransaction();
+            return result;
+        }
 
-            // Set created address for CREATE operations
-            if (is_create and !frame.reverted) {
-                result.created_address = address;
-            }
-
-            // Reset transaction-scoped caches
-            self.access_list_manager.clear();
-
-            // Clear transient storage at end of transaction (EIP-1153)
-            self.storage.clear_transient();
-
-            // Clear logs buffer for next transaction
-            self.logs.clearRetainingCapacity();
-
-            // Delete selfdestructed accounts at end of transaction (EIP-6780)
-            // This must happen AFTER transient storage is cleared since transient storage
-            // should be accessible during the transaction even after SELFDESTRUCT
+        /// End-of-transaction effects that apply only when the transaction succeeded:
+        /// delete self-destructed accounts (EIP-6780) and touched empty accounts (EIP-161).
+        fn commitTransaction(self: *Self) void {
             self.cleanup_selfdestructed_accounts_end_of_tx();
             self.cleanup_touched_empty_accounts_end_of_tx();
+        }
 
-            // Clear transaction-scoped sets at end of transaction
-            // These must be cleared to avoid incorrectly treating accounts as created/selfdestructed
-            // in subsequent transactions within the same block
+        /// Drop everything scoped to the finished transaction so nothing leaks into the next
+        /// call on this instance. Runs on every exit path. `gas_refund` is left readable.
+        fn finishTransaction(self: *Self) void {
+            self.access_list_manager.clear();
+            self.storage.clear_transient();
+            self.logs.clearRetainingCapacity();
+            self.frames.clearRetainingCapacity();
             self.created_accounts.clearRetainingCapacity();
             self.selfdestructed_accounts.clearRetainingCapacity();
             self.touched_accounts.clearRetainingCapacity();
+            self.touched_journal.clearRetainingCapacity();
+            self.pending_access_list = null;
+            self.pending_bytecode = &[_]u8{};
+            self.blob_hashes_owned.clearRetainingCapacity();
+            self.blob_versioned_hashes = &[_][32]u8{};
+        }
 
-            // No cleanup needed - arena handles it
-            return result;
+        /// Shared precompile dispatch for top-level and nested calls: JavaScript handler,
+        /// then configured override, then the standard precompile when `is_standard`.
+        /// A handler that reports failure, or more gas than it was given, fails the call.
+        fn runPrecompile(
+            self: *Self,
+            out_alloc: std.mem.Allocator,
+            address: primitives.Address,
+            input: []const u8,
+            gas: u64,
+            is_standard: bool,
+        ) PrecompileOutcome {
+            const root_c = @import("root_c.zig");
+            var output_len: usize = 0;
+            var output_ptr: [*]u8 = undefined;
+            var js_gas_used: u64 = 0;
+
+            if (root_c.tryCallJsPrecompileHandler(
+                &address.bytes,
+                input.ptr,
+                input.len,
+                gas,
+                &output_len,
+                &output_ptr,
+                &js_gas_used,
+            )) {
+                if (js_gas_used > gas) return .failure;
+                // Copy out of the handler's buffer, which it may reuse on the next call.
+                const output: []const u8 = if (output_len > 0)
+                    out_alloc.dupe(u8, output_ptr[0..output_len]) catch return .failure
+                else
+                    &[_]u8{};
+                return .{ .success = .{ .gas_left = gas - js_gas_used, .output = output } };
+            }
+
+            if (self.getPrecompileOverride(address)) |override| {
+                const result = override.execute(override.context, out_alloc, input, gas) catch return .failure;
+                if (!result.success or result.gas_used > gas) return .failure;
+                return .{ .success = .{ .gas_left = gas - result.gas_used, .output = result.output } };
+            }
+
+            if (is_standard) {
+                const result = executePrecompile(out_alloc, address, input, gas, self.hardfork) catch return .failure;
+                if (result.gas_used > gas) return .failure;
+                return .{ .success = .{ .gas_left = gas - result.gas_used, .output = result.output } };
+            }
+
+            return .none;
         }
 
         /// Main async execution method - supports yielding for async requests
@@ -1144,30 +1271,27 @@ pub fn Evm(comptime config: EvmConfig) type {
             // At this point frames should be empty OR we have one frame to finalize
             if (self.frames.items.len > 0) {
                 const frame = self.frames.items[self.frames.items.len - 1];
-                const output = try self.arena.allocator().dupe(u8, frame.output);
                 const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-                const success = !frame.reverted;
+                const result_alloc = self.arena.allocator();
 
-                // NOW we can pop (we're returning the final result)
-                _ = self.frames.pop();
+                var result = if (frame.reverted)
+                    try CallResult.revert_with_data(result_alloc, gas_left, frame.output)
+                else
+                    try CallResult.success_with_logs(result_alloc, gas_left, frame.output, self.logs.items);
+                result.refund_counter = if (frame.reverted) 0 else self.get_effective_refund();
 
-                // Clean up transaction state (safe now)
-                self.access_list_manager.clear();
-                self.storage.clear_transient();
+                // Same end-of-transaction path as the synchronous `call()`.
+                if (!frame.reverted) self.commitTransaction();
+                self.finishTransaction();
 
-                return .{ .result = CallResult{
-                    .success = success,
-                    .gas_left = gas_left,
-                    .output = output,
-                    .refund_counter = self.gas_refund,
-                } };
+                return .{ .result = result };
             }
 
             return .{ .result = CallResult{
                 .success = true,
                 .gas_left = 0,
                 .output = &.{},
-                .refund_counter = self.gas_refund,
+                .refund_counter = self.get_effective_refund(),
             } };
         }
 
@@ -1202,150 +1326,153 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.selfdestructed_accounts.clearRetainingCapacity();
         }
 
-        fn restore_call_revert_state(
-            self: *Self,
-            refund_snapshot: u64,
-            access_list_snapshot: *const AccessListSnapshot,
-            original_storage_snapshot: *const std.AutoHashMap(StorageKey, u256),
-            storage_snapshot: *const std.AutoHashMap(StorageKey, u256),
-            balance_snapshot: *const std.AutoHashMap(primitives.Address, u256),
-            nonce_snapshot: *const std.AutoHashMap(primitives.Address, u64),
-            code_snapshot: *const std.AutoHashMap(primitives.Address, []const u8),
-            transient_snapshot: *const std.AutoHashMap(StorageKey, u256),
-            selfdestruct_snapshot: *const std.AutoHashMap(primitives.Address, void),
-            created_accounts_snapshot: *const std.AutoHashMap(primitives.Address, void),
-        ) !void {
-            // Restore gas refunds on failure
-            // Per Python: incorporate_child_on_error does NOT add child's refund_counter
-            self.gas_refund = refund_snapshot;
+        fn currentStorageValue(self: *Self, key: StorageKey) u256 {
+            if (self.host) |h| return h.getStorage(primitives.Address{ .bytes = key.address }, key.slot);
+            return self.storage.storage.get(key) orelse 0;
+        }
 
-            // Restore warm addresses and storage slots on failure (EIP-2929)
-            try self.access_list_manager.restore(access_list_snapshot.*);
-
-            // Restore storage on failure
-            // IMPORTANT: Identify slots to delete BEFORE restoring original_storage
-            // First, identify slots that were added during the call (exist in original_storage but not in snapshot)
-            const AddedStorageSlot = struct {
-                key: StorageKey,
-                original_value: u256,
-            };
-            var added_slots = std.ArrayList(AddedStorageSlot){};
-            try added_slots.ensureTotalCapacity(self.arena.allocator(), 10);
-            var orig_check_it = self.storage.original_storage.iterator();
-            while (orig_check_it.next()) |entry| {
-                if (!original_storage_snapshot.contains(entry.key_ptr.*)) {
-                    try added_slots.append(self.arena.allocator(), .{
-                        .key = entry.key_ptr.*,
-                        .original_value = entry.value_ptr.*,
-                    });
-                }
-            }
-
-            // Second, restore original_storage to remove entries added during the call
-            self.storage.original_storage.clearRetainingCapacity();
-            var original_storage_restore_it = original_storage_snapshot.iterator();
-            while (original_storage_restore_it.next()) |entry| {
-                try self.storage.original_storage.put(entry.key_ptr.*, entry.value_ptr.*);
-            }
-
-            // Third, restore storage values from snapshot
-            var storage_restore_it = storage_snapshot.iterator();
-            while (storage_restore_it.next()) |entry| {
-                if (self.host) |h| {
-                    const addr = primitives.Address{ .bytes = entry.key_ptr.*.address };
-                    h.setStorage(addr, entry.key_ptr.*.slot, entry.value_ptr.*);
-                } else {
-                    try self.storage.storage.put(entry.key_ptr.*, entry.value_ptr.*);
-                }
-            }
-
-            // Fourth, delete slots that were added during the call
-            for (added_slots.items) |slot| {
-                const slot_key = slot.key;
-                if (self.host) |h| {
-                    h.setStorage(Address{ .bytes = slot_key.address }, slot_key.slot, slot.original_value);
-                } else {
-                    if (slot.original_value == 0) {
-                        _ = self.storage.storage.remove(slot_key);
-                    } else {
-                        try self.storage.storage.put(slot_key, slot.original_value);
-                    }
-                }
-            }
-
-            // Restore transient storage on failure (EIP-1153)
-            self.storage.clear_transient();
-            var restore_it = transient_snapshot.iterator();
-            while (restore_it.next()) |entry| {
-                try self.storage.transient.put(entry.key_ptr.*, entry.value_ptr.*);
-            }
-
-            // Restore selfdestructed_accounts on failure (EIP-6780)
-            // This ensures that SELFDESTRUCT operations in reverted calls don't affect the final state
-            self.selfdestructed_accounts.clearRetainingCapacity();
-            var restore_selfdestruct_it = selfdestruct_snapshot.iterator();
-            while (restore_selfdestruct_it.next()) |entry| {
-                try self.selfdestructed_accounts.put(entry.key_ptr.*, {});
-            }
-
-            // Restore balances on failure (handles SELFDESTRUCT balance transfers and value transfers)
-            var balance_restore_it = balance_snapshot.iterator();
-            while (balance_restore_it.next()) |entry| {
-                if (self.host) |h| {
-                    h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
-                } else {
-                    try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
-                }
-            }
-
-            var nonce_restore_it = nonce_snapshot.iterator();
-            while (nonce_restore_it.next()) |entry| {
-                if (self.host) |h| {
-                    h.setNonce(entry.key_ptr.*, entry.value_ptr.*);
-                } else if (entry.value_ptr.* == 0) {
-                    _ = self.nonces.remove(entry.key_ptr.*);
-                } else {
-                    try self.nonces.put(entry.key_ptr.*, entry.value_ptr.*);
-                }
-            }
-
-            var code_restore_it = code_snapshot.iterator();
-            while (code_restore_it.next()) |entry| {
-                if (self.host) |h| {
-                    h.setCode(entry.key_ptr.*, entry.value_ptr.*);
-                } else if (entry.value_ptr.*.len == 0) {
-                    _ = self.code.remove(entry.key_ptr.*);
-                } else {
-                    try self.code.put(entry.key_ptr.*, entry.value_ptr.*);
-                }
-            }
-
-            self.created_accounts.clearRetainingCapacity();
-            var restore_created_it = created_accounts_snapshot.iterator();
-            while (restore_created_it.next()) |entry| {
-                try self.created_accounts.put(entry.key_ptr.*, {});
+        fn writeStorageRaw(self: *Self, key: StorageKey, value: u256) !void {
+            if (self.host) |h| {
+                h.setStorage(primitives.Address{ .bytes = key.address }, key.slot, value);
+            } else if (value == 0) {
+                _ = self.storage.storage.remove(key);
+            } else {
+                try self.storage.storage.put(key, value);
             }
         }
 
-        /// Handle inner call from frame (like evm.inner_call)
-        /// Execute a nested EVM call - used for calls from within the EVM (e.g., CALL, DELEGATECALL opcodes).
-        /// This handles nested calls and manages depth tracking.
-        /// Follows the same API pattern as guillotine performance EVM.
+        /// Open a revert point. `cp` must stay at a fixed address until `releaseCheckpoint`.
+        fn takeCheckpoint(self: *Self, cp: *Checkpoint) !void {
+            const tx_alloc = self.tx_arena.allocator();
+
+            var access_list = try self.access_list_manager.snapshot();
+            errdefer access_list.deinit();
+
+            // Current value of every slot written so far in this transaction.
+            var storage_values = SlotMap.init(tx_alloc);
+            var written_it = self.storage.original_storage.keyIterator();
+            while (written_it.next()) |key| {
+                try storage_values.put(key.*, self.currentStorageValue(key.*));
+            }
+
+            cp.* = .{
+                .refund = self.gas_refund,
+                .logs_len = self.logs.items.len,
+                .touched_len = self.touched_journal.items.len,
+                .access_list = access_list,
+                .original_storage = try self.storage.original_storage.cloneWithAllocator(tx_alloc),
+                .storage = storage_values,
+                .transient = try self.storage.transient.cloneWithAllocator(tx_alloc),
+                .selfdestructed = try self.selfdestructed_accounts.cloneWithAllocator(tx_alloc),
+                .created = try self.created_accounts.cloneWithAllocator(tx_alloc),
+                .balances = std.AutoHashMap(primitives.Address, u256).init(tx_alloc),
+                .nonces = std.AutoHashMap(primitives.Address, u64).init(tx_alloc),
+                .code = std.AutoHashMap(primitives.Address, []const u8).init(tx_alloc),
+            };
+
+            // Register the copy-on-write maps so nested writes record their pre-images here.
+            try self.balance_snapshot_stack.append(tx_alloc, &cp.balances);
+            errdefer _ = self.balance_snapshot_stack.pop();
+            try self.nonce_snapshot_stack.append(tx_alloc, &cp.nonces);
+            errdefer _ = self.nonce_snapshot_stack.pop();
+            try self.code_snapshot_stack.append(tx_alloc, &cp.code);
+        }
+
+        /// Close a revert point (after commit or revert). Checkpoints nest strictly.
+        fn releaseCheckpoint(self: *Self, cp: *Checkpoint) void {
+            _ = self.code_snapshot_stack.pop();
+            _ = self.nonce_snapshot_stack.pop();
+            _ = self.balance_snapshot_stack.pop();
+            cp.access_list.deinit();
+        }
+
+        /// Restore every piece of mutable state to what it was at `takeCheckpoint`:
+        /// refund counter, logs, touched accounts, warm sets, storage, original storage,
+        /// transient storage, self-destructed and created sets, balances, nonces and code.
+        /// Per EELS `incorporate_child_on_error`, nothing of a failed message survives.
+        fn revertToCheckpoint(self: *Self, cp: *const Checkpoint) !void {
+            self.gas_refund = cp.refund;
+            self.logs.shrinkRetainingCapacity(cp.logs_len);
+
+            while (self.touched_journal.items.len > cp.touched_len) {
+                const addr = self.touched_journal.pop().?;
+                _ = self.touched_accounts.remove(addr);
+            }
+
+            // Warm addresses and slots (EIP-2929) propagate to the parent only on success.
+            try self.access_list_manager.restore(cp.access_list);
+
+            // Storage. Slots first written after the checkpoint go back to their original
+            // value; slots written before it go back to the value captured at the checkpoint.
+            var written_it = self.storage.original_storage.iterator();
+            while (written_it.next()) |entry| {
+                const key = entry.key_ptr.*;
+                try self.writeStorageRaw(key, cp.storage.get(key) orelse entry.value_ptr.*);
+            }
+            // Drop original-value entries added after the checkpoint, so later SSTOREs price
+            // against the right original.
+            self.storage.original_storage.clearRetainingCapacity();
+            var original_it = cp.original_storage.iterator();
+            while (original_it.next()) |entry| {
+                try self.storage.original_storage.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+
+            // Transient storage (EIP-1153)
+            self.storage.clear_transient();
+            var transient_it = cp.transient.iterator();
+            while (transient_it.next()) |entry| {
+                try self.storage.transient.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
+
+            // SELFDESTRUCT marks (EIP-6780) and same-transaction creation marks
+            self.selfdestructed_accounts.clearRetainingCapacity();
+            var selfdestruct_it = cp.selfdestructed.keyIterator();
+            while (selfdestruct_it.next()) |addr| {
+                try self.selfdestructed_accounts.put(addr.*, {});
+            }
+            self.created_accounts.clearRetainingCapacity();
+            var created_it = cp.created.keyIterator();
+            while (created_it.next()) |addr| {
+                try self.created_accounts.put(addr.*, {});
+            }
+
+            // Balances, nonces and code: write the recorded pre-images back, bypassing the
+            // journal (enclosing checkpoints already hold their own pre-images).
+            var balance_it = cp.balances.iterator();
+            while (balance_it.next()) |entry| {
+                try self.writeBalanceRaw(entry.key_ptr.*, entry.value_ptr.*);
+            }
+            var nonce_it = cp.nonces.iterator();
+            while (nonce_it.next()) |entry| {
+                try self.writeNonceRaw(entry.key_ptr.*, entry.value_ptr.*);
+            }
+            var code_it = cp.code.iterator();
+            while (code_it.next()) |entry| {
+                try self.writeCodeRaw(entry.key_ptr.*, entry.value_ptr.*, false);
+            }
+        }
+
+        /// Whether another frame may be pushed. Guarantees `frames` never reallocates while
+        /// ancestors hold `*Frame`: the depth budget is reserved when no frame is live, and a
+        /// list built by other means is never grown past its capacity.
+        fn canPushFrame(self: *Self) bool {
+            if (self.frames.items.len >= max_frames) return false;
+            if (self.frames.items.len == 0 and self.frames.capacity < max_frames) {
+                self.frames.ensureTotalCapacityPrecise(self.tx_arena.allocator(), max_frames) catch return false;
+            }
+            return self.frames.items.len < self.frames.capacity;
+        }
+
+        /// Execute a nested message call (CALL, CALLCODE, DELEGATECALL, STATICCALL opcodes).
+        ///
+        /// A failed call (REVERT, exceptional halt or precompile failure) rolls back every state
+        /// change it made. `output` carries return data on success and revert data on REVERT.
         pub fn inner_call(
             self: *Self,
             params: CallParams,
         ) CallResult {
-            // Helper to return failure - if allocation fails, return static failure
-            const makeFailure = struct {
-                fn call(allocator: std.mem.Allocator, gas_left: u64) CallResult {
-                    return CallResult.failure(allocator, gas_left) catch CallResult{
-                        .success = false,
-                        .gas_left = gas_left,
-                        .output = &.{},
-                    };
-                }
-            }.call;
-            // Extract parameters from CallParams union
+            const tx_alloc = self.tx_arena.allocator();
+
             const address: primitives.Address = switch (params) {
                 .call => |p| p.to,
                 .callcode => |p| p.to,
@@ -1355,16 +1482,9 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .create2 => unreachable, // CREATE2 should use inner_create
             };
 
-            const value: u256 = if (params.hasValue()) switch (params) {
-                .call => |p| p.value,
-                .callcode => |p| p.value,
-                else => 0,
-            } else 0;
-
             const input: []const u8 = params.getInput();
             const gas: u64 = params.getGas();
 
-            // Determine call type
             const call_type: enum { Call, CallCode, DelegateCall, StaticCall } = switch (params) {
                 .call => .Call,
                 .callcode => .CallCode,
@@ -1372,275 +1492,82 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .staticcall => .StaticCall,
                 else => unreachable,
             };
-            // The top-level transaction frame is not counted toward the 1024 message-call depth limit.
-            if (self.frames.items.len > 1024) {
-                return makeFailure(self.arena.allocator(), gas);
-            }
 
-            // Get caller and execution context address based on call type
-            // For CALL: caller = current frame's address, execution address = target address
-            // For DELEGATECALL: caller = current frame's caller, execution address = current frame's address (code from target)
-            // For CALLCODE: caller = current frame's address, execution address = current frame's address (code from target)
-            // For STATICCALL: same as CALL but with static mode
+            // Depth limit (EELS: `depth + 1 > STACK_DEPTH_LIMIT`), checked before anything is
+            // pushed or snapshotted. The forwarded gas returns to the caller.
+            if (!self.canPushFrame()) return failedResult(gas);
+
+            // Caller and execution address by call type:
+            //   CALL / STATICCALL: caller = current frame, runs at the target address.
+            //   CALLCODE:          caller = current frame, runs target code at the current address.
+            //   DELEGATECALL:      caller and value inherited, runs target code at the current address.
             const current_frame = self.getCurrentFrame();
             const frame_caller = if (current_frame) |frame| frame.address else self.origin;
             const frame_caller_caller = if (current_frame) |frame| frame.caller else self.origin;
+            const parent_value: u256 = if (current_frame) |frame| frame.value else 0;
+            // STATICCALL creates a static context, and static context propagates to all nested calls
+            const parent_is_static = if (current_frame) |frame| frame.is_static else false;
+            const is_static = parent_is_static or call_type == .StaticCall;
 
-            // Snapshot gas refunds before the call
-            // Per Python reference (vm/__init__.py:incorporate_child_on_error), failed calls do not
-            // propagate refunds to parent. Only incorporate_child_on_success adds child refunds.
-            const refund_snapshot = self.gas_refund;
-            const logs_len_snapshot = self.logs.items.len;
-
-            // Snapshot transient storage before the call (EIP-1153)
-            // Transient storage must be reverted on call failure
-            var transient_snapshot = std.AutoHashMap(StorageKey, u256).init(self.arena.allocator());
-            var it = self.storage.transient.iterator();
-            while (it.next()) |entry| {
-                transient_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                    // Memory allocation failed during snapshot - fail the call
-                    return makeFailure(self.arena.allocator(), gas);
-                };
-            }
-
-            // Snapshot selfdestructed_accounts before the call (EIP-6780 revert handling)
-            // On revert, accounts marked for deletion during the reverted call must be removed
-            var selfdestruct_snapshot = std.AutoHashMap(primitives.Address, void).init(self.arena.allocator());
-            var selfdestruct_it = self.selfdestructed_accounts.iterator();
-            while (selfdestruct_it.next()) |entry| {
-                selfdestruct_snapshot.put(entry.key_ptr.*, {}) catch {
-                    // Memory allocation failed during snapshot - fail the call
-                    return makeFailure(self.arena.allocator(), gas);
-                };
-            }
-
-            var created_accounts_snapshot = std.AutoHashMap(primitives.Address, void).init(self.arena.allocator());
-            var created_accounts_it = self.created_accounts.iterator();
-            while (created_accounts_it.next()) |entry| {
-                created_accounts_snapshot.put(entry.key_ptr.*, {}) catch {
-                    return makeFailure(self.arena.allocator(), gas);
-                };
-            }
-
-            // Snapshot warm addresses and storage slots before the call (EIP-2929)
-            // Per Python reference (incorporate_child_on_error), accessed_addresses
-            // and accessed_storage_keys are only propagated on success, not on failure
-            var access_list_snapshot = self.access_list_manager.snapshot() catch {
-                return makeFailure(self.arena.allocator(), gas);
+            // CALLVALUE seen by the callee. DELEGATECALL inherits the parent's value (EIP-7)
+            // without moving funds.
+            const value: u256 = switch (params) {
+                .call => |p| p.value,
+                .callcode => |p| p.value,
+                .delegatecall => parent_value,
+                else => 0,
             };
-            defer access_list_snapshot.deinit();
-
-            // Snapshot original_storage before the call
-            // This is critical for correct SSTORE gas calculation after reverts
-            // When a call reverts, any entries added to original_storage during that call
-            // must be removed, otherwise subsequent SSTOREs will use stale original values
-            // and incorrectly calculate gas costs and refunds
-            var original_storage_snapshot = std.AutoHashMap(StorageKey, u256).init(self.arena.allocator());
-            var original_storage_it = self.storage.original_storage.iterator();
-            while (original_storage_it.next()) |entry| {
-                original_storage_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                    return makeFailure(self.arena.allocator(), gas);
-                };
-            }
-
-            // Snapshot storage before the call
-            // We need to track which slots existed and their values
-            // On revert, we restore to this exact state (remove new slots, restore modified slots)
-            var storage_snapshot = std.AutoHashMap(StorageKey, u256).init(self.arena.allocator());
-            if (self.host) |h| {
-                // In host mode, we need to ask the host for current storage values
-                // But we don't have a way to enumerate all slots, so we track what we've seen
-                // For now, we'll snapshot original_storage keys since those are the accessed slots
-                var orig_it = self.storage.original_storage.iterator();
-                while (orig_it.next()) |entry| {
-                    const addr = primitives.Address.Address{ .bytes = entry.key_ptr.*.address };
-                    const current_val = h.getStorage(addr, entry.key_ptr.*.slot);
-                    storage_snapshot.put(entry.key_ptr.*, current_val) catch {
-                        return makeFailure(self.arena.allocator(), gas);
-                    };
-                }
-            } else {
-                var storage_it = self.storage.storage.iterator();
-                while (storage_it.next()) |entry| {
-                    storage_snapshot.put(entry.key_ptr.*, entry.value_ptr.*) catch {
-                        return makeFailure(self.arena.allocator(), gas);
-                    };
-                }
-            }
-
-            // Snapshot balances before the call (for SELFDESTRUCT revert handling)
-            // We use copy-on-write: addresses are snapshotted when first modified via setBalanceWithSnapshot
-            var balance_snapshot = std.AutoHashMap(primitives.Address, u256).init(self.arena.allocator());
-            var nonce_snapshot = std.AutoHashMap(primitives.Address, u64).init(self.arena.allocator());
-            var code_snapshot = std.AutoHashMap(primitives.Address, []const u8).init(self.arena.allocator());
-
-            // Push the snapshot onto the stack so nested calls can snapshot in parent snapshots
-            self.balance_snapshot_stack.append(self.arena.allocator(), &balance_snapshot) catch {
-                return makeFailure(self.arena.allocator(), gas);
-            };
-            defer _ = self.balance_snapshot_stack.pop();
-            self.nonce_snapshot_stack.append(self.arena.allocator(), &nonce_snapshot) catch {
-                return makeFailure(self.arena.allocator(), gas);
-            };
-            defer _ = self.nonce_snapshot_stack.pop();
-            self.code_snapshot_stack.append(self.arena.allocator(), &code_snapshot) catch {
-                return makeFailure(self.arena.allocator(), gas);
-            };
-            defer _ = self.code_snapshot_stack.pop();
 
             const execution_caller: primitives.Address = switch (call_type) {
-                .Call, .StaticCall => frame_caller,
+                .Call, .StaticCall, .CallCode => frame_caller,
                 .DelegateCall => frame_caller_caller,
-                .CallCode => frame_caller,
             };
-
             const execution_address: primitives.Address = switch (call_type) {
                 .Call, .StaticCall => address,
                 .DelegateCall, .CallCode => frame_caller,
             };
 
-            // Handle balance transfer if value > 0 (only for regular CALL)
+            // Only CALL and CALLCODE require the caller to hold `value`.
+            if (value > 0 and (call_type == .Call or call_type == .CallCode)) {
+                if (self.get_balance(frame_caller) < value) return failedResult(gas);
+            }
+
+            var cp: Checkpoint = undefined;
+            self.takeCheckpoint(&cp) catch return failedResult(gas);
+            defer self.releaseCheckpoint(&cp);
+
             if (value > 0 and call_type == .Call) {
-                const caller_balance = if (self.host) |h| h.getBalance(frame_caller) else self.balances.get(frame_caller) orelse 0;
-                if (caller_balance < value) {
-                    // Insufficient balance - call fails
-                    return makeFailure(self.arena.allocator(), gas);
-                }
-
-                // Transfer balance using snapshot mechanism for proper revert handling
-                self.setBalanceWithSnapshot(frame_caller, caller_balance - value) catch {
-                    return makeFailure(self.arena.allocator(), gas);
-                };
-                const callee_balance = if (self.host) |h| h.getBalance(address) else self.balances.get(address) orelse 0;
-                self.setBalanceWithSnapshot(address, callee_balance + value) catch {
-                    return makeFailure(self.arena.allocator(), gas);
-                };
+                self.transferValue(frame_caller, address, value) catch return self.failAndRevert(&cp);
             }
 
-            if (value > 0 and call_type == .CallCode) {
-                const current_balance = if (self.host) |h| h.getBalance(frame_caller) else self.balances.get(frame_caller) orelse 0;
-                if (current_balance < value) {
-                    return makeFailure(self.arena.allocator(), gas);
-                }
-            }
-
-            // Get code for the target address (active precompiles always dispatch as precompiles)
+            // Code for the target (active precompiles always dispatch as precompiles).
+            // `get_code` follows an EIP-7702 designator; a delegate that is a precompile
+            // address contributes its (empty) account code and never runs the precompile.
             const is_precompile = Self.isPrecompileAddress(address, self.hardfork);
             const code = if (is_precompile) &[_]u8{} else self.get_code(address);
             if (code.len == 0) {
-                // Check for JavaScript custom precompile handler first
-                const root_c = @import("root_c.zig");
-                var output_len: usize = 0;
-                var output_ptr: [*]u8 = undefined;
-                var gas_used: u64 = 0;
-
-                if (root_c.tryCallJsPrecompileHandler(
-                    &address.bytes,
-                    input.ptr,
-                    input.len,
-                    gas,
-                    &output_len,
-                    &output_ptr,
-                    &gas_used,
-                )) {
-                    // JavaScript precompile handler executed successfully
-                    const output = if (output_len > 0) output_ptr[0..output_len] else &[_]u8{};
-                    return CallResult{
-                        .success = true,
-                        .gas_left = gas - gas_used,
-                        .output = output,
-                    };
+                var gas_left = gas;
+                var output: []const u8 = &[_]u8{};
+                switch (self.runPrecompile(tx_alloc, address, input, gas, is_precompile)) {
+                    // A failed precompile consumes its gas and undoes the value transfer.
+                    .failure => return self.failAndRevert(&cp),
+                    .success => |done| {
+                        gas_left = done.gas_left;
+                        output = done.output;
+                    },
+                    // A plain account without code: the call succeeds with no output.
+                    .none => {},
                 }
-
-                // Check for config-based precompile override (native Zig handlers)
-                if (self.getPrecompileOverride(address)) |override| {
-                    const result = override.execute(
-                        override.context,
-                        self.arena.allocator(),
-                        input,
-                        gas,
-                    ) catch {
-                        self.restore_call_revert_state(
-                            refund_snapshot,
-                            &access_list_snapshot,
-                            &original_storage_snapshot,
-                            &storage_snapshot,
-                            &balance_snapshot,
-                            &nonce_snapshot,
-                            &code_snapshot,
-                            &transient_snapshot,
-                            &selfdestruct_snapshot,
-                            &created_accounts_snapshot,
-                        ) catch {
-                            return makeFailure(self.arena.allocator(), 0);
-                        };
-                        return makeFailure(self.arena.allocator(), 0);
-                    };
-
-                    if (call_type == .Call) self.touchCallTarget(address);
-                    return CallResult{
-                        .success = true,
-                        .gas_left = gas - result.gas_used,
-                        .output = result.output,
-                    };
+                if (call_type == .Call) {
+                    self.touchCallTarget(address) catch return self.failAndRevert(&cp);
                 }
-
-                // Check if this is a standard precompile address (hardfork-aware)
-                if (is_precompile) {
-                    const result = executePrecompile(
-                        self.arena.allocator(),
-                        address,
-                        input,
-                        gas,
-                        self.hardfork,
-                    ) catch {
-                        // On error, return failure
-                        self.restore_call_revert_state(
-                            refund_snapshot,
-                            &access_list_snapshot,
-                            &original_storage_snapshot,
-                            &storage_snapshot,
-                            &balance_snapshot,
-                            &nonce_snapshot,
-                            &code_snapshot,
-                            &transient_snapshot,
-                            &selfdestruct_snapshot,
-                            &created_accounts_snapshot,
-                        ) catch {
-                            return makeFailure(self.arena.allocator(), 0);
-                        };
-                        return makeFailure(self.arena.allocator(), 0);
-                    };
-
-                    if (call_type == .Call) self.touchCallTarget(address);
-                    return CallResult{
-                        .success = true,
-                        .gas_left = gas - result.gas_used,
-                        .output = result.output,
-                    };
-                }
-
-                // For non-precompile empty accounts, return success with no output
-                if (call_type == .Call) self.touchCallTarget(address);
-                return CallResult.success_empty(self.arena.allocator(), gas) catch CallResult{
-                    .success = true,
-                    .gas_left = gas,
-                    .output = &.{},
-                };
+                return CallResult{ .success = true, .gas_left = gas_left, .output = output };
             }
 
-            // Create and push frame onto stack
-            // Use execution_caller and execution_address which are determined by call_type
-
-            // Determine if this call should be static
-            // STATICCALL creates a static context, and static context propagates to all nested calls
-            const parent_is_static = if (self.getCurrentFrame()) |frame| frame.is_static else false;
-            const is_static = parent_is_static or call_type == .StaticCall;
-
-            // Safely cast gas to i64 - if it exceeds i64::MAX, cap it (shouldn't happen in practice)
+            // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
             const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
-            self.frames.append(self.arena.allocator(), FrameType.init(
-                self.arena.allocator(),
+            const child_frame = FrameType.init(
+                tx_alloc,
                 code,
                 frame_gas,
                 execution_caller,
@@ -1650,485 +1577,240 @@ pub fn Evm(comptime config: EvmConfig) type {
                 @as(*anyopaque, @ptrCast(self)),
                 self.hardfork,
                 is_static,
-            ) catch {
-                return makeFailure(self.arena.allocator(), 0);
-            }) catch {
-                return makeFailure(self.arena.allocator(), 0);
-            };
-            errdefer _ = self.frames.pop();
+            ) catch return self.failAndRevert(&cp);
+            // `canPushFrame` reserved the slot: this never reallocates `frames`.
+            self.frames.appendAssumeCapacity(child_frame);
+            const frame_index = self.frames.items.len - 1;
 
-            // Execute frame (don't cache pointer - it may become invalid during nested calls)
-            self.frames.items[self.frames.items.len - 1].execute() catch {
-                _ = self.frames.pop();
-                self.logs.shrinkRetainingCapacity(logs_len_snapshot);
-
-                self.restore_call_revert_state(
-                    refund_snapshot,
-                    &access_list_snapshot,
-                    &original_storage_snapshot,
-                    &storage_snapshot,
-                    &balance_snapshot,
-                    &nonce_snapshot,
-                    &code_snapshot,
-                    &transient_snapshot,
-                    &selfdestruct_snapshot,
-                    &created_accounts_snapshot,
-                ) catch {
-                    return makeFailure(self.arena.allocator(), 0);
-                };
-
-                return makeFailure(self.arena.allocator(), 0);
+            self.frames.items[frame_index].execute() catch {
+                // Exceptional halt: all forwarded gas is consumed.
+                self.frames.shrinkRetainingCapacity(frame_index);
+                return self.failAndRevert(&cp);
             };
 
-            // Get frame results (refetch pointer after execution)
-            const frame = &self.frames.items[self.frames.items.len - 1];
+            const frame = &self.frames.items[frame_index];
+            const reverted = frame.reverted;
+            const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
+            const output: []const u8 = if (frame.output.len > 0)
+                (tx_alloc.dupe(u8, frame.output) catch {
+                    self.frames.shrinkRetainingCapacity(frame_index);
+                    return self.failAndRevert(&cp);
+                })
+            else
+                &[_]u8{};
+            self.frames.shrinkRetainingCapacity(frame_index);
 
-            // Store return data
-            const output = if (frame.output.len > 0) blk: {
-                const output_copy = self.arena.allocator().alloc(u8, frame.output.len) catch {
-                    // Allocation failed - return empty output
-                    break :blk &[_]u8{};
-                };
-                @memcpy(output_copy, frame.output);
-                break :blk output_copy;
-            } else &[_]u8{};
-
-            // Return result
-            const result = CallResult{
-                .success = !frame.reverted,
-                .gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0))),
-                .output = output,
-            };
-            if (result.success and call_type == .Call) self.touchCallTarget(address);
-            // Restore revert-only state
-            if (frame.reverted) {
-                self.logs.shrinkRetainingCapacity(logs_len_snapshot);
-                self.restore_call_revert_state(
-                    refund_snapshot,
-                    &access_list_snapshot,
-                    &original_storage_snapshot,
-                    &storage_snapshot,
-                    &balance_snapshot,
-                    &nonce_snapshot,
-                    &code_snapshot,
-                    &transient_snapshot,
-                    &selfdestruct_snapshot,
-                    &created_accounts_snapshot,
-                ) catch {
-                    return makeFailure(self.arena.allocator(), 0);
-                };
+            if (reverted) {
+                self.revertToCheckpoint(&cp) catch return failedResult(0);
+                return CallResult{ .success = false, .gas_left = gas_left, .output = output };
             }
 
-            // Pop frame from stack
-            _ = self.frames.pop();
-
-            // No cleanup needed - arena handles it
-            return result;
+            if (call_type == .Call) {
+                self.touchCallTarget(address) catch return self.failAndRevert(&cp);
+            }
+            return CallResult{ .success = true, .gas_left = gas_left, .output = output };
         }
 
-        /// Handle CREATE operation (contract creation)
+        /// Handle CREATE / CREATE2 (contract creation).
+        ///
+        /// The creator is the current frame's address, or `origin` when no frame is live
+        /// (a contract-creation transaction). In that depth-0 case the transaction processor
+        /// has already incremented the sender nonce, so the address derives from `nonce - 1`
+        /// and the nonce is not incremented again here.
+        ///
+        /// Returns `error.OutOfGas` for init code over the EIP-3860 limit, which halts the
+        /// calling frame. Every other failure returns `success = false` with the destination
+        /// account, endowment and all init-code effects rolled back.
         pub fn inner_create(
             self: *Self,
             value: u256,
             init_code: []const u8,
             gas: u64,
             salt: ?u256,
-        ) errors.CallError!struct { address: primitives.Address, success: bool, gas_left: u64, output: []const u8 } {
-            // Track if this is a top-level create (contract-creation transaction)
-            // We detect this when there is no active frame yet.
-            // Used to avoid double-incrementing the sender's nonce (runner already increments it)
+        ) errors.CallError!CreateResult {
             const is_top_level_create = self.frames.items.len == 0;
-            // The top-level transaction frame is not counted toward the 1024 create depth limit.
-            if (self.frames.items.len > 1024) {
-                return .{
-                    .address = primitives.ZERO_ADDRESS,
-                    .success = false,
-                    .gas_left = gas,
-                    .output = &[_]u8{},
-                };
-            }
-
-            // Get caller from current frame
             const caller = if (self.getCurrentFrame()) |frame| frame.address else self.origin;
+            return self.createFrom(caller, value, init_code, gas, salt, is_top_level_create);
+        }
 
-            // Check sender's nonce for overflow (max nonce is 2^64 - 1)
-            const sender_nonce = if (self.host) |h|
-                h.getNonce(caller)
-            else
-                self.nonces.get(caller) orelse 0;
-
-            if (sender_nonce == std.math.maxInt(u64)) {
-                // Nonce overflow - CREATE fails, return gas
-                return .{
-                    .address = primitives.ZERO_ADDRESS,
-                    .success = false,
-                    .gas_left = gas,
-                    .output = &[_]u8{},
-                };
-            }
-
-            // Handle balance transfer if value > 0
-            if (value > 0) {
-                const caller_balance = if (self.host) |h| h.getBalance(caller) else self.balances.get(caller) orelse 0;
-                if (caller_balance < value) {
-                    // Insufficient balance - CREATE fails
-                    return .{
-                        .address = primitives.ZERO_ADDRESS,
-                        .success = false,
-                        .gas_left = gas,
-                        .output = &[_]u8{},
-                    };
-                }
-                // Note: balance transfer happens after we know the new address
-            }
-
-            // Calculate new contract address
-            const new_address = if (salt) |s| blk: {
-                // CREATE2: keccak256(0xff ++ caller ++ salt ++ keccak256(init_code))[12:]
-                var hash_input = std.ArrayList(u8){};
-                defer hash_input.deinit(self.arena.allocator());
-
-                try hash_input.append(self.arena.allocator(), 0xff);
-                try hash_input.appendSlice(self.arena.allocator(), &caller.bytes);
-
-                // Add salt (32 bytes, big-endian)
-                var salt_bytes: [32]u8 = undefined;
-                var i: usize = 0;
-                while (i < 32) : (i += 1) {
-                    salt_bytes[31 - i] = @as(u8, @truncate(s >> @intCast(i * 8)));
-                }
-                try hash_input.appendSlice(self.arena.allocator(), &salt_bytes);
-
-                // Add keccak256(init_code)
-                var code_hash: [32]u8 = undefined;
-                std.crypto.hash.sha3.Keccak256.hash(init_code, &code_hash, .{});
-                try hash_input.appendSlice(self.arena.allocator(), &code_hash);
-
-                // Hash and take last 20 bytes
-                var addr_hash: [32]u8 = undefined;
-                std.crypto.hash.sha3.Keccak256.hash(hash_input.items, &addr_hash, .{});
-
-                var addr_bytes: [20]u8 = undefined;
-                @memcpy(&addr_bytes, addr_hash[12..32]);
-                break :blk primitives.Address{ .bytes = addr_bytes };
-            } else blk: {
-                // CREATE: keccak256(rlp([sender, nonce]))[12:]
-                // For top-level creates: nonce was already incremented by runner, so subtract 1
-                // For opcode creates: use current nonce (will be incremented after collision check)
-                // Per Python reference (message.py:57): uses "nonce - 1" for transactions
-                var nonce = if (self.host) |h|
-                    h.getNonce(caller)
-                else
-                    self.nonces.get(caller) orelse 0;
-
-                if (is_top_level_create and nonce > 0) {
-                    nonce -= 1; // Undo the increment that runner already did
-                }
-
-                break :blk try self.computeCreateAddress(caller, nonce);
+        /// Shared creation path for the CREATE/CREATE2 opcodes and creation transactions.
+        /// Check order follows EELS `generic_create` and `process_create_message`.
+        fn createFrom(
+            self: *Self,
+            caller: primitives.Address,
+            value: u256,
+            init_code: []const u8,
+            gas: u64,
+            salt: ?u256,
+            is_top_level_create: bool,
+        ) errors.CallError!CreateResult {
+            const failed_all_gas = CreateResult{
+                .address = primitives.ZERO_ADDRESS,
+                .success = false,
+                .gas_left = 0,
+                .output = &[_]u8{},
+            };
+            const failed_gas_returned = CreateResult{
+                .address = primitives.ZERO_ADDRESS,
+                .success = false,
+                .gas_left = gas,
+                .output = &[_]u8{},
             };
 
-            // EIP-3860: Check init code size limit (Shanghai and later)
-            // Per Python reference (system.py:81-82): This check happens IMMEDIATELY after reading call_data
-            // and BEFORE any nonce increments or child call gas calculation
-            // When this check fails, it raises OutOfGasError in the PARENT frame (the frame executing CREATE)
-            // This halts the entire parent frame, not just the CREATE operation
-            if (self.hardfork.isAtLeast(.SHANGHAI)) {
-                // Check must use >= to match reference implementation exactly
-                // MAX_INITCODE_SIZE is the maximum ALLOWED, so > is correct
-                if (init_code.len > primitives.GasConstants.MaxInitcodeSize) {
-                    // Per Python reference: OutOfGasError is raised, halting the parent frame
-                    // The initcode gas was already charged in frame.zig
-                    return error.OutOfGas;
-                }
+            // 1. EIP-3860 (Shanghai+): oversize init code is an out-of-gas halt of the calling
+            //    frame. It is checked before balance, nonce and depth, which only push 0.
+            if (self.hardfork.isAtLeast(.SHANGHAI) and init_code.len > primitives.GasConstants.MaxInitcodeSize) {
+                return error.OutOfGas;
             }
 
-            // EIP-3860 initcode cost is charged in two different places depending on context:
-            // 1. For top-level creates (contract creation transactions): charged in transaction intrinsic gas
-            // 2. For CREATE/CREATE2 opcodes: charged in frame.zig before calling inner_create
-            // Therefore, DO NOT charge it again here for top-level creates
-            const child_gas: u64 = gas;
+            // 2. Insufficient balance, nonce overflow or depth limit: fail, gas is returned.
+            const sender_nonce = self.getNonce(caller);
+            if (self.get_balance(caller) < value or
+                sender_nonce == std.math.maxInt(u64) or
+                !self.canPushFrame())
+            {
+                return failed_gas_returned;
+            }
 
-            // EIP-2929 (Berlin): Mark created address as warm
-            // Per Python reference: accessed_addresses.add(contract_address) happens
-            // BEFORE collision check and nonce increment
+            // 3. Derive the new address once.
+            const new_address = if (salt) |s|
+                try self.computeCreate2Address(caller, s, init_code)
+            else blk: {
+                // Creation transaction: the processor already incremented the sender nonce
+                // (EELS message.py uses `nonce - 1`). Opcode: the current nonce.
+                const address_nonce = if (is_top_level_create and sender_nonce > 0) sender_nonce - 1 else sender_nonce;
+                break :blk try self.computeCreateAddress(caller, address_nonce);
+            };
+
+            // 4. EIP-2929 (Berlin): the new address is warm from here on, even if creation fails.
             if (self.hardfork.isAtLeast(.BERLIN)) {
                 try self.access_list_manager.pre_warm_addresses(&[_]primitives.Address{new_address});
             }
 
-            // Check for address collision (code or nonce already exists)
-            // Per EIP-684: If account has code or nonce, CREATE fails
-            const has_collision = blk: {
-                if (self.host) |h| {
-                    const has_code = h.getCode(new_address).len > 0;
-                    const has_nonce = h.getNonce(new_address) > 0;
-                    break :blk has_code or has_nonce;
-                } else {
-                    const has_code = (self.code.get(new_address) orelse &[_]u8{}).len > 0;
-                    const has_nonce = (self.nonces.get(new_address) orelse 0) > 0;
-                    break :blk has_code or has_nonce;
-                }
-            };
-
+            // 5. Collision (EIP-684, EIP-7610): the destination has a nonce, code or storage.
+            //    The creator nonce is still incremented and all forwarded gas is consumed.
+            //    Nothing at the destination is modified, so a pre-existing balance is kept.
+            const has_collision = self.getNonce(new_address) > 0 or
+                self.get_raw_code(new_address).len > 0 or
+                self.accountHasStorage(new_address);
             if (has_collision) {
-                // Collision detected - increment caller's nonce and return failure
-                // Per Python reference (system.py:107-110): nonce is incremented even on collision
-                // But only for CREATE/CREATE2 opcodes, not for top-level creates (already incremented by runner)
-                if (!is_top_level_create) {
-                    const caller_nonce = if (self.host) |h|
-                        h.getNonce(caller)
-                    else
-                        self.nonces.get(caller) orelse 0;
-
-                    try self.setNonceWithSnapshot(caller, caller_nonce + 1);
-                }
-
-                // Per Python reference (system.py:105-112): On collision, the gas is NOT refunded.
-                // Line 86 deducts create_message_gas, and line 111-112 returns without refunding.
-                // Therefore, we return gas_left = 0 to indicate all gas was consumed.
-                return .{
-                    .address = primitives.ZERO_ADDRESS,
-                    .success = false,
-                    .gas_left = 0,
-                    .output = &[_]u8{},
-                };
+                if (!is_top_level_create) try self.setNonceWithSnapshot(caller, sender_nonce + 1);
+                return failed_all_gas;
             }
 
             self.clearExistingEmptyAccountForCreate(new_address);
 
-            // Increment caller's nonce for CREATE/CREATE2 opcodes (but not top-level creates)
-            // Per Python reference:
-            // - fork.py:546 increments sender nonce for transactions (done by runner before calling this)
-            // - system.py:113 increments caller nonce for CREATE/CREATE2 opcodes
-            // For top-level creates: nonce already incremented in transaction processing (runner.zig:988-990)
-            // For opcode creates: nonce must be incremented here
-            if (!is_top_level_create) {
-                const caller_nonce = if (self.host) |h|
-                    h.getNonce(caller)
-                else
-                    self.nonces.get(caller) orelse 0;
+            // 6. Creator-side nonce increment survives a failed creation, so it happens
+            //    before the checkpoint (opcodes only; transactions are handled by the processor).
+            if (!is_top_level_create) try self.setNonceWithSnapshot(caller, sender_nonce + 1);
 
-                try self.setNonceWithSnapshot(caller, caller_nonce + 1);
-            }
+            // 7. Everything below is one unit: any failure restores storage, original and
+            //    transient storage, logs, balances, nonces, code, created/self-destructed/touched
+            //    sets, warm sets and the refund counter to this point.
+            var cp: Checkpoint = undefined;
+            try self.takeCheckpoint(&cp);
+            defer self.releaseCheckpoint(&cp);
+            errdefer self.revertBestEffort(&cp);
 
-            // Set nonce of new contract to 1 (EVM spec: contracts start with nonce 1)
-            try self.setNonceWithSnapshot(new_address, 1);
-
-            var created_accounts_snapshot = std.AutoHashMap(primitives.Address, void).init(self.arena.allocator());
-            var created_snapshot_it = self.created_accounts.iterator();
-            while (created_snapshot_it.next()) |entry| {
-                try created_accounts_snapshot.put(entry.key_ptr.*, {});
-            }
-            defer created_accounts_snapshot.deinit();
-
-            // EIP-6780 (Cancun): Mark account as created BEFORE execution
-            // Per Python reference (interpreter.py:174): mark_account_created happens BEFORE process_message
-            // "The marker is not removed even if the account creation reverts"
-            // This is required for SELFDESTRUCT to correctly identify same-tx creations
+            // EIP-6780: mark as created in this transaction before running init code.
             try self.created_accounts.put(new_address, {});
-
-            // Snapshot gas refunds before executing init code
-            // Per Python reference (vm/__init__.py:incorporate_child_on_error), failed creates do not
-            // propagate refunds to parent. Only incorporate_child_on_success adds child refunds.
-            const refund_snapshot = self.gas_refund;
-
-            // Snapshot warm addresses and storage slots before executing init code (EIP-2929)
-            // Per Python reference (incorporate_child_on_error), accessed_addresses
-            // and accessed_storage_keys are only propagated on success, not on failure
-            var access_list_snapshot = try self.access_list_manager.snapshot();
-            defer access_list_snapshot.deinit();
-
-            // Snapshot balances before execution (for SELFDESTRUCT revert handling)
-            // We use copy-on-write: addresses are snapshotted when first modified via setBalanceWithSnapshot
-            var balance_snapshot = std.AutoHashMap(primitives.Address, u256).init(self.arena.allocator());
-
-            // Push the snapshot onto the stack so nested calls can snapshot in parent snapshots
-            try self.balance_snapshot_stack.append(self.arena.allocator(), &balance_snapshot);
-            defer _ = self.balance_snapshot_stack.pop();
-
-            // Transfer balance if value > 0 using snapshot mechanism for proper revert handling
-            if (value > 0) {
-                const caller_balance = if (self.host) |h| h.getBalance(caller) else self.balances.get(caller) orelse 0;
-                try self.setBalanceWithSnapshot(caller, caller_balance - value);
-                const new_addr_balance = if (self.host) |h| h.getBalance(new_address) else self.balances.get(new_address) orelse 0;
-                try self.setBalanceWithSnapshot(new_address, new_addr_balance + value);
+            // EIP-161 (Spurious Dragon): a new contract starts at nonce 1; earlier forks at 0.
+            if (self.hardfork.isAtLeast(.SPURIOUS_DRAGON)) {
+                try self.setNonceWithSnapshot(new_address, 1);
+            } else {
+                // With nonce 0, no code and no endowment nothing else would record the new
+                // account; before EIP-161 it exists even when empty, so materialize it.
+                try self.setBalanceWithSnapshot(new_address, self.get_balance(new_address));
             }
+            if (value > 0) try self.transferValue(caller, new_address, value);
 
-            // Snapshot selfdestructed_accounts before executing init code (EIP-6780 revert handling)
-            // If CREATE fails, any SELFDESTRUCTs in the init code must be reverted
-            var create_selfdestruct_snapshot = std.AutoHashMap(primitives.Address, void).init(self.arena.allocator());
-            var create_selfdestruct_it = self.selfdestructed_accounts.iterator();
-            while (create_selfdestruct_it.next()) |entry| {
-                try create_selfdestruct_snapshot.put(entry.key_ptr.*, {});
-            }
-
-            // Execute initialization code
-            try self.frames.append(self.arena.allocator(), try FrameType.init(
-                self.arena.allocator(),
+            // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
+            const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
+            const init_frame = try FrameType.init(
+                self.tx_arena.allocator(),
                 init_code,
-                @intCast(child_gas),
+                frame_gas,
                 caller,
                 new_address,
                 value,
                 &[_]u8{}, // no calldata for CREATE
                 @as(*anyopaque, @ptrCast(self)),
                 self.hardfork,
-                false, // CREATE/CREATE2 are never static (can't create contracts in static context)
-            ));
-            errdefer _ = self.frames.pop();
+                false, // creation is never static
+            );
+            // `canPushFrame` reserved the slot: this never reallocates `frames`.
+            self.frames.appendAssumeCapacity(init_frame);
+            const frame_index = self.frames.items.len - 1;
 
-            // Execute frame
-            self.frames.items[self.frames.items.len - 1].execute() catch {
-                const failed_frame = &self.frames.items[self.frames.items.len - 1];
-                const error_output = failed_frame.output; // Capture output before popping
-                _ = self.frames.pop();
+            self.frames.items[frame_index].execute() catch {
+                // Exceptional halt in init code: all gas consumed, no return data.
+                self.frames.shrinkRetainingCapacity(frame_index);
+                try self.revertToCheckpoint(&cp);
+                return failed_all_gas;
+            };
 
-                // Revert nonce on execution error
-                try self.setNonceWithSnapshot(new_address, 0);
+            const frame = &self.frames.items[frame_index];
+            const reverted = frame.reverted;
+            var gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
+            const frame_output = frame.output;
+            self.frames.shrinkRetainingCapacity(frame_index);
 
-                // Restore gas refunds on failure
-                // Per Python: incorporate_child_on_error does NOT add child's refund_counter
-                self.gas_refund = refund_snapshot;
-
-                // Restore warm addresses and storage slots on failure (EIP-2929)
-                try self.access_list_manager.restore(access_list_snapshot);
-
-                // Restore balances on error (handles SELFDESTRUCT balance transfers and value transfers)
-                var balance_restore_it = balance_snapshot.iterator();
-                while (balance_restore_it.next()) |entry| {
-                    if (self.host) |h| {
-                        h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
-                    } else {
-                        try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
-                    }
-                }
-                try self.restore_created_accounts_after_create_failure(&created_accounts_snapshot);
-
+            if (reverted) {
+                // REVERT is the only failure that returns data and unused gas.
+                try self.revertToCheckpoint(&cp);
                 return .{
                     .address = primitives.ZERO_ADDRESS,
                     .success = false,
-                    .gas_left = 0,
-                    .output = error_output,
+                    .gas_left = gas_left,
+                    .output = frame_output,
                 };
-            };
-
-            // Get frame results
-            const frame = &self.frames.items[self.frames.items.len - 1];
-            var gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-            var success = !frame.reverted;
-            const frame_output = frame.output; // Capture output
-
-            // If successful, check deposit cost and code size, then deploy
-            if (success) {
-                // Charge code deposit cost (200 gas per byte) if there's output
-                if (frame_output.len > 0) {
-                    const deposit_cost = @as(u64, @intCast(frame_output.len)) * GasConstants.CreateDataGas;
-                    if (gas_left < deposit_cost) {
-                        // Out of gas during code deposit -> creation fails
-                        success = false;
-                        gas_left = 0;
-                    }
-                }
-
-                if (success and frame_output.len > 0) {
-                    // EIP-170 (Spurious Dragon+): deployed code may not exceed 24576 bytes.
-                    // EIP-3541 (London+): deployed code may not start with the 0xEF byte.
-                    const exceeds_size = self.hardfork.isAtLeast(.SPURIOUS_DRAGON) and frame_output.len > 24576;
-                    const ef_prefix = self.hardfork.isAtLeast(.LONDON) and frame_output[0] == 0xEF;
-                    if (exceeds_size or ef_prefix) {
-                        _ = self.frames.pop();
-
-                        // Revert nonce on failure
-                        try self.setNonceWithSnapshot(new_address, 0);
-
-                        // Restore gas refunds on failure
-                        // Per Python: incorporate_child_on_error does NOT add child's refund_counter
-                        self.gas_refund = refund_snapshot;
-
-                        // Restore warm addresses and storage slots on failure (EIP-2929)
-                        try self.access_list_manager.restore(access_list_snapshot);
-
-                        // Restore balances on failure (handles SELFDESTRUCT balance transfers and value transfers)
-                        var balance_restore_it = balance_snapshot.iterator();
-                        while (balance_restore_it.next()) |entry| {
-                            if (self.host) |h| {
-                                h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
-                            } else {
-                                try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
-                            }
-                        }
-
-                        // Restore selfdestructed_accounts on failure (EIP-6780)
-                        self.selfdestructed_accounts.clearRetainingCapacity();
-                        var restore_create_selfdestruct_it = create_selfdestruct_snapshot.iterator();
-                        while (restore_create_selfdestruct_it.next()) |entry| {
-                            try self.selfdestructed_accounts.put(entry.key_ptr.*, {});
-                        }
-                        try self.restore_created_accounts_after_create_failure(&created_accounts_snapshot);
-
-                        // Per Python reference: code size violation raises OutOfGasError, consuming all gas
-                        // execution-specs/src/ethereum/forks/constantinople/vm/interpreter.py
-                        return .{
-                            .address = primitives.ZERO_ADDRESS,
-                            .success = false,
-                            .gas_left = 0, // Consume all remaining gas on code size violation
-                            .output = frame_output,
-                        };
-                    }
-
-                    // Deploy code and deduct deposit gas
-                    try self.setCodeWithSnapshot(new_address, frame_output);
-                    const deposit_cost = @as(u64, @intCast(frame_output.len)) * GasConstants.CreateDataGas;
-                    gas_left -= deposit_cost;
-                } else if (success) {
-                    // Deploy empty code (output.len == 0)
-                    try self.setCodeWithSnapshot(new_address, &[_]u8{});
-                }
-            } else {
-                // Reverse state changes on revert
-                // Revert nonce to 0
-                try self.setNonceWithSnapshot(new_address, 0);
-
-                // Restore balances on revert (handles SELFDESTRUCT balance transfers and value transfers)
-                var balance_restore_it = balance_snapshot.iterator();
-                while (balance_restore_it.next()) |entry| {
-                    if (self.host) |h| {
-                        h.setBalance(entry.key_ptr.*, entry.value_ptr.*);
-                    } else {
-                        try self.balances.put(entry.key_ptr.*, entry.value_ptr.*);
-                    }
-                }
-
-                // Restore selfdestructed_accounts on failure (EIP-6780)
-                self.selfdestructed_accounts.clearRetainingCapacity();
-                var restore_create_selfdestruct_it = create_selfdestruct_snapshot.iterator();
-                while (restore_create_selfdestruct_it.next()) |entry| {
-                    try self.selfdestructed_accounts.put(entry.key_ptr.*, {});
-                }
-                try self.restore_created_accounts_after_create_failure(&created_accounts_snapshot);
             }
 
-            // Pop frame
-            _ = self.frames.pop();
+            // 8. Code deposit. EIP-3541 (London): code may not start with 0xEF. Deposit costs
+            //    200 gas per byte. EIP-170 (Spurious Dragon): code may not exceed 24576 bytes.
+            //    Any violation is an exceptional halt of the creation: full rollback, all gas
+            //    consumed, empty return data.
+            var deployed_code = frame_output;
+            const deposit_cost = std.math.mul(u64, @as(u64, @intCast(frame_output.len)), GasConstants.CreateDataGas) catch std.math.maxInt(u64);
+            const deposit_out_of_gas = gas_left < deposit_cost;
+            const ef_prefix = self.hardfork.isAtLeast(.LONDON) and frame_output.len > 0 and frame_output[0] == 0xEF;
+            const exceeds_size = self.hardfork.isAtLeast(.SPURIOUS_DRAGON) and frame_output.len > 24576;
 
-            // According to EIP-1014 and CREATE semantics:
-            // - On success: return_data should be empty
-            // - On failure/revert: return_data should contain the child's output
+            if (deposit_out_of_gas and self.hardfork.isBefore(.HOMESTEAD)) {
+                // Frontier: an unaffordable deposit still creates the account, with empty code
+                // and without charging the deposit (EIP-2 changed this in Homestead).
+                deployed_code = &[_]u8{};
+            } else if (ef_prefix or deposit_out_of_gas or exceeds_size) {
+                try self.revertToCheckpoint(&cp);
+                return failed_all_gas;
+            } else {
+                gas_left -= deposit_cost;
+            }
+
+            try self.setCodeWithSnapshot(new_address, deployed_code);
+
             return .{
-                .address = if (success) new_address else primitives.ZERO_ADDRESS,
-                .success = success,
+                .address = new_address,
+                .success = true,
                 .gas_left = gas_left,
-                .output = if (success) &[_]u8{} else frame_output,
+                .output = &[_]u8{},
             };
         }
 
-        /// Add gas refund (called by frame)
+        /// Add to the signed refund counter (EELS `refund_counter += amount`).
         pub fn add_refund(self: *Self, amount: u64) void {
-            self.gas_refund += amount;
+            self.gas_refund +|= @as(i64, @intCast(@min(amount, std.math.maxInt(i64))));
         }
 
+        /// Subtract from the signed refund counter. The counter may go negative mid-transaction
+        /// (net gas metering removes refunds granted earlier); it is clamped only when read.
         pub fn sub_refund(self: *Self, amount: u64) void {
-            self.gas_refund -= amount;
+            self.gas_refund -|= @as(i64, @intCast(@min(amount, std.math.maxInt(i64))));
+        }
+
+        /// Refund counter as applied at transaction end: negative values count as zero.
+        pub fn get_effective_refund(self: *const Self) u64 {
+            return if (self.gas_refund > 0) @intCast(self.gas_refund) else 0;
         }
 
         /// Get balance of an address (called by frame)
@@ -2137,34 +1819,30 @@ pub fn Evm(comptime config: EvmConfig) type {
             return self.balances.get(address) orelse 0;
         }
 
-        /// Get code for an address
-        /// EIP-7702: Handle delegation designation (0xef0100 + address)
+        /// Code stored at `address`, exactly as stored. An EIP-7702 delegation designator
+        /// (`0xef0100 ++ target`) is returned as-is, not followed.
+        pub fn get_raw_code(self: *Self, address: primitives.Address) []const u8 {
+            if (self.host) |h| return h.getCode(address);
+            return self.code.get(address) orelse &[_]u8{};
+        }
+
+        /// EIP-7702 (Prague+): the delegation target of `address`, or null when its code is
+        /// not a 23-byte `0xef0100 ++ target` designator.
+        pub fn get_delegated_target(self: *Self, address: primitives.Address) ?primitives.Address {
+            if (!self.hardfork.isAtLeast(.PRAGUE)) return null;
+            const raw_code = self.get_raw_code(address);
+            if (raw_code.len != 23 or raw_code[0] != 0xef or raw_code[1] != 0x01 or raw_code[2] != 0x00) return null;
+            var target: primitives.Address = undefined;
+            @memcpy(&target.bytes, raw_code[3..23]);
+            return target;
+        }
+
+        /// Executable code for `address`: follows one level of EIP-7702 delegation.
+        /// A delegate that itself holds a designator is returned as-is (no chaining).
+        /// Use `get_raw_code` to inspect what the account actually stores.
         pub fn get_code(self: *Self, address: primitives.Address) []const u8 {
-            const raw_code = if (self.host) |h|
-                h.getCode(address)
-            else
-                self.code.get(address) orelse &[_]u8{};
-
-            // EIP-7702: Check for delegation designation (Prague+)
-            if (self.hardfork.isAtLeast(.PRAGUE) and raw_code.len == 23 and
-                raw_code[0] == 0xef and raw_code[1] == 0x01 and raw_code[2] == 0x00)
-            {
-                // Extract delegated address (bytes 3-22, 20 bytes)
-                var delegated_addr: primitives.Address = undefined;
-                @memcpy(&delegated_addr.bytes, raw_code[3..23]);
-
-                // Recursively get code from delegated address
-                // Note: We don't recurse infinitely - if delegated address also has
-                // delegation designation, we return its delegation code as-is
-                const delegated_code = if (self.host) |h|
-                    h.getCode(delegated_addr)
-                else
-                    self.code.get(delegated_addr) orelse &[_]u8{};
-
-                return delegated_code;
-            }
-
-            return raw_code;
+            if (self.get_delegated_target(address)) |delegate| return self.get_raw_code(delegate);
+            return self.get_raw_code(address);
         }
 
         /// Get current frame (top of the frame stack)

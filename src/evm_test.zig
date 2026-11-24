@@ -882,3 +882,1028 @@ test "BUG_HUNT_REPORT #9 - root_c AsyncRequest fast-path, >16 KB overflow, and C
     try testing.expect(root_c.evm_continue_ffi(handle, 5, &zero_word, 0, &req));
     try testing.expectEqual(@as(u8, 0), req.output_type);
 }
+
+// ============================================================================
+// Round 1 fix regressions (FX1): checkpointed rollback for call / inner_call /
+// inner_create, call-depth frame safety, pre-state preservation, signed refunds,
+// EIP-7702 delegation helpers, EIP-7610 collisions and precompile gas bounds.
+// ============================================================================
+
+const evm_config_mod = @import("evm_config.zig");
+
+const r1_caller = primitives.Address{ .bytes = [_]u8{0xca} ** 20 };
+const r1_contract = primitives.Address{ .bytes = [_]u8{0xc0} ** 20 };
+const r1_other = primitives.Address{ .bytes = [_]u8{0xb0} ** 20 };
+const r1_empty = primitives.Address{ .bytes = [_]u8{0xe0} ** 20 };
+
+fn r1Slot(vm: anytype, addr: primitives.Address, slot: u256) u256 {
+    return vm.storage.storage.get(.{ .address = addr.bytes, .slot = slot }) orelse 0;
+}
+
+fn r1Balance(vm: anytype, addr: primitives.Address) u256 {
+    return vm.balances.get(addr) orelse 0;
+}
+
+fn r1Word(output: []const u8) !u256 {
+    try std.testing.expectEqual(@as(usize, 32), output.len);
+    return std.mem.readInt(u256, output[0..32], .big);
+}
+
+/// Minimal in-memory host: records deletions so EIP-161 cleanup is observable.
+const R1Host = struct {
+    arena: std.heap.ArenaAllocator,
+    balances: std.AutoHashMap(primitives.Address, u256),
+    nonces: std.AutoHashMap(primitives.Address, u64),
+    code: std.AutoHashMap(primitives.Address, []const u8),
+    storage: std.AutoHashMap(evm.StorageKey, u256),
+    existing: std.AutoHashMap(primitives.Address, void),
+    deleted: std.AutoHashMap(primitives.Address, void),
+
+    fn init(self: *R1Host, allocator: std.mem.Allocator) void {
+        self.arena = std.heap.ArenaAllocator.init(allocator);
+        const a = self.arena.allocator();
+        self.balances = std.AutoHashMap(primitives.Address, u256).init(a);
+        self.nonces = std.AutoHashMap(primitives.Address, u64).init(a);
+        self.code = std.AutoHashMap(primitives.Address, []const u8).init(a);
+        self.storage = std.AutoHashMap(evm.StorageKey, u256).init(a);
+        self.existing = std.AutoHashMap(primitives.Address, void).init(a);
+        self.deleted = std.AutoHashMap(primitives.Address, void).init(a);
+    }
+
+    fn deinit(self: *R1Host) void {
+        self.arena.deinit();
+    }
+
+    fn cast(ptr: *anyopaque) *R1Host {
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    fn getBalance(ptr: *anyopaque, addr: primitives.Address) u256 {
+        return cast(ptr).balances.get(addr) orelse 0;
+    }
+    fn setBalance(ptr: *anyopaque, addr: primitives.Address, balance: u256) void {
+        cast(ptr).balances.put(addr, balance) catch @panic("R1Host out of memory");
+    }
+    fn getCode(ptr: *anyopaque, addr: primitives.Address) []const u8 {
+        return cast(ptr).code.get(addr) orelse &.{};
+    }
+    fn setCode(ptr: *anyopaque, addr: primitives.Address, bytes: []const u8) void {
+        const self = cast(ptr);
+        if (bytes.len == 0) {
+            _ = self.code.remove(addr);
+            return;
+        }
+        const owned = self.arena.allocator().dupe(u8, bytes) catch @panic("R1Host out of memory");
+        self.code.put(addr, owned) catch @panic("R1Host out of memory");
+    }
+    fn getStorage(ptr: *anyopaque, addr: primitives.Address, slot: u256) u256 {
+        return cast(ptr).storage.get(.{ .address = addr.bytes, .slot = slot }) orelse 0;
+    }
+    fn setStorage(ptr: *anyopaque, addr: primitives.Address, slot: u256, value: u256) void {
+        const self = cast(ptr);
+        const key = evm.StorageKey{ .address = addr.bytes, .slot = slot };
+        if (value == 0) {
+            _ = self.storage.remove(key);
+        } else {
+            self.storage.put(key, value) catch @panic("R1Host out of memory");
+        }
+    }
+    fn getNonce(ptr: *anyopaque, addr: primitives.Address) u64 {
+        return cast(ptr).nonces.get(addr) orelse 0;
+    }
+    fn setNonce(ptr: *anyopaque, addr: primitives.Address, nonce: u64) void {
+        cast(ptr).nonces.put(addr, nonce) catch @panic("R1Host out of memory");
+    }
+    fn accountExists(ptr: *anyopaque, addr: primitives.Address) bool {
+        const self = cast(ptr);
+        return self.existing.contains(addr) or getBalance(ptr, addr) != 0 or getNonce(ptr, addr) != 0 or getCode(ptr, addr).len != 0;
+    }
+    fn accountHasStorage(ptr: *anyopaque, addr: primitives.Address) bool {
+        var it = cast(ptr).storage.keyIterator();
+        while (it.next()) |key| {
+            if (std.mem.eql(u8, &key.address, &addr.bytes)) return true;
+        }
+        return false;
+    }
+    fn deleteAccount(ptr: *anyopaque, addr: primitives.Address) void {
+        const self = cast(ptr);
+        self.deleted.put(addr, {}) catch @panic("R1Host out of memory");
+        _ = self.balances.remove(addr);
+        _ = self.nonces.remove(addr);
+        _ = self.code.remove(addr);
+        _ = self.existing.remove(addr);
+    }
+
+    const vtable = host_mod.HostInterface.VTable{
+        .getBalance = getBalance,
+        .setBalance = setBalance,
+        .getCode = getCode,
+        .setCode = setCode,
+        .getStorage = getStorage,
+        .setStorage = setStorage,
+        .getNonce = getNonce,
+        .setNonce = setNonce,
+        .accountExists = accountExists,
+        .accountHasStorage = accountHasStorage,
+        .deleteAccount = deleteAccount,
+    };
+
+    fn interface(self: *R1Host) host_mod.HostInterface {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+};
+
+// ---- Call depth (F-03 / C-25) ----------------------------------------------
+
+test "R1 depth: recursion stops at depth 1024 and the frame list never reallocates" {
+    const testing = std.testing;
+
+    // slot0 += 1; CALL(GAS, ADDRESS, 0, 0, 0, 0, 0); STOP
+    const recursive = [_]u8{
+        0x60, 0x00, 0x54, 0x60, 0x01, 0x01, 0x60, 0x00, 0x55,
+        0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60,
+        0x00, 0x30, 0x5a, 0xf1, 0x00,
+    };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .BERLIN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.code.put(r1_contract, &recursive);
+
+    // Enough gas that the 63/64 rule still leaves the SSTORE stipend at depth 1024.
+    const result = vm.call(.{ .call = .{
+        .caller = r1_caller,
+        .to = r1_contract,
+        .value = 0,
+        .input = &.{},
+        .gas = 10_000_000_000_000,
+    } });
+    try testing.expect(result.success);
+
+    // Depth 0 plus nested depths 1..1024 executed: 1025 frames. The 1026th was refused.
+    try testing.expectEqual(@as(u256, Evm.max_frames), r1Slot(&vm, r1_contract, 0));
+    try testing.expectEqual(@as(usize, 1025), Evm.max_frames);
+    // A reallocation would have grown capacity past the exact reservation.
+    try testing.expectEqual(Evm.max_frames, vm.frames.capacity);
+    try testing.expectEqual(@as(usize, 0), vm.frames.items.len);
+}
+
+test "R1 depth: inner_call and inner_create refuse a full frame list before pushing" {
+    const testing = std.testing;
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .BERLIN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.initTransactionState(null);
+    try testing.expectEqual(Evm.max_frames, vm.frames.capacity);
+
+    const stop = [_]u8{0x00};
+    try vm.code.put(r1_other, &stop);
+    try vm.balances.put(r1_contract, 1_000);
+
+    while (vm.frames.items.len < Evm.max_frames) {
+        vm.frames.appendAssumeCapacity(try @typeInfo(@TypeOf(vm.frames.items)).pointer.child.init(
+            vm.tx_arena.allocator(),
+            &stop,
+            1_000_000,
+            r1_caller,
+            r1_contract,
+            0,
+            &.{},
+            @as(*anyopaque, @ptrCast(&vm)),
+            .BERLIN,
+            false,
+        ));
+    }
+    const frames_ptr = vm.frames.items.ptr;
+
+    const call_result = vm.inner_call(.{ .call = .{
+        .caller = r1_contract,
+        .to = r1_other,
+        .value = 1,
+        .input = &.{},
+        .gas = 50_000,
+    } });
+    try testing.expect(!call_result.success);
+    try testing.expectEqual(@as(u64, 50_000), call_result.gas_left); // gas returned
+    try testing.expectEqual(@as(u256, 1_000), r1Balance(&vm, r1_contract)); // no transfer
+
+    const create_result = try vm.inner_create(1, &stop, 50_000, null);
+    try testing.expect(!create_result.success);
+    try testing.expectEqual(@as(u64, 50_000), create_result.gas_left);
+    try testing.expectEqual(@as(u64, 0), vm.nonces.get(r1_contract) orelse 0); // nonce untouched
+
+    try testing.expectEqual(Evm.max_frames, vm.frames.items.len);
+    try testing.expectEqual(Evm.max_frames, vm.frames.capacity);
+    try testing.expect(frames_ptr == vm.frames.items.ptr);
+}
+
+// ---- inner_create rollback (F-04 / C-04 / C-08 / C-09 / R1-002) -------------
+
+/// Side effects every init-code variant performs before its terminating `tail`:
+/// SSTORE(0,1); SSTORE(2,1); SSTORE(2,0) (earns a refund); TSTORE(1,9); LOG0;
+/// CALL(r1_other), whose code does SSTORE(0,7); LOG0.
+const r1_init_effects = [_]u8{
+    0x60, 0x01, 0x60, 0x00, 0x55,
+    0x60, 0x01, 0x60, 0x02, 0x55,
+    0x60, 0x00, 0x60, 0x02, 0x55,
+    0x60, 0x09, 0x60, 0x01, 0x5d,
+    0x60, 0x00, 0x60, 0x00, 0xa0,
+    0x60, 0x00, 0x60, 0x00, 0x60,
+    0x00, 0x60, 0x00, 0x60, 0x00,
+    0x73,
+} ++ r1_other.bytes ++ [_]u8{ 0x61, 0xff, 0xff, 0xf1, 0x50 };
+
+const r1_callee_effects = [_]u8{ 0x60, 0x07, 0x60, 0x00, 0x55, 0x60, 0x00, 0x60, 0x00, 0xa0, 0x00 };
+
+const R1CreateCase = struct {
+    vm: Evm,
+    new_address: primitives.Address,
+    result: Evm.CreateResult,
+};
+
+/// Run a creation transaction (depth 0) whose init code is `r1_init_effects ++ tail`,
+/// sending 5 wei to a destination that already holds 100 wei.
+fn r1RunCreate(case: *R1CreateCase, hardfork: primitives.Hardfork, comptime tail: anytype, gas: u64) !void {
+    const init_code = r1_init_effects ++ tail;
+    try case.vm.init(std.testing.allocator, null, hardfork, null, r1_caller, 0, null);
+    errdefer case.vm.deinit();
+    const vm = &case.vm;
+    try vm.initTransactionState(null);
+
+    try vm.code.put(r1_other, &r1_callee_effects);
+    try vm.balances.put(r1_caller, 1_000);
+    // The transaction processor has already incremented the sender nonce (0 -> 1).
+    try vm.nonces.put(r1_caller, 1);
+    case.new_address = try vm.computeCreateAddress(r1_caller, 0);
+    try vm.balances.put(case.new_address, 100);
+
+    case.result = try vm.inner_create(5, &init_code, gas, null);
+}
+
+fn r1ExpectCreateRolledBack(case: *R1CreateCase) !void {
+    const testing = std.testing;
+    const vm = &case.vm;
+    const new_address = case.new_address;
+
+    try testing.expect(!case.result.success);
+    try testing.expect(case.result.address.equals(primitives.ZERO_ADDRESS));
+
+    // No deployed code, account, storage or endowment at the destination.
+    try testing.expectEqual(@as(usize, 0), vm.get_raw_code(new_address).len);
+    try testing.expectEqual(@as(u64, 0), vm.getNonce(new_address));
+    try testing.expectEqual(@as(u256, 0), r1Slot(vm, new_address, 0));
+    try testing.expectEqual(@as(u256, 0), r1Slot(vm, new_address, 2));
+    try testing.expect(!vm.accountHasStorage(new_address));
+    try testing.expect(!vm.created_accounts.contains(new_address));
+    // Pre-existing ETH survives; the endowment went back to the creator.
+    try testing.expectEqual(@as(u256, 100), r1Balance(vm, new_address));
+    try testing.expectEqual(@as(u256, 1_000), r1Balance(vm, r1_caller));
+
+    // Effects of the nested call made by init code are undone too.
+    try testing.expectEqual(@as(u256, 0), r1Slot(vm, r1_other, 0));
+    try testing.expectEqual(@as(usize, 0), vm.logs.items.len);
+    try testing.expectEqual(@as(usize, 0), vm.storage.transient.count());
+    try testing.expectEqual(@as(usize, 0), vm.storage.original_storage.count());
+    try testing.expectEqual(@as(i64, 0), vm.gas_refund);
+    try testing.expectEqual(@as(usize, 0), vm.touched_accounts.count());
+    try testing.expectEqual(@as(usize, 0), vm.selfdestructed_accounts.count());
+
+    // Warm set: the new address stays warm (EIP-2929), the nested callee does not.
+    try testing.expect(vm.access_list_manager.is_address_warm(new_address));
+    try testing.expect(!vm.access_list_manager.is_address_warm(r1_other));
+
+    // The creator nonce is owned by the transaction processor at depth 0.
+    try testing.expectEqual(@as(u64, 1), vm.getNonce(r1_caller));
+    try testing.expectEqual(@as(usize, 0), vm.frames.items.len);
+}
+
+test "R1 create: successful creation keeps init-code effects (control)" {
+    const testing = std.testing;
+    var case: R1CreateCase = undefined;
+    // RETURN(0, 1): deploys a single 0x00 byte.
+    try r1RunCreate(&case, .CANCUN, [_]u8{ 0x60, 0x01, 0x60, 0x00, 0xf3 }, 300_000);
+    defer case.vm.deinit();
+    const vm = &case.vm;
+
+    try testing.expect(case.result.success);
+    try testing.expect(case.result.address.equals(case.new_address));
+    try testing.expectEqual(@as(usize, 0), case.result.output.len);
+    try testing.expectEqualSlices(u8, &[_]u8{0x00}, vm.get_raw_code(case.new_address));
+    try testing.expectEqual(@as(u64, 1), vm.getNonce(case.new_address));
+    try testing.expectEqual(@as(u256, 105), r1Balance(vm, case.new_address));
+    try testing.expectEqual(@as(u256, 995), r1Balance(vm, r1_caller));
+    try testing.expectEqual(@as(u256, 1), r1Slot(vm, case.new_address, 0));
+    try testing.expectEqual(@as(u256, 7), r1Slot(vm, r1_other, 0));
+    try testing.expectEqual(@as(usize, 2), vm.logs.items.len);
+    try testing.expect(vm.gas_refund > 0);
+    try testing.expect(vm.created_accounts.contains(case.new_address));
+    try testing.expect(vm.access_list_manager.is_address_warm(r1_other));
+}
+
+test "R1 create: REVERT in init code rolls back everything and returns only revert data" {
+    const testing = std.testing;
+    var case: R1CreateCase = undefined;
+    // REVERT(0, 1)
+    try r1RunCreate(&case, .CANCUN, [_]u8{ 0x60, 0x01, 0x60, 0x00, 0xfd }, 300_000);
+    defer case.vm.deinit();
+
+    try r1ExpectCreateRolledBack(&case);
+    try testing.expectEqual(@as(usize, 1), case.result.output.len);
+    try testing.expect(case.result.gas_left > 0); // REVERT returns unused gas
+}
+
+test "R1 create: exceptional halt in init code rolls back everything with empty output" {
+    const testing = std.testing;
+    var case: R1CreateCase = undefined;
+    try r1RunCreate(&case, .CANCUN, [_]u8{0xfe}, 300_000); // INVALID
+    defer case.vm.deinit();
+
+    try r1ExpectCreateRolledBack(&case);
+    try testing.expectEqual(@as(usize, 0), case.result.output.len);
+    try testing.expectEqual(@as(u64, 0), case.result.gas_left);
+}
+
+test "R1 create: code-deposit out-of-gas rolls back everything (Homestead+)" {
+    const testing = std.testing;
+    var case: R1CreateCase = undefined;
+    // RETURN(0, 0x1000): 4096 bytes cost 819,200 deposit gas, more than is left.
+    try r1RunCreate(&case, .CANCUN, [_]u8{ 0x61, 0x10, 0x00, 0x60, 0x00, 0xf3 }, 300_000);
+    defer case.vm.deinit();
+
+    try r1ExpectCreateRolledBack(&case);
+    try testing.expectEqual(@as(usize, 0), case.result.output.len);
+    try testing.expectEqual(@as(u64, 0), case.result.gas_left);
+}
+
+test "R1 create: EIP-3541 0xEF prefix rolls back everything with empty output" {
+    const testing = std.testing;
+    var case: R1CreateCase = undefined;
+    // MSTORE8(0, 0xEF); RETURN(0, 1)
+    try r1RunCreate(&case, .CANCUN, [_]u8{ 0x60, 0xef, 0x60, 0x00, 0x53, 0x60, 0x01, 0x60, 0x00, 0xf3 }, 300_000);
+    defer case.vm.deinit();
+
+    try r1ExpectCreateRolledBack(&case);
+    try testing.expectEqual(@as(usize, 0), case.result.output.len);
+    try testing.expectEqual(@as(u64, 0), case.result.gas_left);
+}
+
+test "R1 create: EIP-170 oversize code rolls back everything with empty output" {
+    const testing = std.testing;
+    var case: R1CreateCase = undefined;
+    // RETURN(0, 24577): one byte over the limit, with ample gas for the deposit.
+    try r1RunCreate(&case, .CANCUN, [_]u8{ 0x61, 0x60, 0x01, 0x60, 0x00, 0xf3 }, 10_000_000);
+    defer case.vm.deinit();
+
+    try r1ExpectCreateRolledBack(&case);
+    try testing.expectEqual(@as(usize, 0), case.result.output.len);
+    try testing.expectEqual(@as(u64, 0), case.result.gas_left);
+}
+
+test "R1 create: Frontier keeps the account with empty code on deposit out-of-gas; Homestead fails" {
+    const testing = std.testing;
+    // RETURN(0, 100): deposit costs 20,000 gas; only 1,000 is supplied.
+    const init_code = [_]u8{ 0x60, 0x64, 0x60, 0x00, 0xf3 };
+
+    inline for (.{ primitives.Hardfork.FRONTIER, primitives.Hardfork.HOMESTEAD }) |fork| {
+        var vm: Evm = undefined;
+        try vm.init(testing.allocator, null, fork, null, r1_caller, 0, null);
+        defer vm.deinit();
+        try vm.initTransactionState(null);
+        try vm.balances.put(r1_caller, 10);
+        try vm.nonces.put(r1_caller, 1);
+        const new_address = try vm.computeCreateAddress(r1_caller, 0);
+
+        const result = try vm.inner_create(3, &init_code, 1_000, null);
+        try testing.expectEqual(@as(usize, 0), vm.get_raw_code(new_address).len);
+        try testing.expectEqual(@as(usize, 0), result.output.len);
+        // Before Spurious Dragon (EIP-161) a new contract starts at nonce 0.
+        try testing.expectEqual(@as(u64, 0), vm.getNonce(new_address));
+        if (fork == .FRONTIER) {
+            try testing.expect(result.success);
+            try testing.expect(result.address.equals(new_address));
+            try testing.expect(result.gas_left > 0 and result.gas_left < 1_000); // deposit not charged
+            try testing.expectEqual(@as(u256, 3), r1Balance(&vm, new_address));
+        } else {
+            try testing.expect(!result.success);
+            try testing.expectEqual(@as(u64, 0), result.gas_left);
+            try testing.expectEqual(@as(u256, 0), r1Balance(&vm, new_address));
+            try testing.expectEqual(@as(u256, 10), r1Balance(&vm, r1_caller));
+        }
+    }
+}
+
+test "R1 create: collision on nonce, code or storage (EIP-7610) keeps pre-existing ETH" {
+    const testing = std.testing;
+    const stop = [_]u8{0x00};
+    const Kind = enum { nonce, code, storage };
+
+    inline for (.{ Kind.nonce, Kind.code, Kind.storage }) |kind| {
+        var vm: Evm = undefined;
+        try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+        defer vm.deinit();
+        try vm.initTransactionState(null);
+        try vm.balances.put(r1_caller, 1_000);
+        try vm.nonces.put(r1_caller, 1);
+        const new_address = try vm.computeCreateAddress(r1_caller, 0);
+        try vm.balances.put(new_address, 777);
+        switch (kind) {
+            .nonce => try vm.nonces.put(new_address, 1),
+            .code => try vm.code.put(new_address, &stop),
+            .storage => try vm.storage.storage.put(.{ .address = new_address.bytes, .slot = 9 }, 1),
+        }
+
+        const result = try vm.inner_create(5, &stop, 100_000, null);
+        try testing.expect(!result.success);
+        try testing.expectEqual(@as(u64, 0), result.gas_left); // collision consumes all gas
+        try testing.expectEqual(@as(usize, 0), result.output.len);
+        try testing.expectEqual(@as(u256, 777), r1Balance(&vm, new_address));
+        try testing.expectEqual(@as(u256, 1_000), r1Balance(&vm, r1_caller));
+        try testing.expectEqual(@as(u256, if (kind == .storage) 1 else 0), r1Slot(&vm, new_address, 9));
+        try testing.expectEqual(@as(u64, if (kind == .nonce) 1 else 0), vm.getNonce(new_address));
+    }
+}
+
+test "R1 create: EIP-3860 oversize init code halts before the balance check" {
+    const testing = std.testing;
+    const oversize = [_]u8{0x00} ** 49153;
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .SHANGHAI, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.initTransactionState(null);
+
+    // The creator cannot afford the endowment, yet the size check must win.
+    try testing.expectError(error.OutOfGas, vm.inner_create(1, &oversize, 1_000_000, null));
+    // At the limit the balance check applies: fail softly and return the gas.
+    const at_limit = try vm.inner_create(1, oversize[0..49152], 1_000_000, null);
+    try testing.expect(!at_limit.success);
+    try testing.expectEqual(@as(u64, 1_000_000), at_limit.gas_left);
+
+    // Before Shanghai there is no init code limit.
+    var london: Evm = undefined;
+    try london.init(testing.allocator, null, .LONDON, null, r1_caller, 0, null);
+    defer london.deinit();
+    try london.initTransactionState(null);
+    const pre_shanghai = try london.inner_create(0, &oversize, 1_000_000, null);
+    try testing.expect(pre_shanghai.success);
+}
+
+test "R1 create: Evm.call(.create) derives one address from params.caller and deploys there" {
+    const testing = std.testing;
+    // RETURN(0, 1)
+    const init_code = [_]u8{ 0x60, 0x01, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    // `origin` differs from the creator on purpose.
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_other, 0, null);
+    defer vm.deinit();
+    try vm.balances.put(r1_caller, 50);
+    try vm.nonces.put(r1_caller, 5); // already incremented by the transaction processor
+    const expected = try vm.computeCreateAddress(r1_caller, 4);
+
+    const result = vm.call(.{ .create = .{
+        .caller = r1_caller,
+        .value = 7,
+        .init_code = &init_code,
+        .gas = 200_000,
+    } });
+    try testing.expect(result.success);
+    try testing.expect(result.created_address.?.equals(expected));
+    try testing.expectEqualSlices(u8, &[_]u8{0x00}, vm.get_raw_code(expected));
+    try testing.expectEqual(@as(u256, 7), r1Balance(&vm, expected));
+    try testing.expectEqual(@as(u256, 43), r1Balance(&vm, r1_caller));
+    try testing.expectEqual(@as(u64, 5), vm.getNonce(r1_caller));
+}
+
+// ---- Top-level call(): rollback, pre-state, per-call inputs (F-07 / C-10 / C-14 / C-16) ----
+
+test "R1 call: REVERT and exceptional halt roll back storage, logs and the value transfer" {
+    const testing = std.testing;
+    // SSTORE(0,1); LOG0(0,0); <tail>
+    const effects = [_]u8{ 0x60, 0x01, 0x60, 0x00, 0x55, 0x60, 0x00, 0x60, 0x00, 0xa0 };
+    const reverting = effects ++ [_]u8{ 0x60, 0x01, 0x60, 0x00, 0xfd }; // REVERT(0,1)
+    const halting = effects ++ [_]u8{0xfe}; // INVALID
+    const committing = effects ++ [_]u8{0x00}; // STOP
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.balances.put(r1_caller, 100);
+    try vm.storage.storage.put(.{ .address = r1_contract.bytes, .slot = 5 }, 42);
+
+    try vm.code.put(r1_contract, &reverting);
+    const reverted = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 10, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(!reverted.success);
+    try testing.expectEqual(@as(usize, 1), reverted.output.len);
+    try testing.expect(reverted.gas_left > 0);
+    try testing.expectEqual(@as(usize, 0), reverted.logs.len);
+    try testing.expectEqual(@as(u64, 0), reverted.refund_counter);
+    try testing.expectEqual(@as(u256, 0), r1Slot(&vm, r1_contract, 0));
+    try testing.expectEqual(@as(u256, 42), r1Slot(&vm, r1_contract, 5));
+    try testing.expectEqual(@as(u256, 100), r1Balance(&vm, r1_caller));
+    try testing.expectEqual(@as(u256, 0), r1Balance(&vm, r1_contract));
+
+    try vm.code.put(r1_contract, &halting);
+    const halted = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 10, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(!halted.success);
+    try testing.expectEqual(@as(u64, 0), halted.gas_left);
+    try testing.expectEqual(@as(usize, 0), halted.output.len);
+    try testing.expectEqual(@as(u256, 0), r1Slot(&vm, r1_contract, 0));
+    try testing.expectEqual(@as(u256, 100), r1Balance(&vm, r1_caller));
+    try testing.expectEqual(@as(u256, 0), r1Balance(&vm, r1_contract));
+
+    try vm.code.put(r1_contract, &committing);
+    const committed = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 10, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(committed.success);
+    try testing.expectEqual(@as(usize, 1), committed.logs.len);
+    try testing.expectEqual(@as(u256, 1), r1Slot(&vm, r1_contract, 0));
+    try testing.expectEqual(@as(u256, 90), r1Balance(&vm, r1_caller));
+    try testing.expectEqual(@as(u256, 10), r1Balance(&vm, r1_contract));
+}
+
+test "R1 call: a reverted self-transfer does not burn ETH (hostless and host-backed)" {
+    const testing = std.testing;
+    const reverting = [_]u8{ 0x60, 0x00, 0x60, 0x00, 0xfd }; // REVERT(0,0)
+    const stop = [_]u8{0x00};
+    const self_call: Evm.CallParams = .{ .call = .{ .caller = r1_contract, .to = r1_contract, .value = 10, .input = &.{}, .gas = 100_000 } };
+
+    // Hostless
+    {
+        var vm: Evm = undefined;
+        try vm.init(testing.allocator, null, .CANCUN, null, r1_contract, 0, null);
+        defer vm.deinit();
+        try vm.balances.put(r1_contract, 100);
+
+        try vm.code.put(r1_contract, &reverting);
+        try testing.expect(!vm.call(self_call).success);
+        try testing.expectEqual(@as(u256, 100), r1Balance(&vm, r1_contract));
+
+        try vm.code.put(r1_contract, &stop);
+        try testing.expect(vm.call(self_call).success);
+        try testing.expectEqual(@as(u256, 100), r1Balance(&vm, r1_contract));
+    }
+
+    // Host-backed
+    {
+        var backing: R1Host = undefined;
+        backing.init(testing.allocator);
+        defer backing.deinit();
+        try backing.balances.put(r1_contract, 100);
+        try backing.code.put(r1_contract, &reverting);
+
+        var vm: Evm = undefined;
+        try vm.init(testing.allocator, backing.interface(), .CANCUN, null, r1_contract, 0, null);
+        defer vm.deinit();
+
+        try testing.expect(!vm.call(self_call).success);
+        try testing.expectEqual(@as(u256, 100), backing.balances.get(r1_contract).?);
+
+        try backing.code.put(r1_contract, &stop);
+        try testing.expect(vm.call(self_call).success);
+        try testing.expectEqual(@as(u256, 100), backing.balances.get(r1_contract).?);
+    }
+}
+
+test "R1 call: host-backed top-level revert restores host storage and balances" {
+    const testing = std.testing;
+    // SSTORE(0,1); SSTORE(5,0) (clears a pre-existing slot); REVERT(0,0)
+    const reverting = [_]u8{ 0x60, 0x01, 0x60, 0x00, 0x55, 0x60, 0x00, 0x60, 0x05, 0x55, 0x60, 0x00, 0x60, 0x00, 0xfd };
+
+    var backing: R1Host = undefined;
+    backing.init(testing.allocator);
+    defer backing.deinit();
+    try backing.balances.put(r1_caller, 100);
+    try backing.code.put(r1_contract, &reverting);
+    try backing.storage.put(.{ .address = r1_contract.bytes, .slot = 5 }, 42);
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, backing.interface(), .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+
+    const result = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 10, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(!result.success);
+    try testing.expectEqual(@as(?u256, null), backing.storage.get(.{ .address = r1_contract.bytes, .slot = 0 }));
+    try testing.expectEqual(@as(?u256, 42), backing.storage.get(.{ .address = r1_contract.bytes, .slot = 5 }));
+    try testing.expectEqual(@as(u256, 100), backing.balances.get(r1_caller).?);
+    try testing.expectEqual(@as(u256, 0), backing.balances.get(r1_contract) orelse 0);
+    try testing.expectEqual(@as(i64, 0), vm.gas_refund);
+}
+
+test "R1 call: hostless value transfer is checked and applied" {
+    const testing = std.testing;
+    const stop = [_]u8{0x00};
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.code.put(r1_contract, &stop);
+
+    // An unfunded caller cannot present a positive CALLVALUE.
+    const unfunded = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 1, .input = &.{}, .gas = 50_000 } });
+    try testing.expect(!unfunded.success);
+    try testing.expectEqual(@as(u256, 0), r1Balance(&vm, r1_contract));
+
+    try vm.balances.put(r1_caller, 5);
+    const funded = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 5, .input = &.{}, .gas = 50_000 } });
+    try testing.expect(funded.success);
+    try testing.expectEqual(@as(u256, 0), r1Balance(&vm, r1_caller));
+    try testing.expectEqual(@as(u256, 5), r1Balance(&vm, r1_contract));
+}
+
+test "R1 call: pre-installed state survives transactions and committed writes persist" {
+    const testing = std.testing;
+    // RETURN(SLOAD(5)) as one word
+    const read_slot5 = [_]u8{ 0x60, 0x05, 0x54, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    // SSTORE(1, 0xAA); STOP
+    const write_slot1 = [_]u8{ 0x60, 0xaa, 0x60, 0x01, 0x55, 0x00 };
+    // RETURN(SLOAD(1)) as one word
+    const read_slot1 = [_]u8{ 0x60, 0x01, 0x54, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    // RETURN(SELFBALANCE + EXTCODESIZE(r1_other)) as one word
+    const read_accounts = [_]u8{ 0x47, 0x73 } ++ r1_other.bytes ++ [_]u8{ 0x3b, 0x01, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+
+    // Pre-state installed the way the C API setters do, before any call.
+    try vm.balances.put(r1_contract, 77);
+    try vm.nonces.put(r1_caller, 3);
+    try vm.code.put(r1_other, &[_]u8{ 0x00, 0x00, 0x00 });
+    try vm.storage.storage.put(.{ .address = r1_contract.bytes, .slot = 5 }, 42);
+
+    const call_contract: Evm.CallParams = .{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 100_000 } };
+
+    try vm.code.put(r1_contract, &read_slot5);
+    const seeded = vm.call(call_contract);
+    try testing.expect(seeded.success);
+    try testing.expectEqual(@as(u256, 42), try r1Word(seeded.output));
+
+    try vm.code.put(r1_contract, &read_accounts);
+    const accounts = vm.call(call_contract);
+    try testing.expect(accounts.success);
+    try testing.expectEqual(@as(u256, 77 + 3), try r1Word(accounts.output));
+
+    try vm.code.put(r1_contract, &write_slot1);
+    try testing.expect(vm.call(call_contract).success);
+    try vm.code.put(r1_contract, &read_slot1);
+    const persisted = vm.call(call_contract);
+    try testing.expectEqual(@as(u256, 0xaa), try r1Word(persisted.output));
+
+    // Nothing installed up front was lost across four transactions.
+    try testing.expectEqual(@as(u256, 77), r1Balance(&vm, r1_contract));
+    try testing.expectEqual(@as(u64, 3), vm.getNonce(r1_caller));
+    try testing.expectEqual(@as(usize, 3), vm.get_raw_code(r1_other).len);
+    try testing.expectEqual(@as(u256, 42), r1Slot(&vm, r1_contract, 5));
+}
+
+test "R1 call: gas_refund resets at the start of every transaction" {
+    const testing = std.testing;
+    // SSTORE(0,1); SSTORE(0,0); STOP  -> refund 19,900 (EIP-3529)
+    const set_then_clear = [_]u8{ 0x60, 0x01, 0x60, 0x00, 0x55, 0x60, 0x00, 0x60, 0x00, 0x55, 0x00 };
+    const stop = [_]u8{0x00};
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    const call_contract: Evm.CallParams = .{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 100_000 } };
+
+    try vm.code.put(r1_contract, &set_then_clear);
+    const first = vm.call(call_contract);
+    try testing.expect(first.success);
+    try testing.expectEqual(@as(u64, 19_900), first.refund_counter);
+    try testing.expectEqual(@as(i64, 19_900), vm.gas_refund); // readable after the call
+
+    const second = vm.call(call_contract);
+    try testing.expectEqual(@as(u64, 19_900), second.refund_counter); // not 39,800
+    try testing.expectEqual(@as(i64, 19_900), vm.gas_refund);
+
+    try vm.code.put(r1_contract, &stop);
+    const third = vm.call(call_contract);
+    try testing.expect(third.success);
+    try testing.expectEqual(@as(u64, 0), third.refund_counter);
+    try testing.expectEqual(@as(i64, 0), vm.gas_refund);
+
+    // initTransactionState alone resets it too (creation transactions enter that way).
+    vm.add_refund(123);
+    try vm.initTransactionState(null);
+    try testing.expectEqual(@as(i64, 0), vm.gas_refund);
+}
+
+test "R1 refund: add_refund / sub_refund form a signed, saturating counter" {
+    const testing = std.testing;
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+
+    vm.add_refund(100);
+    vm.sub_refund(250);
+    try testing.expectEqual(@as(i64, -150), vm.gas_refund);
+    try testing.expectEqual(@as(u64, 0), vm.get_effective_refund()); // negative reads as zero
+
+    vm.add_refund(200);
+    try testing.expectEqual(@as(i64, 50), vm.gas_refund);
+    try testing.expectEqual(@as(u64, 50), vm.get_effective_refund());
+
+    vm.add_refund(std.math.maxInt(u64));
+    vm.add_refund(std.math.maxInt(u64));
+    try testing.expectEqual(@as(i64, std.math.maxInt(i64)), vm.gas_refund);
+    try testing.expectEqual(@as(u64, std.math.maxInt(i64)), vm.get_effective_refund());
+
+    vm.sub_refund(std.math.maxInt(u64));
+    vm.sub_refund(std.math.maxInt(u64));
+    vm.sub_refund(std.math.maxInt(u64));
+    try testing.expectEqual(@as(i64, std.math.minInt(i64)), vm.gas_refund);
+    try testing.expectEqual(@as(u64, 0), vm.get_effective_refund());
+}
+
+test "R1 call: top-level STATICCALL is read-only" {
+    const testing = std.testing;
+    const writes = [_]u8{ 0x60, 0x01, 0x60, 0x00, 0x55, 0x00 }; // SSTORE(0,1); STOP
+    const reads = [_]u8{ 0x60, 0x05, 0x54, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.storage.storage.put(.{ .address = r1_contract.bytes, .slot = 5 }, 42);
+
+    try vm.code.put(r1_contract, &writes);
+    const denied = vm.call(.{ .staticcall = .{ .caller = r1_caller, .to = r1_contract, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(!denied.success);
+    try testing.expectEqual(@as(u256, 0), r1Slot(&vm, r1_contract, 0));
+
+    try vm.code.put(r1_contract, &reads);
+    const allowed = vm.call(.{ .staticcall = .{ .caller = r1_caller, .to = r1_contract, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(allowed.success);
+    try testing.expectEqual(@as(u256, 42), try r1Word(allowed.output));
+}
+
+test "R1 call: setBytecode, setAccessList and blob hashes apply to one call only" {
+    const testing = std.testing;
+    // RETURN(42) as one word
+    const return_42 = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    // RETURN(BLOBHASH(0)) as one word
+    const return_blobhash = [_]u8{ 0x60, 0x00, 0x49, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    const call_empty: Evm.CallParams = .{ .call = .{ .caller = r1_caller, .to = r1_empty, .value = 0, .input = &.{}, .gas = 100_000 } };
+
+    // setBytecode supplies the code for a target without installed code...
+    vm.setBytecode(&return_42);
+    const with_bytecode = vm.call(call_empty);
+    try testing.expect(with_bytecode.success);
+    try testing.expectEqual(@as(u256, 42), try r1Word(with_bytecode.output));
+    // ...for exactly one call.
+    const without_bytecode = vm.call(call_empty);
+    try testing.expect(without_bytecode.success);
+    try testing.expectEqual(@as(usize, 0), without_bytecode.output.len);
+    try testing.expectEqual(@as(usize, 0), vm.get_raw_code(r1_empty).len);
+
+    // Installed account code wins over a pending override.
+    try vm.code.put(r1_contract, &return_blobhash);
+    vm.setBytecode(&return_42);
+    const blob_hash = [_][32]u8{[_]u8{0x01} ** 32};
+    vm.setBlobVersionedHashes(&blob_hash);
+    const access_entries = [_]primitives.AccessList.AccessListEntry{.{ .address = r1_other, .storage_keys = &.{} }};
+    vm.setAccessList(&access_entries);
+    const call_contract: Evm.CallParams = .{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 100_000 } };
+
+    const with_blob = vm.call(call_contract);
+    try testing.expect(with_blob.success);
+    try testing.expectEqual(std.mem.readInt(u256, &blob_hash[0], .big), try r1Word(with_blob.output));
+
+    // None of the per-call inputs leak into the next transaction.
+    try testing.expect(vm.pending_access_list == null);
+    try testing.expectEqual(@as(usize, 0), vm.pending_bytecode.len);
+    try testing.expectEqual(@as(usize, 0), vm.blob_versioned_hashes.len);
+    const without_blob = vm.call(call_contract);
+    try testing.expect(without_blob.success);
+    try testing.expectEqual(@as(u256, 0), try r1Word(without_blob.output));
+}
+
+test "R1 call: DELEGATECALL inherits CALLVALUE without moving funds" {
+    const testing = std.testing;
+    // Implementation: RETURN(CALLVALUE) as one word
+    const implementation = [_]u8{ 0x34, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    // Proxy: DELEGATECALL(GAS, r1_other, 0, 0, 0, 0x20); RETURN(0, 0x20)
+    const proxy = [_]u8{ 0x60, 0x20, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x73 } ++ r1_other.bytes ++
+        [_]u8{ 0x5a, 0xf4, 0x50, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.balances.put(r1_caller, 100);
+    try vm.code.put(r1_contract, &proxy);
+    try vm.code.put(r1_other, &implementation);
+
+    const result = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 7, .input = &.{}, .gas = 200_000 } });
+    try testing.expect(result.success);
+    try testing.expectEqual(@as(u256, 7), try r1Word(result.output));
+    try testing.expectEqual(@as(u256, 7), r1Balance(&vm, r1_contract));
+    try testing.expectEqual(@as(u256, 0), r1Balance(&vm, r1_other));
+    try testing.expectEqual(@as(u256, 93), r1Balance(&vm, r1_caller));
+}
+
+test "R1 touched: an empty account touched only inside a reverted call is not deleted" {
+    const testing = std.testing;
+    // Child: CALL(GAS, r1_empty, 0, 0, 0, 0, 0); POP; <tail>
+    const child_prefix = [_]u8{ 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x73 } ++ r1_empty.bytes ++ [_]u8{ 0x5a, 0xf1, 0x50 };
+    const child_reverts = child_prefix ++ [_]u8{ 0x60, 0x00, 0x60, 0x00, 0xfd };
+    const child_returns = child_prefix ++ [_]u8{0x00};
+    // Root: CALL(GAS, r1_other, 0, 0, 0, 0, 0); STOP
+    const root = [_]u8{ 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x73 } ++ r1_other.bytes ++ [_]u8{ 0x5a, 0xf1, 0x00 };
+
+    inline for (.{ true, false }) |child_should_revert| {
+        var backing: R1Host = undefined;
+        backing.init(testing.allocator);
+        defer backing.deinit();
+        try backing.existing.put(r1_empty, {}); // exists and is empty
+        try backing.code.put(r1_contract, &root);
+        try backing.code.put(r1_other, if (child_should_revert) &child_reverts else &child_returns);
+
+        var vm: Evm = undefined;
+        try vm.init(testing.allocator, backing.interface(), .BERLIN, null, r1_caller, 0, null);
+        defer vm.deinit();
+
+        const result = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 1_000_000 } });
+        try testing.expect(result.success); // the root catches the child's revert
+        try testing.expectEqual(!child_should_revert, backing.deleted.contains(r1_empty));
+    }
+}
+
+// ---- EIP-7702 delegation helpers (Contract B, F-08 / C-12 / R1-016) ---------
+
+test "R1 7702: get_raw_code and get_delegated_target separate stored code from executable code" {
+    const testing = std.testing;
+    const designator = [_]u8{ 0xef, 0x01, 0x00 } ++ r1_other.bytes;
+    const return_42 = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .PRAGUE, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.initTransactionState(null);
+    try vm.code.put(r1_contract, &designator);
+
+    // Raw code is the 23-byte designator; the target is decoded from it.
+    try testing.expectEqualSlices(u8, &designator, vm.get_raw_code(r1_contract));
+    try testing.expect(vm.get_delegated_target(r1_contract).?.equals(r1_other));
+    try testing.expect(vm.get_delegated_target(r1_other) == null);
+    try testing.expect(vm.get_delegated_target(r1_empty) == null);
+
+    // A delegating account is not empty, even while its delegate has no code.
+    try testing.expectEqual(@as(usize, 0), vm.get_code(r1_contract).len);
+    try testing.expect(!vm.accountIsEmpty(r1_contract));
+    try testing.expect(vm.accountExists(r1_contract));
+
+    // Executable code follows one level of delegation.
+    try vm.code.put(r1_other, &return_42);
+    try testing.expectEqualSlices(u8, &return_42, vm.get_code(r1_contract));
+
+    // Not a designator: wrong length or wrong prefix.
+    try vm.code.put(r1_empty, designator[0..22]);
+    try testing.expect(vm.get_delegated_target(r1_empty) == null);
+    const wrong_prefix = [_]u8{ 0xef, 0x01, 0x01 } ++ r1_other.bytes;
+    try vm.code.put(r1_empty, &wrong_prefix);
+    try testing.expect(vm.get_delegated_target(r1_empty) == null);
+
+    // setCodeWithSnapshot journals the account's own code, not the delegate's.
+    var journal = std.AutoHashMap(primitives.Address, []const u8).init(testing.allocator);
+    defer journal.deinit();
+    try vm.code_snapshot_stack.append(vm.tx_arena.allocator(), &journal);
+    try vm.setCodeWithSnapshot(r1_contract, &.{});
+    _ = vm.code_snapshot_stack.pop();
+    try testing.expectEqualSlices(u8, &designator, journal.get(r1_contract).?);
+
+    // Before Prague the designator is ordinary code.
+    var cancun: Evm = undefined;
+    try cancun.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer cancun.deinit();
+    try cancun.code.put(r1_contract, &designator);
+    try testing.expect(cancun.get_delegated_target(r1_contract) == null);
+    try testing.expectEqualSlices(u8, &designator, cancun.get_code(r1_contract));
+}
+
+test "R1 7702: calls to a delegating account run the delegate; a precompile delegate runs no precompile" {
+    const testing = std.testing;
+    const return_42 = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    const to_contract = [_]u8{ 0xef, 0x01, 0x00 } ++ r1_other.bytes;
+    const identity = primitives.Address.fromU256(4);
+    const to_identity = [_]u8{ 0xef, 0x01, 0x00 } ++ identity.bytes;
+    const payload = [_]u8{ 0xde, 0xad, 0xbe, 0xef };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .PRAGUE, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.code.put(r1_other, &return_42);
+    try vm.code.put(r1_contract, &to_contract);
+    try vm.code.put(r1_empty, &to_identity);
+
+    // Top level: the delegate's code runs in the delegating account's context.
+    const delegated = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(delegated.success);
+    try testing.expectEqual(@as(u256, 42), try r1Word(delegated.output));
+
+    // Top level, delegate is the identity precompile: empty code runs, input is not echoed.
+    const top_level = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_empty, .value = 0, .input = &payload, .gas = 100_000 } });
+    try testing.expect(top_level.success);
+    try testing.expectEqual(@as(usize, 0), top_level.output.len);
+    try testing.expectEqual(@as(u64, 100_000), top_level.gas_left);
+
+    // Nested: same rule in inner_call.
+    try vm.initTransactionState(null);
+    const nested = vm.inner_call(.{ .call = .{ .caller = r1_caller, .to = r1_empty, .value = 0, .input = &payload, .gas = 100_000 } });
+    try testing.expect(nested.success);
+    try testing.expectEqual(@as(usize, 0), nested.output.len);
+    try testing.expectEqual(@as(u64, 100_000), nested.gas_left);
+
+    // Control: the precompile address itself still executes.
+    const direct = vm.inner_call(.{ .call = .{ .caller = r1_caller, .to = identity, .value = 0, .input = &payload, .gas = 100_000 } });
+    try testing.expect(direct.success);
+    try testing.expectEqualSlices(u8, &payload, direct.output);
+}
+
+// ---- Precompile dispatch and gas bounds (C-20 / R1-030 / F-16) --------------
+
+const r1_over_gas_precompile = primitives.Address{ .bytes = [_]u8{0xd1} ** 20 };
+const r1_failing_precompile = primitives.Address{ .bytes = [_]u8{0xd2} ** 20 };
+const r1_good_precompile = primitives.Address{ .bytes = [_]u8{0xd3} ** 20 };
+
+fn r1OverGasPrecompile(_: ?*anyopaque, _: std.mem.Allocator, _: []const u8, gas_limit: u64) anyerror!evm_config_mod.PrecompileOutput {
+    return .{ .output = &.{}, .gas_used = gas_limit + 1, .success = true };
+}
+
+fn r1FailingPrecompile(_: ?*anyopaque, _: std.mem.Allocator, _: []const u8, _: u64) anyerror!evm_config_mod.PrecompileOutput {
+    return .{ .output = &.{}, .gas_used = 0, .success = false };
+}
+
+fn r1GoodPrecompile(_: ?*anyopaque, allocator: std.mem.Allocator, _: []const u8, _: u64) anyerror!evm_config_mod.PrecompileOutput {
+    return .{ .output = try allocator.dupe(u8, "ok"), .gas_used = 10, .success = true };
+}
+
+const R1OverrideEvm = evm.Evm(.{
+    .precompile_overrides = &[_]evm_config_mod.PrecompileOverride{
+        .{ .address = r1_over_gas_precompile, .execute = r1OverGasPrecompile },
+        .{ .address = r1_failing_precompile, .execute = r1FailingPrecompile },
+        .{ .address = r1_good_precompile, .execute = r1GoodPrecompile },
+    },
+});
+
+test "R1 precompile: gas_used above the gas limit fails the call instead of underflowing" {
+    const testing = std.testing;
+
+    var vm: R1OverrideEvm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.balances.put(r1_caller, 50);
+
+    // Top-level call() consults overrides, like nested calls do.
+    const good = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_good_precompile, .value = 0, .input = &.{}, .gas = 1_000 } });
+    try testing.expect(good.success);
+    try testing.expectEqual(@as(u64, 990), good.gas_left);
+    try testing.expectEqualSlices(u8, "ok", good.output);
+
+    inline for (.{ r1_over_gas_precompile, r1_failing_precompile }) |target| {
+        const top = vm.call(.{ .call = .{ .caller = r1_caller, .to = target, .value = 5, .input = &.{}, .gas = 1_000 } });
+        try testing.expect(!top.success);
+        try testing.expectEqual(@as(u64, 0), top.gas_left);
+        // The value transfer is rolled back with the failed call.
+        try testing.expectEqual(@as(u256, 50), r1Balance(&vm, r1_caller));
+        try testing.expectEqual(@as(u256, 0), r1Balance(&vm, target));
+
+        try vm.initTransactionState(null);
+        const nested = vm.inner_call(.{ .call = .{ .caller = r1_caller, .to = target, .value = 5, .input = &.{}, .gas = 1_000 } });
+        try testing.expect(!nested.success);
+        try testing.expectEqual(@as(u64, 0), nested.gas_left);
+        try testing.expectEqual(@as(u256, 50), r1Balance(&vm, r1_caller));
+        try testing.expectEqual(@as(u256, 0), r1Balance(&vm, target));
+    }
+
+    try vm.initTransactionState(null);
+    const nested_good = vm.inner_call(.{ .call = .{ .caller = r1_caller, .to = r1_good_precompile, .value = 5, .input = &.{}, .gas = 1_000 } });
+    try testing.expect(nested_good.success);
+    try testing.expectEqual(@as(u64, 990), nested_good.gas_left);
+    try testing.expectEqual(@as(u256, 45), r1Balance(&vm, r1_caller));
+    try testing.expectEqual(@as(u256, 5), r1Balance(&vm, r1_good_precompile));
+}
+
+test "R1 call: gas above i64 max is capped instead of trapping" {
+    const testing = std.testing;
+    const stop = [_]u8{0x00};
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    try vm.code.put(r1_contract, &stop);
+
+    const result = vm.call(.{ .call = .{ .caller = r1_caller, .to = r1_contract, .value = 0, .input = &.{}, .gas = std.math.maxInt(u64) } });
+    try testing.expect(result.success);
+    try testing.expectEqual(@as(u64, std.math.maxInt(i64)), result.gas_left);
+
+    try vm.initTransactionState(null);
+    try vm.nonces.put(r1_caller, 1);
+    const created = try vm.inner_create(0, &stop, std.math.maxInt(u64), null);
+    try testing.expect(created.success);
+}
