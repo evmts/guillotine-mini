@@ -60,6 +60,7 @@ pub fn build(b: *std.Build) void {
         // Later on we'll use this module as the root module of a test executable
         // which requires us to specify a target.
         .target = target,
+        .optimize = optimize,
         .imports = &.{
             .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "precompiles", .module = precompiles_mod },
@@ -102,17 +103,8 @@ pub fn build(b: *std.Build) void {
     const unit_test_step = b.step("unit", "Run unit tests only (fast)");
     unit_test_step.dependOn(&run_mod_tests.step);
 
-    // Create EVM module (used by spec tests and client EVM adapter)
-    const evm_mod = b.addModule("evm", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "precompiles", .module = precompiles_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-        },
-    });
+    // Keep the public "evm" name as an alias so both imports share the same types.
+    b.modules.put("evm", mod) catch @panic("OOM");
 
     // Client DB module (database abstraction layer)
     const client_db_mod = b.addModule("client_db", .{
@@ -372,7 +364,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
         },
     });
 
@@ -413,7 +405,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
             .{ .name = "state-manager", .module = state_manager_mod },
         },
     });
@@ -465,7 +457,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "bench_utils", .module = bench_utils_mod },
             .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
             .{ .name = "state-manager", .module = state_manager_mod },
         },
     });
@@ -644,7 +636,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
             .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "client_blockchain", .module = client_blockchain_mod },
         },
@@ -676,12 +668,10 @@ pub fn build(b: *std.Build) void {
     // Run artifacts for state tests
     const run_spec_tests_state = b.addRunArtifact(spec_tests_state);
     run_spec_tests_state.setCwd(b.path(".")); // Set working directory to project root for test file paths
-    run_spec_tests_state.setEnvironmentVariable("TEST_TYPE", "state");
 
     // Run artifacts for blockchain tests
     const run_spec_tests_blockchain = b.addRunArtifact(spec_tests_blockchain);
     run_spec_tests_blockchain.setCwd(b.path(".")); // Set working directory to project root for test file paths
-    run_spec_tests_blockchain.setEnvironmentVariable("TEST_TYPE", "blockchain");
 
     // Main spec test step - runs STATE TESTS ONLY by default
     const spec_test_step = b.step("specs", "Run execution-specs STATE tests");
@@ -709,7 +699,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "evm", .module = evm_mod },
+                .{ .name = "evm", .module = mod },
                 .{ .name = "voltaire", .module = primitives_mod },
                 .{ .name = "client_blockchain", .module = client_blockchain_mod },
             },
@@ -897,7 +887,6 @@ pub fn build(b: *std.Build) void {
             const run_sub_tests = b.addRunArtifact(sub_tests);
             run_sub_tests.setCwd(b.path("."));
             run_sub_tests.setEnvironmentVariable("TEST_FILTER", sub_target.filter);
-            run_sub_tests.setEnvironmentVariable("TEST_TYPE", "state");
 
             const step_name = b.fmt("specs-{s}", .{sub_target.name});
             const sub_step = b.step(step_name, sub_target.desc);
@@ -922,7 +911,6 @@ pub fn build(b: *std.Build) void {
         const run_fork_tests = b.addRunArtifact(fork_tests);
         run_fork_tests.setCwd(b.path("."));
         run_fork_tests.setEnvironmentVariable("TEST_FILTER", fork.name);
-        run_fork_tests.setEnvironmentVariable("TEST_TYPE", "state");
 
         const step_name = b.fmt("specs-{s}", .{fork.name});
         const fork_step = b.step(step_name, fork.desc);
@@ -957,7 +945,6 @@ pub fn build(b: *std.Build) void {
         const run_eip_tests = b.addRunArtifact(eip_tests);
         run_eip_tests.setCwd(b.path("."));
         run_eip_tests.setEnvironmentVariable("TEST_FILTER", suite.filter);
-        run_eip_tests.setEnvironmentVariable("TEST_TYPE", "state");
 
         const step_name = b.fmt("specs-{s}", .{suite.name});
         const eip_step = b.step(step_name, suite.desc);
@@ -984,21 +971,6 @@ pub fn build(b: *std.Build) void {
     const run_trace_test = b.addRunArtifact(trace_test);
     const trace_test_step = b.step("test-trace", "Run trace capture test");
     trace_test_step.dependOn(&run_trace_test.step);
-
-    // Interactive test runner
-    const interactive_spec_tests = b.addTest(.{
-        .root_module = spec_runner_mod,
-        .test_runner = .{
-            .path = b.path("interactive_test_runner.zig"),
-            .mode = .simple,
-        },
-    });
-    linkRustSupport(interactive_spec_tests);
-
-    const run_interactive_tests = b.addRunArtifact(interactive_spec_tests);
-    run_interactive_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
-    const interactive_test_step = b.step("test-watch", "Run interactive test runner");
-    interactive_test_step.dependOn(&run_interactive_tests.step);
 
     // WASM build target with ReleaseSmall optimization
     // Using wasi because primitives package includes C libraries (BLST, C-KZG, BN254)

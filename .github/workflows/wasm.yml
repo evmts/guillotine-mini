@@ -2,14 +2,19 @@ name: WASM
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
+env:
+  RUSTUP_TOOLCHAIN: "1.99.0"
+
 jobs:
   wasm:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: guillotine-mini
@@ -35,8 +40,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24.12.0'
-      - name: Install Rust WASM target
-        run: rustup target add wasm32-unknown-unknown
+      - name: Install pinned Rust toolchain and WASM target
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
       - name: Build WASM from source
         run: zig build wasm --summary all
       - name: Report and check WASM bundle size
@@ -73,6 +78,8 @@ jobs:
               raise SystemExit(f"::error::WASM bundle size {raw_bytes} exceeds MAX_WASM_BYTES={max_bytes}")
       - name: Test WASM execution
         run: zig build test-wasm --summary all
+      - name: Run WASM example
+        run: node examples/wasm.mjs
       - uses: actions/upload-artifact@v6
         with:
           name: guillotine-mini-wasm

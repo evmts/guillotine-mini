@@ -1,9 +1,12 @@
 /**
- * Example 2: Async Execution with External Storage Backend
+ * Async Execution with External Storage Backend
+ *
+ * After building the WASM reactor, run with Node.js 24 or newer:
+ *   node examples/typescript/async-execution.ts
  *
  * Demonstrates the async execution protocol for integrating with external state:
  * - Starting async execution with evm_call_ffi
- * - Handling storage/balance/code/nonce requests
+ * - Handling storage and balance requests
  * - Resuming execution with evm_continue_ffi
  * - Processing state change commits
  * - Building a complete async execution loop
@@ -15,24 +18,85 @@
  * - State channels
  */
 
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { readFileSync } from 'node:fs';
+import { WASI } from 'node:wasi';
 
-// Helper functions (same as basic-usage.ts)
-async function loadWasm() {
-  const wasmPath = resolve(__dirname, '../../zig-out/bin/guillotine_mini.wasm');
-  const wasmBuffer = readFileSync(wasmPath);
-  const wasmModule = await WebAssembly.compile(wasmBuffer);
+type WasmExports = WebAssembly.Exports & {
+  memory: WebAssembly.Memory;
+  evm_alloc(length: number): number;
+  evm_free(pointer: number, length: number): void;
+  evm_create(hardfork: number, length: number, logLevel: number): number;
+  evm_destroy(handle: number): void;
+  evm_enable_storage_injector(handle: number): number;
+  evm_set_bytecode(handle: number, code: number, length: number): number;
+  evm_set_execution_context(
+    handle: number, gas: bigint, caller: number, address: number, value: number, calldata: number, length: number
+  ): number;
+  evm_set_blockchain_context(
+    handle: number, chainId: number, blockNumber: bigint, timestamp: bigint, difficulty: number,
+    prevrandao: number, coinbase: number, gasLimit: bigint, baseFee: number, blobBaseFee: number
+  ): void;
+  evm_call_ffi(handle: number, request: number): number;
+  evm_continue_ffi(handle: number, type: number, data: number, length: number, request: number): number;
+  evm_get_state_changes_len(handle: number): number;
+  evm_get_state_changes(handle: number, buffer: number, length: number): number;
+  evm_is_success(handle: number): number;
+  evm_get_output_len(handle: number): number;
+  evm_get_output(handle: number, buffer: number, length: number): number;
+  evm_get_gas_used(handle: number): bigint;
+};
 
-  const imports = {
+async function loadWasm(): Promise<WasmExports> {
+  const bytes = readFileSync(new URL('../../zig-out/bin/guillotine_mini.wasm', import.meta.url));
+  const wasi = new WASI({ version: 'preview1' });
+  const { instance } = await WebAssembly.instantiate(bytes, {
+    wasi_snapshot_preview1: wasi.wasiImport,
     env: {
       js_opcode_callback: () => 0,
       js_precompile_callback: () => 0,
-    }
-  };
+    },
+  });
+  wasi.initialize(instance);
+  return instance.exports as WasmExports;
+}
 
-  const instance = await WebAssembly.instantiate(wasmModule, imports);
-  return instance.exports;
+const RequestType = {
+  RESULT: 0,
+  NEED_STORAGE: 1,
+  NEED_BALANCE: 2,
+  READY_TO_COMMIT: 5,
+  ERROR: 255,
+} as const;
+
+// wasm32 layout of AsyncRequest in src/root_c.zig. Three padding bytes follow slot.
+const JSON_LENGTH_OFFSET = 56;
+const JSON_DATA_OFFSET = 60;
+const JSON_INLINE_CAPACITY = 16384;
+const REQUEST_SIZE = JSON_DATA_OFFSET + JSON_INLINE_CAPACITY;
+
+function allocate(wasm: WasmExports, length: number): number {
+  const pointer = wasm.evm_alloc(length);
+  if (!pointer) throw new Error('WASM buffer allocation failed');
+  return pointer;
+}
+
+function readStateChanges(wasm: WasmExports, handle: number, request: number): string {
+  const length = new DataView(wasm.memory.buffer).getUint32(request + JSON_LENGTH_OFFSET, true);
+  const decoder = new TextDecoder();
+  if (length <= JSON_INLINE_CAPACITY) {
+    return decoder.decode(new Uint8Array(wasm.memory.buffer, request + JSON_DATA_OFFSET, length));
+  }
+
+  const fullLength = wasm.evm_get_state_changes_len(handle);
+  if (fullLength !== length) throw new Error('Inconsistent state changes length');
+  const buffer = allocate(wasm, fullLength);
+  try {
+    const copiedLength = wasm.evm_get_state_changes(handle, buffer, fullLength);
+    if (copiedLength !== fullLength) throw new Error('State changes length changed before copying');
+    return decoder.decode(new Uint8Array(wasm.memory.buffer, buffer, fullLength));
+  } finally {
+    wasm.evm_free(buffer, fullLength);
+  }
 }
 
 function hexToAddress(hex: string): Uint8Array {
@@ -57,8 +121,8 @@ function u256ToBytes(value: bigint): Uint8Array {
 
 function bytesToU256(bytes: Uint8Array): bigint {
   let value = 0n;
-  for (let i = 0; i < 32; i++) {
-    value = (value << 8n) | BigInt(bytes[i]);
+  for (const byte of bytes) {
+    value = (value << 8n) | BigInt(byte);
   }
   return value;
 }
@@ -68,33 +132,13 @@ function addressToHex(address: Uint8Array): string {
 }
 
 /**
- * Request types from AsyncRequest C struct
- */
-enum RequestType {
-  RESULT = 0,           // Execution complete
-  NEED_STORAGE = 1,     // Need storage value
-  NEED_BALANCE = 2,     // Need balance
-  NEED_CODE = 3,        // Need code
-  NEED_NONCE = 4,       // Need nonce
-  READY_TO_COMMIT = 5,  // Ready to commit state changes
-  ERROR = 255           // Error occurred
-}
-
-/**
  * Mock external state backend
  * In production, this would query a database or RPC node
  */
 class ExternalStateBackend {
   private storage = new Map<string, Map<string, bigint>>();
-  private balances = new Map<string, bigint>();
-  private codes = new Map<string, Uint8Array>();
-  private nonces = new Map<string, bigint>();
 
   private requestCount = 0;
-
-  private storageKey(address: Uint8Array, slot: bigint): string {
-    return `${addressToHex(address)}:${slot.toString(16)}`;
-  }
 
   async getStorage(address: Uint8Array, slot: bigint): Promise<bigint> {
     this.requestCount++;
@@ -120,31 +164,8 @@ class ExternalStateBackend {
 
     await this.simulateLatency();
 
-    const balance = this.balances.get(addressToHex(address)) ?? 0n;
-    console.log(`     ↳ Balance: ${balance} wei`);
-    return balance;
-  }
-
-  async getCode(address: Uint8Array): Promise<Uint8Array> {
-    this.requestCount++;
-    console.log(`  📡 [Request ${this.requestCount}] Code read: ${addressToHex(address)}`);
-
-    await this.simulateLatency();
-
-    const code = this.codes.get(addressToHex(address)) ?? new Uint8Array(0);
-    console.log(`     ↳ Code length: ${code.length} bytes`);
-    return code;
-  }
-
-  async getNonce(address: Uint8Array): Promise<bigint> {
-    this.requestCount++;
-    console.log(`  📡 [Request ${this.requestCount}] Nonce read: ${addressToHex(address)}`);
-
-    await this.simulateLatency();
-
-    const nonce = this.nonces.get(addressToHex(address)) ?? 0n;
-    console.log(`     ↳ Nonce: ${nonce}`);
-    return nonce;
+    console.log('     ↳ Balance: 0 wei');
+    return 0n;
   }
 
   async commitStateChanges(changesJson: string): Promise<void> {
@@ -153,14 +174,9 @@ class ExternalStateBackend {
 
     await this.simulateLatency();
 
-    // Parse and apply state changes
-    try {
-      const changes = JSON.parse(changesJson);
-      // In production, this would write to database
-      console.log(`     ✅ State changes committed`);
-    } catch (e) {
-      console.log(`     ⚠️  Warning: Could not parse state changes`);
-    }
+    // A real backend would persist the decoded changes before returning.
+    JSON.parse(changesJson);
+    console.log('     ✅ State changes committed');
   }
 
   // Pre-populate state for testing
@@ -174,22 +190,6 @@ class ExternalStateBackend {
     slotMap.set(slot.toString(16), value);
   }
 
-  setBalance(address: Uint8Array, balance: bigint): void {
-    this.balances.set(addressToHex(address), balance);
-  }
-
-  setCode(address: Uint8Array, code: Uint8Array): void {
-    this.codes.set(addressToHex(address), code);
-  }
-
-  setNonce(address: Uint8Array, nonce: bigint): void {
-    this.nonces.set(addressToHex(address), nonce);
-  }
-
-  resetRequestCount(): void {
-    this.requestCount = 0;
-  }
-
   private async simulateLatency(): Promise<void> {
     // Simulate 10-50ms database/network latency
     const delay = Math.random() * 40 + 10;
@@ -197,388 +197,138 @@ class ExternalStateBackend {
   }
 }
 
-/**
- * Example 1: Simple Async Storage Access
- *
- * Bytecode loads a value from storage slot 0
- */
-async function example1_asyncStorageLoad() {
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('Example 1: Async Storage Load');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+async function executeAsync(
+  wasm: WasmExports, handle: number, request: number, backend: ExternalStateBackend
+): Promise<number> {
+  let ok = wasm.evm_call_ffi(handle, request);
+  for (let iteration = 1; iteration <= 100; iteration++) {
+    const memory = new Uint8Array(wasm.memory.buffer, request, REQUEST_SIZE);
+    const type = memory[0];
+    if (!ok || type === RequestType.ERROR) throw new Error('Async execution failed');
 
-  const wasm = await loadWasm();
-  const backend = new ExternalStateBackend();
-
-  // Pre-populate storage
-  const contractAddress = hexToAddress('0x2000000000000000000000000000000000000002');
-  backend.setStorage(contractAddress, 0n, 42n);
-
-  const hardforkName = 'Cancun';
-  const hardforkBytes = new TextEncoder().encode(hardforkName);
-  const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
-
-  if (!evmHandle) {
-    throw new Error('Failed to create EVM instance');
-  }
-
-  try {
-    // Enable async storage injector
-    const injectorEnabled = (wasm as any).evm_enable_storage_injector(evmHandle);
-    if (!injectorEnabled) {
-      throw new Error('Failed to enable storage injector');
-    }
-
-    // Bytecode: SLOAD from slot 0, return result
-    const bytecode = new Uint8Array([
-      0x60, 0x00,       // PUSH1 0x00 (slot 0)
-      0x54,             // SLOAD
-      0x60, 0x00,       // PUSH1 0x00 (memory offset)
-      0x52,             // MSTORE
-      0x60, 0x20,       // PUSH1 0x20 (32 bytes)
-      0x60, 0x00,       // PUSH1 0x00 (offset 0)
-      0xf3              // RETURN
-    ]);
-
-    console.log('Bytecode: SLOAD slot 0, return result\n');
-    console.log('Pre-populated storage: slot 0 = 42\n');
-
-    // Set bytecode and context
-    (wasm as any).evm_set_bytecode(evmHandle, bytecode, bytecode.length);
-
-    const gas = 100000n;
-    const caller = hexToAddress('0x1000000000000000000000000000000000000001');
-    const address = contractAddress;
-    const value = u256ToBytes(0n);
-    const calldata = new Uint8Array(0);
-
-    (wasm as any).evm_set_execution_context(
-      evmHandle,
-      Number(gas),
-      caller,
-      address,
-      value,
-      calldata,
-      calldata.length
-    );
-
-    const chainId = u256ToBytes(1n);
-    const blockNumber = 100n;
-    const blockTimestamp = 1700000000n;
-    const blockDifficulty = u256ToBytes(0n);
-    const blockPrevrandao = u256ToBytes(0n);
-    const blockCoinbase = hexToAddress('0x0000000000000000000000000000000000000000');
-    const blockGasLimit = 30000000n;
-    const blockBaseFee = u256ToBytes(1000000000n);
-    const blobBaseFee = u256ToBytes(1n);
-
-    (wasm as any).evm_set_blockchain_context(
-      evmHandle,
-      chainId,
-      Number(blockNumber),
-      Number(blockTimestamp),
-      blockDifficulty,
-      blockPrevrandao,
-      blockCoinbase,
-      Number(blockGasLimit),
-      blockBaseFee,
-      blobBaseFee
-    );
-
-    console.log('🚀 Starting async execution...\n');
-
-    // Async execution loop
-    let iterations = 0;
-    const maxIterations = 100;
-
-    // Allocate AsyncRequest struct in WASM memory
-    const requestSize = 20 + 32 + 4 + 16384; // address + slot + json_len + json_data
-    const requestPtr = (wasm as any).malloc?.(requestSize) ?? 0;
-
-    // Start execution
-    let continueExecution = (wasm as any).evm_call_ffi(evmHandle, requestPtr);
-
-    while (continueExecution && iterations < maxIterations) {
-      iterations++;
-
-      // Read AsyncRequest struct
-      const memory = new Uint8Array((wasm as any).memory.buffer);
-      const outputType = memory[requestPtr];
-
-      if (outputType === RequestType.RESULT) {
-        console.log('\n✅ Execution complete!\n');
+    switch (type) {
+      case RequestType.RESULT:
+        return iteration;
+      case RequestType.NEED_STORAGE: {
+        const address = memory.slice(1, 21);
+        const slot = memory.slice(21, 53);
+        const value = await backend.getStorage(address, bytesToU256(slot));
+        const response = new Uint8Array(84);
+        response.set(address, 0);
+        response.set(slot, 20);
+        response.set(u256ToBytes(value), 52);
+        ok = resume(type, response);
         break;
       }
-
-      if (outputType === RequestType.NEED_STORAGE) {
-        // Read address and slot
-        const addressBytes = memory.slice(requestPtr + 1, requestPtr + 21);
-        const slotBytes = memory.slice(requestPtr + 21, requestPtr + 53);
-        const slot = bytesToU256(slotBytes);
-
-        // Query backend
-        const value = await backend.getStorage(addressBytes, slot);
-
-        // Build response: address(20) + slot(32) + value(32) = 84 bytes
-        const response = new Uint8Array(84);
-        response.set(addressBytes, 0);
-        response.set(slotBytes, 20);
-        response.set(u256ToBytes(value), 52);
-
-        // Continue with storage value
-        continueExecution = (wasm as any).evm_continue_ffi(
-          evmHandle,
-          1, // continue_type: storage
-          response,
-          response.length,
-          requestPtr
-        );
-
-      } else if (outputType === RequestType.NEED_BALANCE) {
-        const addressBytes = memory.slice(requestPtr + 1, requestPtr + 21);
-        const balance = await backend.getBalance(addressBytes);
-
-        // Build response: address(20) + balance(32) = 52 bytes
+      case RequestType.NEED_BALANCE: {
+        const address = memory.slice(1, 21);
+        const balance = await backend.getBalance(address);
         const response = new Uint8Array(52);
-        response.set(addressBytes, 0);
+        response.set(address, 0);
         response.set(u256ToBytes(balance), 20);
-
-        continueExecution = (wasm as any).evm_continue_ffi(
-          evmHandle,
-          2, // continue_type: balance
-          response,
-          response.length,
-          requestPtr
-        );
-
-      } else if (outputType === RequestType.READY_TO_COMMIT) {
-        const jsonLen = new DataView(memory.buffer).getUint32(requestPtr + 53, true);
-        const jsonBytes = memory.slice(requestPtr + 57, requestPtr + 57 + jsonLen);
-        const jsonStr = new TextDecoder().decode(jsonBytes);
-
-        await backend.commitStateChanges(jsonStr);
-
-        // Continue after commit
-        continueExecution = (wasm as any).evm_continue_ffi(
-          evmHandle,
-          5, // continue_type: after_commit
-          new Uint8Array(0),
-          0,
-          requestPtr
-        );
-
-      } else if (outputType === RequestType.ERROR) {
-        console.error('❌ Async execution error');
-        break;
-      } else {
-        console.error(`❌ Unknown request type: ${outputType}`);
+        ok = resume(type, response);
         break;
       }
+      case RequestType.READY_TO_COMMIT:
+        await backend.commitStateChanges(readStateChanges(wasm, handle, request));
+        ok = wasm.evm_continue_ffi(handle, type, request, 0, request);
+        break;
+      default:
+        throw new Error(`Unknown async request type: ${type}`);
     }
+  }
+  throw new Error('Async execution exceeded 100 iterations');
 
-    // Get output
-    const outputLen = (wasm as any).evm_get_output_len(evmHandle);
-    if (outputLen > 0) {
-      const outputBuffer = new Uint8Array(outputLen);
-      (wasm as any).evm_get_output(evmHandle, outputBuffer, outputLen);
-
-      const result = bytesToU256(outputBuffer);
-      console.log('📤 Output:', result.toString());
-      console.log('✅ Expected: 42, Got:', result.toString(), result === 42n ? '✅' : '❌');
+  function resume(type: number, bytes: Uint8Array): number {
+    const response = allocate(wasm, bytes.length);
+    try {
+      new Uint8Array(wasm.memory.buffer, response, bytes.length).set(bytes);
+      return wasm.evm_continue_ffi(handle, type, response, bytes.length, request);
+    } finally {
+      wasm.evm_free(response, bytes.length);
     }
-
-    const gasUsed = (wasm as any).evm_get_gas_used(evmHandle);
-    console.log(`\n⛽ Gas used: ${gasUsed}`);
-    console.log(`🔄 Async iterations: ${iterations}\n`);
-
-  } finally {
-    (wasm as any).evm_destroy(evmHandle);
   }
 }
 
-/**
- * Example 2: Multiple Async Requests
- *
- * Bytecode performs multiple storage reads/writes
- */
-async function example2_multipleAsyncRequests() {
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('Example 2: Multiple Async Storage Requests');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-
+async function runExample(title: string, bytecode: Uint8Array, slots: bigint[], expected: bigint) {
+  console.log(`\n${title}`);
   const wasm = await loadWasm();
   const backend = new ExternalStateBackend();
+  const contract = hexToAddress('0x2000000000000000000000000000000000000002');
+  slots.forEach((value, index) => backend.setStorage(contract, BigInt(index), value));
 
-  const contractAddress = hexToAddress('0x2000000000000000000000000000000000000002');
-
-  // Pre-populate multiple storage slots
-  backend.setStorage(contractAddress, 0n, 10n);
-  backend.setStorage(contractAddress, 1n, 20n);
-  backend.setStorage(contractAddress, 2n, 30n);
-
-  const hardforkName = 'Cancun';
-  const hardforkBytes = new TextEncoder().encode(hardforkName);
-  const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
-
-  if (!evmHandle) {
-    throw new Error('Failed to create EVM instance');
+  const buffers: [number, number][] = [];
+  function transfer(data: Uint8Array | number): number {
+    const length = typeof data === 'number' ? data : data.length;
+    const pointer = allocate(wasm, length);
+    buffers.push([pointer, length]);
+    if (typeof data !== 'number') {
+      new Uint8Array(wasm.memory.buffer, pointer, length).set(data);
+    }
+    return pointer;
   }
 
+  let handle = 0;
   try {
-    (wasm as any).evm_enable_storage_injector(evmHandle);
-
-    // Bytecode: Load slots 0, 1, 2, sum them, return result
-    const bytecode = new Uint8Array([
-      0x60, 0x00,       // PUSH1 0x00
-      0x54,             // SLOAD (load slot 0 = 10)
-      0x60, 0x01,       // PUSH1 0x01
-      0x54,             // SLOAD (load slot 1 = 20)
-      0x01,             // ADD (10 + 20 = 30)
-      0x60, 0x02,       // PUSH1 0x02
-      0x54,             // SLOAD (load slot 2 = 30)
-      0x01,             // ADD (30 + 30 = 60)
-      0x60, 0x00,       // PUSH1 0x00
-      0x52,             // MSTORE
-      0x60, 0x20,       // PUSH1 0x20
-      0x60, 0x00,       // PUSH1 0x00
-      0xf3              // RETURN
-    ]);
-
-    console.log('Bytecode: Load slots 0, 1, 2, sum them, return result\n');
-    console.log('Pre-populated storage:');
-    console.log('  - slot 0 = 10');
-    console.log('  - slot 1 = 20');
-    console.log('  - slot 2 = 30');
-    console.log('Expected result: 10 + 20 + 30 = 60\n');
-
-    (wasm as any).evm_set_bytecode(evmHandle, bytecode, bytecode.length);
-
-    const gas = 100000n;
-    const caller = hexToAddress('0x1000000000000000000000000000000000000001');
-    const address = contractAddress;
-    const value = u256ToBytes(0n);
-    const calldata = new Uint8Array(0);
-
-    (wasm as any).evm_set_execution_context(
-      evmHandle,
-      Number(gas),
-      caller,
-      address,
-      value,
-      calldata,
-      calldata.length
-    );
-
-    const chainId = u256ToBytes(1n);
-    const blockNumber = 100n;
-    const blockTimestamp = 1700000000n;
-    const blockDifficulty = u256ToBytes(0n);
-    const blockPrevrandao = u256ToBytes(0n);
-    const blockCoinbase = hexToAddress('0x0000000000000000000000000000000000000000');
-    const blockGasLimit = 30000000n;
-    const blockBaseFee = u256ToBytes(1000000000n);
-    const blobBaseFee = u256ToBytes(1n);
-
-    (wasm as any).evm_set_blockchain_context(
-      evmHandle,
-      chainId,
-      Number(blockNumber),
-      Number(blockTimestamp),
-      blockDifficulty,
-      blockPrevrandao,
-      blockCoinbase,
-      Number(blockGasLimit),
-      blockBaseFee,
-      blobBaseFee
-    );
-
-    console.log('🚀 Starting async execution...\n');
-
-    backend.resetRequestCount();
-    let iterations = 0;
-    const maxIterations = 100;
-
-    const requestSize = 20 + 32 + 4 + 16384;
-    const requestPtr = (wasm as any).malloc?.(requestSize) ?? 0;
-
-    let continueExecution = (wasm as any).evm_call_ffi(evmHandle, requestPtr);
-
-    while (continueExecution && iterations < maxIterations) {
-      iterations++;
-
-      const memory = new Uint8Array((wasm as any).memory.buffer);
-      const outputType = memory[requestPtr];
-
-      if (outputType === RequestType.RESULT) {
-        console.log('\n✅ Execution complete!\n');
-        break;
-      }
-
-      if (outputType === RequestType.NEED_STORAGE) {
-        const addressBytes = memory.slice(requestPtr + 1, requestPtr + 21);
-        const slotBytes = memory.slice(requestPtr + 21, requestPtr + 53);
-        const slot = bytesToU256(slotBytes);
-
-        const value = await backend.getStorage(addressBytes, slot);
-
-        const response = new Uint8Array(84);
-        response.set(addressBytes, 0);
-        response.set(slotBytes, 20);
-        response.set(u256ToBytes(value), 52);
-
-        continueExecution = (wasm as any).evm_continue_ffi(evmHandle, 1, response, response.length, requestPtr);
-
-      } else if (outputType === RequestType.READY_TO_COMMIT) {
-        const jsonLen = new DataView(memory.buffer).getUint32(requestPtr + 53, true);
-        const jsonBytes = memory.slice(requestPtr + 57, requestPtr + 57 + jsonLen);
-        const jsonStr = new TextDecoder().decode(jsonBytes);
-
-        await backend.commitStateChanges(jsonStr);
-
-        continueExecution = (wasm as any).evm_continue_ffi(evmHandle, 5, new Uint8Array(0), 0, requestPtr);
-
-      } else if (outputType === RequestType.ERROR) {
-        console.error('❌ Async execution error');
-        break;
-      }
+    const fork = new TextEncoder().encode('cancun');
+    handle = wasm.evm_create(transfer(fork), fork.length, 0);
+    if (!handle) throw new Error('Failed to create EVM instance');
+    if (!wasm.evm_enable_storage_injector(handle)) throw new Error('Failed to enable storage injector');
+    if (!wasm.evm_set_bytecode(handle, transfer(bytecode), bytecode.length)) {
+      throw new Error('Failed to set bytecode');
     }
 
-    const outputLen = (wasm as any).evm_get_output_len(evmHandle);
-    if (outputLen > 0) {
-      const outputBuffer = new Uint8Array(outputLen);
-      (wasm as any).evm_get_output(evmHandle, outputBuffer, outputLen);
-
-      const result = bytesToU256(outputBuffer);
-      console.log('📤 Output:', result.toString());
-      console.log('✅ Expected: 60, Got:', result.toString(), result === 60n ? '✅' : '❌');
+    const caller = transfer(hexToAddress('0x1000000000000000000000000000000000000001'));
+    const address = transfer(contract);
+    const zero = transfer(u256ToBytes(0n));
+    if (!wasm.evm_set_execution_context(handle, 100000n, caller, address, zero, zero, 0)) {
+      throw new Error('Failed to set execution context');
     }
 
-    const gasUsed = (wasm as any).evm_get_gas_used(evmHandle);
-    console.log(`\n⛽ Gas used: ${gasUsed}`);
-    console.log(`🔄 Async iterations: ${iterations}\n`);
+    const one = transfer(u256ToBytes(1n));
+    const coinbase = transfer(hexToAddress('0x0'));
+    const baseFee = transfer(u256ToBytes(1000000000n));
+    wasm.evm_set_blockchain_context(handle, one, 100n, 1700000000n, zero, zero, coinbase, 30000000n, baseFee, one);
 
+    const iterations = await executeAsync(wasm, handle, transfer(REQUEST_SIZE), backend);
+    if (!wasm.evm_is_success(handle)) throw new Error('EVM execution did not succeed');
+    const outputLength = wasm.evm_get_output_len(handle);
+    if (outputLength !== 32) throw new Error(`Expected 32 output bytes, got ${outputLength}`);
+    const output = transfer(outputLength);
+    if (wasm.evm_get_output(handle, output, outputLength) !== outputLength) {
+      throw new Error('Failed to read EVM output');
+    }
+
+    const result = bytesToU256(new Uint8Array(wasm.memory.buffer, output, outputLength));
+    if (result !== expected) throw new Error(`Expected ${expected}, got ${result}`);
+    console.log(`Output: ${result}`);
+    console.log(`Gas used: ${wasm.evm_get_gas_used(handle)}`);
+    console.log(`Async iterations: ${iterations}`);
   } finally {
-    (wasm as any).evm_destroy(evmHandle);
+    if (handle) wasm.evm_destroy(handle);
+    for (const [pointer, length] of buffers.reverse()) wasm.evm_free(pointer, length);
   }
 }
 
-/**
- * Run all examples
- */
 async function main() {
-  console.log('╔═══════════════════════════════════════════════════════════╗');
-  console.log('║     Guillotine Mini - Async Execution Examples           ║');
-  console.log('╚═══════════════════════════════════════════════════════════╝\n');
+  await runExample('Example 1: Async storage load', new Uint8Array([
+    0x60, 0x00, 0x54, // Load slot 0.
+    0x60, 0x00, 0x52, // Store the value in memory.
+    0x60, 0x20, 0x60, 0x00, 0xf3, // Return 32 bytes.
+  ]), [42n], 42n);
 
-  try {
-    await example1_asyncStorageLoad();
-    await example2_multipleAsyncRequests();
+  await runExample('Example 2: Multiple async storage requests', new Uint8Array([
+    0x60, 0x00, 0x54, // Load slot 0.
+    0x60, 0x01, 0x54, 0x01, // Add slot 1.
+    0x60, 0x02, 0x54, 0x01, // Add slot 2.
+    0x60, 0x00, 0x52, // Store the sum in memory.
+    0x60, 0x20, 0x60, 0x00, 0xf3, // Return 32 bytes.
+  ]), [10n, 20n, 30n], 60n);
 
-    console.log('✅ All async examples completed successfully!');
-  } catch (error) {
-    console.error('❌ Error running examples:', error);
-    process.exit(1);
-  }
+  console.log('\nAll async examples completed successfully.');
 }
 
-main();
+main().catch((error) => {
+  console.error('Error running async examples:', error);
+  process.exitCode = 1;
+});

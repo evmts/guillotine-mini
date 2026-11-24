@@ -2,28 +2,31 @@ name: Commit Message Lint
 
 on:
   push:
-    branches:
-      - main
-      - '**'
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Validate Conventional Commit subjects
         env:
-          BEFORE_SHA: ${{ github.event.before }}
-          AFTER_SHA: ${{ github.sha }}
+          BEFORE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFTER_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          # On a branch's first push, lint the tip commit, including a root commit.
-          if [[ "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-            revisions=(-1 "$AFTER_SHA")
-          else
+          # A new branch or force-push can leave the previous commit unavailable.
+          if [[ -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
             revisions=("$BEFORE_SHA..$AFTER_SHA")
+          else
+            revisions=(-1 "$AFTER_SHA")
           fi
 
           git log --format=%s "${revisions[@]}" | perl -CS -e '
