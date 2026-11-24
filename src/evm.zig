@@ -1354,6 +1354,12 @@ pub fn Evm(comptime config: EvmConfig) type {
                 try self.storage.original_storage.put(entry.key_ptr.*, entry.value_ptr.*);
             }
 
+            // Without a host or injector, zero writes delete map entries and the
+            // snapshot is the complete entry state. Rebuild from it so a reverted
+            // child cannot resurrect a slot its parent cleared.
+            const snapshot_is_complete = self.host == null and self.storage.storage_injector == null;
+            if (snapshot_is_complete) self.storage.storage.clearRetainingCapacity();
+
             // Third, restore storage values from snapshot
             var storage_restore_it = storage_snapshot.iterator();
             while (storage_restore_it.next()) |entry| {
@@ -1367,19 +1373,15 @@ pub fn Evm(comptime config: EvmConfig) type {
             }
 
             // Fourth, delete slots that were added during the call
-            for (added_slots.items) |slot| {
+            if (!snapshot_is_complete) for (added_slots.items) |slot| {
                 const slot_key = slot.key;
                 if (self.host) |h| {
                     h.setStorage(Address{ .bytes = slot_key.address }, slot_key.slot, slot.original_value);
                 }
                 if (self.host == null or self.storage.storage_injector != null) {
-                    if (slot.original_value == 0 and self.storage.storage_injector == null) {
-                        _ = self.storage.storage.remove(slot_key);
-                    } else {
-                        try self.storage.storage.put(slot_key, slot.original_value);
-                    }
+                    try self.storage.storage.put(slot_key, slot.original_value);
                 }
-            }
+            };
 
             // Restore transient storage on failure (EIP-1153)
             self.storage.clear_transient();

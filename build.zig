@@ -126,6 +126,24 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const osaka_properties = b.addTest(.{
+        .name = "osaka-properties",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/osaka_property_fuzz_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "evm", .module = evm_mod },
+                .{ .name = "voltaire", .module = primitives_mod },
+            },
+        }),
+    });
+    linkRustSupport(osaka_properties);
+    const run_osaka_properties = b.addRunArtifact(osaka_properties);
+    unit_test_step.dependOn(&run_osaka_properties.step);
+    test_step.dependOn(&run_osaka_properties.step);
+    b.step("test-osaka-properties", "Run Osaka execution and precompile properties").dependOn(&run_osaka_properties.step);
+
     // Client DB module (database abstraction layer)
     const client_db_mod = b.addModule("client_db", .{
         .root_source_file = b.path("client/db/root.zig"),
