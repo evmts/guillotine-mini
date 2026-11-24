@@ -48,11 +48,11 @@ pub const TraceEntry = struct {
         try obj.put("memSize", .{ .integer = @intCast(self.memSize) });
 
         // Stack as array of hex strings
-        var stack_arr = std.ArrayList(std.json.Value){};
+        var stack_arr = std.json.Array.init(allocator);
         for (self.stack) |val| {
             var val_buf: [66]u8 = undefined;
             const val_str = try std.fmt.bufPrint(&val_buf, "0x{x}", .{val});
-            try stack_arr.append(allocator, .{ .string = try allocator.dupe(u8, val_str) });
+            try stack_arr.append(.{ .string = try allocator.dupe(u8, val_str) });
         }
         try obj.put("stack", .{ .array = stack_arr });
 
@@ -130,6 +130,8 @@ pub const Tracer = struct {
         self.enabled = false;
     }
 
+    /// Record one step. `memSize` is the length of `memory`; a caller that
+    /// skips the byte snapshot should use `captureStep` with the logical size.
     pub fn captureState(
         self: *Tracer,
         pc: u64,
@@ -137,6 +139,27 @@ pub const Tracer = struct {
         gas: u64,
         gas_cost: u64,
         memory: ?[]const u8,
+        stack: []const u256,
+        return_data: ?[]const u8,
+        depth: usize,
+        refund: i64,
+        op_name: []const u8,
+    ) !void {
+        const mem_size = if (memory) |m| m.len else 0;
+        return self.captureStep(pc, op, gas, gas_cost, memory, mem_size, stack, return_data, depth, refund, op_name);
+    }
+
+    /// Record one step. `mem_size` is the frame's logical memory size in bytes
+    /// and is recorded even when `memory` is null because memory-byte capture
+    /// is disabled.
+    pub fn captureStep(
+        self: *Tracer,
+        pc: u64,
+        op: u8,
+        gas: u64,
+        gas_cost: u64,
+        memory: ?[]const u8,
+        mem_size: usize,
         stack: []const u256,
         return_data: ?[]const u8,
         depth: usize,
@@ -189,7 +212,7 @@ pub const Tracer = struct {
             .gas = gas,
             .gasCost = gas_cost,
             .memory = mem_copy,
-            .memSize = if (memory) |m| m.len else 0,
+            .memSize = mem_size,
             .stack = stack_copy,
             .returnData = return_copy,
             .depth = depth,
@@ -200,12 +223,14 @@ pub const Tracer = struct {
         try self.entries.append(self.allocator, entry);
     }
 
+    /// Build a JSON array of every entry. The value's strings, arrays and
+    /// objects are allocated with `self.allocator` and are not freed
+    /// individually; use an arena-backed tracer or copy the value out.
     pub fn toJson(self: *const Tracer) !std.json.Value {
-        var arr = std.ArrayList(std.json.Value){};
+        var arr = std.json.Array.init(self.allocator);
 
         for (self.entries.items) |*entry| {
-            const entry_json = try entry.toJson(self.allocator);
-            try arr.append(self.allocator, entry_json);
+            try arr.append(try entry.toJson(self.allocator));
         }
 
         return .{ .array = arr };
@@ -260,7 +285,13 @@ pub const Tracer = struct {
 
             try writer.print("    \"depth\": {d},\n", .{entry.depth});
             try writer.print("    \"refund\": {d},\n", .{entry.refund});
-            try writer.print("    \"opName\": \"{s}\"\n", .{entry.opName});
+            try writer.print("    \"opName\": \"{s}\"", .{entry.opName});
+            // Same key as `TraceEntry.toJson` and EIP-3155.
+            if (entry.error_msg) |err| {
+                try writer.writeAll(",\n    \"error\": ");
+                try writeJsonString(writer, err);
+            }
+            try writer.writeAll("\n");
             try writer.writeAll("  }");
         }
 
@@ -268,6 +299,18 @@ pub const Tracer = struct {
         try file.writeAll(json.items);
     }
 };
+
+/// Write `text` as a quoted JSON string.
+fn writeJsonString(writer: anytype, text: []const u8) !void {
+    try writer.writeByte('"');
+    for (text) |c| switch (c) {
+        '"' => try writer.writeAll("\\\""),
+        '\\' => try writer.writeAll("\\\\"),
+        0...0x1f => try writer.print("\\u{x:0>4}", .{c}),
+        else => try writer.writeByte(c),
+    };
+    try writer.writeByte('"');
+}
 
 /// Compare two traces and find the first divergence
 pub const TraceDiff = struct {
@@ -416,4 +459,93 @@ test "Tracer.captureState frees partial copies when any allocation fails" {
 
     // Fails every allocation in turn; the testing allocator reports any leak.
     try testing.checkAllAllocationFailures(testing.allocator, capture, .{});
+}
+
+test "Tracer.toJson serializes captured steps" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tracer = Tracer.init(allocator);
+    defer tracer.deinit();
+    tracer.enable();
+    tracer.config.enable_return_data = true;
+
+    const memory = [_]u8{ 0x00, 0x2a };
+    const stack = [_]u256{ 1, 0xff };
+    try tracer.captureState(0, 0x60, 100, 3, &memory, &stack, &[_]u8{0xbb}, 1, 0, "PUSH1");
+    try tracer.captureState(2, 0xfe, 97, 97, null, &.{}, null, 1, 0, "INVALID");
+    tracer.entries.items[1].error_msg = try allocator.dupe(u8, "InvalidOpcode");
+
+    const value = try tracer.toJson();
+    const json = try std.json.Stringify.valueAlloc(allocator, value, .{});
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    const steps = parsed.value.array.items;
+    try testing.expectEqual(@as(usize, 2), steps.len);
+    const first = steps[0].object;
+    try testing.expectEqual(@as(i64, 0), first.get("pc").?.integer);
+    try testing.expectEqual(@as(i64, 0x60), first.get("op").?.integer);
+    try testing.expectEqualStrings("0x64", first.get("gas").?.string);
+    try testing.expectEqualStrings("0x3", first.get("gasCost").?.string);
+    try testing.expectEqualStrings("0x002a", first.get("memory").?.string);
+    try testing.expectEqual(@as(i64, 2), first.get("memSize").?.integer);
+    const stack_json = first.get("stack").?.array.items;
+    try testing.expectEqual(@as(usize, 2), stack_json.len);
+    try testing.expectEqualStrings("0x1", stack_json[0].string);
+    try testing.expectEqualStrings("0xff", stack_json[1].string);
+    try testing.expectEqualStrings("0xbb", first.get("returnData").?.string);
+    try testing.expectEqualStrings("PUSH1", first.get("opName").?.string);
+    try testing.expect(first.get("error") == null);
+
+    const second = steps[1].object;
+    try testing.expect(second.get("memory").? == .null);
+    try testing.expectEqual(@as(usize, 0), second.get("stack").?.array.items.len);
+    try testing.expectEqualStrings("InvalidOpcode", second.get("error").?.string);
+}
+
+test "Tracer keeps logical memSize without memory bytes and writes the step error" {
+    const testing = std.testing;
+    var tracer = Tracer.init(testing.allocator);
+    defer tracer.deinit();
+    tracer.enable();
+    tracer.config.disable_memory = true;
+    tracer.config.enable_memory = false;
+    try testing.expect(!tracer.config.tracksMemory());
+
+    // MSTORE expanded memory to 64 bytes, then INVALID faulted. Byte capture is
+    // off, so no snapshot is passed, but the logical size must survive.
+    const stack = [_]u256{};
+    try tracer.captureStep(0, 0x52, 100, 9, null, 0, &stack, null, 1, 0, "MSTORE");
+    try tracer.captureStep(3, 0xfe, 91, 91, null, 64, &stack, null, 1, 0, "INVALID");
+    tracer.entries.items[1].error_msg = try testing.allocator.dupe(u8, "InvalidOpcode");
+    try testing.expect(tracer.entries.items[1].memory == null);
+    try testing.expectEqual(@as(usize, 64), tracer.entries.items[1].memSize);
+
+    // A snapshot that capture drops still reports its length through captureState.
+    try tracer.captureState(4, 0x00, 0, 0, &([_]u8{0} ** 32), &stack, null, 1, 0, "STOP");
+    try testing.expect(tracer.entries.items[2].memory == null);
+    try testing.expectEqual(@as(usize, 32), tracer.entries.items[2].memSize);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+    const path = try std.fs.path.join(testing.allocator, &.{ dir_path, "trace.json" });
+    defer testing.allocator.free(path);
+    try tracer.writeToFile(path);
+
+    const contents = try tmp.dir.readFileAlloc(testing.allocator, "trace.json", 1 << 20);
+    defer testing.allocator.free(contents);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, contents, .{});
+    defer parsed.deinit();
+    const steps = parsed.value.array.items;
+    try testing.expectEqual(@as(usize, 3), steps.len);
+    try testing.expect(steps[0].object.get("error") == null);
+    const fault = steps[1].object;
+    try testing.expect(fault.get("memory").? == .null);
+    try testing.expectEqual(@as(i64, 64), fault.get("memSize").?.integer);
+    try testing.expectEqualStrings("InvalidOpcode", fault.get("error").?.string);
+    try testing.expectEqual(@as(i64, 32), steps[2].object.get("memSize").?.integer);
 }

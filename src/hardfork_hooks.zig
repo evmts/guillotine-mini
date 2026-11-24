@@ -144,12 +144,18 @@ pub inline fn supportsStateGas(fork: anytype) bool {
 }
 
 /// Returns the EIP-7825 transaction gas cap for `fork`, or null before Osaka.
+/// From Amsterdam (EIP-8037) it bounds execution gas only; see
+/// `isTxGasLimitAllowed` for the bound on `tx.gas`.
 pub inline fn txGasLimitCap(fork: anytype) ?u64 {
     return if (supportsEip7825TxGasCap(fork)) EIP7825_TX_GAS_LIMIT_CAP else null;
 }
 
-/// Returns true when a transaction gas limit is allowed under EIP-7825.
+/// Returns true when `tx.gas` is admissible for `fork`: unbounded before
+/// Osaka, at most the EIP-7825 cap through Osaka, and at most the schedule's
+/// EIP-8037 `TX_MAX_TOTAL_GAS_LIMIT` from Amsterdam, where gas above the
+/// EIP-7825 cap funds the state gas reservoir (`StateGasReservoir.init`).
 pub inline fn isTxGasLimitAllowed(fork: anytype, gas_limit: u64) bool {
+    if (GasSchedule.forFork(fork).tx_max_total_gas_limit) |total| return gas_limit <= total;
     const cap = txGasLimitCap(fork) orelse return true;
     return gas_limit <= cap;
 }
@@ -664,12 +670,16 @@ pub const StateGasReservoir = struct {
     /// Gas reserved for state creation.
     reservoir: u64,
 
-    /// Splits the gas of a transaction after intrinsic gas is known.
-    /// Returns null when `intrinsic_gas` exceeds `tx_gas` or the EIP-7825 cap.
-    pub fn init(tx_gas: u64, intrinsic_gas: u64) ?StateGasReservoir {
-        if (intrinsic_gas > tx_gas or intrinsic_gas > EIP7825_TX_GAS_LIMIT_CAP) return null;
+    /// Splits the gas of a transaction after intrinsic gas is known, using
+    /// the same fork schedule as `isTxGasLimitAllowed`. Returns null when that
+    /// helper rejects `tx_gas`, or when `intrinsic_gas` exceeds `tx_gas` or the
+    /// EIP-7825 cap. Before Osaka there is no cap and no reservoir.
+    pub fn init(fork: anytype, tx_gas: u64, intrinsic_gas: u64) ?StateGasReservoir {
+        if (!isTxGasLimitAllowed(fork, tx_gas)) return null;
+        const execution_cap = txGasLimitCap(fork) orelse std.math.maxInt(u64);
+        if (intrinsic_gas > tx_gas or intrinsic_gas > execution_cap) return null;
         const evm_gas = tx_gas - intrinsic_gas;
-        const execution_gas_budget = EIP7825_TX_GAS_LIMIT_CAP - intrinsic_gas;
+        const execution_gas_budget = execution_cap - intrinsic_gas;
         const gas_left = @min(execution_gas_budget, evm_gas);
         return .{ .gas_left = gas_left, .reservoir = evm_gas - gas_left };
     }
@@ -1101,19 +1111,55 @@ test "GasSchedule.forFork selects by fork and folds without the tag" {
 }
 
 test "StateGasReservoir.init splits gas at the EIP-7825 budget" {
+    const amsterdam = ForkWithAmsterdam.AMSTERDAM;
     // Below the cap: everything is execution gas.
-    const small = StateGasReservoir.init(1_000_000, 21_000).?;
+    const small = StateGasReservoir.init(amsterdam, 1_000_000, 21_000).?;
     try testing.expectEqual(@as(u64, 979_000), small.gas_left);
     try testing.expectEqual(@as(u64, 0), small.reservoir);
 
     // Above the cap: the excess funds state gas only.
-    const large = StateGasReservoir.init(20_000_000, 21_000).?;
+    const large = StateGasReservoir.init(amsterdam, 20_000_000, 21_000).?;
     try testing.expectEqual(@as(u64, 16_777_216 - 21_000), large.gas_left);
     try testing.expectEqual(@as(u64, 20_000_000 - 16_777_216), large.reservoir);
     try testing.expectEqual(@as(u64, 20_000_000 - 21_000), large.gas_left + large.reservoir);
 
-    try testing.expect(StateGasReservoir.init(20_000, 21_000) == null);
-    try testing.expect(StateGasReservoir.init(std.math.maxInt(u32), 16_777_217) == null);
+    try testing.expect(StateGasReservoir.init(amsterdam, 20_000, 21_000) == null);
+    try testing.expect(StateGasReservoir.init(amsterdam, std.math.maxInt(u32), 16_777_217) == null);
+}
+
+test "tx gas admission and reservoir split agree at every fork boundary" {
+    const cap: u64 = EIP7825_TX_GAS_LIMIT_CAP;
+    const total: u64 = std.math.maxInt(u32);
+    const intrinsic: u64 = 21_000;
+    const Case = struct { gas: u64, prague: bool, osaka: bool, amsterdam: bool };
+    const cases = [_]Case{
+        .{ .gas = cap, .prague = true, .osaka = true, .amsterdam = true },
+        .{ .gas = cap + 1, .prague = true, .osaka = false, .amsterdam = true },
+        .{ .gas = total, .prague = true, .osaka = false, .amsterdam = true },
+        .{ .gas = total + 1, .prague = true, .osaka = false, .amsterdam = false },
+    };
+    for (cases) |c| {
+        try testing.expectEqual(c.prague, isTxGasLimitAllowed(ForkWithAmsterdam.PRAGUE, c.gas));
+        try testing.expectEqual(c.osaka, isTxGasLimitAllowed(ForkWithAmsterdam.OSAKA, c.gas));
+        try testing.expectEqual(c.amsterdam, isTxGasLimitAllowed(ForkWithAmsterdam.AMSTERDAM, c.gas));
+        // The reservoir admits exactly what the admission helper admits.
+        try testing.expectEqual(c.prague, StateGasReservoir.init(ForkWithAmsterdam.PRAGUE, c.gas, intrinsic) != null);
+        try testing.expectEqual(c.osaka, StateGasReservoir.init(ForkWithAmsterdam.OSAKA, c.gas, intrinsic) != null);
+        try testing.expectEqual(c.amsterdam, StateGasReservoir.init(ForkWithAmsterdam.AMSTERDAM, c.gas, intrinsic) != null);
+    }
+    // A pin without an Amsterdam tag keeps the Osaka bound.
+    try testing.expect(!isTxGasLimitAllowed(ForkWithoutAmsterdam.OSAKA, cap + 1));
+    try testing.expect(StateGasReservoir.init(ForkWithoutAmsterdam.OSAKA, cap + 1, intrinsic) == null);
+
+    // Amsterdam at 2^24 + 1: one unit above the execution budget goes to the reservoir.
+    const over = StateGasReservoir.init(ForkWithAmsterdam.AMSTERDAM, cap + 1, intrinsic).?;
+    try testing.expectEqual(cap - intrinsic, over.gas_left);
+    try testing.expectEqual(@as(u64, 1), over.reservoir);
+    // Osaka at the cap and Prague above it: no reservoir.
+    try testing.expectEqual(@as(u64, 0), StateGasReservoir.init(ForkWithAmsterdam.OSAKA, cap, intrinsic).?.reservoir);
+    const prague = StateGasReservoir.init(ForkWithAmsterdam.PRAGUE, 30_000_000, intrinsic).?;
+    try testing.expectEqual(@as(u64, 30_000_000 - intrinsic), prague.gas_left);
+    try testing.expectEqual(@as(u64, 0), prague.reservoir);
 }
 
 test "StateGasReservoir.chargeState draws from the reservoir first" {
