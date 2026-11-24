@@ -1115,6 +1115,7 @@ pub fn build(b: *std.Build) void {
 
     // Register runnable Zig examples (examples/build_steps.zig)
     @import("examples/build_steps.zig").registerExamples(b, target, optimize, mod, primitives_mod);
+    @import("test/differential/build_steps.zig").registerLeanDiff(b, target, optimize, mod, primitives_mod);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
