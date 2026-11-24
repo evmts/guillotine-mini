@@ -53,13 +53,30 @@ exe.linkLibrary(primitives_dep.artifact("crypto_wrappers"));
 
 **Build from source**
 
+`build.zig.zon` resolves Voltaire (primitives, crypto, precompiles) from the
+adjacent `../voltaire` directory. Clone both repositories side by side and check
+out the Voltaire revision pinned in `native-dependencies.json`:
+
 ```bash
-git clone https://github.com/evmts/guillotine-mini.git --recurse-submodules
+git clone --recurse-submodules https://github.com/evmts/guillotine-mini.git
+git clone https://github.com/evmts/voltaire.git
+git -C voltaire checkout "$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)"
 cd guillotine-mini
 zig build
 ```
 
-> The primitives library is fetched automatically during build. Downstream consumers must link the crypto artifacts from `guillotine_primitives` (see snippet above).
+The first build runs Cargo inside `../voltaire` to compile the Rust crypto
+archive. Plain `zig build` installs no artifacts; use `zig build native` for the
+C ABI static library and `zig build wasm` for the WASI reactor.
+
+`zig build test` runs the unit tests and the execution-specs state tests. It reads
+fixtures from the `execution-specs` and `ethereum-tests` submodules and runs
+`python3` to generate the spec test wrappers. If you cloned without submodules,
+run `git submodule update --init execution-specs ethereum-tests`. The Nethermind
+trie diff runs only when `dotnet` is installed; pass `-Dnethermind-diff=false` to
+skip it explicitly.
+
+> Downstream consumers must link the crypto artifacts from `guillotine_primitives` (see snippet above).
 
 ## Quick Start
 

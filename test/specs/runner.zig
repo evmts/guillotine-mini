@@ -642,7 +642,14 @@ fn hardforkToString(hf: Hardfork) []const u8 {
         .CANCUN => "Cancun",
         .PRAGUE => "Prague",
         .OSAKA => "Osaka",
+        .AMSTERDAM => "Amsterdam",
     };
+}
+
+test "hardforkToString names every Hardfork that fromString parses back" {
+    for (std.enums.values(Hardfork)) |hf| {
+        try testing.expectEqual(@as(?Hardfork, hf), Hardfork.fromString(hardforkToString(hf)));
+    }
 }
 
 /// Extract hardfork from test JSON

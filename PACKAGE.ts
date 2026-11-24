@@ -30,7 +30,7 @@ const { test: clientDbTest } = clientDbPkg
 const { test: clientTrieTest } = clientTriePkg
 const { test: clientStateTest } = clientStatePkg
 const { test: clientEvmTest } = clientEvmPkg
-const { test: clientBlockchainTest } = clientBlockchainPkg
+const { test: clientBlockchainTest, srcs: clientBlockchainSrcs } = clientBlockchainPkg
 const { test: clientTxpoolTest } = clientTxpoolPkg
 const { test: clientNetworkTest } = clientNetworkPkg
 const { test: clientRpcTest } = clientRpcPkg
@@ -169,11 +169,24 @@ const bench_cli = S.Shell.Test({
 // Core EVM & WASM unit/integration tests
 // ---------------------------------------------------------------------------
 
+/** Spec runner sources compiled by `zig build unit` and `test-spec-runner` without fixtures. */
+const spec_runner_srcs = S.Filegroup({
+  srcs: [S.file("test/specs/runner.zig"), S.file("test/specs/test_host.zig"), S.file("test/specs/assembler.zig")],
+})
+
 const test_unit = S.Shell.Test({
   bin: S.Host.bin("sh"),
   tools: [S.Host.bin("zig")],
   args: [".smithers/run-zig.sh", "build", "unit"],
-  data: [S.file("//.smithers/run-zig.sh"), build_files, evm_srcs, cli_srcs],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, evm_srcs, cli_srcs, spec_runner_srcs, clientBlockchainSrcs],
+  sandbox: "none",
+})
+
+const test_spec_runner = S.Shell.Test({
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "test-spec-runner"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, evm_srcs, spec_runner_srcs, clientBlockchainSrcs],
   sandbox: "none",
 })
 
@@ -218,6 +231,7 @@ const bench_summary = S.Shell.Run({
 const test_all = S.Suite({
   tests: [
     test_unit,
+    test_spec_runner,
     test_trace,
     test_runner,
     test_wasm,
@@ -260,7 +274,9 @@ export const Package = S.Package({
     bench_ffi,
     bench_wasm,
     bench_cli,
+    spec_runner_srcs,
     test_unit,
+    test_spec_runner,
     test_trace,
     test_runner,
     test_wasm,

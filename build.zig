@@ -822,6 +822,29 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Compile and run runner.zig's own tests without execution-specs fixtures.
+    // The spec suites only compile runner.zig after the fixture pipeline, so
+    // a Voltaire API change (for example a new Hardfork variant) would
+    // otherwise break `zig build test` without failing `zig build unit`.
+    const spec_runner_unit_tests = b.addTest(.{
+        .name = "spec-runner",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/specs/runner.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "evm", .module = evm_mod },
+                .{ .name = "voltaire", .module = primitives_mod },
+                .{ .name = "client_blockchain", .module = client_blockchain_mod },
+            },
+        }),
+    });
+    linkRustSupport(spec_runner_unit_tests);
+    const run_spec_runner_unit_tests = b.addRunArtifact(spec_runner_unit_tests);
+    unit_test_step.dependOn(&run_spec_runner_unit_tests.step);
+    test_step.dependOn(&run_spec_runner_unit_tests.step);
+    b.step("test-spec-runner", "Run spec runner unit tests (no fixtures needed)").dependOn(&run_spec_runner_unit_tests.step);
+
     // Create separate test executables for state tests and blockchain tests
     const spec_tests_state = b.addTest(.{
         .root_module = spec_runner_mod,
