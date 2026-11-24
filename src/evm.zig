@@ -211,8 +211,9 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Account field an async transaction can ask the host for.
         pub const AsyncAccountField = enum(u8) { balance, nonce, code };
         pub const AsyncKnownKey = struct { field: AsyncAccountField, address: [20]u8 };
-        /// Transaction-scoped account code, owned by `allocator`.
-        pub const AsyncCodeView = struct { address: primitives.Address, bytes: []u8 };
+        /// Transaction-scoped account code. `owned` bytes belong to `allocator`; borrowed
+        /// bytes belong to the caller of the synchronous `call()` and outlive it.
+        pub const AsyncCodeView = struct { address: primitives.Address, bytes: []const u8, owned: bool = true };
 
         pub const CallParams = call_params.CallParams(config);
         pub const CallResult = call_result.CallResult(config);
@@ -292,8 +293,16 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Account fields the host supplied during the async transaction in flight
         /// (transaction-arena backed). Fetched fields are dropped when it ends.
         async_known: std.AutoHashMap(AsyncKnownKey, void),
-        /// Code installed at the call target for one async call (see `installAsyncCodeView`).
+        /// Code installed at the call target for one call, synchronous or async (see
+        /// `installCallCodeView` and `installAsyncCodeView`).
         async_code_view: ?AsyncCodeView = null,
+        /// Where the synchronous `call()` allocates the result it returns (output, logs,
+        /// error text). Null selects the long-lived arena, which keeps every result until
+        /// `deinit`. An embedder that reuses one instance for many calls sets an allocator it
+        /// resets itself between calls, so results do not accumulate (R3-015).
+        result_allocator: ?std.mem.Allocator = null,
+        /// Allocation behind `pending_state_changes` (the JSON may be shorter).
+        pending_state_changes_buffer: []u8 = &.{},
 
         // Accumulated logs for current transaction
         logs: std.ArrayList(call_result.Log),
@@ -384,7 +393,8 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         fn freePendingStateChanges(self: *Self) void {
-            if (self.pending_state_changes.len > 0) self.allocator.free(self.pending_state_changes);
+            if (self.pending_state_changes_buffer.len > 0) self.allocator.free(self.pending_state_changes_buffer);
+            self.pending_state_changes_buffer = &.{};
             self.pending_state_changes = &.{};
         }
 
@@ -416,7 +426,20 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Clean up resources. Safe to call directly after `init`, without `call()`.
+        ///
+        /// An async transaction still suspended is cancelled first: its uncommitted writes
+        /// are rolled back while the host and its root checkpoint are alive, so an external
+        /// host is not left holding the writes of a transaction that never finished.
         pub fn deinit(self: *Self) void {
+            // The injector belongs to the embedder and may already be gone; the rollback
+            // must not touch it.
+            self.storage.storage_injector = null;
+            self.pending_storage_injector = null;
+            if (self.async_executor) |*executor| {
+                executor.evm = self;
+                executor.cancel();
+            }
+            self.async_executor = null;
             self.releaseAsyncCodeView();
             self.freePendingStateChanges();
             self.blob_hashes_owned.deinit(self.allocator);
@@ -495,6 +518,9 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.storage.original_storage.clearRetainingCapacity();
             self.storage.transient.clearRetainingCapacity();
             if (self.host != null or injector != null) self.storage.storage.clearRetainingCapacity();
+            // No write is in flight any more. The injector cache keeps what the host holds
+            // (fetched values and committed writes); a rolled back write never reached it.
+            if (injector) |active| active.clearDirty();
 
             self.gas_refund = 0;
             self.access_list_manager = AccessListManager.init(tx_alloc);
@@ -601,9 +627,22 @@ pub fn Evm(comptime config: EvmConfig) type {
             if (code.len != 0) try self.code.put(address, try self.tx_arena.allocator().dupe(u8, code));
         }
 
-        /// Make `bytes` the code of `address` for one async call, so EXTCODE* and re-entrant
-        /// calls see the code the call runs (as the synchronous C entry point does). Hostless
-        /// only. Released by `endAsyncTransaction`.
+        /// Whether code supplied with `setBytecode` also becomes the account code of `address`
+        /// for the one call that runs it, so EXTCODE* and re-entrant calls see the code the
+        /// call executes. True only on a hostless EVM for a target that has no code of its
+        /// own and is not an active precompile: a host owns its accounts, and installed code
+        /// is never replaced. The synchronous and the async entry point share this rule, so
+        /// `EXTCODESIZE(ADDRESS)` agrees between them.
+        pub fn suppliedCodeIsAccountCode(self: *Self, address: primitives.Address, supplied: []const u8) bool {
+            if (supplied.len == 0 or self.host != null) return false;
+            if ((self.code.get(address) orelse &[_]u8{}).len != 0) return false;
+            return !Self.isPrecompileAddress(address, self.hardfork);
+        }
+
+        /// Make `bytes` the code of `address` for one async call (see
+        /// `suppliedCodeIsAccountCode`). The view owns a copy, because the call can stay
+        /// suspended after the caller's buffer is gone. Released by `endAsyncTransaction`;
+        /// the account's code is never changed past the transaction.
         pub fn installAsyncCodeView(self: *Self, address: primitives.Address, bytes: []const u8) ![]const u8 {
             self.releaseAsyncCodeView();
             const owned = try self.allocator.dupe(u8, bytes);
@@ -613,6 +652,14 @@ pub fn Evm(comptime config: EvmConfig) type {
             return owned;
         }
 
+        /// Synchronous counterpart of `installAsyncCodeView`: `bytes` is borrowed, since
+        /// `call()` returns before its caller can free it. Released when `call()` returns.
+        fn installCallCodeView(self: *Self, address: primitives.Address, bytes: []const u8) !void {
+            self.releaseAsyncCodeView();
+            try self.code.put(address, bytes);
+            self.async_code_view = .{ .address = address, .bytes = bytes, .owned = false };
+        }
+
         fn releaseAsyncCodeView(self: *Self) void {
             const view = self.async_code_view orelse return;
             self.async_code_view = null;
@@ -620,7 +667,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             if (self.code.get(view.address)) |current| {
                 if (current.ptr == view.bytes.ptr) _ = self.code.remove(view.address);
             }
-            self.allocator.free(view.bytes);
+            if (view.owned) self.allocator.free(view.bytes);
         }
 
         /// Drop everything scoped to an async transaction: the restart request, the code view
@@ -1107,8 +1154,14 @@ pub fn Evm(comptime config: EvmConfig) type {
         ///
         /// Inputs registered with `setBytecode`, `setAccessList` and `setBlobVersionedHashes`
         /// apply to this call only and are cleared when it returns. `setBytecode` supplies the
-        /// code for a target that has none installed. `gas_refund` stays readable after the call
-        /// and is reset when the next transaction starts.
+        /// code for a target that has none installed. On a hostless EVM that code is also the
+        /// target's account code while the call runs, so EXTCODE* and re-entrant calls see it,
+        /// exactly as on the async entry point; it is removed again when the call returns.
+        /// `gas_refund` stays readable after the call and is reset when the next transaction
+        /// starts.
+        ///
+        /// The result's buffers come from `result_allocator`, or from the long-lived arena
+        /// when none is set.
         ///
         /// CREATE convention: like `inner_create` at depth 0, the transaction processor has
         /// already incremented the sender nonce, so the address derives from `nonce - 1`.
@@ -1121,6 +1174,12 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.pending_access_list = null;
             self.pending_bytecode = &[_]u8{};
             defer self.finishTransaction();
+            // The supplied code is account code for this call only (see `installCallCodeView`).
+            // Only this call's borrowed view is dropped here: a call rejected before it
+            // starts a transaction must leave a suspended async transaction's view alone.
+            defer if (self.async_code_view) |view| {
+                if (!view.owned) self.releaseAsyncCodeView();
+            };
 
             return self.executeTransaction(params, access_list, pending_bytecode);
         }
@@ -1148,7 +1207,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             access_list: ?primitives.AccessList.AccessList,
             pending_bytecode: []const u8,
         ) CallResult {
-            const result_alloc = self.arena.allocator();
+            const result_alloc = self.result_allocator orelse self.arena.allocator();
 
             const target = params.get_to();
 
@@ -1239,7 +1298,14 @@ pub fn Evm(comptime config: EvmConfig) type {
                     bytecode = self.get_raw_code(delegate);
                 } else {
                     bytecode = self.get_raw_code(address);
-                    if (bytecode.len == 0) bytecode = pending_bytecode;
+                    if (bytecode.len == 0) {
+                        bytecode = pending_bytecode;
+                        // Same visibility as the async entry point (R3-005): the code this
+                        // call runs is the target's account code until the call returns.
+                        if (self.suppliedCodeIsAccountCode(address, pending_bytecode)) {
+                            self.installCallCodeView(address, pending_bytecode) catch return failedResult(0);
+                        }
+                    }
                 }
             }
 
@@ -1322,10 +1388,12 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// End-of-transaction effects that apply only when the transaction succeeded:
-        /// delete self-destructed accounts (EIP-6780) and touched empty accounts (EIP-161).
+        /// delete self-destructed accounts (EIP-6780) and touched empty accounts (EIP-161),
+        /// then let the injector cache follow the committed storage writes. Never fails.
         pub fn commitTransaction(self: *Self) void {
             self.cleanup_selfdestructed_accounts_end_of_tx();
             self.cleanup_touched_empty_accounts_end_of_tx();
+            self.storage.commitInjectorWrites();
         }
 
         /// Drop everything scoped to the finished transaction so nothing leaks into the next
@@ -1424,7 +1492,39 @@ pub fn Evm(comptime config: EvmConfig) type {
             log.debug("dumpStateChanges: Got {} bytes from injector", .{raw.len});
             if (raw.len == 0) return &.{};
 
-            self.pending_state_changes = try self.allocator.dupe(u8, raw);
+            self.pending_state_changes_buffer = try self.allocator.dupe(u8, raw);
+            self.pending_state_changes = self.pending_state_changes_buffer;
+            return self.pending_state_changes;
+        }
+
+        /// First half of a commit dump that cannot fail past the commit point (R3-009).
+        ///
+        /// Call while the transaction can still be rolled back, before `commitTransaction`.
+        /// Does every fallible step: marks the changed accounts and reserves the buffer the
+        /// final JSON is written into. `commitTransaction` only deletes accounts, which can
+        /// only shorten the JSON (a value becomes `0x0`, code becomes empty), so the size
+        /// measured here bounds the final one. Finish with `writePreparedStateChanges`.
+        /// On error nothing is reserved and no state changed.
+        pub fn prepareStateChanges(self: *Self) !void {
+            self.freePendingStateChanges();
+            const injector = self.storage.storage_injector orelse return;
+            try injector.markChangedAccounts(self);
+
+            var counter = storage_injector.CountingWriter{};
+            try injector.writeChanges(self, counter.writer());
+            self.pending_state_changes_buffer = try self.allocator.alloc(u8, counter.bytes_written);
+        }
+
+        /// Second half: serialize the committed state into the buffer reserved by
+        /// `prepareStateChanges`. Allocates nothing. Returns the JSON, owned like the result
+        /// of `dumpStateChanges`; empty without an injector.
+        pub fn writePreparedStateChanges(self: *Self) ![]const u8 {
+            const injector = self.storage.storage_injector orelse return &.{};
+            var fixed = storage_injector.FixedWriter{ .buffer = self.pending_state_changes_buffer };
+            // `error.NoSpaceLeft` would mean a commit made the JSON longer, which deletions
+            // cannot do; it is reported, never truncated.
+            try injector.writeChanges(self, fixed.writer());
+            self.pending_state_changes = fixed.written();
             return self.pending_state_changes;
         }
 
@@ -1452,8 +1552,8 @@ pub fn Evm(comptime config: EvmConfig) type {
             if (self.host) |h| h.setStorage(primitives.Address{ .bytes = key.address }, key.slot, value);
             if (self.storage.storage_injector != null) {
                 // Injector mode reads the overlay first, so a rollback must restore it too,
-                // as an explicit entry: a missing one would fall back to the fetch cache,
-                // which still holds the reverted write.
+                // as an explicit entry: a missing entry for a written slot reads as zero
+                // (see `Storage.injectedValue`).
                 try self.storage.storage.put(key, value);
             } else if (self.host != null) {
                 return;

@@ -2769,3 +2769,318 @@ test "R2 create: a CREATE that reports failure has committed nothing, whichever 
     }
     try testing.expect(failures_seen > 0);
 }
+
+// ---- Round 3: injector cache vs rollback, teardown rollback, code visibility, commit atomicity ----
+
+// SSTORE(5, 7) with its operands pushed twice (valid whether the handler probes the slot
+// before or after popping).
+const r3_store_slot5_7 = [_]u8{ 0x60, 0x07, 0x60, 0x05, 0x60, 0x07, 0x60, 0x05, 0x55 };
+// SLOAD(5); MSTORE(0); RETURN(0, 32)
+const r3_return_slot5 = [_]u8{ 0x60, 0x05, 0x54, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+// EXTCODESIZE(ADDRESS); MSTORE(0); RETURN(0, 32). Ten bytes long.
+const r3_own_code_size = [_]u8{ 0x30, 0x3b, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+
+/// Run `code` at `r1_contract` asynchronously; the host holds slot 5 = 5.
+fn r3RunAsync(vm: *Evm, code: []const u8) !Evm.CallOrContinueOutput {
+    var host = R2AsyncHost{ .slots = &.{.{ .address = r1_contract, .slot = 5, .value = 5 }} };
+    vm.setBytecode(code);
+    return host.drive(vm, try vm.callOrContinue(.{ .call = r2CallParams(0) }));
+}
+
+/// SLOAD(5) through the synchronous entry point.
+fn r3SyncSlot5(vm: *Evm) !u256 {
+    vm.setBytecode(&r3_return_slot5);
+    const result = vm.call(r2CallParams(0));
+    try std.testing.expect(result.success);
+    return r1Word(result.output);
+}
+
+test "R3-001: a reverted async SSTORE does not resurface in the next synchronous transaction" {
+    const testing = std.testing;
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .OSAKA, null, r1_caller, 0, null);
+    defer vm.deinit();
+    var injector = try StorageInjector.init(testing.allocator);
+    defer injector.deinit();
+    vm.pending_storage_injector = &injector;
+
+    // The host supplies the original value 5; the transaction writes 7 and reverts.
+    const reverted = try r3RunAsync(&vm, &(r3_store_slot5_7 ++ [_]u8{ 0x60, 0x00, 0x60, 0x00, 0xfd }));
+    try testing.expect(reverted == .result);
+    try testing.expect(!reverted.result.success);
+    try testing.expectEqual(@as(u256, 5), vm.storage.peek(r1_contract, 5));
+    // The fetch cache still holds what the host holds.
+    try testing.expectEqual(@as(u256, 5), injector.getStorageFromCache(r1_contract, 5).?);
+
+    // The next transaction, on the synchronous entry, reads the original.
+    try testing.expectEqual(@as(u256, 5), try r3SyncSlot5(&vm));
+    try testing.expectEqual(@as(u256, 5), try r3SyncSlot5(&vm));
+
+    // Same after an exceptional halt...
+    const halted = try r3RunAsync(&vm, &(r3_store_slot5_7 ++ [_]u8{0xfe}));
+    try testing.expect(halted == .result and !halted.result.success);
+    try testing.expectEqual(@as(u256, 5), try r3SyncSlot5(&vm));
+
+    // ...and after a transaction cancelled while suspended: SSTORE(5, 7), then SLOAD(6).
+    vm.setBytecode(&(r3_store_slot5_7 ++ [_]u8{ 0x60, 0x06, 0x54, 0x00 }));
+    const first = try vm.callOrContinue(.{ .call = r2CallParams(0) });
+    try testing.expect(first == .need_storage);
+    const second = try vm.callOrContinue(.{ .continue_with_storage = .{ .address = r1_contract, .slot = 5, .value = 5 } });
+    try testing.expect(second == .need_storage);
+    try testing.expectEqual(@as(u256, 6), second.need_storage.slot);
+    try testing.expectEqual(@as(u256, 7), vm.storage.peek(r1_contract, 5));
+    try testing.expectEqual(@as(u256, 5), try r3SyncSlot5(&vm));
+    try testing.expectEqual(@as(usize, 0), injector.dirty_storage.count());
+}
+
+test "R3-001: a committed async SSTORE is what the next synchronous transaction reads" {
+    const testing = std.testing;
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .OSAKA, null, r1_caller, 0, null);
+    defer vm.deinit();
+    var injector = try StorageInjector.init(testing.allocator);
+    defer injector.deinit();
+    vm.pending_storage_injector = &injector;
+
+    const committed = try r3RunAsync(&vm, &(r3_store_slot5_7 ++ [_]u8{0x00}));
+    try testing.expect(committed == .ready_to_commit);
+    try testing.expect(std.mem.indexOf(u8, committed.ready_to_commit.changes_json, "\"originalValue\":\"0x5\",\"newValue\":\"0x7\"") != null);
+    try testing.expectEqual(@as(u256, 7), injector.getStorageFromCache(r1_contract, 5).?);
+    try testing.expect((try vm.callOrContinue(.{ .continue_after_commit = {} })).result.success);
+
+    // Acknowledged or not, the committed value is the one later transactions see.
+    try testing.expectEqual(@as(u256, 7), try r3SyncSlot5(&vm));
+    try testing.expectEqual(@as(u256, 7), try r3SyncSlot5(&vm));
+
+    // A synchronous write that reverts leaves it alone: SSTORE(5, 7 -> 9); REVERT.
+    vm.setBytecode(&[_]u8{ 0x60, 0x09, 0x60, 0x05, 0x55, 0x60, 0x00, 0x60, 0x00, 0xfd });
+    try testing.expect(!vm.call(r2CallParams(0)).success);
+    try testing.expectEqual(@as(u256, 7), try r3SyncSlot5(&vm));
+}
+
+test "R3-002: deinit rolls back a suspended async transaction on an external host" {
+    const testing = std.testing;
+    // SSTORE(1, 9) through the host, then SLOAD(0) suspends.
+    const code = [_]u8{ 0x60, 0x09, 0x60, 0x01, 0x55, 0x60, 0x00, 0x54, 0x00 };
+
+    var backing: R1Host = undefined;
+    backing.init(testing.allocator);
+    defer backing.deinit();
+    try backing.balances.put(r1_caller, 10);
+    try backing.balances.put(r1_contract, 20);
+    try backing.storage.put(.{ .address = r1_contract.bytes, .slot = 1 }, 4);
+    try backing.code.put(r1_contract, &code);
+
+    var injector = try StorageInjector.init(testing.allocator);
+    {
+        var vm: Evm = undefined;
+        try vm.init(testing.allocator, backing.interface(), .CANCUN, null, r1_caller, 0, null);
+        vm.pending_storage_injector = &injector;
+
+        var output = try vm.callOrContinue(.{ .call = r2CallParams(1) });
+        try testing.expect(output == .need_storage);
+        try testing.expectEqual(@as(u256, 1), output.need_storage.slot);
+        output = try vm.callOrContinue(.{ .continue_with_storage = .{ .address = r1_contract, .slot = 1, .value = 4 } });
+        try testing.expect(output == .need_storage);
+        try testing.expectEqual(@as(u256, 0), output.need_storage.slot);
+
+        // The suspended transaction has written to the host.
+        try testing.expectEqual(@as(u256, 9), backing.balances.get(r1_caller).?);
+        try testing.expectEqual(@as(u256, 21), backing.balances.get(r1_contract).?);
+        try testing.expectEqual(@as(u256, 9), backing.storage.get(.{ .address = r1_contract.bytes, .slot = 1 }).?);
+
+        // The embedder frees its injector first; teardown must not touch it.
+        injector.deinit();
+        vm.deinit();
+    }
+
+    try testing.expectEqual(@as(u256, 10), backing.balances.get(r1_caller).?);
+    try testing.expectEqual(@as(u256, 20), backing.balances.get(r1_contract).?);
+    try testing.expectEqual(@as(u256, 4), backing.storage.get(.{ .address = r1_contract.bytes, .slot = 1 }).?);
+}
+
+test "R3-005: supplied bytecode is the target's account code on both entries, for one call only" {
+    const testing = std.testing;
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .OSAKA, null, r1_caller, 0, null);
+    defer vm.deinit();
+
+    // Synchronous and async entries agree on EXTCODESIZE(ADDRESS).
+    vm.setBytecode(&r3_own_code_size);
+    const sync_result = vm.call(r2CallParams(0));
+    try testing.expect(sync_result.success);
+    try testing.expectEqual(@as(u256, r3_own_code_size.len), try r1Word(sync_result.output));
+    try testing.expect(!vm.code.contains(r1_contract));
+    try testing.expect(vm.async_code_view == null);
+
+    vm.setBytecode(&r3_own_code_size);
+    const async_result = try vm.callOrContinue(.{ .call = r2CallParams(0) });
+    try testing.expectEqual(@as(u256, r3_own_code_size.len), try r1Word(async_result.result.output));
+    try testing.expect(!vm.code.contains(r1_contract));
+
+    // A self-reentrant CALL runs the supplied code: depth 1 returns its CALLVALUE marker.
+    // if CALLVALUE == 0: CALL(self, value 1) and return the callee's word; else return 0x2a.
+    const reenter = [_]u8{ 0x34, 0x60, 0x2c, 0x57 } ++ // CALLVALUE; PUSH1 44; JUMPI
+        [_]u8{ 0x60, 0x20, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x01, 0x30, 0x61, 0xff, 0xff, 0xf1, 0x50 } ++
+        [_]u8{ 0x60, 0x20, 0x60, 0x00, 0xf3 } ++ ([_]u8{0x00} ** 19) ++
+        [_]u8{ 0x5b, 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    try testing.expectEqual(@as(u8, 0x5b), reenter[44]);
+    try vm.balances.put(r1_contract, 1);
+    vm.setBytecode(&reenter);
+    const reentered = vm.call(r2CallParams(0));
+    try testing.expect(reentered.success);
+    try testing.expectEqual(@as(u256, 0x2a), try r1Word(reentered.output));
+    try testing.expect(!vm.code.contains(r1_contract));
+
+    // The view is dropped on failure paths too, and a codeless target stays codeless.
+    vm.setBytecode(&[_]u8{0xfe});
+    try testing.expect(!vm.call(r2CallParams(0)).success);
+    try testing.expect(!vm.code.contains(r1_contract));
+    const empty = vm.call(r2CallParams(0));
+    try testing.expect(empty.success);
+    try testing.expectEqual(@as(usize, 0), empty.output.len);
+
+    // Installed code is never replaced or removed by supplied bytecode.
+    const installed = [_]u8{ 0x60, 0x07, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    try vm.code.put(r1_contract, &installed);
+    vm.setBytecode(&r3_own_code_size);
+    try testing.expectEqual(@as(u256, 7), try r1Word(vm.call(r2CallParams(0)).output));
+    try testing.expectEqualSlices(u8, &installed, vm.code.get(r1_contract).?);
+}
+
+test "R3-009: an allocation failure while preparing the async commit rolls the transaction back" {
+    const testing = std.testing;
+    // The target self-destructs to r1_other, so the commit has deletions to apply.
+    const destructing = [_]u8{0x73} ++ r1_other.bytes ++ [_]u8{0xff};
+
+    var failures_seen: usize = 0;
+    var commits_seen: usize = 0;
+    var fail_at: usize = 0;
+    while (true) : (fail_at += 1) {
+        try testing.expect(fail_at < 5_000);
+        var faulty = R2SingleFaultAllocator{ .child = testing.allocator, .fail_at = fail_at };
+
+        var vm: Evm = undefined;
+        vm.init(faulty.allocator(), null, .SHANGHAI, null, r1_caller, 0, null) catch continue;
+        defer vm.deinit();
+        var injector = StorageInjector.init(faulty.allocator()) catch continue;
+        defer injector.deinit();
+        vm.pending_storage_injector = &injector;
+        vm.balances.put(r1_caller, 100) catch continue;
+        vm.balances.put(r1_contract, 20) catch continue;
+        vm.balances.put(r1_other, 0) catch continue;
+
+        var host = R2AsyncHost{};
+        vm.setBytecode(&destructing);
+        const outcome: anyerror!Evm.CallOrContinueOutput = blk: {
+            const first = vm.callOrContinue(.{ .call = r2CallParams(7) }) catch |err| break :blk err;
+            break :blk host.drive(&vm, first);
+        };
+
+        // An allocation failure surfaces as an error or, inside an opcode, as an
+        // exceptional halt. Either way nothing of the transaction may remain.
+        const committed = if (outcome) |output| output == .ready_to_commit else |_| false;
+        if (committed) {
+            // Offered for commit: the local state is the committed one.
+            const output = try outcome;
+            commits_seen += 1;
+            try testing.expectEqual(@as(u256, 93), r1Balance(&vm, r1_caller));
+            try testing.expectEqual(@as(u256, 27), r1Balance(&vm, r1_other));
+            try testing.expect(!vm.balances.contains(r1_contract));
+            try testing.expect(std.mem.indexOf(u8, output.ready_to_commit.changes_json, "\"selfDestructs\":[\"0x") != null);
+        } else {
+            if (outcome) |output| try testing.expect(output == .result and !output.result.success) else |_| {}
+            failures_seen += 1;
+            try testing.expectEqual(@as(u256, 100), r1Balance(&vm, r1_caller));
+            try testing.expectEqual(@as(u256, 20), r1Balance(&vm, r1_contract));
+            try testing.expectEqual(@as(u256, 0), r1Balance(&vm, r1_other));
+            // No change set is readable and nothing is left to continue.
+            try testing.expectEqual(@as(usize, 0), vm.getPendingStateChanges().len);
+            try testing.expectEqual(AsyncPhase.idle, vm.async_executor.?.phase);
+            try testing.expectEqual(@as(usize, 0), injector.dirty_balances.count());
+        }
+        if (!faulty.faulted) break;
+    }
+    try testing.expect(failures_seen > 0);
+    try testing.expect(commits_seen > 0);
+}
+
+test "R3-009: the prepared commit JSON describes the state after end-of-transaction deletions" {
+    const testing = std.testing;
+    // SSTORE(5, 7), then SELFDESTRUCT to r1_other: the deletion zeroes the slot in the dump.
+    const code = r3_store_slot5_7 ++ [_]u8{0x73} ++ r1_other.bytes ++ [_]u8{0xff};
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .SHANGHAI, null, r1_caller, 0, null);
+    defer vm.deinit();
+    var injector = try StorageInjector.init(testing.allocator);
+    defer injector.deinit();
+    vm.pending_storage_injector = &injector;
+    try vm.balances.put(r1_caller, 100);
+    try vm.balances.put(r1_contract, 20);
+    try vm.balances.put(r1_other, 0);
+
+    var host = R2AsyncHost{ .slots = &.{.{ .address = r1_contract, .slot = 5, .value = 5 }} };
+    vm.setBytecode(&code);
+    const output = try host.drive(&vm, try vm.callOrContinue(.{ .call = r2CallParams(7) }));
+    try testing.expect(output == .ready_to_commit);
+    const json = output.ready_to_commit.changes_json;
+
+    // The buffer was reserved before the deletion (slot values 0x5 and 0x7), the JSON
+    // was written after it, and the two agree on the size bound.
+    try testing.expect(json.len <= vm.pending_state_changes_buffer.len);
+    try testing.expectEqual(vm.pending_state_changes_buffer.ptr, json.ptr);
+    try testing.expectEqualSlices(u8, json, vm.getPendingStateChanges());
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    // The deleted account: listed once, its written slot reads zero, no balance entry.
+    const destroyed = root.get("selfDestructs").?.array.items;
+    try testing.expectEqual(@as(usize, 1), destroyed.len);
+    try testing.expectEqualStrings("0x" ++ "c0" ** 20, destroyed[0].string);
+    const slots = root.get("storage").?.array.items;
+    try testing.expectEqual(@as(usize, 1), slots.len);
+    try testing.expectEqualStrings("0x5", slots[0].object.get("slot").?.string);
+    try testing.expectEqualStrings("0x0", slots[0].object.get("newValue").?.string);
+    const balances = root.get("balances").?.array.items;
+    try testing.expectEqual(@as(usize, 2), balances.len);
+    for (balances) |entry| {
+        const address = entry.object.get("address").?.string;
+        const expected = if (std.mem.eql(u8, address, "0x" ++ "b0" ** 20)) "0x1b" else "0x5d";
+        try testing.expectEqualStrings(expected, entry.object.get("balance").?.string);
+    }
+    try testing.expectEqual(@as(usize, 0), root.get("codes").?.array.items.len);
+
+    // The injector cache follows the commit: the slot of the deleted account is zero.
+    try testing.expectEqual(@as(u256, 0), injector.getStorageFromCache(r1_contract, 5).?);
+}
+
+test "R3-015: result_allocator keeps synchronous results out of the long-lived arena" {
+    const testing = std.testing;
+    // LOG0(0, 32); RETURN(0, 1024)
+    const code = [_]u8{ 0x60, 0x20, 0x60, 0x00, 0xa0, 0x61, 0x04, 0x00, 0x60, 0x00, 0xf3 };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .CANCUN, null, r1_caller, 0, null);
+    defer vm.deinit();
+    var results = std.heap.ArenaAllocator.init(testing.allocator);
+    defer results.deinit();
+    vm.result_allocator = results.allocator();
+
+    var after_warmup: usize = 0;
+    var i: usize = 0;
+    while (i < 200) : (i += 1) {
+        _ = results.reset(.retain_capacity);
+        vm.setBytecode(&code);
+        const result = vm.call(r2CallParams(0));
+        try testing.expect(result.success);
+        try testing.expectEqual(@as(usize, 1024), result.output.len);
+        try testing.expectEqual(@as(usize, 1), result.logs.len);
+        if (i == 8) after_warmup = vm.arena.queryCapacity();
+        if (i > 8) try testing.expectEqual(after_warmup, vm.arena.queryCapacity());
+    }
+}

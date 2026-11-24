@@ -130,6 +130,13 @@ const ExecutionContext = struct {
     result: ?CallResult,
     /// Gas limit of the call that produced `result` (for evm_get_gas_used).
     result_gas_limit: i64 = 0,
+    /// Owns the output, logs and error text of a synchronous `result`. Reset
+    /// when the next call starts and freed in evm_destroy, so a reused handle
+    /// holds one result at a time (R3-015). The EVM allocates into it through
+    /// `Evm.result_allocator`, which points at this field: the context is heap
+    /// allocated and never moves. An async result lives in the EVM's
+    /// transaction arena instead, until the next transaction starts.
+    result_arena: std.heap.ArenaAllocator,
     /// Code copies made by evm_set_code. The EVM's code map only borrows them,
     /// so each copy is freed here on replacement and in evm_destroy.
     owned_code: std.AutoHashMapUnmanaged(Address, []u8) = .empty,
@@ -151,6 +158,38 @@ const ExecutionContext = struct {
 fn idleContextOf(handle: ?*EvmHandle) ?*ExecutionContext {
     const ctx = contextOf(handle) orelse return null;
     if (ctx.in_flight) return null;
+    return ctx;
+}
+
+/// Result buffers kept between calls on one handle; anything above is returned
+/// to the allocator when the next call starts.
+const result_arena_retain_limit: usize = 64 * 1024;
+
+/// Drop the previous call's result and its buffers. Every entry that starts a
+/// new call runs this first, so a failed call never leaves the previous
+/// result readable and a reused handle never accumulates results.
+fn discardResult(ctx: *ExecutionContext) void {
+    ctx.result = null;
+    _ = ctx.result_arena.reset(.{ .retain_with_limit = result_arena_retain_limit });
+}
+
+/// True while an async transaction started by evm_call_ffi is suspended on a
+/// data request (output_type 1-4) and can still be continued. Its frames have
+/// already read the block and transaction environment, so the setters of that
+/// environment are rejected until the transaction finishes or a new call
+/// supersedes it (R3-006). A transaction awaiting only its commit
+/// acknowledgement has finished executing and does not count.
+fn hasSuspendedTransaction(ctx: *ExecutionContext) bool {
+    const executor = ctx.evm.async_executor orelse return false;
+    return executor.phase == .awaiting_data;
+}
+
+/// Context for a setter of the block or transaction environment: null for a
+/// null handle, while the handle is executing, or while an async transaction
+/// is suspended.
+fn environmentContextOf(handle: ?*EvmHandle) ?*ExecutionContext {
+    const ctx = idleContextOf(handle) orelse return null;
+    if (hasSuspendedTransaction(ctx)) return null;
     return ctx;
 }
 
@@ -230,7 +269,9 @@ pub export fn evm_create(hardfork_name: ?[*]const u8, hardfork_len: usize, log_l
         .access_list_storage_keys = &[_]AccessListStorageKey{},
         .blob_versioned_hashes = null,
         .result = null,
+        .result_arena = std.heap.ArenaAllocator.init(allocator),
     };
+    evm_ptr.result_allocator = ctx.result_arena.allocator();
 
     return @ptrCast(ctx);
 }
@@ -248,7 +289,10 @@ pub export fn evm_destroy(handle: ?*EvmHandle) void {
 }
 
 fn destroyContext(ctx: *ExecutionContext) void {
+    // Rolls back a transaction still suspended, then frees the EVM's arenas.
     ctx.evm.deinit();
+    ctx.result = null;
+    ctx.result_arena.deinit();
     if (ctx.injector) |injector| {
         injector.deinit();
         allocator.destroy(injector);
@@ -310,22 +354,30 @@ pub export fn evm_set_execution_context(
 
 /// Set the transaction origin reported by ORIGIN and warmed as the sender
 /// (EIP-2929). Defaults to the zero address. Persists across calls.
+/// Returns false and changes nothing while an async transaction is suspended
+/// on a data request.
 pub export fn evm_set_origin(handle: ?*EvmHandle, origin_bytes: ?[*]const u8) bool {
-    const ctx = idleContextOf(handle) orelse return false;
+    const ctx = environmentContextOf(handle) orelse return false;
     ctx.evm.origin = readAddress(origin_bytes) orelse return false;
     return true;
 }
 
 /// Set the effective gas price reported by GASPRICE (32-byte big-endian).
 /// Defaults to zero. Persists across calls.
+/// Returns false and changes nothing while an async transaction is suspended
+/// on a data request.
 pub export fn evm_set_gas_price(handle: ?*EvmHandle, gas_price_bytes: ?[*]const u8) bool {
-    const ctx = idleContextOf(handle) orelse return false;
+    const ctx = environmentContextOf(handle) orelse return false;
     ctx.evm.gas_price = readWord(gas_price_bytes) orelse return false;
     return true;
 }
 
 /// Set blockchain context (required before execution).
-/// A null handle or any null pointer leaves the context unchanged.
+/// Returns false and leaves the context unchanged for a null handle, any null
+/// pointer, a handle that is executing, or a handle whose async transaction is
+/// suspended on a data request: the suspended frames have already read the
+/// block they run in, and a second block must not appear halfway through.
+/// Finish the transaction, or start the next call (which cancels it), first.
 export fn evm_set_blockchain_context(
     handle: ?*EvmHandle,
     chain_id_bytes: ?[*]const u8, // 32 bytes
@@ -337,15 +389,15 @@ export fn evm_set_blockchain_context(
     block_gas_limit: u64,
     block_base_fee_bytes: ?[*]const u8, // 32 bytes
     blob_base_fee_bytes: ?[*]const u8, // 32 bytes
-) void {
-    const ctx = idleContextOf(handle) orelse return;
+) bool {
+    const ctx = environmentContextOf(handle) orelse return false;
 
-    const chain_id = readWord(chain_id_bytes) orelse return;
-    const block_difficulty = readWord(block_difficulty_bytes) orelse return;
-    const block_prevrandao = readWord(block_prevrandao_bytes) orelse return;
-    const block_coinbase = readAddress(block_coinbase_bytes) orelse return;
-    const block_base_fee = readWord(block_base_fee_bytes) orelse return;
-    const blob_base_fee = readWord(blob_base_fee_bytes) orelse return;
+    const chain_id = readWord(chain_id_bytes) orelse return false;
+    const block_difficulty = readWord(block_difficulty_bytes) orelse return false;
+    const block_prevrandao = readWord(block_prevrandao_bytes) orelse return false;
+    const block_coinbase = readAddress(block_coinbase_bytes) orelse return false;
+    const block_base_fee = readWord(block_base_fee_bytes) orelse return false;
+    const blob_base_fee = readWord(blob_base_fee_bytes) orelse return false;
 
     ctx.evm.block_context = .{
         .chain_id = chain_id,
@@ -358,16 +410,18 @@ export fn evm_set_blockchain_context(
         .block_base_fee = block_base_fee,
         .blob_base_fee = blob_base_fee,
     };
+    return true;
 }
 
 /// Set access list addresses (EIP-2930) - call before execute.
-/// On failure the previous list is kept.
+/// On failure the previous list is kept. Rejected while an async transaction
+/// is suspended on a data request.
 export fn evm_set_access_list_addresses(
     handle: ?*EvmHandle,
     addresses: ?[*]const u8, // Packed 20-byte addresses
     count: usize,
 ) bool {
-    const ctx = idleContextOf(handle) orelse return false;
+    const ctx = environmentContextOf(handle) orelse return false;
 
     if (count == 0) {
         allocator.free(ctx.access_list_addresses);
@@ -389,14 +443,15 @@ export fn evm_set_access_list_addresses(
 /// Set access list storage keys (EIP-2930) - call before execute.
 /// Every key is warmed together with its address, whether or not that address
 /// was also passed to evm_set_access_list_addresses. On failure the previous
-/// list is kept.
+/// list is kept. Rejected while an async transaction is suspended on a data
+/// request.
 export fn evm_set_access_list_storage_keys(
     handle: ?*EvmHandle,
     addresses: ?[*]const u8, // Packed 20-byte addresses
     slots: ?[*]const u8, // Packed 32-byte slots
     count: usize,
 ) bool {
-    const ctx = idleContextOf(handle) orelse return false;
+    const ctx = environmentContextOf(handle) orelse return false;
 
     if (count == 0) {
         allocator.free(ctx.access_list_storage_keys);
@@ -423,12 +478,13 @@ export fn evm_set_access_list_storage_keys(
 
 /// Set blob versioned hashes (EIP-4844) - call before execute.
 /// `count == 0` clears them; the next call then sees no blob hashes.
+/// Rejected while an async transaction is suspended on a data request.
 export fn evm_set_blob_hashes(
     handle: ?*EvmHandle,
     hashes: ?[*]const u8, // Packed 32-byte hashes
     count: usize,
 ) bool {
-    const ctx = idleContextOf(handle) orelse return false;
+    const ctx = environmentContextOf(handle) orelse return false;
 
     if (count == 0) {
         if (ctx.blob_versioned_hashes) |old_hashes| allocator.free(old_hashes);
@@ -523,8 +579,12 @@ pub fn freeAccessList(gpa_allocator: std.mem.Allocator, access_list: ?[]AccessLi
 ///
 /// Code installed with evm_set_code (including an EIP-7702 delegation
 /// designator) takes precedence; evm_set_bytecode supplies the code only for
-/// a target that has none. Starting a synchronous call cancels any async
-/// transaction suspended by evm_call_ffi.
+/// a target that has none. That supplied code is the target's account code
+/// while the call runs (EXTCODESIZE, EXTCODECOPY, EXTCODEHASH and re-entrant
+/// calls see it, exactly as with evm_call_ffi) and is gone again when the call
+/// returns. Starting a synchronous call cancels any async transaction
+/// suspended by evm_call_ffi and rolls back everything it changed. The result
+/// stays readable until the next call starts on the handle.
 export fn evm_execute(handle: ?*EvmHandle) bool {
     const ctx = idleContextOf(handle) orelse return false;
     ctx.in_flight = true;
@@ -534,9 +594,11 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
 
 fn executeSync(ctx: *ExecutionContext) bool {
     // A failed call must never leave the previous call's result readable.
-    ctx.result = null;
-    if (ctx.gas < 0) return false;
+    discardResult(ctx);
+    // Before anything can fail: a suspended transaction must not stay half
+    // applied behind an error return.
     cancelAsync(ctx);
+    if (ctx.gas < 0) return false;
 
     const access_list = buildAccessList(allocator, ctx.access_list_addresses, ctx.access_list_storage_keys) catch return false;
     defer freeAccessList(allocator, access_list);
@@ -549,8 +611,8 @@ fn executeSync(ctx: *ExecutionContext) bool {
 
     // Set bytecode, access list, and blob hashes. An empty slice clears hashes
     // left behind by an earlier blob transaction. `call()` consumes the
-    // pending bytecode only when the target has no installed code, and never
-    // writes it into the code map.
+    // pending bytecode only when the target has no installed code. It is then
+    // the target's account code for this call only, as on the async path.
     ctx.evm.setBytecode(ctx.bytecode);
     ctx.evm.setAccessList(access_list);
     ctx.evm.setBlobVersionedHashes(ctx.blob_versioned_hashes orelse &.{});
@@ -570,17 +632,22 @@ fn hasInstalledCode(ctx: *ExecutionContext) bool {
 }
 
 /// Abandon an async transaction left suspended (awaiting data or commit) by
-/// evm_call_ffi, so a later evm_continue_ffi fails instead of resuming stale
-/// frames or replaying the previous transaction's result.
+/// evm_call_ffi. A transaction awaiting data is rolled back to its root
+/// checkpoint: balances, nonces, code, storage, logs, warm sets and the
+/// injector's pending changes all return to their state before the call. A
+/// later evm_continue_ffi then fails instead of resuming stale frames or
+/// replaying the previous transaction's result.
+///
+/// Order matters (R3-002): the executor is cancelled in place while it is
+/// still attached to the EVM, because the rollback needs its root checkpoint.
+/// Only then is it dropped and the per-transaction async state released
+/// (fetched account fields and the temporary code view of the call target).
 fn cancelAsync(ctx: *ExecutionContext) void {
     ctx.evm.pending_precompile_result = null;
-    const executor = ctx.evm.async_executor orelse return;
-    if (executor.phase != .idle) {
-        ctx.evm.frames.clearRetainingCapacity();
-        if (ctx.injector) |injector| injector.clearDirty();
-    }
-    ctx.evm.storage.clear_async_request();
+    if (ctx.evm.async_executor) |*executor| executor.cancel();
     ctx.evm.async_executor = null;
+    ctx.evm.endAsyncTransaction();
+    ctx.evm.storage.clear_async_request();
 }
 
 /// Get gas remaining after execution
@@ -730,8 +797,10 @@ pub const ASYNC_JSON_INLINE_CAPACITY: usize = 16384;
 ///   1-4 = need_storage / need_balance / need_code / need_nonce
 ///   5   = ready_to_commit (only after a successful execution)
 ///   255 = host-side failure: invalid arguments, a continuation that does not
-///         answer the outstanding request, or allocation failure. No result
-///         is readable.
+///         answer the outstanding request, or allocation failure. A failed
+///         evm_call_ffi leaves no readable result. An evm_continue_ffi that
+///         is rejected because nothing is suspended never changes the result
+///         of the last completed call.
 ///
 /// For `output_type == 5` (`ready_to_commit`):
 /// - `json_len` ALWAYS holds the true, untruncated byte length of the state-changes JSON.
@@ -829,16 +898,17 @@ fn packOutput(output: Evm.CallOrContinueOutput, ctx: *ExecutionContext, request_
     }
 }
 
-/// Reject a request on a null or currently executing handle without touching
-/// the handle's state.
+/// Reject a request without touching the handle's state: a null or currently
+/// executing handle, or a continuation that answers nothing.
 fn rejectRequest(request: *AsyncRequest) bool {
     request.output_type = 255;
     return false;
 }
 
-/// Report a host-side failure: tag 255 and no readable result.
+/// Report a host-side failure while starting a call: tag 255 and no readable
+/// result.
 fn failRequest(ctx: *ExecutionContext, request_out: *AsyncRequest) bool {
-    ctx.result = null;
+    discardResult(ctx);
     request_out.output_type = 255;
     return false;
 }
@@ -875,8 +945,13 @@ pub export fn evm_call_ffi(
 }
 
 fn startAsync(ctx: *ExecutionContext, request: *AsyncRequest) bool {
+    // A new call supersedes a suspended one. Cancel it first (R3-02): the
+    // rollback releases the temporary code view the suspended call installed
+    // at its target, which `hasInstalledCode` below would otherwise mistake
+    // for installed code and drop the new bytecode.
+    cancelAsync(ctx);
     // A failed call must never leave the previous call's result readable.
-    ctx.result = null;
+    discardResult(ctx);
     if (ctx.gas < 0) return failRequest(ctx, request);
 
     const access_list = buildAccessList(allocator, ctx.access_list_addresses, ctx.access_list_storage_keys) catch {
@@ -908,7 +983,10 @@ fn startAsync(ctx: *ExecutionContext, request: *AsyncRequest) bool {
 /// Returns next request in request_out, or output_type=0 if done.
 /// The reply must answer the outstanding request (same kind, address and
 /// slot); anything else returns false with output_type=255 and leaves the
-/// suspended execution untouched. `data_ptr` may be null when `data_len` is 0.
+/// suspended execution untouched. A stale or duplicate continuation (nothing
+/// is suspended, or the commit was already acknowledged) is rejected the same
+/// way and leaves the result of the last completed call readable.
+/// `data_ptr` may be null when `data_len` is 0.
 pub export fn evm_continue_ffi(
     handle: ?*EvmHandle,
     continue_type: u8, // 1=storage, 2=balance, 3=code, 4=nonce, 5=after_commit
@@ -930,13 +1008,17 @@ fn continueAsync(
     data_len: usize,
     request: *AsyncRequest,
 ) bool {
-    const data = inputSlice(data_ptr, data_len) orelse return failRequest(ctx, request);
+    // Every failure below is a rejection that keeps `ctx.result` (R3-046). While
+    // a call is in flight the result is already null (the call entry cleared
+    // it), so a real failure still reports no result; with nothing in flight
+    // the continuation is stale and the last completed call stays readable.
+    const data = inputSlice(data_ptr, data_len) orelse return rejectRequest(request);
 
     // Build continue input based on type
     const input: Evm.CallOrContinueInput = switch (continue_type) {
         1 => blk: {
             // Storage: address(20) + slot(32) + value(32) = 84 bytes
-            if (data.len < 84) return failRequest(ctx, request);
+            if (data.len < 84) return rejectRequest(request);
             break :blk .{ .continue_with_storage = .{
                 .address = .{ .bytes = data[0..20].* },
                 .slot = std.mem.readInt(u256, data[20..52], .big),
@@ -945,7 +1027,7 @@ fn continueAsync(
         },
         2 => blk: {
             // Balance: address(20) + balance(32) = 52 bytes
-            if (data.len < 52) return failRequest(ctx, request);
+            if (data.len < 52) return rejectRequest(request);
             break :blk .{ .continue_with_balance = .{
                 .address = .{ .bytes = data[0..20].* },
                 .balance = std.mem.readInt(u256, data[20..52], .big),
@@ -953,7 +1035,7 @@ fn continueAsync(
         },
         3 => blk: {
             // Code: address(20) + code bytes (remainder). Answers a need_code request.
-            if (data.len < 20) return failRequest(ctx, request);
+            if (data.len < 20) return rejectRequest(request);
             break :blk .{ .continue_with_code = .{
                 .address = .{ .bytes = data[0..20].* },
                 .code = data[20..],
@@ -961,18 +1043,18 @@ fn continueAsync(
         },
         4 => blk: {
             // Nonce: address(20) + nonce(8, big-endian). Answers a need_nonce request.
-            if (data.len < 28) return failRequest(ctx, request);
+            if (data.len < 28) return rejectRequest(request);
             break :blk .{ .continue_with_nonce = .{
                 .address = .{ .bytes = data[0..20].* },
                 .nonce = std.mem.readInt(u64, data[20..28], .big),
             } };
         },
         5 => .{ .continue_after_commit = {} },
-        else => return failRequest(ctx, request),
+        else => return rejectRequest(request),
     };
 
     const output = ctx.evm.callOrContinue(input) catch {
-        return failRequest(ctx, request);
+        return rejectRequest(request);
     };
 
     return packOutput(output, ctx, request);
@@ -1204,7 +1286,7 @@ test "C ABI - null pointers are rejected or treated as empty, never dereferenced
     try testing.expect(!evm_set_execution_context(null, 1, null, null, null, null, 0));
     try testing.expect(!evm_set_origin(null, null));
     try testing.expect(!evm_set_gas_price(null, null));
-    evm_set_blockchain_context(null, null, 0, 0, null, null, null, 0, null, null);
+    try testing.expect(!evm_set_blockchain_context(null, null, 0, 0, null, null, null, 0, null, null));
     try testing.expect(!evm_set_access_list_addresses(null, null, 0));
     try testing.expect(!evm_set_access_list_storage_keys(null, null, null, 0));
     try testing.expect(!evm_set_blob_hashes(null, null, 0));
@@ -1263,7 +1345,7 @@ test "C ABI - null pointers are rejected or treated as empty, never dereferenced
 
     // A null pointer in the block context leaves the context unchanged.
     const chain_before = handle_evm(handle).block_context.chain_id;
-    evm_set_blockchain_context(handle, null, 7, 7, null, null, null, 7, null, null);
+    try testing.expect(!evm_set_blockchain_context(handle, null, 7, 7, null, null, null, 7, null, null));
     try testing.expectEqual(chain_before, handle_evm(handle).block_context.chain_id);
     try testing.expectEqual(@as(u64, 0), handle_evm(handle).block_context.block_number);
 
@@ -1775,5 +1857,188 @@ test "evm_alloc returns 16-byte aligned buffers" {
         const ptr = evm_alloc(size) orelse return error.OutOfMemory;
         try testing.expectEqual(@as(usize, 0), @intFromPtr(ptr) % 16);
         evm_free(ptr, size);
+    }
+}
+
+// ---- Round 3: rollback on cancel, code visibility, suspended setters, result ownership ----
+
+// SLOAD(0); STOP: suspends on slot 0 in the top-level frame, after the value transfer.
+const r3_suspend = [_]u8{ 0x60, 0x00, 0x54, 0x00 };
+// SELFBALANCE; MSTORE(0); BALANCE(CALLER); MSTORE(32); RETURN(0, 64)
+const r3_balances = [_]u8{ 0x47, 0x60, 0x00, 0x52, 0x33, 0x31, 0x60, 0x20, 0x52, 0x60, 0x40, 0x60, 0x00, 0xf3 };
+// EXTCODESIZE(ADDRESS); MSTORE(0); RETURN(0, 32). Ten bytes long.
+const r3_own_code_size = [_]u8{ 0x30, 0x3b, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+// MSTORE(0, 42); RETURN(0, 32)
+const r3_return_42 = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+
+fn r3Word(value: u8) [32]u8 {
+    return [_]u8{0} ** 31 ++ [_]u8{value};
+}
+
+test "C ABI R3-002 - a sync call rolls back the transfer of the async call it supersedes" {
+    const scope = TestAllocatorScope.enter();
+    defer scope.exit();
+    const handle = try testHandle();
+    defer evm_destroy(handle);
+    try testing.expect(evm_enable_storage_injector(handle));
+    var request: AsyncRequest = undefined;
+    var buffer: [64]u8 = undefined;
+
+    try testing.expect(evm_set_balance(handle, &test_zero_address, &r3Word(10)));
+    try testing.expect(evm_set_balance(handle, &test_target, &r3Word(20)));
+
+    // The async call moves 1 wei, then suspends on SLOAD(0).
+    try testing.expect(evm_set_bytecode(handle, &r3_suspend, r3_suspend.len));
+    try testing.expect(evm_set_execution_context(handle, 100_000, &test_zero_address, &test_target, &r3Word(1), null, 0));
+    try testing.expect(evm_call_ffi(handle, &request));
+    try testing.expectEqual(@as(u8, 1), request.output_type);
+    const target = Address{ .bytes = test_target };
+    try testing.expectEqual(@as(u256, 21), handle_evm(handle).balances.get(target).?);
+
+    // Superseding it restores both balances before the new call reads them.
+    try testSetCall(handle, &r3_balances, 100_000);
+    try testing.expect(evm_execute(handle));
+    const output = testOutput(handle, &buffer);
+    try testing.expectEqual(@as(usize, 64), output.len);
+    try testing.expectEqual(@as(u256, 20), std.mem.readInt(u256, output[0..32], .big));
+    try testing.expectEqual(@as(u256, 10), std.mem.readInt(u256, output[32..64], .big));
+    try testing.expect(handle_evm(handle).async_executor == null);
+    try testing.expect(handle_evm(handle).async_code_view == null);
+
+    // Destroying a handle with a suspended value transfer leaks nothing either.
+    try testing.expect(evm_set_bytecode(handle, &r3_suspend, r3_suspend.len));
+    try testing.expect(evm_set_execution_context(handle, 100_000, &test_zero_address, &test_target, &r3Word(1), null, 0));
+    try testing.expect(evm_call_ffi(handle, &request));
+    try testing.expectEqual(@as(u8, 1), request.output_type);
+}
+
+test "C ABI R3-005 - supplied bytecode is account code on both entries and a superseding call runs its own code" {
+    const scope = TestAllocatorScope.enter();
+    defer scope.exit();
+    const handle = try testHandle();
+    defer evm_destroy(handle);
+    var request: AsyncRequest = undefined;
+    var buffer: [32]u8 = undefined;
+    const target = Address{ .bytes = test_target };
+
+    // Same answer from evm_execute and evm_call_ffi, and no code left behind by either.
+    try testSetCall(handle, &r3_own_code_size, 100_000);
+    try testing.expect(evm_execute(handle));
+    try testing.expectEqual(@as(u8, r3_own_code_size.len), testOutput(handle, &buffer)[31]);
+    try testing.expect(!handle_evm(handle).code.contains(target));
+    try testing.expect(evm_call_ffi(handle, &request));
+    try testing.expectEqual(@as(u8, 0), request.output_type);
+    try testing.expectEqual(@as(u8, r3_own_code_size.len), testOutput(handle, &buffer)[31]);
+    try testing.expect(!handle_evm(handle).code.contains(target));
+
+    // A suspended call holds a temporary code view at the target. The call that
+    // supersedes it must run the bytecode set for it, not ask the host for code.
+    try testing.expect(evm_enable_storage_injector(handle));
+    try testSetCall(handle, &r3_suspend, 100_000);
+    try testing.expect(evm_call_ffi(handle, &request));
+    try testing.expectEqual(@as(u8, 1), request.output_type);
+    try testing.expect(handle_evm(handle).code.contains(target));
+
+    try testSetCall(handle, &r3_return_42, 100_000);
+    try testing.expect(evm_call_ffi(handle, &request));
+    try testing.expectEqual(@as(u8, 5), request.output_type);
+    try testing.expect(evm_continue_ffi(handle, 5, null, 0, &request));
+    try testing.expect(evm_is_success(handle));
+    try testing.expectEqual(@as(u8, 42), testOutput(handle, &buffer)[31]);
+    try testing.expect(!handle_evm(handle).code.contains(target));
+}
+
+test "C ABI R3-006 - environment setters are rejected while an async call is suspended" {
+    const scope = TestAllocatorScope.enter();
+    defer scope.exit();
+    const handle = try testHandle();
+    defer evm_destroy(handle);
+    try testing.expect(evm_enable_storage_injector(handle));
+    var request: AsyncRequest = undefined;
+    var buffer: [64]u8 = undefined;
+    const word = r3Word(9);
+    const hash = [_]u8{0x01} ++ [_]u8{0x77} ** 31;
+
+    try testing.expect(evm_set_blockchain_context(handle, &test_zero_word, 1, 1_720_000_000, &test_zero_word, &test_zero_word, &test_zero_address, 30_000_000, &test_zero_word, &test_zero_word));
+
+    // TIMESTAMP; MSTORE(0); SLOAD(0); POP; TIMESTAMP; MSTORE(32); RETURN(0, 64)
+    const code = [_]u8{ 0x42, 0x60, 0x00, 0x52, 0x60, 0x00, 0x54, 0x50, 0x42, 0x60, 0x20, 0x52, 0x60, 0x40, 0x60, 0x00, 0xf3 };
+    try testSetCall(handle, &code, 100_000);
+    try testing.expect(evm_call_ffi(handle, &request));
+    try testing.expectEqual(@as(u8, 1), request.output_type);
+
+    // Suspended: every setter of the block or transaction environment is refused.
+    try testing.expect(!evm_set_blockchain_context(handle, &test_zero_word, 2, 1_800_000_000, &test_zero_word, &test_zero_word, &test_zero_address, 30_000_000, &test_zero_word, &test_zero_word));
+    try testing.expect(!evm_set_origin(handle, &test_target));
+    try testing.expect(!evm_set_gas_price(handle, &word));
+    try testing.expect(!evm_set_blob_hashes(handle, &hash, 1));
+    try testing.expect(!evm_set_blob_hashes(handle, null, 0));
+    try testing.expect(!evm_set_access_list_addresses(handle, &test_target, 1));
+    try testing.expect(!evm_set_access_list_storage_keys(handle, &test_target, &word, 1));
+    try testing.expectEqual(@as(u64, 1_720_000_000), handle_evm(handle).block_context.block_timestamp);
+    try testing.expectEqual(@as(u256, 0), handle_evm(handle).gas_price);
+
+    var reply = [_]u8{0} ** 84;
+    @memcpy(reply[0..20], &test_target);
+    try testing.expect(evm_continue_ffi(handle, 1, &reply, reply.len, &request));
+    try testing.expectEqual(@as(u8, 5), request.output_type);
+
+    // Execution has finished; only the acknowledgement is owed. Setters work again.
+    try testing.expect(evm_set_gas_price(handle, &word));
+    try testing.expect(evm_continue_ffi(handle, 5, null, 0, &request));
+    const output = testOutput(handle, &buffer);
+    try testing.expectEqual(@as(u256, 1_720_000_000), std.mem.readInt(u256, output[0..32], .big));
+    try testing.expectEqual(@as(u256, 1_720_000_000), std.mem.readInt(u256, output[32..64], .big));
+    try testing.expect(evm_set_blockchain_context(handle, &test_zero_word, 2, 1_800_000_000, &test_zero_word, &test_zero_word, &test_zero_address, 30_000_000, &test_zero_word, &test_zero_word));
+    try testing.expect(evm_set_origin(handle, &test_target));
+    try testing.expect(evm_set_blob_hashes(handle, &hash, 1));
+    try testing.expect(evm_set_access_list_addresses(handle, &test_target, 1));
+    try testing.expect(evm_set_access_list_storage_keys(handle, &test_target, &word, 1));
+}
+
+test "C ABI R3-046, R3-015 - a stale continuation keeps the last result and a reused handle holds one result" {
+    const scope = TestAllocatorScope.enter();
+    defer scope.exit();
+    const handle = try testHandle();
+    defer evm_destroy(handle);
+    var request: AsyncRequest = undefined;
+    var buffer: [32]u8 = undefined;
+
+    try testSetCall(handle, &r3_return_42, 100_000);
+    try testing.expect(evm_execute(handle));
+
+    // Nothing is suspended: every continuation is stale and changes nothing.
+    var reply = [_]u8{0} ** 84;
+    @memcpy(reply[0..20], &test_target);
+    try testing.expect(!evm_continue_ffi(handle, 5, null, 0, &request));
+    try testing.expectEqual(@as(u8, 255), request.output_type);
+    try testing.expect(!evm_continue_ffi(handle, 1, &reply, reply.len, &request));
+    try testing.expect(!evm_continue_ffi(handle, 9, null, 0, &request));
+    try testing.expect(!evm_continue_ffi(handle, 1, &reply, 10, &request));
+    try testing.expectEqual(@as(u8, 255), request.output_type);
+    try testing.expect(evm_is_success(handle));
+    try testing.expectEqual(@as(usize, 32), evm_get_output_len(handle));
+    try testing.expectEqual(@as(u8, 42), testOutput(handle, &buffer)[31]);
+    try testing.expectEqual(@as(i64, 100_000 - 18), evm_get_gas_remaining(handle));
+
+    // RETURN(0, 1024): each call replaces the previous result's buffers, so the
+    // handle's memory stops growing after the first few calls.
+    const big = [_]u8{ 0x61, 0x04, 0x00, 0x60, 0x00, 0xf3 };
+    try testSetCall(handle, &big, 100_000);
+    const ctx = contextOf(handle).?;
+    var settled_results: usize = 0;
+    var settled_world: usize = 0;
+    var i: usize = 0;
+    while (i < 200) : (i += 1) {
+        try testing.expect(evm_execute(handle));
+        try testing.expectEqual(@as(usize, 1024), evm_get_output_len(handle));
+        if (i == 8) {
+            settled_results = ctx.result_arena.queryCapacity();
+            settled_world = ctx.evm.arena.queryCapacity();
+        }
+        if (i > 8) {
+            try testing.expectEqual(settled_results, ctx.result_arena.queryCapacity());
+            try testing.expectEqual(settled_world, ctx.evm.arena.queryCapacity());
+        }
     }
 }

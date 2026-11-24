@@ -22,9 +22,11 @@ pub const AsyncDataRequest = async_executor.AsyncDataRequest;
 ///   `storage` is the authoritative transaction overlay. It holds every slot the
 ///   host supplied (`put_in_cache`) and every slot written (`set`), including
 ///   explicit zeros, so reads never fall back to a stale fetch. The injector's
-///   `storage_cache` mirrors the latest value and is consulted only for slots
-///   the overlay does not hold. The overlay wins because call-revert snapshots
-///   restore it, while the injector cache is never rolled back.
+///   `storage_cache` holds only what the host holds: fetched values and the
+///   writes of transactions that succeeded (`commitInjectorWrites`). A write in
+///   flight never reaches it, so a reverted, halted or cancelled transaction
+///   cannot leak a value into the next one (R3-001). The cache is consulted
+///   only for slots the overlay does not hold.
 pub const Storage = struct {
     /// Persistent storage (current transaction state)
     storage: std.AutoHashMap(StorageSlotKey, u256),
@@ -78,10 +80,9 @@ pub const Storage = struct {
     /// has not been loaded yet.
     fn injectedValue(self: *Storage, injector: *storage_injector.StorageInjector, key: StorageSlotKey) ?u256 {
         if (self.storage.get(key)) |value| return value;
-        // A written slot always lives in the overlay. If it is gone, a call
-        // revert or account deletion removed it, which the EVM only does when
-        // the restored value is zero. The injector cache still holds the
-        // reverted write and must not be read.
+        // A written slot always lives in the overlay. If it is gone, an account
+        // deletion removed it, so the slot now reads zero. The injector cache
+        // still holds the value from before the deletion and must not be read.
         if (injector.dirty_storage.contains(key)) return 0;
         return injector.storage_cache.get(key);
     }
@@ -176,10 +177,13 @@ pub const Storage = struct {
         }
 
         if (self.storage_injector) |injector| {
+            // Mark first: `dirty_storage` only grows, so a failed overlay write
+            // cannot leave a written slot unmarked.
+            try injector.markStorageDirty(address, slot);
+            // The value lives in the overlay only. The injector cache keeps the
+            // fetched original until the transaction commits, so a rollback has
+            // nothing to undo there (R3-001).
             try self.storage.put(key, value);
-            // Mirror the write into the injector cache and mark it dirty so
-            // cache readers and dumpChanges() report the new value.
-            try injector.recordStorageWrite(address, slot, value);
             if (self.host) |h| h.setStorage(address, slot, value);
             return;
         }
@@ -240,6 +244,19 @@ pub const Storage = struct {
 
         // Also put in self.storage so get() can find it
         try self.storage.put(key, value);
+    }
+
+    /// A transaction succeeded: fold every slot it wrote into the injector cache,
+    /// so the cache keeps describing what the host holds. A written slot whose
+    /// overlay entry is gone belonged to a deleted account and now reads zero.
+    /// Call after end-of-transaction deletions. No-op without an injector.
+    /// Never fails (see `StorageInjector.commitStorageWrite`).
+    pub fn commitInjectorWrites(self: *Storage) void {
+        const injector = self.storage_injector orelse return;
+        var written_it = injector.dirty_storage.keyIterator();
+        while (written_it.next()) |key| {
+            injector.commitStorageWrite(key.*, self.storage.get(key.*) orelse 0);
+        }
     }
 
     /// Clear transient storage (called at transaction boundaries)
@@ -522,7 +539,7 @@ test "Storage: ensureSlotLoaded accepts a slot held only by the injector cache" 
     try std.testing.expectEqual(@as(u256, 55), try storage.get(addr, 1));
 }
 
-test "Storage: injector write is visible to get, the cache, and dumpChanges" {
+test "Storage: injector write is visible to get and dumpChanges, and reaches the cache only on commit" {
     const allocator = std.testing.allocator;
     var injector = try storage_injector.StorageInjector.init(allocator);
     defer injector.deinit();
@@ -536,7 +553,8 @@ test "Storage: injector write is visible to get, the cache, and dumpChanges" {
     try storage.set(addr, 0, 7);
 
     try std.testing.expectEqual(@as(u256, 7), try storage.get(addr, 0));
-    try std.testing.expectEqual(@as(u256, 7), injector.getStorageFromCache(addr, 0).?);
+    // R3-001: the fetched original survives the speculative write.
+    try std.testing.expectEqual(@as(u256, 5), injector.getStorageFromCache(addr, 0).?);
     try std.testing.expectEqual(@as(u256, 5), storage.get_original(addr, 0));
     try std.testing.expect(injector.dirty_storage.contains(.{ .address = addr.bytes, .slot = 0 }));
 
@@ -555,6 +573,34 @@ test "Storage: injector write is visible to get, the cache, and dumpChanges" {
     const json = try injector.dumpChanges(&fake);
     defer allocator.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"originalValue\":\"0x5\",\"newValue\":\"0x7\"") != null);
+
+    storage.commitInjectorWrites();
+    try std.testing.expectEqual(@as(u256, 7), injector.getStorageFromCache(addr, 0).?);
+}
+
+test "Storage: a rolled back injector write leaves the fetched original for the next transaction" {
+    const allocator = std.testing.allocator;
+    var injector = try storage_injector.StorageInjector.init(allocator);
+    defer injector.deinit();
+    var storage = Storage.init(allocator, null, &injector);
+    defer storage.deinit();
+
+    const addr = primitives.Address{ .bytes = [_]u8{0x08} ** 20 };
+    const key = StorageSlotKey{ .address = addr.bytes, .slot = 5 };
+
+    // Host supplies slot 5 = 5; the transaction writes 7 and is rolled back.
+    try storage.put_in_cache(addr, 5, 5);
+    try storage.set(addr, 5, 7);
+    try storage.storage.put(key, 5);
+    injector.clearDirty();
+
+    // Next transaction: the overlay and the original-value tracking start empty.
+    storage.storage.clearRetainingCapacity();
+    storage.original_storage.clearRetainingCapacity();
+
+    try storage.ensureSlotLoaded(addr, 5);
+    try std.testing.expectEqual(@as(u256, 5), try storage.get(addr, 5));
+    try std.testing.expectEqual(@as(u256, 5), storage.peek(addr, 5));
 }
 
 test "Storage: injector write of zero is not shadowed by the fetched value" {

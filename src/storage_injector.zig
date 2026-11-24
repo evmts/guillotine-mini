@@ -167,6 +167,48 @@ pub fn LruCache(comptime K: type, comptime V: type, comptime capacity: usize) ty
 const evm_module = @import("evm.zig");
 const StorageKey = evm_module.StorageKey;
 
+/// Writer that discards its input and counts the bytes. Sizes a buffer for
+/// `StorageInjector.writeChanges` without allocating.
+pub const CountingWriter = struct {
+    bytes_written: usize = 0,
+
+    pub const Writer = std.io.GenericWriter(*CountingWriter, error{}, write);
+
+    pub fn writer(self: *CountingWriter) Writer {
+        return .{ .context = self };
+    }
+
+    fn write(self: *CountingWriter, bytes: []const u8) error{}!usize {
+        self.bytes_written += bytes.len;
+        return bytes.len;
+    }
+};
+
+/// Writer into a caller-owned buffer. Never allocates; a write that does not
+/// fit fails with `error.NoSpaceLeft` and leaves `len` unchanged.
+pub const FixedWriter = struct {
+    buffer: []u8,
+    len: usize = 0,
+
+    pub const Error = error{NoSpaceLeft};
+    pub const Writer = std.io.GenericWriter(*FixedWriter, Error, write);
+
+    pub fn writer(self: *FixedWriter) Writer {
+        return .{ .context = self };
+    }
+
+    pub fn written(self: *const FixedWriter) []u8 {
+        return self.buffer[0..self.len];
+    }
+
+    fn write(self: *FixedWriter, bytes: []const u8) Error!usize {
+        if (bytes.len > self.buffer.len - self.len) return error.NoSpaceLeft;
+        @memcpy(self.buffer[self.len..][0..bytes.len], bytes);
+        self.len += bytes.len;
+        return bytes.len;
+    }
+};
+
 fn writeAddressHex(writer: anytype, bytes: []const u8) !void {
     for (bytes) |byte| {
         try std.fmt.format(writer, "{x:0>2}", .{byte});
@@ -181,7 +223,13 @@ fn writeAddressHex(writer: anytype, bytes: []const u8) !void {
 pub const StorageInjector = struct {
     allocator: std.mem.Allocator,
 
-    // LRU cache (check before sending message)
+    // LRU cache (check before sending message).
+    //
+    // `storage_cache` holds only values the host holds: slots it supplied and
+    // slots written by transactions that succeeded. A write in flight lives in
+    // the EVM's storage overlay and `dirty_storage` and never reaches the
+    // cache, so a reverted, halted or cancelled transaction leaves every
+    // fetched original intact for the next transaction.
     storage_cache: LruCache(StorageKey, u256, 1024),
     balance_cache: LruCache(Address, u256, 256),
     code_cache: LruCache(Address, []const u8, 128),
@@ -236,19 +284,22 @@ pub const StorageInjector = struct {
         self.baseline_codes.deinit();
     }
 
-    /// Mark storage slot as dirty (called by Evm.set_storage)
+    /// Mark a storage slot as written by the transaction in flight (called by
+    /// `Storage.set`). The written value stays in the EVM's storage overlay.
     pub fn markStorageDirty(self: *StorageInjector, address: Address, slot: u256) !void {
         const key = StorageKey{ .address = address.bytes, .slot = slot };
         try self.dirty_storage.put(key, {});
     }
 
-    /// Record a storage write: mirror the new value into the cache and mark the
-    /// slot dirty. Called by `Storage.set`.
-    pub fn recordStorageWrite(self: *StorageInjector, address: Address, slot: u256, value: u256) !void {
-        const key = StorageKey{ .address = address.bytes, .slot = slot };
-        try self.dirty_storage.ensureUnusedCapacity(1);
-        try self.storage_cache.put(key, value);
-        self.dirty_storage.putAssumeCapacity(key, {});
+    /// Fold one committed storage write into the fetch cache, so a later
+    /// transaction that reads the cache sees the value the host now holds.
+    /// Called only when a transaction succeeds (`Storage.commitInjectorWrites`).
+    ///
+    /// Never fails: a cached slot is updated in place without allocating. A
+    /// slot that is not cached and cannot be inserted stays uncached, which is
+    /// safe because an uncached slot is fetched from the host again.
+    pub fn commitStorageWrite(self: *StorageInjector, key: StorageKey, value: u256) void {
+        self.storage_cache.put(key, value) catch return;
     }
 
     /// Mark balance as dirty
@@ -380,7 +431,12 @@ pub const StorageInjector = struct {
     /// zero balance, zero nonce and empty code, so a value cleared to zero or
     /// empty is reported too. Accounts scheduled for deletion are left to
     /// "selfDestructs".
-    fn markChangedAccounts(self: *StorageInjector, evm: anytype) !void {
+    ///
+    /// End-of-transaction deletions do not change the result: an account deleted
+    /// as touched-and-empty already differs from (or equals) its baseline in the
+    /// same way before the deletion. A caller can therefore mark before applying
+    /// them and serialize afterwards with `writeChanges`, which never allocates.
+    pub fn markChangedAccounts(self: *StorageInjector, evm: anytype) !void {
         if (!self.baseline_active) return;
 
         var balance_it = evm.balances.iterator();
@@ -441,16 +497,23 @@ pub const StorageInjector = struct {
     /// read from the EVM's authoritative storage, never from a fetch cache.
     /// Returns a JSON string owned by the caller (free with `self.allocator`).
     pub fn dumpChanges(self: *StorageInjector, evm: anytype) ![]const u8 {
-        // Determine EVM type (mock vs real) once at the beginning
-        const EvmTypeInfo = @typeInfo(@TypeOf(evm));
-        const EvmType = if (EvmTypeInfo == .pointer) @TypeOf(evm.*) else @TypeOf(evm);
-
         // Fold account mutations into the dirty sets before serializing.
         try self.markChangedAccounts(evm);
 
         var buffer: std.ArrayList(u8) = .{};
         defer buffer.deinit(self.allocator);
-        const writer = buffer.writer(self.allocator);
+        try self.writeChanges(evm, buffer.writer(self.allocator));
+        return buffer.toOwnedSlice(self.allocator);
+    }
+
+    /// Serialize the dirty sets as the commit JSON. Allocates nothing itself and
+    /// fails only when `writer` does, so it can run past a commit point into a
+    /// buffer sized beforehand. Does not mark account changes: call
+    /// `markChangedAccounts` first (`dumpChanges` does both).
+    pub fn writeChanges(self: *StorageInjector, evm: anytype, writer: anytype) !void {
+        // Determine EVM type (mock vs real) once at the beginning
+        const EvmTypeInfo = @typeInfo(@TypeOf(evm));
+        const EvmType = if (EvmTypeInfo == .pointer) @TypeOf(evm.*) else @TypeOf(evm);
 
         // Start JSON object
         try writer.writeAll("{\"storage\":[");
@@ -565,8 +628,6 @@ pub const StorageInjector = struct {
         }
 
         try writer.writeAll("]}");
-
-        return buffer.toOwnedSlice(self.allocator);
     }
 };
 
@@ -921,17 +982,57 @@ test "LruCache - failed insertion leaves map, list and size consistent" {
     try testing.checkAllAllocationFailures(testing.allocator, run, .{});
 }
 
-test "StorageInjector - recordStorageWrite updates the cache and marks the slot dirty" {
+test "StorageInjector - a write in flight never replaces the fetched value; a committed write does" {
     const testing = std.testing;
     var injector = try StorageInjector.init(testing.allocator);
     defer injector.deinit();
 
     const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
+    const key = StorageKey{ .address = addr.bytes, .slot = 1 };
     try injector.cacheStorage(addr, 1, 5);
-    try injector.recordStorageWrite(addr, 1, 7);
+    try injector.markStorageDirty(addr, 1);
 
+    // R3-001: the speculative write is tracked, the fetched original is untouched.
+    try testing.expect(injector.dirty_storage.contains(key));
+    try testing.expectEqual(@as(u256, 5), injector.getStorageFromCache(addr, 1).?);
+
+    // Rollback: the dirty mark goes, the original stays.
+    injector.clearDirty();
+    try testing.expectEqual(@as(u256, 5), injector.getStorageFromCache(addr, 1).?);
+
+    // Commit: the cache follows the host.
+    injector.commitStorageWrite(key, 7);
     try testing.expectEqual(@as(u256, 7), injector.getStorageFromCache(addr, 1).?);
-    try testing.expect(injector.dirty_storage.contains(.{ .address = addr.bytes, .slot = 1 }));
+}
+
+test "StorageInjector - writeChanges serializes into a fixed buffer without allocating" {
+    const testing = std.testing;
+    var injector = try StorageInjector.init(testing.allocator);
+    defer injector.deinit();
+    var accounts = TestAccounts.init(testing.allocator);
+    defer accounts.deinit();
+
+    const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
+    const key = StorageKey{ .address = addr.bytes, .slot = 0x2a };
+    try accounts.original_storage.put(key, 5);
+    try accounts.storage.put(key, 7);
+    try injector.markStorageDirty(addr, 0x2a);
+
+    const expected = try injector.dumpChanges(accounts);
+    defer testing.allocator.free(expected);
+
+    var counter = CountingWriter{};
+    try injector.writeChanges(accounts, counter.writer());
+    try testing.expectEqual(expected.len, counter.bytes_written);
+
+    var storage_buf: [512]u8 = undefined;
+    var fixed = FixedWriter{ .buffer = &storage_buf };
+    try injector.writeChanges(accounts, fixed.writer());
+    try testing.expectEqualStrings(expected, fixed.written());
+
+    // A buffer one byte short reports the overflow instead of truncating silently.
+    var short = FixedWriter{ .buffer = storage_buf[0 .. expected.len - 1] };
+    try testing.expectError(error.NoSpaceLeft, injector.writeChanges(accounts, short.writer()));
 }
 
 test "StorageInjector - dumpChanges reports the written storage value" {
@@ -1039,7 +1140,8 @@ test "StorageInjector - clearDirty drops pending changes and keeps fetched value
     defer injector.deinit();
 
     const addr = primitives.Address.fromHex("0x1234567890123456789012345678901234567890") catch unreachable;
-    try injector.recordStorageWrite(addr, 1, 7);
+    try injector.cacheStorage(addr, 1, 7);
+    try injector.markStorageDirty(addr, 1);
     try injector.markBalanceDirty(addr);
     try injector.markNonceDirty(addr);
     try injector.markCodeDirty(addr);

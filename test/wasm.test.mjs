@@ -787,6 +787,14 @@ test('interleaved evm_execute and evm_call_ffi keep evm_set_code and cancel the 
     assert.equal(h.tag(), 255)
     assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 0)
     assert.equal(h.tag(), 255)
+    // R3-046: stale and malformed continuations left the completed result alone.
+    assert.equal(api.evm_continue_ffi(handle, 9, 0, 0, h.request), 0)
+    assert.equal(api.evm_continue_ffi(handle, 1, f.zero, 10, h.request), 0)
+    assert.equal(h.tag(), 255)
+    assert.equal(api.evm_is_success(handle), 1, 'the sync result is still a success')
+    assert.equal(api.evm_get_output_len(handle), 32, 'the sync output is still readable')
+    assert.equal(h.output()[31], 0x2a)
+    assert.equal(api.evm_get_gas_used(handle), 18n)
 
     // The installed code survived the whole sequence.
     assert.equal(api.evm_execute(handle), 1)
@@ -893,5 +901,253 @@ test('a reverted async transaction leaves storage, refunds and change lists clea
     assert.deepEqual(h.json().storage, [])
     assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 1)
     assert.equal(h.output()[31], 5)
+  } finally { f.close() }
+})
+
+// ---- Round 3: rollback on cancel, injector cache, code visibility, suspended setters ----
+
+// SSTORE(5, 7) with its operands pushed twice (see STORE_SLOT0_7).
+const STORE_SLOT5_7 = '600760056007600555'
+const RETURN_SLOT5 = '60055460005260206000f3'
+// SLOAD(0); STOP: suspends on slot 0 in the top-level frame.
+const SUSPEND_ON_SLOT0 = '60005400'
+// EXTCODESIZE(ADDRESS); MSTORE(0); RETURN(0, 32). Ten bytes long.
+const OWN_CODE_SIZE = '303b60005260206000f3'
+const word = (n) => { const w = new Uint8Array(32); w[31] = n; return w }
+
+// R3-001: the injector cache keeps the fetched original while a write is in flight.
+test('a reverted async SSTORE does not resurface in the next synchronous SLOAD', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const h = asyncHelpers(f)
+    assert.equal(api.evm_enable_storage_injector(handle), 1)
+    const slot5 = f.alloc(word(5))
+    const storageOut = f.alloc(32)
+    const readSlot5 = () => {
+      assert.equal(api.evm_get_storage(handle, f.address, slot5, storageOut), 1)
+      return h.bytesAt(storageOut, 32)[31]
+    }
+    // Run `code` asynchronously; the host holds slot 5 = 5. Returns the final tag.
+    function runAsync(code) {
+      f.setCall(code, { gas: 100_000n })
+      assert.equal(api.evm_call_ffi(handle, h.request), 1)
+      assert.equal(h.tag(), 1, 'need_storage')
+      assert.equal(h.bytesAt(h.request + REQUEST.slot, 32)[31], 5)
+      assert.equal(api.evm_continue_ffi(handle, 1, h.storageReply(5, 5), 84, h.request), 1)
+      return h.tag()
+    }
+    const syncSlot5 = () => {
+      const result = f.execute(RETURN_SLOT5, { gas: 100_000n })
+      assert.equal(result.success, true)
+      return result.output[31]
+    }
+
+    // Original 5, SSTORE 7, REVERT.
+    assert.equal(runAsync(STORE_SLOT5_7 + '60006000fd'), 0)
+    assert.equal(api.evm_is_success(handle), 0)
+    assert.equal(readSlot5(), 5)
+
+    // The next transaction is synchronous and must read the original, twice.
+    assert.equal(syncSlot5(), 5, 'the reverted write must not resurface')
+    assert.equal(syncSlot5(), 5)
+    assert.equal(readSlot5(), 5)
+
+    // Same after an exceptional halt.
+    assert.equal(runAsync(STORE_SLOT5_7 + 'fe'), 0)
+    assert.equal(api.evm_is_success(handle), 0)
+    assert.equal(syncSlot5(), 5)
+
+    // Same after a suspended transaction is superseded: SSTORE(5, 7); SLOAD(6).
+    assert.equal(runAsync(STORE_SLOT5_7 + '60065400'), 1, 'suspended on slot 6')
+    assert.equal(readSlot5(), 7, 'the write is visible while the transaction is in flight')
+    assert.equal(syncSlot5(), 5)
+    assert.equal(readSlot5(), 5)
+
+    // A committed write is what later synchronous transactions read.
+    assert.equal(runAsync(STORE_SLOT5_7 + '00'), 5, 'ready_to_commit')
+    assert.deepEqual(h.json().storage, [{
+      address: '0x' + '00'.repeat(18) + '0200', slot: '0x5', originalValue: '0x5', newValue: '0x7',
+    }])
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 1)
+    assert.equal(syncSlot5(), 7)
+    assert.equal(readSlot5(), 7)
+  } finally { f.close() }
+})
+
+// R3-002: superseding a suspended call rolls it back before the new call runs.
+test('a sync call rolls back the value transfer of the suspended async call it supersedes', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const h = asyncHelpers(f)
+    assert.equal(api.evm_enable_storage_injector(handle), 1)
+    assert.equal(api.evm_set_balance(handle, f.caller, f.alloc(word(10))), 1)
+    assert.equal(api.evm_set_balance(handle, f.address, f.alloc(word(20))), 1)
+    const oneWei = f.alloc(word(1))
+    // SELFBALANCE; MSTORE(0); BALANCE(CALLER); MSTORE(32); RETURN(0, 64)
+    const BALANCES = '4760005233316020526040' + '6000f3'
+    const balances = () => {
+      const result = f.execute(BALANCES, { gas: 100_000n })
+      assert.equal(result.success, true)
+      assert.equal(result.output.length, 64)
+      return { recipient: result.output[31], caller: result.output[63] }
+    }
+    function suspendTransfer() {
+      const code = Buffer.from(SUSPEND_ON_SLOT0, 'hex')
+      assert.equal(api.evm_set_bytecode(handle, f.alloc(code), code.length), 1)
+      assert.equal(api.evm_set_execution_context(handle, 100_000n, f.caller, f.address, oneWei, f.zero, 0), 1)
+      assert.equal(api.evm_call_ffi(handle, h.request), 1)
+      assert.equal(h.tag(), 1, 'suspended on SLOAD after the transfer')
+    }
+
+    assert.deepEqual(balances(), { recipient: 20, caller: 10 })
+
+    // 1 wei has moved when the call suspends. The sync call that supersedes it
+    // must see the balances from before the transfer.
+    suspendTransfer()
+    assert.deepEqual(balances(), { recipient: 20, caller: 10 }, 'the cancelled transfer is rolled back')
+    // The abandoned request cannot be answered any more.
+    assert.equal(api.evm_continue_ffi(handle, 1, h.storageReply(0, 0), 84, h.request), 0)
+    assert.equal(h.tag(), 255)
+    assert.deepEqual(balances(), { recipient: 20, caller: 10 })
+
+    // Superseding with another async call rolls back the same way; that call then
+    // commits exactly one transfer.
+    suspendTransfer()
+    suspendTransfer()
+    assert.equal(api.evm_continue_ffi(handle, 1, h.storageReply(0, 0), 84, h.request), 1)
+    assert.equal(h.tag(), 5, 'ready_to_commit')
+    const committed = Object.fromEntries(h.json().balances.map(({ address, balance }) => [address, balance]))
+    assert.deepEqual(committed, { ['0x' + '00'.repeat(20)]: '0x9', ['0x' + '00'.repeat(18) + '0200']: '0x15' })
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 1)
+    assert.deepEqual(balances(), { recipient: 21, caller: 9 })
+
+    // Destroying a handle with a transfer still suspended is safe.
+    suspendTransfer()
+  } finally { f.close() }
+})
+
+// R3-005 / R3-02: one rule for evm_set_bytecode on both entry points.
+test('supplied bytecode is account code on sync and async entry, and a superseding call runs its own bytecode', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const h = asyncHelpers(f)
+    const callsCodelessAccount = () => {
+      // No bytecode set: the target has no code of its own once a call has returned.
+      f.setCall('', { gas: 100_000n })
+      assert.equal(api.evm_execute(handle), 1)
+      return api.evm_get_output_len(handle) === 0
+    }
+
+    // Clean target: EXTCODESIZE(ADDRESS) is the supplied code's length on both entries.
+    const sync = f.execute(OWN_CODE_SIZE, { gas: 100_000n })
+    assert.equal(sync.success, true)
+    assert.equal(sync.output[31], 10, 'evm_execute')
+    assert.ok(callsCodelessAccount(), 'evm_execute left no code behind')
+
+    f.setCall(OWN_CODE_SIZE, { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 0)
+    assert.equal(h.output()[31], 10, 'evm_call_ffi')
+    assert.ok(callsCodelessAccount(), 'evm_call_ffi left no code behind')
+
+    // The same holds with a storage injector attached.
+    assert.equal(api.evm_enable_storage_injector(handle), 1)
+    assert.equal(f.execute(OWN_CODE_SIZE, { gas: 100_000n }).output[31], 10)
+    f.setCall(OWN_CODE_SIZE, { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 5)
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 1)
+    assert.equal(h.output()[31], 10)
+
+    // Suspend a call at the target, then supersede it with new bytecode at the same
+    // target. The new bytecode runs; the host is not asked for the target's code.
+    f.setCall(SUSPEND_ON_SLOT0, { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 1, 'need_storage')
+    f.setCall(returnByte(0x2a), { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 5, 'the superseding call ran to ready_to_commit')
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 1)
+    assert.equal(api.evm_is_success(handle), 1)
+    assert.equal(h.output()[31], 0x2a, 'the new bytecode executed')
+
+    // Same when the superseding call is synchronous.
+    f.setCall(SUSPEND_ON_SLOT0, { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 1)
+    assert.equal(f.execute(returnByte(0x2b), { gas: 100_000n }).output[31], 0x2b)
+    assert.ok(callsCodelessAccount())
+  } finally { f.close() }
+})
+
+// R3-006: a suspended transaction keeps the block and transaction environment it started in.
+test('block and transaction context setters are rejected while an async call is suspended', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle, zero } = f
+    const h = asyncHelpers(f)
+    assert.equal(api.evm_enable_storage_injector(handle), 1)
+    const setBlock = (timestamp) =>
+      api.evm_set_blockchain_context(handle, zero, 1n, timestamp, zero, zero, f.caller, 30_000_000n, zero, zero)
+    const hash = f.alloc(new Uint8Array(32).fill(0x77).fill(0x01, 0, 1))
+    const nine = f.alloc(word(9))
+    const setters = () => ({
+      block: setBlock(1_800_000_000n),
+      origin: api.evm_set_origin(handle, f.address),
+      gasPrice: api.evm_set_gas_price(handle, nine),
+      blobHashes: api.evm_set_blob_hashes(handle, hash, 1),
+      clearBlobHashes: api.evm_set_blob_hashes(handle, 0, 0),
+      accessAddresses: api.evm_set_access_list_addresses(handle, f.address, 1),
+      accessKeys: api.evm_set_access_list_storage_keys(handle, f.address, nine, 1),
+    })
+    assert.equal(setBlock(1_720_000_000n), 1)
+
+    // TIMESTAMP; MSTORE(0); SLOAD(0); POP; TIMESTAMP; MSTORE(32); RETURN(0, 64)
+    f.setCall('426000526000545042602052' + '60406000f3', { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 1, 'suspended between the two TIMESTAMP reads')
+    assert.deepEqual(setters(), {
+      block: 0, origin: 0, gasPrice: 0, blobHashes: 0, clearBlobHashes: 0, accessAddresses: 0, accessKeys: 0,
+    })
+
+    assert.equal(api.evm_continue_ffi(handle, 1, h.storageReply(0, 0), 84, h.request), 1)
+    assert.equal(h.tag(), 5)
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 1)
+    const out = h.output()
+    assert.equal(out.length, 64)
+    assert.equal(BigInt('0x' + out.subarray(0, 32).toString('hex')), 1_720_000_000n)
+    assert.equal(BigInt('0x' + out.subarray(32, 64).toString('hex')), 1_720_000_000n, 'one block for the whole transaction')
+
+    // Nothing is suspended any more: the same setters succeed and take effect.
+    assert.deepEqual(setters(), {
+      block: 1, origin: 1, gasPrice: 1, blobHashes: 1, clearBlobHashes: 1, accessAddresses: 1, accessKeys: 1,
+    })
+    f.setCall('4260005260206000f3', { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 5)
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 1)
+    assert.equal(BigInt('0x' + h.output().toString('hex')), 1_800_000_000n)
+  } finally { f.close() }
+})
+
+// R3-015: a reused handle holds one synchronous result at a time.
+test('repeated evm_execute on one handle does not retain earlier results', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    // LOG0(0, 32); RETURN(0, 1024)
+    f.setCall('60206000a0' + '6104006000f3', { gas: 100_000n })
+    const run = (count) => {
+      for (let i = 0; i < count; i++) {
+        assert.equal(api.evm_execute(handle), 1)
+        assert.equal(api.evm_get_output_len(handle), 1024)
+      }
+    }
+    // 3,000 measured calls of >= 1 KiB each, with no setter in the loop.
+    assertNoLeak(api, () => run(100), () => run(3000), { leakBytesIfBroken: 3000 * 1024 })
+    assert.equal(api.evm_get_log_count(handle), 1)
   } finally { f.close() }
 })

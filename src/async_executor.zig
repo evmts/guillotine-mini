@@ -19,8 +19,10 @@
 ///     storage, balances, nonces, code, logs, self-destruct and touched sets,
 ///     warm sets and the refund counter. `ready_to_commit` is never emitted
 ///     for a failed transaction.
-///   - On success `Evm.commitTransaction` (self-destruct and EIP-161 deletions)
-///     runs first; only then are the changes serialized or the result returned.
+///   - On success the result is copied and the commit JSON buffer is reserved
+///     first, while a failure still rolls the transaction back. Then
+///     `Evm.commitTransaction` (self-destruct and EIP-161 deletions) runs, and
+///     the changes are serialized into the reserved buffer without allocating.
 ///   - CALL, CALLCODE, DELEGATECALL, STATICCALL, CREATE and CREATE2 use the
 ///     same caller, execution address, CALLVALUE, static flag and value
 ///     transfer rules as `Evm.call`, with or without a host. Standard
@@ -402,17 +404,23 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
 
             // End-of-transaction reads must not ask the host for anything.
             evm.async_active = false;
-            // Self-destructed and touched empty accounts are deleted before the
-            // changes are serialized, so the host commits the final state.
+
+            // Everything that can fail runs while the root checkpoint is open, so
+            // a failed allocation rolls the whole transaction back (R3-009): the
+            // changed accounts are marked and the commit JSON buffer is reserved.
+            const offers_commit = evm.storage.storage_injector != null;
+            if (offers_commit) try evm.prepareStateChanges();
+
+            // Commit point. Self-destructed and touched empty accounts are deleted
+            // before the changes are serialized, so the host commits the final
+            // state. Deletions cannot be undone, so nothing below allocates.
             evm.commitTransaction();
             self.closeRoot();
 
             var changes_json: ?[]const u8 = null;
-            if (evm.storage.storage_injector != null) {
+            if (offers_commit) {
                 log.debug("AsyncExecutor: transaction succeeded, dumping changes", .{});
-                // Past the commit point: a failure here leaves the local state
-                // committed and reports the error; no change set is offered.
-                changes_json = try evm.dumpStateChanges();
+                changes_json = try evm.writePreparedStateChanges();
             }
 
             self.endTransaction();
@@ -541,9 +549,7 @@ pub fn AsyncExecutor(comptime EvmType: type, comptime CallParams: type, comptime
                 // account's code for this call, so EXTCODE* and re-entrant calls
                 // see it. A host owns its accounts and installed code is never
                 // replaced, so in those cases the frame alone runs it.
-                if (evm.host == null and (evm.code.get(to) orelse &[_]u8{}).len == 0 and
-                    !EvmType.isPrecompileAddress(to, evm.hardfork))
-                {
+                if (evm.suppliedCodeIsAccountCode(to, pending_bytecode)) {
                     self.message.bytecode = try evm.installAsyncCodeView(to, pending_bytecode);
                 } else {
                     self.message.bytecode = try tx_alloc.dupe(u8, pending_bytecode);

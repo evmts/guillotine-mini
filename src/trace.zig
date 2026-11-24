@@ -87,6 +87,7 @@ pub const Tracer = struct {
     allocator: std.mem.Allocator,
     enabled: bool = false,
     /// Maximum retained steps; execution continues after this limit.
+    /// `captureStep` drops every step past it.
     max_entries: usize = std.math.maxInt(usize),
     config: TraceConfig = TraceConfig.from(),
 
@@ -167,6 +168,9 @@ pub const Tracer = struct {
         op_name: []const u8,
     ) !void {
         if (!self.enabled) return;
+        // The retention cap holds for every caller, not only the interpreter,
+        // which also checks it to skip preparing a step that would be dropped.
+        if (self.entries.items.len >= self.max_entries) return;
 
         const track_memory = self.config.tracksMemory();
         const track_stack = self.config.tracksStack();
@@ -285,7 +289,9 @@ pub const Tracer = struct {
 
             try writer.print("    \"depth\": {d},\n", .{entry.depth});
             try writer.print("    \"refund\": {d},\n", .{entry.refund});
-            try writer.print("    \"opName\": \"{s}\"", .{entry.opName});
+            // Callers of `captureStep` choose the name, so it is escaped like any string.
+            try writer.writeAll("    \"opName\": ");
+            try writeJsonString(writer, entry.opName);
             // Same key as `TraceEntry.toJson` and EIP-3155.
             if (entry.error_msg) |err| {
                 try writer.writeAll(",\n    \"error\": ");
@@ -548,4 +554,61 @@ test "Tracer keeps logical memSize without memory bytes and writes the step erro
     try testing.expectEqual(@as(i64, 64), fault.get("memSize").?.integer);
     try testing.expectEqualStrings("InvalidOpcode", fault.get("error").?.string);
     try testing.expectEqual(@as(i64, 32), steps[2].object.get("memSize").?.integer);
+}
+
+test "Tracer.writeToFile escapes a quoted opcode name like toJson does" {
+    const testing = std.testing;
+    // `toJson` leaves its value tree to the tracer's allocator, so use an arena.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var tracer = Tracer.init(arena.allocator());
+    tracer.enable();
+
+    // R3-047: `captureStep` is public and takes any name.
+    const name = "CUSTOM \"quoted\" \\ op\n";
+    const stack = [_]u256{};
+    try tracer.captureStep(0, 0x0c, 100, 1, null, 0, &stack, null, 1, 0, name);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+    const path = try std.fs.path.join(testing.allocator, &.{ dir_path, "trace.json" });
+    defer testing.allocator.free(path);
+    try tracer.writeToFile(path);
+
+    const contents = try tmp.dir.readFileAlloc(testing.allocator, "trace.json", 1 << 20);
+    defer testing.allocator.free(contents);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, contents, .{});
+    defer parsed.deinit();
+    try testing.expectEqual(@as(usize, 1), parsed.value.array.items.len);
+    try testing.expectEqualStrings(name, parsed.value.array.items[0].object.get("opName").?.string);
+
+    // The object serializer agrees.
+    const value = try tracer.toJson();
+    try testing.expectEqualStrings(name, value.array.items[0].object.get("opName").?.string);
+}
+
+test "Tracer.captureStep enforces max_entries for direct callers" {
+    const testing = std.testing;
+    var tracer = Tracer.init(testing.allocator);
+    defer tracer.deinit();
+    tracer.enable();
+    tracer.max_entries = 1;
+
+    // R3-048: no interpreter in front of the tracer to apply the cap.
+    const stack = [_]u256{7};
+    try tracer.captureStep(0, 0x60, 100, 3, null, 0, &stack, null, 1, 0, "PUSH1");
+    try tracer.captureStep(2, 0x01, 97, 3, null, 0, &stack, null, 1, 0, "ADD");
+    try tracer.captureState(3, 0x00, 94, 0, null, &stack, null, 1, 0, "STOP");
+    try testing.expectEqual(@as(usize, 1), tracer.entries.items.len);
+    try testing.expectEqualStrings("PUSH1", tracer.entries.items[0].opName);
+
+    // Raising the cap resumes capture; zero retains nothing.
+    tracer.max_entries = 2;
+    try tracer.captureStep(3, 0x00, 94, 0, null, 0, &stack, null, 1, 0, "STOP");
+    try testing.expectEqual(@as(usize, 2), tracer.entries.items.len);
+    tracer.max_entries = 0;
+    try tracer.captureStep(4, 0x00, 94, 0, null, 0, &stack, null, 1, 0, "STOP");
+    try testing.expectEqual(@as(usize, 2), tracer.entries.items.len);
 }
