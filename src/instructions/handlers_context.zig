@@ -9,11 +9,6 @@ const Address = primitives.Address;
 /// and fields: pc, address, caller, value, calldata, bytecode, return_data, hardfork
 pub fn Handlers(FrameType: type) type {
     return struct {
-        /// Helper function to add two u32 values with overflow checking
-        inline fn add_u32(a: u32, b: u32) FrameType.EvmError!u32 {
-            return std.math.add(u32, a, b) catch return error.OutOfBounds;
-        }
-
         /// Calculate copy gas cost based on size
         fn copyGasCost(size: u32) u64 {
             const words = wordCount(@as(u64, size));

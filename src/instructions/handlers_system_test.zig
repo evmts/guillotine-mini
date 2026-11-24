@@ -55,16 +55,6 @@ fn createTestFrame(
     return evm.getCurrentFrame().?;
 }
 
-// Helper to convert u256 to Address
-fn u256ToAddress(value: u256) Address {
-    var bytes: [20]u8 = undefined;
-    var i: usize = 0;
-    while (i < 20) : (i += 1) {
-        bytes[19 - i] = @truncate(value >> @intCast(i * 8));
-    }
-    return Address{ .bytes = bytes };
-}
-
 // Helper to convert Address to u256
 fn addressToU256(addr: Address) u256 {
     var result: u256 = 0;

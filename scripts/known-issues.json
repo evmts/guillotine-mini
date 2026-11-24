@@ -197,7 +197,7 @@
         "Pairing check logic incorrect"
       ],
       "relevant_files": [
-        "lib/c-kzg-4844 (may need BLS library integration)",
+        "../voltaire/packages/voltaire-zig/src/evm/precompiles/bls12_*.zig",
         "src/evm.zig:precompile handling"
       ],
       "python_ref": "execution-specs/src/ethereum/forks/prague/vm/precompiled_contracts/bls12_381/",
@@ -234,7 +234,7 @@
       "relevant_files": [
         "src/frame.zig:BLOBHASH/BLOBBASEFEE opcodes",
         "src/primitives/blob.zig",
-        "lib/c-kzg-4844 (KZG library integration)"
+        "../voltaire/packages/voltaire-zig/src/evm/precompiles/point_evaluation.zig"
       ],
       "python_ref": "execution-specs/src/ethereum/forks/cancun/vm/instructions/system.py:blobhash/blobbasefee",
       "key_invariants": [

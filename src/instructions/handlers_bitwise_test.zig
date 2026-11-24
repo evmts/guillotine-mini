@@ -679,8 +679,8 @@ test "BYTE: extract byte at position 0" {
     defer frame.deinit();
 
     // Setup: extract byte 0 from 0xFF00...00 (most significant byte)
-    try frame.pushStack(0);
     try frame.pushStack(@as(u256, 0xFF) << 248);
+    try frame.pushStack(0);
 
     const initial_gas = frame.gas_remaining;
 
@@ -712,8 +712,8 @@ test "BYTE: extract byte at position 31" {
     defer frame.deinit();
 
     // Setup: extract byte 31 from 0x...AB (least significant byte)
-    try frame.pushStack(31);
     try frame.pushStack(0xAB);
+    try frame.pushStack(31);
 
     // Execute BYTE
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -738,8 +738,8 @@ test "BYTE: extract byte at position 15" {
     // Setup: extract byte 15 (middle byte)
     // Value: 0x00...00CD00...00 (byte 15 is 0xCD)
     const value = @as(u256, 0xCD) << 128;
-    try frame.pushStack(15);
     try frame.pushStack(value);
+    try frame.pushStack(15);
 
     // Execute BYTE
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -762,8 +762,8 @@ test "BYTE: position >= 32 returns zero" {
     defer frame.deinit();
 
     // Setup: extract byte 32 (out of bounds)
-    try frame.pushStack(32);
     try frame.pushStack(std.math.maxInt(u256));
+    try frame.pushStack(32);
 
     // Execute BYTE
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -786,8 +786,8 @@ test "BYTE: large position returns zero" {
     defer frame.deinit();
 
     // Setup: extract byte 1000 (way out of bounds)
-    try frame.pushStack(1000);
     try frame.pushStack(std.math.maxInt(u256));
+    try frame.pushStack(1000);
 
     // Execute BYTE
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -843,8 +843,8 @@ test "BYTE: all positions 0-31" {
         var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 1_000_000);
         defer frame.deinit();
 
-        try frame.pushStack(i);
         try frame.pushStack(value);
+        try frame.pushStack(i);
 
         const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
         try BitwiseHandlers.byte(&frame);
@@ -852,9 +852,6 @@ test "BYTE: all positions 0-31" {
         // Verify we extracted the correct byte
         try testing.expectEqual(@as(u256, i), frame.stack.items[0]);
     }
-
-    evm.deinit();
-    allocator.destroy(evm);
 }
 
 test "BYTE: stack underflow error" {
@@ -892,8 +889,8 @@ test "BYTE: out of gas error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CANCUN, 2); // Only 2 gas
     defer frame.deinit();
 
-    try frame.pushStack(0);
     try frame.pushStack(0xFF);
+    try frame.pushStack(0);
 
     // Execute BYTE with insufficient gas (need 3, have 2)
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -920,8 +917,8 @@ test "SHL: basic shift left" {
     defer frame.deinit();
 
     // Setup: 0xFF << 8 = 0xFF00
-    try frame.pushStack(8);
     try frame.pushStack(0xFF);
+    try frame.pushStack(8);
 
     const initial_gas = frame.gas_remaining;
 
@@ -953,8 +950,8 @@ test "SHL: shift by zero" {
     defer frame.deinit();
 
     // Setup: 0xFF << 0 = 0xFF
-    try frame.pushStack(0);
     try frame.pushStack(0xFF);
+    try frame.pushStack(0);
 
     // Execute SHL
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -977,8 +974,8 @@ test "SHL: shift by 1" {
     defer frame.deinit();
 
     // Setup: 5 << 1 = 10
-    try frame.pushStack(1);
     try frame.pushStack(5);
+    try frame.pushStack(1);
 
     // Execute SHL
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1001,8 +998,8 @@ test "SHL: shift by 255" {
     defer frame.deinit();
 
     // Setup: 1 << 255 = sign bit set
-    try frame.pushStack(255);
     try frame.pushStack(1);
+    try frame.pushStack(255);
 
     // Execute SHL
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1026,8 +1023,8 @@ test "SHL: shift by 256 returns zero" {
     defer frame.deinit();
 
     // Setup: any value << 256 = 0
-    try frame.pushStack(256);
     try frame.pushStack(std.math.maxInt(u256));
+    try frame.pushStack(256);
 
     // Execute SHL
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1050,8 +1047,8 @@ test "SHL: shift by large amount returns zero" {
     defer frame.deinit();
 
     // Setup: any value << 1000 = 0
-    try frame.pushStack(1000);
     try frame.pushStack(0x123456);
+    try frame.pushStack(1000);
 
     // Execute SHL
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1074,8 +1071,8 @@ test "SHL: shift zero" {
     defer frame.deinit();
 
     // Setup: 0 << 8 = 0
-    try frame.pushStack(8);
     try frame.pushStack(0);
+    try frame.pushStack(8);
 
     // Execute SHL
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1097,8 +1094,8 @@ test "SHL: invalid before Constantinople" {
     var frame = try createTestFrame(allocator, evm, bytecode, .BYZANTIUM, 1_000_000);
     defer frame.deinit();
 
-    try frame.pushStack(8);
     try frame.pushStack(0xFF);
+    try frame.pushStack(8);
 
     // Execute SHL on Byzantium (pre-Constantinople)
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1143,8 +1140,8 @@ test "SHL: out of gas error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CONSTANTINOPLE, 2); // Only 2 gas
     defer frame.deinit();
 
-    try frame.pushStack(8);
     try frame.pushStack(0xFF);
+    try frame.pushStack(8);
 
     // Execute SHL with insufficient gas (need 3, have 2)
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1171,8 +1168,8 @@ test "SHR: basic shift right" {
     defer frame.deinit();
 
     // Setup: 0xFF00 >> 8 = 0xFF
-    try frame.pushStack(8);
     try frame.pushStack(0xFF00);
+    try frame.pushStack(8);
 
     const initial_gas = frame.gas_remaining;
 
@@ -1204,8 +1201,8 @@ test "SHR: shift by zero" {
     defer frame.deinit();
 
     // Setup: 0xFF >> 0 = 0xFF
-    try frame.pushStack(0);
     try frame.pushStack(0xFF);
+    try frame.pushStack(0);
 
     // Execute SHR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1228,8 +1225,8 @@ test "SHR: shift by 1" {
     defer frame.deinit();
 
     // Setup: 10 >> 1 = 5
-    try frame.pushStack(1);
     try frame.pushStack(10);
+    try frame.pushStack(1);
 
     // Execute SHR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1253,8 +1250,8 @@ test "SHR: shift by 255" {
 
     // Setup: sign bit >> 255 = 1
     const value = @as(u256, 1) << 255;
-    try frame.pushStack(255);
     try frame.pushStack(value);
+    try frame.pushStack(255);
 
     // Execute SHR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1277,8 +1274,8 @@ test "SHR: shift by 256 returns zero" {
     defer frame.deinit();
 
     // Setup: any value >> 256 = 0
-    try frame.pushStack(256);
     try frame.pushStack(std.math.maxInt(u256));
+    try frame.pushStack(256);
 
     // Execute SHR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1301,8 +1298,8 @@ test "SHR: shift by large amount returns zero" {
     defer frame.deinit();
 
     // Setup: any value >> 1000 = 0
-    try frame.pushStack(1000);
     try frame.pushStack(0x123456);
+    try frame.pushStack(1000);
 
     // Execute SHR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1325,8 +1322,8 @@ test "SHR: shift zero" {
     defer frame.deinit();
 
     // Setup: 0 >> 8 = 0
-    try frame.pushStack(8);
     try frame.pushStack(0);
+    try frame.pushStack(8);
 
     // Execute SHR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1350,8 +1347,8 @@ test "SHR: logical shift (no sign extension)" {
 
     // Setup: shift negative number (sign bit set)
     const value = @as(u256, 1) << 255; // Most significant bit set
-    try frame.pushStack(1);
     try frame.pushStack(value);
+    try frame.pushStack(1);
 
     // Execute SHR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1374,8 +1371,8 @@ test "SHR: invalid before Constantinople" {
     var frame = try createTestFrame(allocator, evm, bytecode, .BYZANTIUM, 1_000_000);
     defer frame.deinit();
 
-    try frame.pushStack(8);
     try frame.pushStack(0xFF00);
+    try frame.pushStack(8);
 
     // Execute SHR on Byzantium (pre-Constantinople)
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1420,8 +1417,8 @@ test "SHR: out of gas error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CONSTANTINOPLE, 2); // Only 2 gas
     defer frame.deinit();
 
-    try frame.pushStack(8);
     try frame.pushStack(0xFF00);
+    try frame.pushStack(8);
 
     // Execute SHR with insufficient gas (need 3, have 2)
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1448,8 +1445,8 @@ test "SAR: basic arithmetic shift right" {
     defer frame.deinit();
 
     // Setup: 0xFF00 >> 8 = 0xFF (positive number)
-    try frame.pushStack(8);
     try frame.pushStack(0xFF00);
+    try frame.pushStack(8);
 
     const initial_gas = frame.gas_remaining;
 
@@ -1481,8 +1478,8 @@ test "SAR: positive number shift" {
     defer frame.deinit();
 
     // Setup: 10 >> 1 = 5 (positive)
-    try frame.pushStack(1);
     try frame.pushStack(10);
+    try frame.pushStack(1);
 
     // Execute SAR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1506,8 +1503,8 @@ test "SAR: negative number sign extension" {
 
     // Setup: -2 (as u256) >> 1 = -1 (sign extension)
     const neg_2 = @as(u256, @bitCast(@as(i256, -2)));
-    try frame.pushStack(1);
     try frame.pushStack(neg_2);
+    try frame.pushStack(1);
 
     // Execute SAR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1532,8 +1529,8 @@ test "SAR: negative number large shift" {
 
     // Setup: negative number >> 255 = -1 (all ones from sign extension)
     const neg_100 = @as(u256, @bitCast(@as(i256, -100)));
-    try frame.pushStack(255);
     try frame.pushStack(neg_100);
+    try frame.pushStack(255);
 
     // Execute SAR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1558,8 +1555,8 @@ test "SAR: negative number shift by 256+" {
 
     // Setup: negative number >> 256 = -1 (all ones)
     const neg_42 = @as(u256, @bitCast(@as(i256, -42)));
-    try frame.pushStack(256);
     try frame.pushStack(neg_42);
+    try frame.pushStack(256);
 
     // Execute SAR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1584,8 +1581,8 @@ test "SAR: negative number shift by large amount" {
 
     // Setup: negative number >> 1000 = -1 (all ones)
     const neg_value = @as(u256, @bitCast(@as(i256, -123456)));
-    try frame.pushStack(1000);
     try frame.pushStack(neg_value);
+    try frame.pushStack(1000);
 
     // Execute SAR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1609,8 +1606,8 @@ test "SAR: positive number shift by 256+" {
     defer frame.deinit();
 
     // Setup: positive number >> 256 = 0
-    try frame.pushStack(256);
     try frame.pushStack(0x123456);
+    try frame.pushStack(256);
 
     // Execute SAR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1633,8 +1630,8 @@ test "SAR: positive number shift by large amount" {
     defer frame.deinit();
 
     // Setup: positive number >> 1000 = 0
-    try frame.pushStack(1000);
     try frame.pushStack(std.math.maxInt(u256) >> 1); // Max positive value
+    try frame.pushStack(1000);
 
     // Execute SAR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1658,8 +1655,8 @@ test "SAR: shift by zero" {
 
     // Setup: value >> 0 = value
     const value = 0x123456;
-    try frame.pushStack(0);
     try frame.pushStack(value);
+    try frame.pushStack(0);
 
     // Execute SAR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1682,8 +1679,8 @@ test "SAR: shift zero" {
     defer frame.deinit();
 
     // Setup: 0 >> 8 = 0
-    try frame.pushStack(8);
     try frame.pushStack(0);
+    try frame.pushStack(8);
 
     // Execute SAR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1707,8 +1704,8 @@ test "SAR: -1 shifted" {
 
     // Setup: -1 >> any amount = -1 (all bits remain 1)
     const neg_1 = @as(u256, @bitCast(@as(i256, -1)));
-    try frame.pushStack(100);
     try frame.pushStack(neg_1);
+    try frame.pushStack(100);
 
     // Execute SAR
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1730,8 +1727,8 @@ test "SAR: invalid before Constantinople" {
     var frame = try createTestFrame(allocator, evm, bytecode, .BYZANTIUM, 1_000_000);
     defer frame.deinit();
 
-    try frame.pushStack(8);
     try frame.pushStack(0xFF00);
+    try frame.pushStack(8);
 
     // Execute SAR on Byzantium (pre-Constantinople)
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));
@@ -1776,8 +1773,8 @@ test "SAR: out of gas error" {
     var frame = try createTestFrame(allocator, evm, bytecode, .CONSTANTINOPLE, 2); // Only 2 gas
     defer frame.deinit();
 
-    try frame.pushStack(8);
     try frame.pushStack(0xFF00);
+    try frame.pushStack(8);
 
     // Execute SAR with insufficient gas (need 3, have 2)
     const BitwiseHandlers = @import("handlers_bitwise.zig").Handlers(@TypeOf(frame));

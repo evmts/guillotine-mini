@@ -69,7 +69,6 @@ const misc_files = S.Filegroup({
       "examples/**",
       "cloudflare/**",
       "prd/**",
-      "patches/**",
       "test/**",
       ".github/**",
       ".githooks/**",

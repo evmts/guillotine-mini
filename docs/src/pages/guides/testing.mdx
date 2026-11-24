@@ -65,8 +65,6 @@ TEST_FILTER="transientStorage" zig build specs
 TEST_FILTER="Osaka" zig build specs
 ```
 
-`zig build test-watch` is declared in `build.zig`, but its test runner file `interactive_test_runner.zig` is missing from this checkout, so the step fails.
-
 ### Granular per-fork and per-EIP targets
 
 `build.zig` generates dedicated steps for each hardfork and EIP slice (for example `specs-shanghai-push0`, `specs-cancun-tstore-basic`, `specs-cancun-mcopy`, `specs-byzantium-modexp`). The runner matches `TEST_FILTER` as a plain, case-sensitive substring, so the Berlin, Frontier, Prague, and Osaka sub-steps, whose filters use regex syntax, select zero tests. List all targets with:

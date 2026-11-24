@@ -129,10 +129,5 @@ pub fn Handlers(FrameType: type) type {
             const words = wordCount(bytes);
             return @intCast(words * 32);
         }
-
-        /// Safe add helper for u32 indices
-        inline fn add_u32(a: u32, b: u32) FrameType.EvmError!u32 {
-            return std.math.add(u32, a, b) catch return error.OutOfBounds;
-        }
     };
 }

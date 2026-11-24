@@ -27,9 +27,6 @@ pub const StorageSlotKey = struct {
     }
 };
 
-const AddressContext = std.array_hash_map.AutoContext(Address);
-const StorageContext = std.hash_map.AutoContext(StorageSlotKey);
-
 pub const TestHost = struct {
     const Self = @This();
 

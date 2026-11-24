@@ -1154,21 +1154,6 @@ pub fn build(b: *std.Build) void {
     const trace_test_step = b.step("test-trace", "Run trace capture test");
     trace_test_step.dependOn(&run_trace_test.step);
 
-    // Interactive test runner
-    const interactive_spec_tests = b.addTest(.{
-        .root_module = spec_runner_mod,
-        .test_runner = .{
-            .path = b.path("interactive_test_runner.zig"),
-            .mode = .simple,
-        },
-    });
-    linkRustSupport(interactive_spec_tests);
-
-    const run_interactive_tests = b.addRunArtifact(interactive_spec_tests);
-    run_interactive_tests.setCwd(b.path(".")); // Set working directory to project root for test file paths
-    const interactive_test_step = b.step("test-watch", "Run interactive test runner");
-    interactive_test_step.dependOn(&run_interactive_tests.step);
-
     // WASM build target with ReleaseSmall optimization
     // Using wasi because primitives package includes C libraries (BLST, C-KZG, BN254)
     const wasm_target = b.resolveTargetQuery(.{

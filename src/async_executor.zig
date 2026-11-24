@@ -5,7 +5,6 @@ const std = @import("std");
 const primitives = @import("voltaire");
 const log = @import("logger.zig");
 const errors = @import("errors.zig");
-const storage_mod = @import("storage.zig");
 
 pub const StorageKey = primitives.State.StorageKey;
 

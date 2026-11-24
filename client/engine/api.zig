@@ -217,16 +217,8 @@ fn validate_json_string_array(
     }
 }
 
-fn validate_json_capabilities(value: std.json.Value, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
-    return validate_json_string_array(value, invalid_err, method_name.isEngineVersionedMethodName);
-}
-
 fn validate_response_capabilities(list: anytype, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
     return validate_string_list(list, invalid_err, method_name.isValidAdvertisableEngineMethodName);
-}
-
-fn validate_json_response_capabilities(value: std.json.Value, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {
-    return validate_json_string_array(value, invalid_err, method_name.isValidAdvertisableEngineMethodName);
 }
 
 fn validate_client_version_v1_params(params: ClientVersionV1Params, comptime invalid_err: EngineApi.Error) EngineApi.Error!void {

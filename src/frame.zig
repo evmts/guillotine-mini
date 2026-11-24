@@ -472,26 +472,6 @@ pub fn Frame(comptime config: EvmConfig) type {
             return gas_cost;
         }
 
-        /// Calculate KECCAK256 gas cost (replaces manual calculation)
-        fn keccak256GasCost(data_size: u32) u64 {
-            const words = wordCount(@as(u64, data_size));
-            return GasConstants.Keccak256Gas + words * GasConstants.Keccak256WordGas;
-        }
-
-        /// Calculate copy operation gas cost (replaces manual calculations)
-        fn copyGasCost(size: u32) u64 {
-            const words = wordCount(@as(u64, size));
-            return GasConstants.CopyGas * words;
-        }
-
-        /// Calculate LOG operation gas cost (replaces manual calculation)
-        fn logGasCost(topic_count: u8, data_size: u32) u64 {
-            const base_cost = GasConstants.LogGas;
-            const topic_cost = @as(u64, topic_count) * GasConstants.LogTopicGas;
-            const data_cost = @as(u64, data_size) * GasConstants.LogDataGas;
-            return base_cost + topic_cost + data_cost;
-        }
-
         /// ----------------------------------- OPCODES ---------------------------------- ///
         /// Execute a single opcode - delegates to Evm for external ops
         ///

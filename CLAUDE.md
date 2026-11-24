@@ -78,7 +78,6 @@ External Dependencies (Voltaire, path dependency on ../voltaire in build.zig.zon
 | Spec tests | execution-specs state fixtures | `zig build specs` |
 | Filtered tests | By hardfork/EIP/opcode | `TEST_FILTER="Cancun" zig build specs` |
 | Trace tests | EIP-3155 trace capture/comparison | `zig build test-trace` |
-| Watch mode | Auto-reload on changes | `zig build test-watch` (broken: `interactive_test_runner.zig` is missing) |
 | Engine tests | Consensus-layer format tests | `INCLUDE_ENGINE_TESTS=1 zig build specs` |
 
 ### Engine API Tests (Optional)
@@ -406,7 +405,6 @@ See `src/root_c.zig` for full API.
 | `zig build native` | C ABI static library |
 | `zig build wasm` | WASI reactor library |
 | `zig build test-wasm` | WASM execution and crypto regression tests (Node 22+) |
-| `zig build test-watch` | Interactive test runner (broken: `interactive_test_runner.zig` is missing) |
 | `zig build test-trace` | Trace capture tests |
 
 ### Adding New Features

@@ -120,6 +120,7 @@ test {
     _ = @import("instructions/handlers_stack_test.zig");
     _ = @import("instructions/handlers_arithmetic_test.zig");
     _ = @import("instructions/handlers_comparison_test.zig");
+    _ = @import("instructions/handlers_bitwise_test.zig");
     _ = @import("instructions/clz_test.zig");
     _ = @import("instructions/handlers_keccak_test.zig");
     _ = @import("instructions/handlers_memory_test.zig");

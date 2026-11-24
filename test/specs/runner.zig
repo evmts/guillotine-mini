@@ -598,26 +598,6 @@ fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.
     std.debug.print("\n", .{});
 }
 
-// Helper function to check if opcode is memory-related
-fn isMemoryOp(op: u8) bool {
-    return switch (op) {
-        0x51...0x5f => true, // MLOAD, MSTORE, MSTORE8, etc.
-        0x37, 0x39, 0x3c, 0x3e => true, // CALLDATACOPY, CODECOPY, EXTCODECOPY, RETURNDATACOPY
-        0xf0...0xf5 => true, // CREATE, CALL, CALLCODE, RETURN, DELEGATECALL, CREATE2, STATICCALL
-        0xfd => true, // REVERT
-        else => false,
-    };
-}
-
-// Helper function to check if opcode is storage-related
-fn isStorageOp(op: u8) bool {
-    return switch (op) {
-        0x54, 0x55 => true, // SLOAD, SSTORE
-        0x5c, 0x5d => true, // TLOAD, TSTORE
-        else => false,
-    };
-}
-
 /// Convert hardfork to its string name for JSON lookup
 /// Note: This tries to find the fork-specific key in the JSON.
 /// If not found, the caller should fall back to direct post access.

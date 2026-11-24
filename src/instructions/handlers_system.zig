@@ -36,10 +36,6 @@ pub fn Handlers(FrameType: type) type {
             return @intCast(words * 32);
         }
 
-        inline fn add_u32(a: u32, b: u32) FrameType.EvmError!u32 {
-            return std.math.add(u32, a, b) catch return error.OutOfBounds;
-        }
-
         /// CREATE opcode (0xf0) - Create a new contract
         pub fn create(frame: *FrameType) FrameType.EvmError!void {
             // EIP-214: CREATE cannot be executed in static call context

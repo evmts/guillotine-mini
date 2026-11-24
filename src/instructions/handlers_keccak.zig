@@ -14,11 +14,6 @@ inline fn wordAlignedSize(bytes: u64) u32 {
     return @intCast(words * 32);
 }
 
-/// Helper function for safe u32 addition
-inline fn add_u32(a: u32, b: u32) error{OutOfBounds}!u32 {
-    return std.math.add(u32, a, b) catch return error.OutOfBounds;
-}
-
 /// Calculate KECCAK256 gas cost
 fn keccak256GasCost(data_size: u32) u64 {
     const words = wordCount(@as(u64, data_size));

@@ -62,11 +62,6 @@ const Asm = struct {
         try self.op(&.{ 0x5a, 0xf1, 0x50 });
     }
 
-    fn callNoValue(self: *Asm, opcode: u8, to: u256, in_off: u256, in_len: u256, out_off: u256, out_len: u256) !void {
-        for ([_]u256{ out_len, out_off, in_len, in_off, to }) |v| try self.push(v);
-        try self.op(&.{ 0x5a, opcode, 0x50 });
-    }
-
     fn sstore(self: *Asm, slot: u256, value: u256) !void {
         try self.push(value);
         try self.push(slot);

@@ -75,23 +75,6 @@ fn format_ns(ns: u64) [32]u8 {
     return buf;
 }
 
-fn format_ops_per_sec(ops: usize, elapsed_ns: u64) [32]u8 {
-    var buf: [32]u8 = [_]u8{0} ** 32;
-    if (elapsed_ns == 0) {
-        _ = std.fmt.bufPrint(&buf, "inf ops/s", .{}) catch unreachable;
-        return buf;
-    }
-    const ops_per_sec = @as(f64, @floatFromInt(ops)) / (@as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0);
-    if (ops_per_sec >= 1_000_000) {
-        _ = std.fmt.bufPrint(&buf, "{d:.2} M ops/s", .{ops_per_sec / 1_000_000.0}) catch unreachable;
-    } else if (ops_per_sec >= 1_000) {
-        _ = std.fmt.bufPrint(&buf, "{d:.1} K ops/s", .{ops_per_sec / 1_000.0}) catch unreachable;
-    } else {
-        _ = std.fmt.bufPrint(&buf, "{d:.0} ops/s", .{ops_per_sec}) catch unreachable;
-    }
-    return buf;
-}
-
 const BenchResult = struct {
     name: []const u8,
     n_keys: usize,

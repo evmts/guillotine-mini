@@ -3,11 +3,6 @@ const std = @import("std");
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 
-/// Helper function for u32 addition with overflow check
-fn add_u32(a: u32, b: u32) error{OutOfBounds}!u32 {
-    return std.math.add(u32, a, b) catch error.OutOfBounds;
-}
-
 /// Helper function to calculate word-aligned size
 fn wordAlignedSize(byte_size: u64) u64 {
     return ((byte_size + 31) / 32) * 32;
