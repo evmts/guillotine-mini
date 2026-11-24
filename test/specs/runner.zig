@@ -78,6 +78,36 @@ fn fillHeaderFromJson(
     if (header_json.object.get("parentHash")) |parent_hash| {
         header.parent_hash = try parseFixedHexBytes(Hash.SIZE, allocator, parent_hash);
     }
+    if (header_json.object.get("coinbase")) |coinbase| {
+        header.beneficiary = .{ .bytes = try parseFixedHexBytes(20, allocator, coinbase) };
+    }
+    if (header_json.object.get("stateRoot")) |root| {
+        header.state_root = try parseFixedHexBytes(Hash.SIZE, allocator, root);
+    }
+    if (header_json.object.get("transactionsTrie") orelse header_json.object.get("transactionsRoot")) |root| {
+        header.transactions_root = try parseFixedHexBytes(Hash.SIZE, allocator, root);
+    }
+    if (header_json.object.get("receiptTrie") orelse header_json.object.get("receiptsRoot")) |root| {
+        header.receipts_root = try parseFixedHexBytes(Hash.SIZE, allocator, root);
+    }
+    if (header_json.object.get("bloom") orelse header_json.object.get("logsBloom")) |bloom| {
+        header.logs_bloom = try parseFixedHexBytes(BlockHeader.BLOOM_SIZE, allocator, bloom);
+    }
+    if (header_json.object.get("withdrawalsRoot")) |root| {
+        header.withdrawals_root = try parseFixedHexBytes(Hash.SIZE, allocator, root);
+    }
+    if (header_json.object.get("blobGasUsed")) |blob_gas_used| {
+        header.blob_gas_used = try parseIntFromJson(blob_gas_used);
+    }
+    if (header_json.object.get("excessBlobGas")) |excess_blob_gas| {
+        header.excess_blob_gas = try parseIntFromJson(excess_blob_gas);
+    }
+    if (header_json.object.get("parentBeaconBlockRoot")) |root| {
+        header.parent_beacon_block_root = try parseFixedHexBytes(Hash.SIZE, allocator, root);
+    }
+    if (header_json.object.get("requestsHash")) |hash| {
+        header.requests_hash = try parseFixedHexBytes(Hash.SIZE, allocator, hash);
+    }
     if (header_json.object.get("extraData")) |extra| {
         if (extra == .string) {
             const extra_bytes = try primitives.Hex.hexToBytes(allocator, extra.string);
@@ -188,11 +218,70 @@ fn txGasLimitTooLow(gas_limit: u64, intrinsic_gas: u64, calldata_floor: u64) boo
     return gas_limit < @max(intrinsic_gas, calldata_floor);
 }
 
-/// A state fixture that names `expectException` passes only if the runner
-/// rejected at least one transaction. Otherwise the invalid transaction was
-/// accepted and the fixture must fail.
-fn checkExpectedException(expects_exception: bool, rejected_tx_count: usize) error{ExpectedExceptionNotRaised}!void {
-    if (expects_exception and rejected_tx_count == 0) return error.ExpectedExceptionNotRaised;
+/// Why the runner refused to include a transaction.
+const TxRejection = enum {
+    intrinsic_gas,
+    insufficient_funds,
+    insufficient_max_fee,
+    priority_fee_above_max_fee,
+    nonce_mismatch,
+    nonce_is_max,
+    initcode_size,
+    gas_limit_cap,
+    blob_contract_creation,
+    blob_count,
+    blob_versioned_hash,
+    set_code_invalid,
+
+    /// Fixture exception names for this rejection: EEST
+    /// `TransactionException.*` and legacy retesteth `TR_*`.
+    fn names(self: TxRejection) []const []const u8 {
+        return switch (self) {
+            .intrinsic_gas => &.{ "INTRINSIC_GAS_TOO_LOW", "INTRINSIC_GAS_BELOW_FLOOR_GAS_COST", "TR_IntrinsicGas" },
+            .insufficient_funds => &.{ "INSUFFICIENT_ACCOUNT_FUNDS", "TR_NoFunds" },
+            .insufficient_max_fee => &.{ "INSUFFICIENT_MAX_FEE_PER_GAS", "TR_FeeCapLessThanBlocks" },
+            .priority_fee_above_max_fee => &.{ "PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS", "TR_TipGtFeeCap" },
+            .nonce_mismatch => &.{ "NONCE_MISMATCH", "TR_NonceTooHigh", "TR_NonceTooLow" },
+            .nonce_is_max => &.{ "NONCE_IS_MAX", "TR_NonceHasMaxValue" },
+            .initcode_size => &.{ "INITCODE_SIZE_EXCEEDED", "TR_InitCodeLimitExceeded" },
+            .gas_limit_cap => &.{"GAS_LIMIT_EXCEEDS_MAXIMUM"},
+            .blob_contract_creation => &.{"TYPE_3_TX_CONTRACT_CREATION"},
+            .blob_count => &.{"TYPE_3_TX_BLOB_COUNT_EXCEEDED"},
+            .blob_versioned_hash => &.{"TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH"},
+            .set_code_invalid => &.{ "TYPE_4_TX_CONTRACT_CREATION", "TYPE_4_EMPTY_AUTHORIZATION_LIST", "TYPE_4_TX_PRE_FORK" },
+        };
+    }
+
+    /// True when `expected` (an `expectException` value, possibly `A|B`)
+    /// names this rejection.
+    fn matches(self: TxRejection, expected: []const u8) bool {
+        for (self.names()) |name| {
+            if (std.mem.indexOf(u8, expected, name) != null) return true;
+        }
+        return false;
+    }
+};
+
+/// Checks one state-test case against its `expectException`: a negative case
+/// must be rejected for one of the named reasons, and a positive case must
+/// not be rejected at all.
+fn checkExpectedException(expected: ?[]const u8, rejection: ?TxRejection) error{
+    ExpectedExceptionNotRaised,
+    WrongExceptionRaised,
+    UnexpectedTransactionRejection,
+}!void {
+    const want = expected orelse {
+        if (rejection) |got| {
+            std.debug.print("transaction rejected ({s}) but the fixture expects it to be included\n", .{@tagName(got)});
+            return error.UnexpectedTransactionRejection;
+        }
+        return;
+    };
+    const got = rejection orelse return error.ExpectedExceptionNotRaised;
+    if (!got.matches(want)) {
+        std.debug.print("transaction rejected ({s}) but the fixture expects {s}\n", .{ @tagName(got), want });
+        return error.WrongExceptionRaised;
+    }
 }
 
 /// EIP-7702 delegation designator prefix.
@@ -611,16 +700,47 @@ fn postForkEntries(post: std.json.Value, hf: Hardfork) ?std.json.Value {
     };
 }
 
-/// True when the first `post` entry for `hf` expects an exception containing `needle`.
-fn postExpectsException(test_case: std.json.Value, hf: Hardfork, needle: []const u8) bool {
-    const post = test_case.object.get("post") orelse return false;
-    const entries = postForkEntries(post, hf) orelse return false;
-    if (entries != .array or entries.array.items.len == 0) return false;
-    const first = entries.array.items[0];
-    if (first != .object) return false;
-    const exception = first.object.get("expectException") orelse return false;
-    if (exception != .string) return false;
-    return std.mem.indexOf(u8, exception.string, needle) != null;
+/// One state-test case. A post entry's `indexes` select the data, gas and
+/// value alternatives of the shared transaction; `accessLists` follows data.
+const Variant = struct {
+    data: usize = 0,
+    gas: usize = 0,
+    value: usize = 0,
+    /// The post entry this case is checked against; null for fixtures
+    /// without fork-keyed post entries.
+    post_entry: ?std.json.Value = null,
+
+    fn fromPostEntry(entry: std.json.Value) !Variant {
+        var variant = Variant{ .post_entry = entry };
+        if (entry != .object) return variant;
+        const indexes = entry.object.get("indexes") orelse return variant;
+        if (indexes != .object) return error.InvalidPostIndexes;
+        if (indexes.object.get("data")) |i| variant.data = try parseIntFromJson(i);
+        if (indexes.object.get("gas")) |i| variant.gas = try parseIntFromJson(i);
+        if (indexes.object.get("value")) |i| variant.value = try parseIntFromJson(i);
+        return variant;
+    }
+
+    fn expectedException(self: Variant) ?[]const u8 {
+        const entry = self.post_entry orelse return null;
+        if (entry != .object) return null;
+        const exception = entry.object.get("expectException") orelse return null;
+        return if (exception == .string) exception.string else null;
+    }
+
+    /// True when this case expects `rejection`.
+    fn expects(self: Variant, rejection: TxRejection) bool {
+        const expected = self.expectedException() orelse return false;
+        return rejection.matches(expected);
+    }
+};
+
+/// Returns alternative `index` of a transaction field that is either a
+/// scalar or an array of alternatives.
+fn selectAlternative(field: std.json.Value, index: usize) !std.json.Value {
+    if (field != .array) return field;
+    if (index >= field.array.items.len) return error.InvalidVariantIndex;
+    return field.array.items[index];
 }
 
 /// EIP-7825 (Osaka): maximum gas a single transaction may request (2^24).
@@ -681,351 +801,565 @@ fn extractHardfork(test_case: std.json.Value) ?Hardfork {
     return null;
 }
 
-/// Process an RLP-encoded transaction (from blockchain tests)
+/// Base intrinsic gas: 21000, plus the 32000 creation surcharge from
+/// Homestead (Frontier charged creation like a call).
+fn createAwareBaseGas(hf: Hardfork, is_create: bool) u64 {
+    if (is_create and hf.isAtLeast(.HOMESTEAD)) return primitives.GasConstants.TxGasContractCreation;
+    return primitives.GasConstants.TxGas;
+}
+
+/// Deep copy of a test host's account state, used to prove that a rejected
+/// transaction left state untouched.
+const HostSnapshot = struct {
+    allocator: std.mem.Allocator,
+    balances: std.AutoHashMap(Address, u256),
+    nonces: std.AutoHashMap(Address, u64),
+    code: std.AutoHashMap(Address, []const u8),
+    storage: std.AutoHashMap(StorageSlotKey, u256),
+
+    fn capture(allocator: std.mem.Allocator, host: *TestHost) !HostSnapshot {
+        var balances = try host.balances.clone();
+        errdefer balances.deinit();
+        var nonces = try host.nonces.clone();
+        errdefer nonces.deinit();
+        var storage = try host.storage.clone();
+        errdefer storage.deinit();
+        var snapshot = HostSnapshot{
+            .allocator = allocator,
+            .balances = balances,
+            .nonces = nonces,
+            .code = std.AutoHashMap(Address, []const u8).init(allocator),
+            .storage = storage,
+        };
+        errdefer snapshot.freeCode();
+        var it = host.code.iterator();
+        while (it.next()) |kv| {
+            const owned = try allocator.dupe(u8, kv.value_ptr.*);
+            errdefer allocator.free(owned);
+            try snapshot.code.put(kv.key_ptr.*, owned);
+        }
+        return snapshot;
+    }
+
+    fn freeCode(self: *HostSnapshot) void {
+        var it = self.code.valueIterator();
+        while (it.next()) |code| self.allocator.free(code.*);
+        self.code.deinit();
+    }
+
+    fn deinit(self: *HostSnapshot) void {
+        self.freeCode();
+        self.balances.deinit();
+        self.nonces.deinit();
+        self.storage.deinit();
+    }
+
+    /// Fails when any balance, nonce, code or storage slot differs from the
+    /// snapshot. Missing entries compare as zero or empty.
+    fn expectUnchanged(self: *const HostSnapshot, host: *TestHost) !void {
+        if (!sameValues(Address, u256, &self.balances, &host.balances) or
+            !sameValues(Address, u64, &self.nonces, &host.nonces) or
+            !sameValues(StorageSlotKey, u256, &self.storage, &host.storage) or
+            !sameCode(&self.code, &host.code) or !sameCode(&host.code, &self.code))
+        {
+            std.debug.print("a rejected transaction changed the pre-state\n", .{});
+            return error.StateMutatedByRejectedTransaction;
+        }
+    }
+
+    fn sameValues(comptime K: type, comptime V: type, a: *const std.AutoHashMap(K, V), b: *const std.AutoHashMap(K, V)) bool {
+        var it_a = a.iterator();
+        while (it_a.next()) |kv| {
+            if ((b.get(kv.key_ptr.*) orelse 0) != kv.value_ptr.*) return false;
+        }
+        var it_b = b.iterator();
+        while (it_b.next()) |kv| {
+            if ((a.get(kv.key_ptr.*) orelse 0) != kv.value_ptr.*) return false;
+        }
+        return true;
+    }
+
+    fn sameCode(a: *const std.AutoHashMap(Address, []const u8), b: *const std.AutoHashMap(Address, []const u8)) bool {
+        var it = a.iterator();
+        while (it.next()) |kv| {
+            if (!std.mem.eql(u8, b.get(kv.key_ptr.*) orelse &[_]u8{}, kv.value_ptr.*)) return false;
+        }
+        return true;
+    }
+};
+
+/// True when the host holds a nonzero balance, nonce, code or storage slot
+/// for `address`. Empty accounts are absent from a post-state listing.
+fn hostAccountNonEmpty(host: *TestHost, address: Address) bool {
+    if ((host.balances.get(address) orelse 0) != 0) return true;
+    if (host.getNonce(address) != 0) return true;
+    if ((host.code.get(address) orelse &[_]u8{}).len != 0) return true;
+    var it = host.storage.iterator();
+    while (it.next()) |kv| {
+        if (kv.key_ptr.address.equals(address) and kv.value_ptr.* != 0) return true;
+    }
+    return false;
+}
+
+fn postStateLists(expected_state: std.json.Value, address: Address) !bool {
+    var it = expected_state.object.iterator();
+    while (it.next()) |kv| {
+        if ((try parseAddress(kv.key_ptr.*)).equals(address)) return true;
+    }
+    return false;
+}
+
+fn expectListed(host: *TestHost, expected_state: std.json.Value, address: Address) !void {
+    if (!hostAccountNonEmpty(host, address)) return;
+    if (try postStateLists(expected_state, address)) return;
+    std.debug.print("UNEXPECTED ACCOUNT: addr={any} is not in the expected post state\n", .{address.bytes});
+    return error.UnexpectedAccountInPostState;
+}
+
+/// A post entry's `state` lists every account: fail on any other nonempty
+/// account in the host.
+fn expectNoUnlistedAccounts(host: *TestHost, expected_state: std.json.Value) !void {
+    if (expected_state != .object) return error.InvalidPostState;
+    var balances = host.balances.keyIterator();
+    while (balances.next()) |address| try expectListed(host, expected_state, address.*);
+    var nonces = host.nonces.keyIterator();
+    while (nonces.next()) |address| try expectListed(host, expected_state, address.*);
+    var code = host.code.keyIterator();
+    while (code.next()) |address| try expectListed(host, expected_state, address.*);
+    var storage = host.storage.keyIterator();
+    while (storage.next()) |key| try expectListed(host, expected_state, key.address);
+}
+
+fn expectCode(allocator: std.mem.Allocator, host: *TestHost, address: Address, expected_json: std.json.Value) !void {
+    if (expected_json != .string) return error.InvalidPostState;
+    const hex = expected_json.string;
+    const expected: []u8 = if (hex.len <= 2) try allocator.alloc(u8, 0) else try primitives.Hex.hexToBytes(allocator, hex);
+    defer allocator.free(expected);
+    const actual = host.code.get(address) orelse &[_]u8{};
+    if (!std.mem.eql(u8, expected, actual)) {
+        std.debug.print("CODE MISMATCH: addr={any} expected {x}, found {x}\n", .{ address.bytes, expected, actual });
+        return error.CodeMismatch;
+    }
+}
+
+// ---------------------------------------------------------------- RLP
+
+/// One RLP item at the start of a byte string.
+const RlpItem = struct {
+    /// Header plus payload length.
+    encoded_len: usize,
+    payload: []const u8,
+    is_list: bool,
+};
+
+fn rlpItem(bytes: []const u8) !RlpItem {
+    if (bytes.len == 0) return error.InvalidRlp;
+    const prefix = bytes[0];
+    if (prefix < 0x80) return .{ .encoded_len = 1, .payload = bytes[0..1], .is_list = false };
+    const is_list = prefix >= 0xc0;
+    const short: usize = prefix - @as(u8, if (is_list) 0xc0 else 0x80);
+    var header: usize = 1;
+    var len: usize = short;
+    if (short > 55) {
+        const len_of_len = short - 55;
+        if (len_of_len > @sizeOf(usize) or bytes.len < 1 + len_of_len) return error.InvalidRlp;
+        len = 0;
+        for (bytes[1 .. 1 + len_of_len]) |b| len = (len << 8) | b;
+        header += len_of_len;
+    }
+    if (bytes.len - header < len) return error.InvalidRlp;
+    return .{ .encoded_len = header + len, .payload = bytes[header .. header + len], .is_list = is_list };
+}
+
+/// Splits a list payload into the raw encodings of its items.
+fn rlpListItems(allocator: std.mem.Allocator, payload: []const u8) ![]const []const u8 {
+    var items: std.ArrayList([]const u8) = .{};
+    errdefer items.deinit(allocator);
+    var rest = payload;
+    while (rest.len > 0) {
+        const item = try rlpItem(rest);
+        try items.append(allocator, rest[0..item.encoded_len]);
+        rest = rest[item.encoded_len..];
+    }
+    return items.toOwnedSlice(allocator);
+}
+
+/// Decodes a big-endian unsigned integer item.
+fn rlpUint(comptime T: type, raw: []const u8) !T {
+    const item = try rlpItem(raw);
+    if (item.is_list or item.payload.len > @sizeOf(T)) return error.InvalidTransactionFormat;
+    var value: T = 0;
+    for (item.payload) |b| value = (value << 8) | b;
+    return value;
+}
+
+fn rlpAppendHeader(out: *std.ArrayList(u8), allocator: std.mem.Allocator, offset: u8, len: usize) !void {
+    if (len < 56) return out.append(allocator, offset + @as(u8, @intCast(len)));
+    var buf: [@sizeOf(usize)]u8 = undefined;
+    std.mem.writeInt(usize, &buf, len, .big);
+    const skip = @clz(len) / 8;
+    try out.append(allocator, offset + 55 + @as(u8, @intCast(buf.len - skip)));
+    try out.appendSlice(allocator, buf[skip..]);
+}
+
+fn rlpAppendString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, bytes: []const u8) !void {
+    if (bytes.len == 1 and bytes[0] < 0x80) return out.append(allocator, bytes[0]);
+    try rlpAppendHeader(out, allocator, 0x80, bytes.len);
+    try out.appendSlice(allocator, bytes);
+}
+
+fn rlpAppendUint(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u256) !void {
+    var buf: [32]u8 = undefined;
+    std.mem.writeInt(u256, &buf, value, .big);
+    try rlpAppendString(out, allocator, buf[@clz(value) / 8 ..]);
+}
+
+/// keccak256 of `prefix ++ rlp(list(items))`, where items are raw encodings.
+fn hashRlpList(allocator: std.mem.Allocator, prefix: []const u8, items: []const []const u8) ![32]u8 {
+    var payload_len: usize = 0;
+    for (items) |item| payload_len += item.len;
+    var out: std.ArrayList(u8) = .{};
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, prefix);
+    try rlpAppendHeader(&out, allocator, 0xc0, payload_len);
+    for (items) |item| try out.appendSlice(allocator, item);
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha3.Keccak256.hash(out.items, &hash, .{});
+    return hash;
+}
+
+/// keccak256(rlp(logs)), each log encoded as [address, [topics], data].
+fn logsHash(allocator: std.mem.Allocator, logs: []const evm_mod.Log) ![32]u8 {
+    var encoded: std.ArrayList([]const u8) = .{};
+    defer {
+        for (encoded.items) |item| allocator.free(item);
+        encoded.deinit(allocator);
+    }
+    for (logs) |log| {
+        var topics: std.ArrayList(u8) = .{};
+        defer topics.deinit(allocator);
+        for (log.topics) |topic| {
+            var buf: [32]u8 = undefined;
+            std.mem.writeInt(u256, &buf, topic, .big);
+            try rlpAppendString(&topics, allocator, &buf);
+        }
+        var fields: std.ArrayList(u8) = .{};
+        defer fields.deinit(allocator);
+        try rlpAppendString(&fields, allocator, &log.address.bytes);
+        try rlpAppendHeader(&fields, allocator, 0xc0, topics.items.len);
+        try fields.appendSlice(allocator, topics.items);
+        try rlpAppendString(&fields, allocator, log.data);
+
+        var item: std.ArrayList(u8) = .{};
+        errdefer item.deinit(allocator);
+        try rlpAppendHeader(&item, allocator, 0xc0, fields.items.len);
+        try item.appendSlice(allocator, fields.items);
+        const owned = try item.toOwnedSlice(allocator);
+        errdefer allocator.free(owned);
+        try encoded.append(allocator, owned);
+    }
+    return hashRlpList(allocator, &.{}, encoded.items);
+}
+
+fn expectLogsHash(allocator: std.mem.Allocator, expected_json: std.json.Value, logs: []const evm_mod.Log) !void {
+    const expected = try parseFixedHexBytes(32, allocator, expected_json);
+    const actual = try logsHash(allocator, logs);
+    if (!std.mem.eql(u8, &expected, &actual)) {
+        std.debug.print("LOGS HASH MISMATCH: expected {x}, found {x} ({d} logs)\n", .{ expected, actual, logs.len });
+        return error.LogsHashMismatch;
+    }
+}
+
+/// Recovers a transaction sender from its signature over `hash`. Returns
+/// null for an invalid signature; from Homestead (EIP-2) s must be low.
+fn recoverTxSender(hf: Hardfork, hash: [32]u8, y_parity: u256, r: u256, s: u256) ?Address {
+    if (y_parity > 1) return null;
+    if (r == 0 or r >= SECP256K1N) return null;
+    if (s == 0 or s >= SECP256K1N) return null;
+    if (hf.isAtLeast(.HOMESTEAD) and s > SECP256K1N / 2) return null;
+    const signature = primitives.crypto.Crypto.Signature{ .r = r, .s = s, .v = @intCast(y_parity) };
+    return primitives.crypto.Crypto.unaudited_recoverAddress(hash, signature) catch null;
+}
+
+/// A decoded, signature-checked raw transaction (legacy, EIP-2930 or EIP-1559).
+const RawTransaction = struct {
+    sender: Address,
+    nonce: u64,
+    /// Legacy and EIP-2930 use gas_price for both fee fields.
+    max_fee_per_gas: u256,
+    max_priority_fee_per_gas: u256,
+    is_fee_market: bool,
+    gas_limit: u64,
+    /// Null for contract creation. The zero address is a real destination.
+    to: ?Address,
+    value: u256,
+    data: []const u8,
+    access_list: []primitives.AccessList.AccessListEntry,
+    storage_key_count: usize,
+
+    fn deinit(self: *RawTransaction, allocator: std.mem.Allocator) void {
+        for (self.access_list) |entry| allocator.free(entry.storage_keys);
+        allocator.free(self.access_list);
+    }
+};
+
+/// Decodes a signed transaction envelope and recovers its sender. `raw`
+/// must outlive the result (`data` borrows from it).
+fn decodeRawTransaction(allocator: std.mem.Allocator, hf: Hardfork, raw: []const u8) !RawTransaction {
+    if (raw.len == 0) return error.InvalidTransactionFormat;
+    const tx_type: u8 = if (raw[0] < 0x80) raw[0] else 0;
+    switch (tx_type) {
+        0 => {},
+        1 => if (hf.isBefore(.BERLIN)) return error.TransactionTypeNotActive,
+        2 => if (hf.isBefore(.LONDON)) return error.TransactionTypeNotActive,
+        // Blob and set-code envelopes need sidecar and authorization admission.
+        else => return error.UnsupportedTransactionType,
+    }
+    const body = if (tx_type == 0) raw else raw[1..];
+    const outer = try rlpItem(body);
+    if (!outer.is_list or outer.encoded_len != body.len) return error.InvalidTransactionFormat;
+    const fields = try rlpListItems(allocator, outer.payload);
+    defer allocator.free(fields);
+
+    const field_count: usize = switch (tx_type) {
+        0 => 9,
+        1 => 11,
+        else => 12,
+    };
+    if (fields.len != field_count) return error.InvalidTransactionFormat;
+
+    // Typed fields start with the chain id.
+    const base: usize = if (tx_type == 0) 0 else 1;
+    const fee_fields: usize = if (tx_type == 2) 2 else 1;
+    const gas_limit_idx = base + 1 + fee_fields;
+
+    var tx: RawTransaction = undefined;
+    tx.nonce = try rlpUint(u64, fields[base]);
+    tx.is_fee_market = tx_type == 2;
+    if (tx_type == 2) {
+        tx.max_priority_fee_per_gas = try rlpUint(u256, fields[2]);
+        tx.max_fee_per_gas = try rlpUint(u256, fields[3]);
+    } else {
+        tx.max_fee_per_gas = try rlpUint(u256, fields[base + 1]);
+        tx.max_priority_fee_per_gas = tx.max_fee_per_gas;
+    }
+    tx.gas_limit = try rlpUint(u64, fields[gas_limit_idx]);
+    const to_item = try rlpItem(fields[gas_limit_idx + 1]);
+    if (to_item.is_list) return error.InvalidTransactionFormat;
+    tx.to = switch (to_item.payload.len) {
+        0 => null,
+        20 => Address{ .bytes = to_item.payload[0..20].* },
+        else => return error.InvalidTransactionFormat,
+    };
+    tx.value = try rlpUint(u256, fields[gas_limit_idx + 2]);
+    const data_item = try rlpItem(fields[gas_limit_idx + 3]);
+    if (data_item.is_list) return error.InvalidTransactionFormat;
+    tx.data = data_item.payload;
+
+    // Signature and signing hash.
+    const v = try rlpUint(u256, fields[field_count - 3]);
+    const r = try rlpUint(u256, fields[field_count - 2]);
+    const s = try rlpUint(u256, fields[field_count - 1]);
+    var y_parity: u256 = undefined;
+    var signing_hash: [32]u8 = undefined;
+    if (tx_type == 0) {
+        if (v == 27 or v == 28) {
+            y_parity = v - 27;
+            signing_hash = try hashRlpList(allocator, &.{}, fields[0..6]);
+        } else if (v >= 35 and hf.isAtLeast(.SPURIOUS_DRAGON)) {
+            // EIP-155: sign [nonce, gasPrice, gas, to, value, data, chainId, 0, 0].
+            y_parity = (v - 35) % 2;
+            var chain_fields: std.ArrayList(u8) = .{};
+            defer chain_fields.deinit(allocator);
+            try rlpAppendUint(&chain_fields, allocator, (v - 35) / 2);
+            const chain_id_len = chain_fields.items.len;
+            try chain_fields.appendSlice(allocator, &.{ 0x80, 0x80 });
+            const items = [_][]const u8{
+                fields[0],                           fields[1],                                            fields[2],                               fields[3], fields[4], fields[5],
+                chain_fields.items[0..chain_id_len], chain_fields.items[chain_id_len .. chain_id_len + 1], chain_fields.items[chain_id_len + 1 ..],
+            };
+            signing_hash = try hashRlpList(allocator, &.{}, &items);
+        } else return error.InvalidTransactionSignature;
+    } else {
+        y_parity = v;
+        signing_hash = try hashRlpList(allocator, &.{tx_type}, fields[0 .. field_count - 3]);
+    }
+    tx.sender = recoverTxSender(hf, signing_hash, y_parity, r, s) orelse return error.InvalidTransactionSignature;
+
+    // EIP-2930 access list: [[address, [key, ...]], ...].
+    tx.storage_key_count = 0;
+    if (tx_type == 0) {
+        tx.access_list = try allocator.alloc(primitives.AccessList.AccessListEntry, 0);
+        return tx;
+    }
+    const list_item = try rlpItem(fields[gas_limit_idx + 4]);
+    if (!list_item.is_list) return error.InvalidTransactionFormat;
+    const raw_entries = try rlpListItems(allocator, list_item.payload);
+    defer allocator.free(raw_entries);
+    const entries = try allocator.alloc(primitives.AccessList.AccessListEntry, raw_entries.len);
+    var filled: usize = 0;
+    errdefer {
+        for (entries[0..filled]) |entry| allocator.free(entry.storage_keys);
+        allocator.free(entries);
+    }
+    for (raw_entries) |raw_entry| {
+        const entry_item = try rlpItem(raw_entry);
+        if (!entry_item.is_list) return error.InvalidTransactionFormat;
+        const parts = try rlpListItems(allocator, entry_item.payload);
+        defer allocator.free(parts);
+        if (parts.len != 2) return error.InvalidTransactionFormat;
+        const address_item = try rlpItem(parts[0]);
+        if (address_item.is_list or address_item.payload.len != 20) return error.InvalidTransactionFormat;
+        const keys_item = try rlpItem(parts[1]);
+        if (!keys_item.is_list) return error.InvalidTransactionFormat;
+        const raw_keys = try rlpListItems(allocator, keys_item.payload);
+        defer allocator.free(raw_keys);
+        const keys = try allocator.alloc([32]u8, raw_keys.len);
+        errdefer allocator.free(keys);
+        for (raw_keys, keys) |raw_key, *key| {
+            const key_item = try rlpItem(raw_key);
+            if (key_item.is_list or key_item.payload.len != 32) return error.InvalidTransactionFormat;
+            key.* = key_item.payload[0..32].*;
+        }
+        entries[filled] = .{ .address = .{ .bytes = address_item.payload[0..20].* }, .storage_keys = keys };
+        filled += 1;
+        tx.storage_key_count += keys.len;
+    }
+    tx.access_list = entries;
+    return tx;
+}
+
+/// Executes one raw block transaction: decode, recover the sender, admit it
+/// under the fork's rules, buy gas, run it through `Evm.call` (which moves
+/// the value once) and settle. Returns the rejection reason, if any, without
+/// changing state.
 fn processRlpTransaction(
     allocator: std.mem.Allocator,
     evm_instance: anytype,
     test_host: *TestHost,
     rlp_hex: []const u8,
     block_ctx: ?evm_mod.BlockContext,
-) !void {
-    // Decode hex to bytes
-    const rlp_bytes = try primitives.Hex.hexToBytes(allocator, rlp_hex);
-    defer allocator.free(rlp_bytes);
+) !?TxRejection {
+    const hf: Hardfork = evm_instance.hardfork;
+    const raw = try primitives.Hex.hexToBytes(allocator, rlp_hex);
+    defer allocator.free(raw);
+    var tx = try decodeRawTransaction(allocator, hf, raw);
+    defer tx.deinit(allocator);
 
-    // Check if transaction is typed (EIP-2718)
-    // Typed transactions start with a single byte (0x01 or 0x02) followed by RLP payload
-    const is_typed = rlp_bytes.len > 0 and (rlp_bytes[0] == 0x01 or rlp_bytes[0] == 0x02);
+    const is_create = tx.to == null;
 
-    // For typed transactions, decode from byte 1 onwards
-    const rlp_to_decode = if (is_typed) rlp_bytes[1..] else rlp_bytes;
+    // Fees (EIP-1559 from London).
+    const base_fee: u256 = if (hf.isAtLeast(.LONDON)) (if (block_ctx) |ctx| ctx.block_base_fee else 0) else 0;
+    if (tx.max_priority_fee_per_gas > tx.max_fee_per_gas) return .priority_fee_above_max_fee;
+    if (tx.max_fee_per_gas < base_fee) return .insufficient_max_fee;
+    const priority_fee_per_gas = @min(tx.max_priority_fee_per_gas, tx.max_fee_per_gas - base_fee);
+    const effective_gas_price = base_fee + priority_fee_per_gas;
 
-    // Decode RLP structure
-    const decoded = try primitives.Rlp.decode(allocator, rlp_to_decode, false);
-    defer decoded.data.deinit(allocator);
-
-    // Expect a list for transaction
-    const tx_list = switch (decoded.data) {
-        .List => |items| items,
-        else => return error.InvalidTransactionFormat,
-    };
-
-    // Legacy transaction format: [nonce, gasPrice, gasLimit, to, value, data, v, r, s] (9 fields)
-    // Type 1 (EIP-2930): [chainId, nonce, gasPrice, gasLimit, to, value, data, accessList, yParity, r, s] (11 fields)
-    // Type 2 (EIP-1559): [chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList, yParity, r, s] (12 fields)
-    const is_legacy = tx_list.len == 9;
-    const is_type_1 = tx_list.len == 11;
-    const is_type_2 = tx_list.len == 12;
-
-    if (!is_legacy and !is_type_1 and !is_type_2) {
-        return error.InvalidTransactionFormat;
-    }
-
-    // Extract transaction fields (indices vary by transaction type)
-    // Legacy: [nonce(0), gasPrice(1), gasLimit(2), to(3), value(4), data(5), v(6), r(7), s(8)]
-    // Type 1: [chainId(0), nonce(1), gasPrice(2), gasLimit(3), to(4), value(5), data(6), accessList(7), yParity(8), r(9), s(10)]
-    // Type 2: [chainId(0), nonce(1), maxPriorityFee(2), maxFee(3), gasLimit(4), to(5), value(6), data(7), accessList(8), yParity(9), r(10), s(11)]
-
-    const nonce_idx: usize = if (is_legacy) 0 else 1;
-    const gas_price_idx: usize = if (is_legacy) 1 else if (is_type_1) 2 else 3; // Type 2 uses maxFee at index 3
-    const gas_limit_idx: usize = if (is_legacy) 2 else if (is_type_1) 3 else 4;
-    const to_idx: usize = if (is_legacy) 3 else if (is_type_1) 4 else 5;
-    const value_idx: usize = if (is_legacy) 4 else if (is_type_1) 5 else 6;
-    const data_idx: usize = if (is_legacy) 5 else if (is_type_1) 6 else 7;
-    const access_list_idx: usize = if (is_type_1) 7 else if (is_type_2) 8 else 0; // Only for typed transactions
-
-    const nonce_bytes = switch (tx_list[nonce_idx]) {
-        .String => |s| s,
-        else => return error.InvalidTransactionFormat,
-    };
-    const nonce: u64 = if (nonce_bytes.len == 0) 0 else blk: {
-        var val: u64 = 0;
-        for (nonce_bytes) |b| {
-            val = (val << 8) | b;
-        }
-        break :blk val;
-    };
-
-    const gas_price_bytes = switch (tx_list[gas_price_idx]) {
-        .String => |s| s,
-        else => return error.InvalidTransactionFormat,
-    };
-    var gas_price: u256 = 0;
-    for (gas_price_bytes) |b| {
-        gas_price = (gas_price << 8) | b;
-    }
-
-    const gas_limit_bytes = switch (tx_list[gas_limit_idx]) {
-        .String => |s| s,
-        else => return error.InvalidTransactionFormat,
-    };
-    var gas_limit: u64 = 0;
-    for (gas_limit_bytes) |b| {
-        gas_limit = (gas_limit << 8) | @as(u64, b);
-    }
-
-    const to_bytes = switch (tx_list[to_idx]) {
-        .String => |s| s,
-        else => return error.InvalidTransactionFormat,
-    };
-    const to_addr = if (to_bytes.len == 20) blk: {
-        var addr_bytes: [20]u8 = undefined;
-        for (to_bytes, 0..) |b, i| {
-            addr_bytes[i] = b;
-        }
-        break :blk Address{ .bytes = addr_bytes };
-    } else primitives.ZERO_ADDRESS;
-
-    const value_bytes = switch (tx_list[value_idx]) {
-        .String => |s| s,
-        else => return error.InvalidTransactionFormat,
-    };
-    var value: u256 = 0;
-    for (value_bytes) |b| {
-        value = (value << 8) | b;
-    }
-
-    const data_bytes = switch (tx_list[data_idx]) {
-        .String => |s| s,
-        else => return error.InvalidTransactionFormat,
-    };
-    const tx_data = try allocator.dupe(u8, data_bytes);
-    defer allocator.free(tx_data);
-
-    // Signature components (v, r and s) - not currently used for sender recovery
-    // Legacy: v(6), r(7), s(8)
-    // Type 1: yParity(8), r(9), s(10)
-    // Type 2: yParity(9), r(10), s(11)
-
-    // Parse access list if present (Type 1 or Type 2 transactions)
-    var access_list_gas_cost: u64 = 0;
-    if (is_type_1 or is_type_2) {
-        const access_list_data = tx_list[access_list_idx];
-        if (access_list_data == .List) {
-            const access_list = access_list_data.List;
-            for (access_list) |entry| {
-                // Each address costs 2400 gas
-                access_list_gas_cost += primitives.AccessList.ACCESS_LIST_ADDRESS_COST;
-
-                // Each storage key costs 1900 gas
-                if (entry == .List and entry.List.len >= 2) {
-                    const storage_keys = entry.List[1];
-                    if (storage_keys == .List) {
-                        access_list_gas_cost += @as(u64, storage_keys.List.len) * primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST;
-                    }
-                }
-            }
-        }
-    }
-
-    // Recover sender from signature
-    // For now, we'll use a simple approach: find the first pre-state account with matching nonce
-    var sender: Address = primitives.ZERO_ADDRESS;
-    var nonces_it = test_host.nonces.iterator();
-    while (nonces_it.next()) |entry| {
-        if (entry.value_ptr.* == nonce) {
-            sender = entry.key_ptr.*;
-            break;
-        }
-    }
-
-    // If no matching account found, use a default test address
-    if (std.mem.eql(u8, &sender.bytes, &primitives.ZERO_ADDRESS.bytes)) {
-        // Common test sender address
-        const test_sender_hex = "a94f5374fce5edbc8e2a8697c15331677e6ebf0b";
-        sender = try parseAddress(test_sender_hex);
-    }
-
-    // Calculate priority fee (entire gas_price goes to coinbase in legacy transactions)
-    const base_fee: u256 = if (block_ctx) |ctx| ctx.block_base_fee else 0;
-    const priority_fee_per_gas: u256 = if (gas_price > base_fee) gas_price - base_fee else 0;
-
-    // Deduct transaction cost from sender
-    const tx_cost = gas_price * @as(u256, gas_limit) + value;
-    const sender_balance = test_host.balances.get(sender) orelse 0;
-    if (sender_balance >= tx_cost) {
-        try test_host.balances.put(sender, sender_balance - tx_cost);
-    } else {
-        // Transaction can't afford gas, skip execution
-        return;
-    }
-
-    // Increment sender nonce
-    try test_host.nonces.put(sender, nonce + 1);
-
-    // Set transaction context
-    evm_instance.gas_price = gas_price;
-    evm_instance.origin = sender;
-
-    // Pre-warm sender and target (EIP-2929, Berlin+)
-    if (evm_instance.hardfork.isAtLeast(.BERLIN)) {
-        try evm_instance.preWarmTransaction(to_addr);
-    }
-
-    // Pre-warm access list addresses and storage keys (EIP-2930, Berlin+)
-    if (is_type_1 or is_type_2) {
-        const access_list_data = tx_list[access_list_idx];
-        if (access_list_data == .List) {
-            const access_list = access_list_data.List;
-            for (access_list) |entry| {
-                if (entry == .List and entry.List.len >= 1) {
-                    // Pre-warm address
-                    const addr_bytes = switch (entry.List[0]) {
-                        .String => |s| s,
-                        else => continue,
-                    };
-                    if (addr_bytes.len == 20) {
-                        var addr: Address = undefined;
-                        for (addr_bytes, 0..) |b, i| {
-                            addr.bytes[i] = b;
-                        }
-                        _ = try evm_instance.access_list_manager.warm_addresses.getOrPut(addr);
-
-                        // Pre-warm storage keys
-                        if (entry.List.len >= 2) {
-                            const storage_keys = entry.List[1];
-                            if (storage_keys == .List) {
-                                for (storage_keys.List) |key_item| {
-                                    const key_bytes = switch (key_item) {
-                                        .String => |s| s,
-                                        else => continue,
-                                    };
-                                    var key: u256 = 0;
-                                    for (key_bytes) |b| {
-                                        key = (key << 8) | b;
-                                    }
-                                    const storage_key = evm_mod.StorageKey{ .address = addr.bytes, .slot = key };
-                                    _ = try evm_instance.access_list_manager.warm_storage_slots.getOrPut(storage_key);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Calculate intrinsic gas cost
-    // Contract creation transactions cost 53000 base gas, regular transactions cost 21000
-    const is_contract_creation = std.mem.eql(u8, &to_addr.bytes, &primitives.ZERO_ADDRESS.bytes);
-    var intrinsic_gas: u64 = if (is_contract_creation)
-        primitives.GasConstants.TxGasContractCreation // 53000 for contract creation
-    else
-        primitives.GasConstants.TxGas; // 21000 for regular transactions
-    // EIP-2028 (Istanbul): Reduced non-zero calldata cost from 68 to 16 gas
-    const non_zero_gas = if (evm_instance.hardfork.isBefore(.ISTANBUL))
-        68 // Pre-Istanbul intrinsic gas for non-zero tx data bytes
-    else
-        primitives.GasConstants.TxDataNonZeroGas; // 16 for Istanbul+
-    for (tx_data) |byte| {
+    // Intrinsic gas and EIP-7623 floor.
+    var intrinsic_gas: u64 = createAwareBaseGas(hf, is_create);
+    const non_zero_gas: u64 = if (hf.isBefore(.ISTANBUL)) 68 else primitives.GasConstants.TxDataNonZeroGas;
+    var tokens: u64 = 0;
+    for (tx.data) |byte| {
         if (byte == 0) {
-            intrinsic_gas += primitives.GasConstants.TxDataZeroGas; // 4
+            intrinsic_gas += primitives.GasConstants.TxDataZeroGas;
+            tokens += 1;
         } else {
             intrinsic_gas += non_zero_gas;
+            tokens += 4;
         }
     }
-
-    // Add access list cost (EIP-2930, Berlin+)
-    intrinsic_gas += access_list_gas_cost;
-
-    // EIP-3860 (Shanghai+): Add init code cost for contract creation transactions
-    // Cost is 2 gas per word (32 bytes) of init code
-    if (is_contract_creation and evm_instance.hardfork.isAtLeast(.SHANGHAI)) {
-        const init_code_words = (tx_data.len + 31) / 32;
-        const init_code_cost = @as(u64, @intCast(init_code_words)) * primitives.GasConstants.InitcodeWordGas;
-        intrinsic_gas += init_code_cost;
+    intrinsic_gas += @as(u64, tx.access_list.len) * primitives.AccessList.ACCESS_LIST_ADDRESS_COST;
+    intrinsic_gas += @as(u64, tx.storage_key_count) * primitives.AccessList.ACCESS_LIST_STORAGE_KEY_COST;
+    if (is_create and hf.isAtLeast(.SHANGHAI)) {
+        intrinsic_gas += @as(u64, (tx.data.len + 31) / 32) * primitives.GasConstants.InitcodeWordGas;
     }
+    const calldata_floor: u64 = if (hf.isAtLeast(.PRAGUE)) tokens * 10 + primitives.GasConstants.TxGas else 0;
+    if (txGasLimitTooLow(tx.gas_limit, intrinsic_gas, calldata_floor)) return .intrinsic_gas;
+    if (tx.nonce >= std.math.maxInt(u64)) return .nonce_is_max;
+    if (is_create and hf.isAtLeast(.SHANGHAI) and tx.data.len > primitives.GasConstants.MaxInitcodeSize) return .initcode_size;
+    if (exceedsTxGasLimitCap(hf, tx.gas_limit)) return .gas_limit_cap;
 
-    // Check if gas_limit is sufficient for intrinsic gas
-    if (gas_limit < intrinsic_gas) {
-        // Transaction cannot afford intrinsic gas, fail immediately
-        // No gas refund - all gas is consumed
-        if (block_ctx) |ctx| {
-            const coinbase_payment = @as(u256, gas_limit) * priority_fee_per_gas;
-            const coinbase_balance = test_host.balances.get(ctx.block_coinbase) orelse 0;
-            try test_host.balances.put(ctx.block_coinbase, coinbase_balance + coinbase_payment);
-        }
-        return;
+    // Sender nonce and balance: affordability includes the value, but only
+    // gas is bought here.
+    if (tx.nonce != test_host.getNonce(tx.sender)) return .nonce_mismatch;
+    const max_gas_fee = std.math.mul(u256, tx.gas_limit, tx.max_fee_per_gas) catch return .insufficient_funds;
+    const required = std.math.add(u256, max_gas_fee, tx.value) catch return .insufficient_funds;
+    const sender_balance = test_host.balances.get(tx.sender) orelse 0;
+    if (sender_balance < required) return .insufficient_funds;
+
+    try test_host.setNonce(tx.sender, tx.nonce + 1);
+    try test_host.setBalance(tx.sender, sender_balance - @as(u256, tx.gas_limit) * effective_gas_price);
+
+    evm_instance.gas_price = effective_gas_price;
+    evm_instance.origin = tx.sender;
+    evm_instance.setAccessList(tx.access_list);
+
+    const execution_gas = tx.gas_limit - intrinsic_gas;
+    const result = if (tx.to) |to| evm_instance.call(.{ .call = .{
+        .caller = tx.sender,
+        .to = to,
+        .value = tx.value,
+        .input = tx.data,
+        .gas = execution_gas,
+    } }) else evm_instance.call(.{ .create = .{
+        .caller = tx.sender,
+        .value = tx.value,
+        .init_code = tx.data,
+        .gas = execution_gas,
+    } });
+
+    const execution_gas_used = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
+    const refund_counter: u64 = if (evm_instance.gas_refund > 0) @intCast(evm_instance.gas_refund) else 0;
+    const settlement = settleTxGas(hf, tx.gas_limit, intrinsic_gas + execution_gas_used, refund_counter, calldata_floor);
+
+    const balance_after = test_host.balances.get(tx.sender) orelse 0;
+    try test_host.setBalance(tx.sender, balance_after + @as(u256, settlement.unused_gas) * effective_gas_price);
+    if (block_ctx) |ctx| {
+        const coinbase_balance = test_host.balances.get(ctx.block_coinbase) orelse 0;
+        try test_host.setBalance(ctx.block_coinbase, coinbase_balance + @as(u256, settlement.gas_used) * priority_fee_per_gas);
     }
-
-    // Calculate execution gas (gas available after intrinsic cost)
-    const execution_gas = gas_limit - intrinsic_gas;
-
-    // Execute the transaction
-    const is_create = std.mem.eql(u8, &to_addr.bytes, &primitives.ZERO_ADDRESS.bytes);
-
-    if (is_create) {
-        // CREATE transaction - use inner_create
-        const result = evm_instance.inner_create(value, tx_data, execution_gas, null) catch |err| {
-            // Refund gas on failure
-            const refund = @as(u256, gas_limit) * gas_price;
-            const new_balance = test_host.balances.get(sender) orelse 0;
-            try test_host.balances.put(sender, new_balance + refund);
-            return err;
-        };
-
-        // Calculate gas used before refunds (intrinsic + execution)
-        const execution_gas_used = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
-        const gas_used_before_refunds: u64 = intrinsic_gas + execution_gas_used;
-
-        // Apply gas refunds (EIP-3529: capped at 1/2 pre-London, 1/5 post-London).
-        // The refund counter may be signed; only a positive balance refunds gas.
-        const refund_counter: u64 = if (evm_instance.gas_refund > 0) @intCast(evm_instance.gas_refund) else 0;
-        const settlement = settleTxGas(evm_instance.hardfork, gas_limit, gas_used_before_refunds, refund_counter, 0);
-        const gas_used = settlement.gas_used;
-        const gas_refund_amount = @as(u256, settlement.unused_gas) * gas_price;
-        const new_balance = test_host.balances.get(sender) orelse 0;
-        try test_host.balances.put(sender, new_balance + gas_refund_amount);
-
-        // Pay coinbase (miner)
-        if (block_ctx) |ctx| {
-            const coinbase_payment = @as(u256, gas_used) * priority_fee_per_gas;
-            const coinbase_balance = test_host.balances.get(ctx.block_coinbase) orelse 0;
-            try test_host.balances.put(ctx.block_coinbase, coinbase_balance + coinbase_payment);
-        }
-    } else {
-        // CALL transaction - use call with bytecode
-        const bytecode = test_host.code.get(to_addr) orelse &[_]u8{};
-        evm_instance.setBytecode(bytecode);
-        const result = evm_instance.call(.{ .call = .{
-            .caller = sender,
-            .to = to_addr,
-            .value = value,
-            .input = tx_data,
-            .gas = @intCast(execution_gas),
-        } });
-
-        // Calculate gas used before refunds (intrinsic + execution)
-        const execution_gas_used = if (result.gas_left > execution_gas) 0 else execution_gas - result.gas_left;
-        const gas_used_before_refunds: u64 = intrinsic_gas + execution_gas_used;
-
-        // Apply gas refunds (EIP-3529: capped at 1/2 pre-London, 1/5 post-London).
-        // The refund counter may be signed; only a positive balance refunds gas.
-        const refund_counter: u64 = if (evm_instance.gas_refund > 0) @intCast(evm_instance.gas_refund) else 0;
-        const settlement = settleTxGas(evm_instance.hardfork, gas_limit, gas_used_before_refunds, refund_counter, 0);
-        const gas_used = settlement.gas_used;
-        const gas_refund_amount = @as(u256, settlement.unused_gas) * gas_price;
-        const new_balance = test_host.balances.get(sender) orelse 0;
-        try test_host.balances.put(sender, new_balance + gas_refund_amount);
-
-        // Pay coinbase (miner)
-        if (block_ctx) |ctx| {
-            const coinbase_payment = @as(u256, gas_used) * priority_fee_per_gas;
-            const coinbase_balance = test_host.balances.get(ctx.block_coinbase) orelse 0;
-            try test_host.balances.put(ctx.block_coinbase, coinbase_balance + coinbase_payment);
-        }
-    }
+    return null;
 }
 
 fn runJsonTestImpl(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?*trace.Tracer) !void {
     try runJsonTestImplWithOptionalFork(allocator, test_case, tracer, null);
 }
 
+/// Runs every case of a fixture: one per `post.<fork>` entry, each on a fresh
+/// host built from `pre`. Fixtures without fork-keyed entries run once.
+/// Entries the runner cannot check (only a state root) are skipped; the
+/// fixture is skipped only when every entry is.
 fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?*trace.Tracer, forced_hardfork: ?Hardfork) !void {
-    // Handle non-object test cases
-    if (test_case != .object) {
-        return;
+    if (test_case != .object) return;
+
+    const hardfork = forced_hardfork orelse extractHardfork(test_case);
+    const entries: []const std.json.Value = blk: {
+        const post = test_case.object.get("post") orelse break :blk &.{};
+        const hf = hardfork orelse break :blk &.{};
+        const fork_entries = postForkEntries(post, hf) orelse break :blk &.{};
+        if (fork_entries != .array) break :blk &.{};
+        break :blk fork_entries.array.items;
+    };
+    if (entries.len == 0) return runVariant(allocator, test_case, tracer, forced_hardfork, .{});
+
+    var skipped: usize = 0;
+    for (entries, 0..) |entry, i| {
+        const variant = try Variant.fromPostEntry(entry);
+        runVariant(allocator, test_case, tracer, forced_hardfork, variant) catch |err| {
+            if (err == error.SkipZigTest) {
+                skipped += 1;
+                continue;
+            }
+            std.debug.print("post entry {d} (data {d}, gas {d}, value {d}) failed: {s}\n", .{ i, variant.data, variant.gas, variant.value, @errorName(err) });
+            return err;
+        };
     }
+    if (skipped == entries.len) return error.SkipZigTest;
+}
+
+/// Runs one fixture case and checks it against `variant.post_entry`.
+fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?*trace.Tracer, forced_hardfork: ?Hardfork, variant: Variant) !void {
+    if (test_case != .object) return;
 
     // // std.debug.print("DEBUG: Starting test\n", .{});
 
@@ -1341,6 +1675,12 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                             client_blockchain.ValidationError.InvalidBlockNumber,
                             client_blockchain.ValidationError.MissingParentHeader,
                             client_blockchain.ValidationError.BaseFeeMath,
+                            client_blockchain.ValidationError.MissingBlobGasUsed,
+                            client_blockchain.ValidationError.MissingExcessBlobGas,
+                            client_blockchain.ValidationError.InvalidExcessBlobGas,
+                            client_blockchain.ValidationError.InvalidBlobGasUsed,
+                            client_blockchain.ValidationError.MissingParentBeaconBlockRoot,
+                            client_blockchain.ValidationError.UnexpectedBlobFieldsPreCancun,
                             => {
                                 if (has_expect_exception) break;
                                 return err;
@@ -1348,7 +1688,13 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                             else => return err,
                         };
                     }
-                    if (has_expect_exception) break;
+                    if (has_expect_exception) {
+                        // The header is valid, so the block is invalid for a
+                        // body-level reason this runner cannot check. Skip
+                        // rather than report a pass.
+                        std.debug.print("block expects an exception its header does not show; skipping\n", .{});
+                        return error.SkipZigTest;
+                    }
                     if (block.object.get("transactions")) |txs| {
                         if (txs == .array) {
                             try transactions_list.appendSlice(allocator, txs.array.items);
@@ -1521,22 +1867,35 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         }
     }
 
-    // Transactions the runner rejected as invalid (not included). A fixture
-    // expecting an exception must see at least one rejection.
-    var rejected_tx_count: usize = 0;
+    // The first transaction the runner refused to include, and why.
+    var rejection: ?TxRejection = null;
+    // Logs of included transactions, for the post entry's `logs` hash.
+    var tx_logs: std.ArrayList(evm_mod.Log) = .{};
+    defer tx_logs.deinit(allocator);
+    // Base fee the transactions see: block header first, then env.
+    const tx_base_fee: u256 = block_header_base_fee orelse if (block_ctx) |ctx| ctx.block_base_fee else 0;
+    // A negative case must leave state exactly as `pre` set it.
+    var pre_snapshot: ?HostSnapshot = if (variant.expectedException() != null)
+        try HostSnapshot.capture(allocator, &test_host)
+    else
+        null;
+    defer if (pre_snapshot) |*snapshot| snapshot.deinit();
 
     if (transactions_list.items.len > 0) {
         tx_loop: for (transactions_list.items) |tx| {
             // Handle RLP-encoded transactions (Engine API format)
             if (tx == .string) {
-                // Process RLP-encoded transaction
-                try processRlpTransaction(allocator, &evm_instance, &test_host, tx.string, block_ctx);
+                // Transactions of accepted blocks must all be valid.
+                if (try processRlpTransaction(allocator, &evm_instance, &test_host, tx.string, block_ctx)) |reason| {
+                    std.debug.print("raw block transaction rejected: {s}\n", .{@tagName(reason)});
+                    return error.InvalidBlockTransaction;
+                }
                 continue;
             }
 
             // Parse transaction data
             const tx_data = if (tx.object.get("data")) |data| blk: {
-                const data_str = if (data == .array) data.array.items[0].string else data.string;
+                const data_str = (try selectAlternative(data, variant.data)).string;
                 const hex = try parseHexData(allocator, data_str);
                 defer allocator.free(hex);
                 if (hex.len > 2) {
@@ -1550,7 +1909,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
 
             // Parse value early for sender selection
             const value = if (tx.object.get("value")) |v| blk: {
-                const val_str = if (v == .array) v.array.items[0].string else v.string;
+                const val_str = (try selectAlternative(v, variant.value)).string;
                 break :blk if (val_str.len == 0) 0 else try std.fmt.parseInt(u256, val_str, 0);
             } else 0;
 
@@ -1611,13 +1970,10 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             }
 
             // Parse gas limit early for affordability checks
-            const gas_limit = if (tx.object.get("gasLimit")) |g| blk: {
-                if (g == .array) {
-                    break :blk try parseIntFromJson(g.array.items[0]);
-                } else {
-                    break :blk try parseIntFromJson(g);
-                }
-            } else 1000000;
+            const gas_limit = if (tx.object.get("gasLimit")) |g|
+                try parseIntFromJson(try selectAlternative(g, variant.gas))
+            else
+                1000000;
 
             // Determine sender
             var sender: Address = primitives.ZERO_ADDRESS;
@@ -1680,6 +2036,19 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 break :blk try parseAddress(to_str);
             } else null;
 
+            // EIP-7702: a set-code transaction needs Prague, a destination and
+            // at least one authorization.
+            if (tx.object.get("authorizationList")) |auth_list_json| {
+                const empty = auth_list_json != .array or auth_list_json.array.items.len == 0;
+                if (evm_instance.hardfork.isBefore(.PRAGUE) or to == null or empty) {
+                    if (variant.expects(.set_code_invalid)) {
+                        rejection = rejection orelse .set_code_invalid;
+                        continue;
+                    }
+                    return error.InvalidSetCodeTransaction;
+                }
+            }
+
             // Parse maxFeePerBlobGas for EIP-4844 transactions
             var max_fee_per_blob_gas: u256 = 0;
             if (tx.object.get("maxFeePerBlobGas")) |max_blob_fee| {
@@ -1693,23 +2062,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 // Check if this is a contract creation (to is null or empty)
                 if (to == null) {
                     // Transaction should be rejected - check if test expects this
-                    if (test_case.object.get("post")) |post| {
-                        const fork_data = postForkEntries(post, hardfork orelse .CANCUN);
-
-                        if (fork_data) |fd| {
-                            if (fd == .array and fd.array.items.len > 0) {
-                                const first_item = fd.array.items[0];
-                                if (first_item.object.get("expectException")) |exception| {
-                                    const exception_str = exception.string;
-                                    // If test expects TYPE_3_TX_CONTRACT_CREATION, skip execution
-                                    if (std.mem.indexOf(u8, exception_str, "TYPE_3_TX_CONTRACT_CREATION") != null) {
-                                        // Transaction is invalid as expected, don't execute
-                                        rejected_tx_count += 1;
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
+                    if (variant.expects(.blob_contract_creation)) {
+                        rejection = rejection orelse .blob_contract_creation;
+                        continue;
                     }
                     // If we get here, the test doesn't expect this exception, so fail
                     return error.BlobTransactionContractCreation;
@@ -1734,23 +2089,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 // Check if blob count exceeds maximum
                 if (blob_count > max_blobs) {
                     // Transaction should be rejected - check if test expects this
-                    if (test_case.object.get("post")) |post| {
-                        const fork_data = postForkEntries(post, hardfork orelse .CANCUN);
-
-                        if (fork_data) |fd| {
-                            if (fd == .array and fd.array.items.len > 0) {
-                                const first_item = fd.array.items[0];
-                                if (first_item.object.get("expectException")) |exception| {
-                                    const exception_str = exception.string;
-                                    // If test expects TYPE_3_TX_BLOB_COUNT_EXCEEDED, skip execution
-                                    if (std.mem.indexOf(u8, exception_str, "TYPE_3_TX_BLOB_COUNT_EXCEEDED") != null) {
-                                        // Transaction is invalid as expected, don't execute
-                                        rejected_tx_count += 1;
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
+                    if (variant.expects(.blob_count)) {
+                        rejection = rejection orelse .blob_count;
+                        continue;
                     }
                     // If we get here, the test doesn't expect this exception, so fail
                     return error.BlobCountExceeded;
@@ -1758,6 +2099,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
 
                 // Parse blob hashes from JSON
                 const blob_hashes_array = try allocator.alloc([32]u8, blob_count);
+                errdefer allocator.free(blob_hashes_array);
                 for (blob_hashes_json.array.items, 0..) |hash_json, i| {
                     const hash_str = hash_json.string;
                     const hash_bytes = try primitives.Hex.hexToBytes(allocator, hash_str);
@@ -1772,28 +2114,12 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 for (blob_hashes_array) |hash| {
                     if (hash[0] != 0x01) {
                         // Transaction should be rejected - check if test expects this
-                        if (test_case.object.get("post")) |post| {
-                            const fork_data = postForkEntries(post, hardfork orelse .CANCUN);
-
-                            if (fork_data) |fd| {
-                                if (fd == .array and fd.array.items.len > 0) {
-                                    const first_item = fd.array.items[0];
-                                    if (first_item.object.get("expectException")) |exception| {
-                                        const exception_str = exception.string;
-                                        // If test expects TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH, skip execution
-                                        if (std.mem.indexOf(u8, exception_str, "TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH") != null) {
-                                            // Transaction is invalid as expected: skip the whole
-                                            // transaction, not just this hash.
-                                            allocator.free(blob_hashes_array);
-                                            rejected_tx_count += 1;
-                                            continue :tx_loop;
-                                        }
-                                    }
-                                }
-                            }
+                        if (variant.expects(.blob_versioned_hash)) {
+                            allocator.free(blob_hashes_array);
+                            rejection = rejection orelse .blob_versioned_hash;
+                            continue :tx_loop;
                         }
                         // If we get here, the test doesn't expect this exception, so fail
-                        allocator.free(blob_hashes_array);
                         return error.InvalidBlobHashVersion;
                     }
                 }
@@ -1804,10 +2130,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
 
             // Calculate intrinsic gas cost
             // Contract creation transactions cost 53000 base gas, regular transactions cost 21000
-            var intrinsic_gas: u64 = if (to == null)
-                primitives.GasConstants.TxGasContractCreation // 53000 for contract creation
-            else
-                primitives.GasConstants.TxGas; // 21000 for regular transactions
+            var intrinsic_gas: u64 = createAwareBaseGas(evm_instance.hardfork, to == null);
 
             // Add calldata cost (4 gas per zero byte, 16/68 gas per non-zero byte)
             // Also track counts for EIP-7623 floor calculation (Prague+)
@@ -1875,9 +2198,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     }
                 }
             } else if (tx.object.get("accessLists")) |access_lists_json| {
-                // accessLists is an array of access lists (one per data/gas/value combo)
+                // accessLists holds one access list per data alternative.
                 if (access_lists_json == .array and access_lists_json.array.items.len > 0) {
-                    const access_list_json = access_lists_json.array.items[0];
+                    const access_list_json = try selectAlternative(access_lists_json, variant.data);
                     if (access_list_json == .array) {
                         for (access_list_json.array.items) |entry| {
                             // Each entry costs ACCESS_LIST_ADDRESS_COST (2400 gas)
@@ -1905,23 +2228,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                         if (tx_data.len > primitives.GasConstants.MaxInitcodeSize) {
                             // Transaction is invalid - initcode too large
                             // Check if test expects this exception
-                            if (test_case.object.get("post")) |post| {
-                                const fork_data = if (hardfork) |fork| postForkEntries(post, fork) else null;
-
-                                if (fork_data) |fd| {
-                                    if (fd == .array and fd.array.items.len > 0) {
-                                        const first_item = fd.array.items[0];
-                                        if (first_item.object.get("expectException")) |exception| {
-                                            const exception_str = exception.string;
-                                            // If test expects INITCODE_SIZE_EXCEEDED exception, skip execution
-                                            if (std.mem.indexOf(u8, exception_str, "INITCODE_SIZE_EXCEEDED") != null) {
-                                                // Transaction is invalid as expected, don't execute
-                                                rejected_tx_count += 1;
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
+                            if (variant.expects(.initcode_size)) {
+                                rejection = rejection orelse .initcode_size;
+                                continue;
                             }
                             // If we get here, the test doesn't expect this exception, so fail
                             return error.InitcodeSizeExceeded;
@@ -1938,25 +2247,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // EIP-7623 calldata floor (EELS: max(intrinsic, floor) > tx.gas).
             if (txGasLimitTooLow(gas_limit, intrinsic_gas, calldata_floor_gas_cost)) {
                 // Transaction is invalid - check if test expects this
-                if (test_case.object.get("post")) |post| {
-                    const fork_data = if (hardfork) |hf| postForkEntries(post, hf) else null;
-
-                    if (fork_data) |fd| {
-                        if (fd == .array and fd.array.items.len > 0) {
-                            const first_item = fd.array.items[0];
-                            if (first_item.object.get("expectException")) |exception| {
-                                const exception_str = exception.string;
-                                // If test expects INTRINSIC_GAS exception, skip execution
-                                if (std.mem.indexOf(u8, exception_str, "INTRINSIC_GAS_TOO_LOW") != null or
-                                    std.mem.indexOf(u8, exception_str, "INTRINSIC_GAS_BELOW_FLOOR_GAS_COST") != null)
-                                {
-                                    // Transaction is invalid as expected, don't execute
-                                    rejected_tx_count += 1;
-                                    continue;
-                                }
-                            }
-                        }
-                    }
+                if (variant.expects(.intrinsic_gas)) {
+                    rejection = rejection orelse .intrinsic_gas;
+                    continue;
                 }
                 // If we get here, the test doesn't expect this exception, so fail
                 return error.IntrinsicGasTooLow;
@@ -1965,8 +2258,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // EIP-7825 (Osaka+): reject transactions above the per-tx gas cap.
             if (hardfork) |hf| {
                 if (exceedsTxGasLimitCap(hf, gas_limit)) {
-                    if (postExpectsException(test_case, hf, "GAS_LIMIT_EXCEEDS_MAXIMUM")) {
-                        rejected_tx_count += 1;
+                    if (variant.expects(.gas_limit_cap)) {
+                        rejection = rejection orelse .gas_limit_cap;
                         continue;
                     }
                     return error.TransactionGasLimitExceedsMaximum;
@@ -1998,6 +2291,34 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 blob_gas_fee_for_validation = total_blob_gas * max_fee_per_blob_gas;
             }
 
+            // EELS `check_transaction`: fee caps against the base fee (London+),
+            // then the sender nonce, then the balance.
+            if (evm_instance.hardfork.isAtLeast(.LONDON)) {
+                if (tx.object.get("maxFeePerGas") != null) {
+                    const max_priority_fee: u256 = if (tx.object.get("maxPriorityFeePerGas")) |mpf| try parseU256FromJson(mpf) else 0;
+                    if (max_priority_fee > max_fee_per_gas_for_validation) {
+                        rejection = rejection orelse .priority_fee_above_max_fee;
+                        continue;
+                    }
+                }
+                if (max_fee_per_gas_for_validation < tx_base_fee) {
+                    rejection = rejection orelse .insufficient_max_fee;
+                    continue;
+                }
+            }
+            if (tx.object.get("nonce")) |nonce_json| {
+                const tx_nonce = try parseU256FromJson(nonce_json);
+                // EIP-2681: nonces stop at 2^64 - 1.
+                if (tx_nonce >= std.math.maxInt(u64)) {
+                    rejection = rejection orelse .nonce_is_max;
+                    continue;
+                }
+                if (tx_nonce != test_host.getNonce(sender)) {
+                    rejection = rejection orelse .nonce_mismatch;
+                    continue;
+                }
+            }
+
             // Per Ethereum spec: sender must have sufficient funds for upfront gas + blob fee + value
             // Use max_fee_per_gas and max_fee_per_blob_gas for upfront check (worst case)
             const upfront_gas_cost_for_validation = @as(u256, gas_limit) * max_fee_per_gas_for_validation;
@@ -2005,7 +2326,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             const total_required = upfront_gas_cost_for_validation + blob_gas_fee_for_validation + value;
             if (sender_balance < total_required) {
                 // INSUFFICIENT_ACCOUNT_FUNDS: the transaction is not included.
-                rejected_tx_count += 1;
+                rejection = rejection orelse .insufficient_funds;
                 continue;
             }
 
@@ -2024,9 +2345,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             // call that fails (for example out of gas at exactly intrinsic gas)
             // also reverts the transfer. The runner never pre-transfers value.
             const target_addr = to orelse primitives.ZERO_ADDRESS;
-
-            // Get contract code
-            const bytecode = test_host.code.get(target_addr) orelse &[_]u8{};
 
             // Parse access list for EIP-2930 (Berlin+)
             var access_list_entries_storage: ?[]primitives.AccessList.AccessListEntry = null;
@@ -2050,11 +2368,11 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     }
                     break :blk null;
                 } else blk2: {
-                    // Handle accessLists (plural) - array of arrays, take first
+                    // Handle accessLists (plural): one list per data alternative
                     if (access_list_data == .array and access_list_data.array.items.len > 0) {
-                        const first_item = access_list_data.array.items[0];
-                        if (first_item == .array) {
-                            break :blk2 first_item.array;
+                        const selected = try selectAlternative(access_list_data, variant.data);
+                        if (selected == .array) {
+                            break :blk2 selected.array;
                         }
                     }
                     break :blk null;
@@ -2125,8 +2443,9 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                         const auth_addr = try parseAddress(auth_json.object.get("address").?.string);
                         const auth_nonce = try parseU256FromJson(auth_json.object.get("nonce").?);
 
-                        // Recover the authority from the signature. Fixtures
-                        // without a signature fall back to the "signer" annotation.
+                        // Recover the authority from the signature. A tuple
+                        // without a complete signature is skipped; the
+                        // fixture's "signer" annotation is never trusted.
                         const y_parity_json = auth_json.object.get("yParity") orelse auth_json.object.get("v");
                         const authority: ?Address = if (y_parity_json != null and
                             auth_json.object.get("r") != null and auth_json.object.get("s") != null)
@@ -2138,8 +2457,6 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                 try parseU256FromJson(auth_json.object.get("r").?),
                                 try parseU256FromJson(auth_json.object.get("s").?),
                             )
-                        else if (auth_json.object.get("signer")) |signer_json|
-                            try parseAddress(signer_json.string)
                         else
                             null;
 
@@ -2182,30 +2499,21 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             var result_gas_left: u64 = undefined;
 
             if (to == null) {
-                // Contract creation transaction - use inner_create
-                // First, initialize transaction state (hash maps, etc.)
-                try evm_instance.initTransactionState(blob_hashes_storage);
-
-                // Pre-warm the origin/sender for contract creation
-                try evm_instance.preWarmTransaction(sender);
-
-                // Pre-warm access list (EIP-2930)
-                if (access_list_param) |list| {
-                    try evm_instance.access_list_manager.preWarmFromAccessList(list);
-                }
-
-                const create_result = try evm_instance.inner_create(
-                    value,
-                    tx_data, // initcode
-                    execution_gas,
-                    null, // no salt for regular CREATE (only CREATE2 uses salt)
-                );
+                // The public root CREATE path runs the transaction epilogue
+                // (EIP-6780 self-destruct and EIP-161 touched-account cleanup).
+                evm_instance.setAccessList(access_list_param);
+                const create_result = evm_instance.call(.{ .create = .{
+                    .caller = sender,
+                    .value = value,
+                    .init_code = tx_data,
+                    .gas = execution_gas,
+                } });
                 result_success = create_result.success;
                 result_gas_left = create_result.gas_left;
+                try tx_logs.appendSlice(allocator, create_result.logs);
             } else {
-                // Regular call - use call method
-                // Set bytecode, access list, and blob hashes before calling
-                evm_instance.setBytecode(bytecode);
+                // Code is resolved from the host after authorizations apply,
+                // so no fallback bytecode is passed.
                 evm_instance.setAccessList(access_list_param);
                 if (blob_hashes_storage) |hashes| {
                     evm_instance.setBlobVersionedHashes(hashes);
@@ -2219,6 +2527,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 } });
                 result_success = call_result.success;
                 result_gas_left = call_result.gas_left;
+                try tx_logs.appendSlice(allocator, call_result.logs);
             }
 
             const result = .{ .success = result_success, .gas_left = result_gas_left };
@@ -2306,42 +2615,27 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         // Format 1: post -> Cancun/Prague/etc (array) -> [0] -> state -> addresses
         // Format 2: post -> addresses (for state tests)
         // Format 3: postState -> addresses (for blockchain tests)
+        var full_state = false;
         const post_state = blk: {
-            if (post == .object) {
-                // Check if this is the nested format (has hardfork keys)
-                // Use the same hardfork that was detected earlier
-                var fork_data: ?std.json.Value = null;
-                if (hardfork) |hf| {
-                    // Try canonical name first
-                    fork_data = post.object.get(hardforkToString(hf));
-
-                    // If not found, try known aliases
-                    if (fork_data == null) {
-                        if (hf == .PETERSBURG) {
-                            fork_data = post.object.get("ConstantinopleFix");
-                        } else if (hf == .MERGE) {
-                            fork_data = post.object.get("Paris");
-                        }
-                    }
+            if (variant.post_entry) |entry| {
+                if (entry != .object) return error.InvalidPostEntry;
+                const expected_exception = variant.expectedException();
+                try checkExpectedException(expected_exception, rejection);
+                if (expected_exception != null) {
+                    if (pre_snapshot) |*snapshot| try snapshot.expectUnchanged(&test_host);
                 }
-
-                if (fork_data) |fd| {
-                    if (fd == .array and fd.array.items.len > 0) {
-                        const first_item = fd.array.items[0];
-                        // A fixture expecting an exception passes only if the
-                        // runner rejected the transaction.
-                        if (first_item.object.get("expectException")) |_| {
-                            try checkExpectedException(true, rejected_tx_count);
-                            return;
-                        }
-                        if (first_item.object.get("state")) |state| {
-                            break :blk state;
-                        }
-                    }
+                if (entry.object.get("logs")) |logs_json| {
+                    try expectLogsHash(allocator, logs_json, tx_logs.items);
                 }
-                // Direct format
-                break :blk post;
+                if (entry.object.get("state")) |state| {
+                    full_state = true;
+                    break :blk state;
+                }
+                if (expected_exception != null) return;
+                // Only a state root is given, which this runner cannot compute.
+                return error.SkipZigTest;
             }
+            // Direct format (postState or address-keyed post)
             break :blk post;
         };
 
@@ -2366,6 +2660,11 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                         try testing.expectEqual(@as(usize, 0), code.len);
                         continue;
                     }
+                }
+
+                // Check code
+                if (expected.object.get("code")) |expected_code| {
+                    try expectCode(allocator, &test_host, address, expected_code);
                 }
 
                 // Check balance
@@ -2416,6 +2715,8 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     }
                 }
             }
+            // A post entry's state is complete: no other account may exist.
+            if (full_state) try expectNoUnlistedAccounts(&test_host, post_state);
         }
     } else if (test_case.object.get("expect")) |expect_list| {
         // Debug: print all storage for debugging
@@ -2693,8 +2994,11 @@ test "Osaka post sections resolve to the Osaka fork" {
     defer parsed.deinit();
 
     try testing.expectEqual(@as(?Hardfork, .OSAKA), extractHardfork(parsed.value));
-    try testing.expect(postExpectsException(parsed.value, .OSAKA, "GAS_LIMIT_EXCEEDS_MAXIMUM"));
-    try testing.expect(!postExpectsException(parsed.value, .PRAGUE, "GAS_LIMIT_EXCEEDS_MAXIMUM"));
+    const entries = postForkEntries(parsed.value.object.get("post").?, .OSAKA).?;
+    const variant = try Variant.fromPostEntry(entries.array.items[0]);
+    try testing.expect(variant.expects(.gas_limit_cap));
+    try testing.expect(!variant.expects(.intrinsic_gas));
+    try testing.expect(postForkEntries(parsed.value.object.get("post").?, .PRAGUE) == null);
 }
 
 test "postForkEntries resolves fixture fork aliases" {
@@ -2777,10 +3081,15 @@ test "settleTxGas refunds unused gas on Frontier and Homestead" {
     }
 }
 
-test "checkExpectedException fails when no transaction was rejected" {
-    try testing.expectError(error.ExpectedExceptionNotRaised, checkExpectedException(true, 0));
-    try checkExpectedException(true, 1);
-    try checkExpectedException(false, 0);
+test "checkExpectedException matches the rejection to the named exception" {
+    const intrinsic = "TransactionException.INTRINSIC_GAS_TOO_LOW";
+    try testing.expectError(error.ExpectedExceptionNotRaised, checkExpectedException(intrinsic, null));
+    try checkExpectedException(intrinsic, .intrinsic_gas);
+    try testing.expectError(error.WrongExceptionRaised, checkExpectedException("TransactionException.NONCE_MISMATCH_TOO_LOW", .insufficient_funds));
+    try checkExpectedException("TransactionException.INSUFFICIENT_ACCOUNT_FUNDS|TransactionException.NONCE_MISMATCH_TOO_HIGH", .nonce_mismatch);
+    try checkExpectedException("TR_NoFunds", .insufficient_funds);
+    try checkExpectedException(null, null);
+    try testing.expectError(error.UnexpectedTransactionRejection, checkExpectedException(null, .insufficient_funds));
 }
 
 fn testAddress(byte: u8) Address {
@@ -2952,7 +3261,8 @@ test "zero execution gas: a failing call keeps the value with the sender" {
         \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x01"]},
         \\"post": {"Cancun": [{"state": {
         \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a760cbb0", "nonce": "0x01"},
-        \\  "0x1000000000000000000000000000000000000000": {"balance": "0x00"}}}]}}
+        \\  "0x1000000000000000000000000000000000000000": {"balance": "0x00", "nonce": "0x01", "code": "0x5b00"},
+        \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {"balance": "0x033450"}}}]}}
     ;
     try runFixtureForTest(json);
 }
@@ -2964,7 +3274,8 @@ test "zero execution gas: a transfer to an empty account moves the value" {
         \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x01"]},
         \\"post": {"Cancun": [{"state": {
         \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a760cbaf", "nonce": "0x01"},
-        \\  "0x1000000000000000000000000000000000000000": {"balance": "0x01"}}}]}}
+        \\  "0x1000000000000000000000000000000000000000": {"balance": "0x01"},
+        \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {"balance": "0x033450"}}}]}}
     ;
     try runFixtureForTest(json);
 }
@@ -2980,4 +3291,276 @@ test "Frontier settlement refunds unused gas and pays the miner for gas used" {
         \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {"balance": "0x033450"}}}
     ;
     try runFixtureForTest(json);
+}
+
+const fixture_pre_sender =
+    \\"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}}}
+;
+
+/// A Cancun transfer fixture. `tx_extra` adds transaction fields; the nonce
+/// defaults to 0.
+fn transferFixture(comptime tx_extra: []const u8, comptime post: []const u8) []const u8 {
+    const nonce = comptime if (std.mem.indexOf(u8, tx_extra, "\"nonce\"") == null) ", \"nonce\": \"0x00\"" else "";
+    return "{" ++ fixture_env ++ "," ++ fixture_pre_sender ++
+        \\,"transaction": {"data": ["0x"], "gasPrice": "0x0a",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"],
+    ++ tx_extra ++ nonce ++ "}, \"post\": {\"Cancun\": [" ++ post ++ "]}}";
+}
+
+const transfer_ok_state =
+    \\"state": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a760cbb0", "nonce": "0x01"},
+    \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {"balance": "0x033450"}}
+;
+
+test "every post entry runs with its own gas index" {
+    // Entry 1 selects gas 0x5208, which is valid, but claims INTRINSIC_GAS_TOO_LOW.
+    try testing.expectError(error.ExpectedExceptionNotRaised, runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x5208", "0x5208"]
+    ,
+        \\{"indexes": {"data": 0, "gas": 0, "value": 0},
+    ++ transfer_ok_state ++
+        \\}, {"indexes": {"data": 0, "gas": 1, "value": 0}, "expectException": "TransactionException.INTRINSIC_GAS_TOO_LOW"}
+    )));
+    // With gas 1 really too low, both entries pass.
+    try runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x5208", "0x5207"]
+    ,
+        \\{"indexes": {"data": 0, "gas": 0, "value": 0},
+    ++ transfer_ok_state ++
+        \\}, {"indexes": {"data": 0, "gas": 1, "value": 0}, "expectException": "TransactionException.INTRINSIC_GAS_TOO_LOW"}
+    ));
+    // An index outside the alternatives is a malformed fixture, not variant 0.
+    try testing.expectError(error.InvalidVariantIndex, runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x5208"]
+    ,
+        \\{"indexes": {"data": 0, "gas": 3, "value": 0},
+    ++ transfer_ok_state ++ "}")));
+}
+
+test "post state fails on unlisted accounts, wrong code and wrong logs" {
+    // Coinbase is paid but missing from the full state.
+    try testing.expectError(error.UnexpectedAccountInPostState, runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x5208"]
+    ,
+        \\{"state": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a760cbb0", "nonce": "0x01"}}}
+    )));
+    // The sender has no code.
+    try testing.expectError(error.CodeMismatch, runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x5208"]
+    ,
+        \\{"state": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a760cbb0", "nonce": "0x01", "code": "0x6001600155"},
+        \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {"balance": "0x033450"}}}
+    )));
+    // A plain transfer emits no logs: keccak256(rlp([])) passes, anything else fails.
+    try runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x5208"]
+    ,
+        \\{"logs": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+    ++ transfer_ok_state ++ "}"));
+    try testing.expectError(error.LogsHashMismatch, runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x5208"]
+    ,
+        \\{"logs": "0x0000000000000000000000000000000000000000000000000000000000000001",
+    ++ transfer_ok_state ++ "}")));
+    // Only a state root: the runner cannot check it, so the case is skipped.
+    try testing.expectError(error.SkipZigTest, runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x5208"]
+    ,
+        \\{"hash": "0x00"}
+    )));
+}
+
+test "logsHash of no logs is keccak256(rlp([]))" {
+    const hash = try logsHash(testing.allocator, &.{});
+    var expected: [32]u8 = undefined;
+    std.mem.writeInt(u256, &expected, 0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347, .big);
+    try testing.expectEqualSlices(u8, &expected, &hash);
+}
+
+test "an expected exception must name the actual rejection" {
+    // Nonce 1 against sender nonce 0 is a nonce mismatch.
+    try runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x5208"], "nonce": "0x01"
+    ,
+        \\{"expectException": "TransactionException.NONCE_MISMATCH_TOO_HIGH"}
+    ));
+    try testing.expectError(error.UnexpectedTransactionRejection, runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x5208"], "nonce": "0x01"
+    , "{" ++ transfer_ok_state ++ "}")));
+    // Insufficient funds is not a nonce error.
+    try testing.expectError(error.WrongExceptionRaised, runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x02c68af0bb140000"]
+    ,
+        \\{"expectException": "TransactionException.NONCE_MISMATCH_TOO_LOW"}
+    )));
+}
+
+test "a top-level CREATE runs the transaction epilogue" {
+    // Init code CALLER SELFDESTRUCT: created and destroyed in one Cancun
+    // transaction, so the account is deleted. Gas: 53034 intrinsic + 5002.
+    const json = "{" ++ fixture_env ++ "," ++ fixture_pre_sender ++
+        \\,"transaction": {"data": ["0x33ff"], "gasLimit": ["0x0186a0"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "", "value": ["0x00"]},
+        \\"post": {"Cancun": [{"state": {
+        \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a75b24f8", "nonce": "0x01"},
+        \\  "0x6295ee1b4f6dd65047762f924ecd367c17eabf8f": {"shouldnotexist": "1"},
+        \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {"balance": "0x08db08"}}}]}}
+    ;
+    try runFixtureForTest(json);
+}
+
+const set_code_sender = "0xd02d72e067e77158444ef2020ff2d325f929b363";
+
+test "clearing a delegation leaves no stale code to execute" {
+    // a94f delegates to 0xcc...; a tuple signed by a94f clears it, then the
+    // transaction sends a94f 1 wei. Stale designator bytes (0xef) would halt
+    // and revert the transfer.
+    const allocator = testing.allocator;
+    var key: [32]u8 = undefined;
+    std.mem.writeInt(u256, &key, 0x45a915e4d060149eb4365960e6a7a45f334393093061116b197e3240065ff2d8, .big);
+    const signed = try primitives.Authorization.createAuthorization(allocator, 1, primitives.ZERO_ADDRESS, 0, key);
+    const y_parity: u256 = if (signed.v >= 27) (signed.v - 27) % 2 else signed.v;
+    const json = try std.fmt.allocPrint(allocator,
+        \\{{"env": {{"currentCoinbase": "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba", "currentGasLimit": "0x05f5e100",
+        \\  "currentNumber": "0x01", "currentTimestamp": "0x03e8", "currentDifficulty": "0x00", "currentBaseFee": "0x00"}},
+        \\"pre": {{"{s}": {{"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {{}}}},
+        \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {{"balance": "0x00", "nonce": "0x00", "code": "0xef0100cccccccccccccccccccccccccccccccccccccccc", "storage": {{}}}},
+        \\  "0xcccccccccccccccccccccccccccccccccccccccc": {{"balance": "0x00", "nonce": "0x01", "code": "0x6001600155", "storage": {{}}}}}},
+        \\"transaction": {{"data": ["0x"], "gasLimit": ["0x0186a0"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "{s}", "to": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "value": ["0x01"],
+        \\  "authorizationList": [{{"chainId": "0x01", "address": "0x0000000000000000000000000000000000000000", "nonce": "0x00",
+        \\    "yParity": "0x{x}", "r": "0x{x}", "s": "0x{x}"}}]}},
+        \\"post": {{"Prague": [{{"state": {{
+        \\  "{s}": {{"balance": "0x0de0b6b3a75e627f", "nonce": "0x01"}},
+        \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {{"balance": "0x01", "nonce": "0x01", "code": "0x", "storage": {{}}}},
+        \\  "0xcccccccccccccccccccccccccccccccccccccccc": {{"balance": "0x00", "nonce": "0x01", "code": "0x6001600155", "storage": {{}}}},
+        \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {{"balance": "0x059d80"}}}}}}]}}}}
+    , .{
+        set_code_sender,
+        set_code_sender,
+        y_parity,
+        std.mem.readInt(u256, &signed.r, .big),
+        std.mem.readInt(u256, &signed.s, .big),
+        set_code_sender,
+    });
+    defer allocator.free(json);
+    try runFixtureForTest(json);
+}
+
+test "an unsigned authorization with a signer annotation changes nothing" {
+    const json = "{" ++ fixture_env ++
+        \\,"pre": {"0xd02d72e067e77158444ef2020ff2d325f929b363": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}}},
+        \\"transaction": {"data": ["0x"], "gasLimit": ["0x0186a0"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xd02d72e067e77158444ef2020ff2d325f929b363", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"],
+        \\  "authorizationList": [{"chainId": "0x01", "address": "0xcccccccccccccccccccccccccccccccccccccccc", "nonce": "0x00",
+        \\    "signer": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b"}]},
+        \\"post": {"Prague": [{"state": {
+        \\  "0xd02d72e067e77158444ef2020ff2d325f929b363": {"balance": "0x0de0b6b3a75cfb20", "nonce": "0x01"},
+        \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x00", "nonce": "0x00", "code": "0x"},
+        \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {"balance": "0x0704e0"}}}]}}
+    ;
+    try runFixtureForTest(json);
+}
+
+test "set-code transactions need Prague and a destination" {
+    const json = "{" ++ fixture_env ++ "," ++ fixture_pre_sender ++
+        \\,"transaction": {"data": ["0x"], "gasLimit": ["0x0186a0"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"],
+        \\  "authorizationList": []},
+        \\"post": {"Prague": [{"expectException": "TransactionException.TYPE_4_EMPTY_AUTHORIZATION_LIST"}]}}
+    ;
+    try runFixtureForTest(json);
+}
+
+/// Signs an EIP-155 (chain 1) legacy transaction from `key` and returns it as hex.
+fn signedLegacyTxHex(allocator: std.mem.Allocator, key: [32]u8, gas_limit: u64, to: ?Address, value: u256) ![]u8 {
+    var unsigned: std.ArrayList(u8) = .{};
+    defer unsigned.deinit(allocator);
+    try rlpAppendUint(&unsigned, allocator, 0); // nonce
+    try rlpAppendUint(&unsigned, allocator, 10); // gas price
+    try rlpAppendUint(&unsigned, allocator, gas_limit);
+    try rlpAppendString(&unsigned, allocator, if (to) |addr| &addr.bytes else &.{});
+    try rlpAppendUint(&unsigned, allocator, value);
+    try rlpAppendString(&unsigned, allocator, &.{});
+
+    var signing: std.ArrayList(u8) = .{};
+    defer signing.deinit(allocator);
+    try signing.appendSlice(allocator, unsigned.items);
+    try rlpAppendUint(&signing, allocator, 1);
+    try rlpAppendUint(&signing, allocator, 0);
+    try rlpAppendUint(&signing, allocator, 0);
+    const hash = try hashRlpList(allocator, &.{}, &.{signing.items});
+    const signature = try primitives.crypto.Crypto.unaudited_signHash(hash, key);
+
+    var fields: std.ArrayList(u8) = .{};
+    defer fields.deinit(allocator);
+    try fields.appendSlice(allocator, unsigned.items);
+    try rlpAppendUint(&fields, allocator, 37 + @as(u256, signature.recoveryId()));
+    try rlpAppendUint(&fields, allocator, signature.r);
+    try rlpAppendUint(&fields, allocator, signature.s);
+    var tx: std.ArrayList(u8) = .{};
+    defer tx.deinit(allocator);
+    try rlpAppendHeader(&tx, allocator, 0xc0, fields.items.len);
+    try tx.appendSlice(allocator, fields.items);
+    return std.fmt.allocPrint(allocator, "0x{x}", .{tx.items});
+}
+
+test "raw transactions recover the signer, move value once and call the zero address" {
+    const allocator = testing.allocator;
+    var key: [32]u8 = undefined;
+    std.mem.writeInt(u256, &key, 0x45a915e4d060149eb4365960e6a7a45f334393093061116b197e3240065ff2d8, .big);
+    const signer = try Address.fromHex("0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+    // Same nonce and balance as the signer: guessing by nonce could pick it.
+    const decoy = testAddress(0x0d);
+    const coinbase = testAddress(0xc0);
+
+    var host = try TestHost.init(allocator);
+    defer host.deinit();
+    try host.setBalance(decoy, 1_000_000_000_000_000_000);
+    try host.setBalance(signer, 1_000_000_000_000_000_000);
+
+    const Evm = evm_mod.Evm(.{});
+    var evm_instance: Evm = undefined;
+    const block_ctx = evm_mod.BlockContext{
+        .chain_id = 1,
+        .block_number = 1,
+        .block_timestamp = 1000,
+        .block_difficulty = 0,
+        .block_prevrandao = 0,
+        .block_coinbase = coinbase,
+        .block_gas_limit = 30_000_000,
+        .block_base_fee = 0,
+        .blob_base_fee = 0,
+    };
+    try evm_instance.init(allocator, host.hostInterface(), .CANCUN, block_ctx, primitives.ZERO_ADDRESS, 0, null);
+    defer evm_instance.deinit();
+
+    const tx_hex = try signedLegacyTxHex(allocator, key, 21_000, primitives.ZERO_ADDRESS, 1);
+    defer allocator.free(tx_hex);
+    try testing.expectEqual(@as(?TxRejection, null), try processRlpTransaction(allocator, &evm_instance, &host, tx_hex, block_ctx));
+
+    try testing.expectEqual(@as(u256, 999_999_999_999_789_999), host.balances.get(signer).?);
+    try testing.expectEqual(@as(u64, 1), host.getNonce(signer));
+    try testing.expectEqual(@as(u256, 1_000_000_000_000_000_000), host.balances.get(decoy).?);
+    try testing.expectEqual(@as(u64, 0), host.getNonce(decoy));
+    try testing.expectEqual(@as(u256, 1), host.balances.get(primitives.ZERO_ADDRESS).?);
+    try testing.expectEqual(@as(u256, 210_000), host.balances.get(coinbase).?);
+
+    // Replaying nonce 0 is rejected without touching state.
+    try testing.expectEqual(@as(?TxRejection, .nonce_mismatch), try processRlpTransaction(allocator, &evm_instance, &host, tx_hex, block_ctx));
+    try testing.expectEqual(@as(u256, 999_999_999_999_789_999), host.balances.get(signer).?);
+}
+
+test "createAwareBaseGas charges the creation surcharge from Homestead" {
+    try testing.expectEqual(@as(u64, 21_000), createAwareBaseGas(.FRONTIER, true));
+    try testing.expectEqual(@as(u64, 53_000), createAwareBaseGas(.HOMESTEAD, true));
+    try testing.expectEqual(@as(u64, 21_000), createAwareBaseGas(.CANCUN, false));
+}
+
+test "rlpItem rejects truncated input" {
+    try testing.expectError(error.InvalidRlp, rlpItem(&.{ 0x82, 0x01 }));
+    try testing.expectError(error.InvalidRlp, rlpItem(&.{ 0xb8, 0x40 }));
+    const item = try rlpItem(&.{ 0xc2, 0x01, 0x02 });
+    try testing.expect(item.is_list);
+    try testing.expectEqual(@as(usize, 3), item.encoded_len);
 }

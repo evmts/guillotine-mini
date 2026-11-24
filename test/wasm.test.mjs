@@ -9,9 +9,14 @@ const module = await WebAssembly.compile(bytes)
 
 async function fixture(hardfork = 'prague') {
   const wasi = new WASI({ version: 'preview1' })
+  // Tests replace these to run host code inside execution.
+  const hooks = { opcode: () => 0, precompile: () => 0 }
   const instance = await WebAssembly.instantiate(module, {
     wasi_snapshot_preview1: wasi.wasiImport,
-    env: { js_opcode_callback: () => 0, js_precompile_callback: () => 0 },
+    env: {
+      js_opcode_callback: (...args) => hooks.opcode(...args),
+      js_precompile_callback: (...args) => hooks.precompile(...args),
+    },
   })
   wasi.initialize(instance)
   const api = instance.exports
@@ -52,7 +57,7 @@ async function fixture(hardfork = 'prague') {
     api.evm_destroy(handle)
     for (const [ptr, len] of allocations.reverse()) api.evm_free(ptr, len)
   }
-  return { api, alloc, handle, address, caller, zero, setCall, execute, close }
+  return { api, alloc, handle, address, caller, zero, hooks, setCall, execute, close }
 }
 
 // Leak check for linear memory. The allocator returns whole pages only when every slot
@@ -79,6 +84,21 @@ test('WASI reactor contains crypto implementations and exports its complete C AP
   assert.equal(exports.has('main'), false)
   assert.deepEqual(WebAssembly.Module.imports(module).filter(({ module }) => module !== 'wasi_snapshot_preview1')
     .map(({ module, name }) => `${module}.${name}`).sort(), ['env.js_opcode_callback', 'env.js_precompile_callback'])
+})
+
+// Must match wasm_lib.root_module.export_symbol_names in build.zig.
+const C_API = ['evm_alloc', 'evm_free', 'evm_create', 'evm_destroy', 'evm_set_bytecode', 'evm_set_execution_context',
+  'evm_set_blockchain_context', 'evm_execute', 'evm_get_gas_remaining', 'evm_get_gas_used', 'evm_is_success',
+  'evm_get_output_len', 'evm_get_output', 'evm_set_storage', 'evm_get_storage', 'evm_set_balance', 'evm_set_code',
+  'evm_set_access_list_addresses', 'evm_set_access_list_storage_keys', 'evm_set_blob_hashes', 'evm_call_ffi',
+  'evm_continue_ffi', 'evm_get_state_changes', 'evm_get_state_changes_len', 'evm_set_origin', 'evm_set_gas_price',
+  'evm_enable_storage_injector', 'evm_set_nonce', 'evm_get_log_count', 'evm_get_log', 'evm_get_gas_refund',
+  'evm_get_storage_change_count', 'evm_get_storage_change']
+
+test('WASI reactor exports exactly the 33 C API functions listed in build.zig', () => {
+  const exported = WebAssembly.Module.exports(module).filter(({ kind }) => kind === 'function').map(({ name }) => name)
+  assert.equal(C_API.length, 33)
+  assert.deepEqual(exported.filter((name) => name.startsWith('evm_')).sort(), [...C_API].sort())
 })
 
 test('executes arithmetic bytecode and returns output and gas', async () => {
@@ -726,5 +746,152 @@ test('access list storage keys warm their slot and transfer buffers are 16-byte 
     assert.equal(f.execute('60015400').gasUsed, 2103n)
 
     for (const size of [1, 7, 60, REQUEST.size]) assert.equal(f.alloc(size) % 16, 0, `evm_alloc(${size}) alignment`)
+  } finally { f.close() }
+})
+
+// MSTORE(0, n); RETURN(0, 32)
+const returnByte = (n) => `60${n.toString(16).padStart(2, '0')}60005260206000f3`
+
+test('interleaved evm_execute and evm_call_ffi keep evm_set_code and cancel the suspended call', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const h = asyncHelpers(f)
+    const installed = Buffer.from(returnByte(0x2a), 'hex')
+    assert.equal(api.evm_set_code(handle, f.address, f.alloc(installed), installed.length), 1)
+
+    // Installed code wins over evm_set_bytecode on both entry points, repeatedly.
+    for (let round = 0; round < 2; round++) {
+      f.setCall(returnByte(7), { gas: 100_000n })
+      assert.equal(api.evm_execute(handle), 1)
+      assert.equal(h.output()[31], 0x2a, 'evm_execute runs the installed code')
+      assert.equal(api.evm_call_ffi(handle, h.request), 1)
+      assert.equal(h.tag(), 0)
+      assert.equal(h.output()[31], 0x2a, 'evm_call_ffi runs the installed code')
+    }
+
+    // Suspend an async SLOAD at a code-less address, then run a sync call.
+    assert.equal(api.evm_enable_storage_injector(handle), 1)
+    const other = f.alloc(new Uint8Array(20).fill(0x33))
+    f.setCall(RETURN_SLOT0, { gas: 100_000n, to: other })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 1, 'need_storage')
+    f.setCall(returnByte(7), { gas: 100_000n })
+    assert.equal(api.evm_execute(handle), 1)
+    assert.equal(h.output()[31], 0x2a)
+
+    // The suspended call was cancelled: its reply is rejected and the sync result stays readable.
+    const reply = new Uint8Array(84).fill(0x33, 0, 20)
+    reply[83] = 5
+    assert.equal(api.evm_continue_ffi(handle, 1, f.alloc(reply), 84, h.request), 0)
+    assert.equal(h.tag(), 255)
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 0)
+    assert.equal(h.tag(), 255)
+
+    // The installed code survived the whole sequence.
+    assert.equal(api.evm_execute(handle), 1)
+    assert.equal(h.output()[31], 0x2a)
+  } finally { f.close() }
+})
+
+test('a host callback cannot re-enter, mutate or destroy the executing handle', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const h = asyncHelpers(f)
+    const code = f.alloc(Buffer.from('fe', 'hex'))
+    const storageOut = f.alloc(32)
+    const attempts = []
+    f.hooks.opcode = () => {
+      if (attempts.length > 0) return 0
+      attempts.push({
+        execute: api.evm_execute(handle),
+        callFfi: api.evm_call_ffi(handle, h.request),
+        callTag: h.tag(),
+        continueFfi: api.evm_continue_ffi(handle, 5, 0, 0, h.request),
+        setBytecode: api.evm_set_bytecode(handle, code, 1),
+        setContext: api.evm_set_execution_context(handle, 1n, f.caller, f.address, f.zero, 0, 0),
+        setCode: api.evm_set_code(handle, f.address, code, 1),
+        setStorage: api.evm_set_storage(handle, f.address, f.zero, f.zero),
+        setBalance: api.evm_set_balance(handle, f.address, f.zero),
+        setNonce: api.evm_set_nonce(handle, f.address, 1n),
+        setBlobs: api.evm_set_blob_hashes(handle, 0, 0),
+        injector: api.evm_enable_storage_injector(handle),
+        readStorage: api.evm_get_storage(handle, f.address, f.zero, storageOut),
+      })
+      return 0
+    }
+    f.setCall(returnByte(0x2a), { gas: 100_000n })
+    assert.equal(api.evm_execute(handle), 1)
+    f.hooks.opcode = () => 0
+    assert.equal(h.output()[31], 0x2a, 'the outer call completes with its own code')
+    assert.deepEqual(attempts, [{
+      execute: 0, callFfi: 0, callTag: 255, continueFfi: 0, setBytecode: 0, setContext: 0, setCode: 0,
+      setStorage: 0, setBalance: 0, setNonce: 0, setBlobs: 0, injector: 0, readStorage: 1,
+    }])
+    assert.equal(api.evm_get_gas_used(handle) > 0n, true)
+
+    // Nothing was replaced: the same call runs the same code again.
+    assert.equal(api.evm_execute(handle), 1)
+    assert.equal(h.output()[31], 0x2a)
+
+    // Destroy from inside a callback is deferred to the end of the call, on both entry points.
+    const created = []
+    function destroyDuringCall(start) {
+      const doomed = api.evm_create(0, 0, 0)
+      assert.ok(doomed)
+      created.push(doomed)
+      const bytecode = Buffer.from(returnByte(1), 'hex')
+      assert.equal(api.evm_set_bytecode(doomed, f.alloc(bytecode), bytecode.length), 1)
+      assert.equal(api.evm_set_execution_context(doomed, 100_000n, f.caller, f.address, f.zero, 0, 0), 1)
+      let calls = 0
+      f.hooks.opcode = () => { if (calls++ === 0) api.evm_destroy(doomed); return 0 }
+      const ok = start(doomed)
+      f.hooks.opcode = () => 0
+      assert.ok(calls > 1, 'execution continued after the deferred destroy')
+      return ok
+    }
+    assert.equal(destroyDuringCall((doomed) => api.evm_execute(doomed)), 0)
+    assert.equal(destroyDuringCall((doomed) => api.evm_call_ffi(doomed, h.request)), 0)
+    // The surviving handle still works and fresh handles reuse the freed memory.
+    assert.equal(api.evm_execute(handle), 1)
+    assert.equal(h.output()[31], 0x2a)
+  } finally { f.close() }
+})
+
+// R2-02: AsyncExecutor owns a root checkpoint so a reverted async transaction rolls back SSTOREs.
+test('a reverted async transaction leaves storage, refunds and change lists clean', async () => {
+  const f = await fixture('osaka')
+  try {
+    const { api, handle } = f
+    const h = asyncHelpers(f)
+    assert.equal(api.evm_enable_storage_injector(handle), 1)
+    const storageOut = f.alloc(32)
+    const readSlot0 = () => {
+      assert.equal(api.evm_get_storage(handle, f.address, f.zero, storageOut), 1)
+      return h.bytesAt(storageOut, 32)[31]
+    }
+
+    // SSTORE(0, 7); SSTORE(0, 0) for a refund; then REVERT(0, 0).
+    f.setCall(STORE_SLOT0_7 + '600060006000600055' + '60006000fd', { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    assert.equal(h.tag(), 1)
+    assert.equal(api.evm_continue_ffi(handle, 1, h.storageReply(0, 5), 84, h.request), 1)
+    assert.equal(h.tag(), 0)
+    assert.equal(api.evm_is_success(handle), 0)
+
+    assert.notEqual(readSlot0(), 7, 'the reverted write is not visible')
+    assert.notEqual(readSlot0(), 0, 'the reverted clear is not visible')
+    assert.equal(api.evm_get_gas_refund(handle), 0n)
+    assert.equal(api.evm_get_state_changes_len(handle), 0)
+
+    // A later successful transaction sees the host value, not the reverted one.
+    f.setCall(RETURN_SLOT0, { gas: 100_000n })
+    assert.equal(api.evm_call_ffi(handle, h.request), 1)
+    if (h.tag() === 1) assert.equal(api.evm_continue_ffi(handle, 1, h.storageReply(0, 5), 84, h.request), 1)
+    assert.equal(h.tag(), 5)
+    assert.deepEqual(h.json().storage, [])
+    assert.equal(api.evm_continue_ffi(handle, 5, 0, 0, h.request), 1)
+    assert.equal(h.output()[31], 5)
   } finally { f.close() }
 })

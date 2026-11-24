@@ -30,6 +30,11 @@ pub const ValidationError = error{
     MissingBlobGasUsed,
     MissingExcessBlobGas,
     InvalidExcessBlobGas,
+    // Cancun+: blob_gas_used above the fork's per-block max or not a multiple
+    // of GAS_PER_BLOB
+    InvalidBlobGasUsed,
+    // Cancun+ header must include parent_beacon_block_root (EIP-4788)
+    MissingParentBeaconBlockRoot,
     // Pre-Cancun headers must not carry any 4844 fields
     UnexpectedBlobFieldsPreCancun,
     OutOfMemory,
@@ -49,6 +54,94 @@ const BASE_FEE_MAX_CHANGE_DENOMINATOR: u64 = 8;
 const ELASTICITY_MULTIPLIER: u64 = 2;
 const GAS_LIMIT_ADJUSTMENT_FACTOR: u64 = 1024;
 const GAS_LIMIT_MINIMUM: u64 = 5000;
+
+/// EIP-4844 `GAS_PER_BLOB` (2^17).
+const GAS_PER_BLOB: u64 = Blob.BLOB_GAS_PER_BLOB;
+/// EIP-7918 (Osaka) `BLOB_BASE_COST`.
+const BLOB_BASE_COST: u256 = 1 << 13;
+/// EIP-4844 `MIN_BASE_FEE_PER_BLOB_GAS`.
+const MIN_BASE_FEE_PER_BLOB_GAS: u256 = 1;
+
+/// Per-fork blob gas parameters for header validation.
+const BlobParams = struct {
+    target_blob_gas_per_block: u64,
+    max_blob_gas_per_block: u64,
+    base_fee_update_fraction: u64,
+    /// EIP-7918: excess blob gas is bounded by the execution base fee.
+    reserve_price: bool,
+};
+
+/// Blob parameters for the child block's fork. Voltaire's
+/// `Blob.calculateExcessBlobGas` hardcodes the Cancun target, so the schedule
+/// lives here.
+/// - Cancun (EIP-4844): target 3 blobs, max 6, fraction 3_338_477.
+/// - Prague (EIP-7691): target 6 blobs, max 9, fraction 5_007_716.
+/// - Osaka (EIP-7918): Prague schedule plus the blob reserve price. Voltaire's
+///   Hardfork enum has no BPO forks, so later forks reuse the Osaka schedule.
+fn blob_params(hardfork: Hardfork) BlobParams {
+    if (hardfork.isAtLeast(.PRAGUE)) return .{
+        .target_blob_gas_per_block = 6 * GAS_PER_BLOB,
+        .max_blob_gas_per_block = 9 * GAS_PER_BLOB,
+        .base_fee_update_fraction = 5_007_716,
+        .reserve_price = hardfork.isAtLeast(.OSAKA),
+    };
+    return .{
+        .target_blob_gas_per_block = 3 * GAS_PER_BLOB,
+        .max_blob_gas_per_block = 6 * GAS_PER_BLOB,
+        .base_fee_update_fraction = 3_338_477,
+        .reserve_price = false,
+    };
+}
+
+/// EIP-4844 `fake_exponential`. Saturates to maxInt(u256) instead of
+/// overflowing (EELS uses unbounded integers).
+fn fake_exponential(factor: u256, numerator: u256, denominator: u256) u256 {
+    const max = std.math.maxInt(u256);
+    var i: u256 = 1;
+    var output: u256 = 0;
+    var accumulated = std.math.mul(u256, factor, denominator) catch return max;
+    while (accumulated > 0) {
+        output = std.math.add(u256, output, accumulated) catch return max;
+        const product = std.math.mul(u256, accumulated, numerator) catch return max;
+        const divisor = std.math.mul(u256, denominator, i) catch return max;
+        accumulated = product / divisor;
+        i += 1;
+    }
+    return output / denominator;
+}
+
+/// Expected child `excess_blob_gas` per EELS `calculate_excess_blob_gas` for
+/// the child's fork. A parent without blob fields counts as zero.
+fn calculate_excess_blob_gas(
+    hardfork: Hardfork,
+    parent: *const BlockHeader.BlockHeader,
+) ValidationError!u64 {
+    const params = blob_params(hardfork);
+    const parent_excess: u64 = parent.excess_blob_gas orelse 0;
+    const parent_used: u64 = parent.blob_gas_used orelse 0;
+    const parent_blob_gas: u128 = @as(u128, parent_excess) + parent_used;
+    if (parent_blob_gas < params.target_blob_gas_per_block) return 0;
+
+    if (params.reserve_price) {
+        const parent_base_fee = parent.base_fee_per_gas orelse return ValidationError.MissingBaseFee;
+        const blob_gas_price = fake_exponential(
+            MIN_BASE_FEE_PER_BLOB_GAS,
+            parent_excess,
+            params.base_fee_update_fraction,
+        );
+        const target_blob_gas_price = std.math.mul(u256, GAS_PER_BLOB, blob_gas_price) catch
+            std.math.maxInt(u256);
+        const base_blob_tx_price = std.math.mul(u256, BLOB_BASE_COST, parent_base_fee) catch
+            std.math.maxInt(u256);
+        if (base_blob_tx_price > target_blob_gas_price) {
+            const delta = params.max_blob_gas_per_block - params.target_blob_gas_per_block;
+            const increase = @as(u128, parent_used) * delta / params.max_blob_gas_per_block;
+            return std.math.cast(u64, parent_excess + increase) orelse ValidationError.InvalidExcessBlobGas;
+        }
+    }
+    return std.math.cast(u64, parent_blob_gas - params.target_blob_gas_per_block) orelse
+        ValidationError.InvalidExcessBlobGas;
+}
 
 /// Validate PoS header constants: extraData<=32, difficulty=0, nonce=0, ommers=empty list hash.
 fn validate_pos_header_constants(header: *const BlockHeader.BlockHeader) ValidationError!void {
@@ -125,14 +218,19 @@ fn validate_post_merge_header(
 
     const parent_header = ctx.parent_header orelse return ValidationError.MissingParentHeader;
 
-    // Enforce EIP-4844 header fields presence/absence across forks
+    // Enforce EIP-4844/EIP-4788 header fields presence/absence across forks
     if (ctx.hardfork.hasEIP4844()) {
-        // Cancun+: both blob_gas_used and excess_blob_gas must be present
-        _ = header.blob_gas_used orelse return ValidationError.MissingBlobGasUsed;
+        // Cancun+: blob_gas_used, excess_blob_gas and parent_beacon_block_root
+        // must be present.
+        const blob_gas_used = header.blob_gas_used orelse return ValidationError.MissingBlobGasUsed;
         const header_excess_blob_gas = header.excess_blob_gas orelse return ValidationError.MissingExcessBlobGas;
-        const parent_excess_blob_gas = parent_header.excess_blob_gas orelse 0;
-        const parent_blob_gas_used = parent_header.blob_gas_used orelse 0;
-        const expected_excess_blob_gas = Blob.calculateExcessBlobGas(parent_excess_blob_gas, parent_blob_gas_used);
+        if (header.parent_beacon_block_root == null) return ValidationError.MissingParentBeaconBlockRoot;
+
+        const params = blob_params(ctx.hardfork);
+        if (blob_gas_used > params.max_blob_gas_per_block or blob_gas_used % GAS_PER_BLOB != 0) {
+            return ValidationError.InvalidBlobGasUsed;
+        }
+        const expected_excess_blob_gas = try calculate_excess_blob_gas(ctx.hardfork, parent_header);
         if (header_excess_blob_gas != expected_excess_blob_gas) {
             return ValidationError.InvalidExcessBlobGas;
         }
@@ -178,29 +276,22 @@ pub fn validate_timestamp_strictly_greater(
     if (header.timestamp <= parent.timestamp) return ValidationError.InvalidTimestamp;
 }
 
-/// Decide whether  should be validated under post-merge (PoS) rules.
+/// Decide whether a header is validated under post-merge (PoS) rules.
 ///
-/// Semantics:
-/// - If Terminal Total Difficulty (TTD) is provided:
-///   - With : post-merge when ,
-///     parent (when provided) also crossed TTD, and .
-///   - Without : conservatively fall back to checking
-///     . Callers that require strict TTD gating must
-///     supply TDs for both header and parent.
-/// - If no TTD is provided: use hardfork gating (>= MERGE) and .
-fn is_post_merge(header: *const BlockHeader.BlockHeader, ctx: HeaderValidationContext) bool {
+/// Consensus mode comes from trusted inputs only, never from the candidate
+/// header: a forged nonzero difficulty must not route a PoS block to the
+/// pre-merge validator.
+/// - With a terminal total difficulty and the parent's total difficulty,
+///   the block is PoS when the parent reached TTD (EIP-3675: the terminal
+///   PoW block's children are PoS).
+/// - Otherwise the configured fork decides: MERGE and later are PoS.
+///
+/// The post-merge validator then rejects any nonzero candidate difficulty.
+fn is_post_merge(ctx: HeaderValidationContext) bool {
     if (ctx.terminal_total_difficulty) |ttd| {
-        if (ctx.header_total_difficulty) |td| {
-            if (td < ttd) return false;
-            if (header.difficulty != 0) return false;
-            if (ctx.parent_total_difficulty) |parent_td| {
-                if (parent_td < ttd) return false;
-            }
-            return true;
-        }
-        return header.difficulty == 0;
+        if (ctx.parent_total_difficulty) |parent_td| return parent_td >= ttd;
     }
-    return ctx.hardfork.isAtLeast(.MERGE) and header.difficulty == 0;
+    return ctx.hardfork.isAtLeast(.MERGE);
 }
 
 /// Merge-aware header validator that enforces PoS constants post-merge and
@@ -225,7 +316,7 @@ pub fn merge_header_validator(comptime PreMergeValidator: type) type {
 
         /// Validate a header under the given hardfork.
         pub fn validate(header: *const BlockHeader.BlockHeader, ctx: HeaderValidationContext) Error!void {
-            if (is_post_merge(header, ctx)) {
+            if (is_post_merge(ctx)) {
                 return validate_post_merge_header(header, ctx);
             }
             return PreMergeValidator.validate(header, ctx);
@@ -494,10 +585,8 @@ test "merge_header_validator - prague rejects incorrect excess blob gas" {
     // Required on Cancun+
     header.blob_gas_used = 0;
 
-    const expected_excess_blob_gas = Blob.calculateExcessBlobGas(
-        parent.excess_blob_gas.?,
-        parent.blob_gas_used.?,
-    );
+    header.parent_beacon_block_root = Hash.ZERO;
+    const expected_excess_blob_gas = try calculate_excess_blob_gas(.PRAGUE, &parent);
     header.excess_blob_gas = expected_excess_blob_gas + 1;
 
     const ctx = HeaderValidationContext{
@@ -545,10 +634,8 @@ test "merge_header_validator - prague accepts correct excess blob gas" {
     );
     // Required on Cancun+
     header.blob_gas_used = 0;
-    header.excess_blob_gas = Blob.calculateExcessBlobGas(
-        parent.excess_blob_gas.?,
-        parent.blob_gas_used.?,
-    );
+    header.parent_beacon_block_root = Hash.ZERO;
+    header.excess_blob_gas = try calculate_excess_blob_gas(.PRAGUE, &parent);
 
     const ctx = HeaderValidationContext{
         .allocator = allocator,
@@ -758,9 +845,6 @@ test "merge validation boundaries cover gas limit and TTD edges" {
     );
     try std.testing.expectEqual(parent_base_fee, boundary_fee);
 
-    var header = BlockHeader.init();
-    header.difficulty = 1;
-
     const ttd: u256 = 1000;
     var ctx = HeaderValidationContext{
         .allocator = std.testing.allocator,
@@ -769,11 +853,12 @@ test "merge validation boundaries cover gas limit and TTD edges" {
         .header_total_difficulty = ttd,
         .parent_total_difficulty = ttd - 1,
     };
-    try std.testing.expect(!is_post_merge(&header, ctx));
+    // Parent below TTD: the child is the terminal PoW block.
+    try std.testing.expect(!is_post_merge(ctx));
 
-    header.difficulty = 0;
+    // Parent reached TTD: the child is PoS.
     ctx.parent_total_difficulty = ttd;
-    try std.testing.expect(is_post_merge(&header, ctx));
+    try std.testing.expect(is_post_merge(ctx));
 }
 
 /// Ensures the gas limit change from parent to header is strictly less than
@@ -862,4 +947,206 @@ test "validate_gas_limit_delta - rejects below max delta" {
     header.gas_limit = parent.gas_limit - delta - 1;
 
     try std.testing.expectError(ValidationError.InvalidGasLimit, validate_gas_limit_delta(&header, &parent));
+}
+
+/// Pre-merge validator that accepts everything, so tests observe routing.
+const AcceptAllPreMerge = struct {
+    pub fn validate(_: *const BlockHeader.BlockHeader, _: HeaderValidationContext) ValidationError!void {
+        return;
+    }
+};
+
+/// Builds a valid post-merge child of `parent` for `hardfork`, filling blob
+/// fields and the parent beacon root from Cancun on.
+fn test_post_merge_child(
+    hardfork: Hardfork,
+    parent: *const BlockHeader.BlockHeader,
+    blob_gas_used: u64,
+) !BlockHeader.BlockHeader {
+    var header = BlockHeader.init();
+    header.number = parent.number + 1;
+    header.timestamp = parent.timestamp + 1;
+    header.gas_limit = parent.gas_limit;
+    header.gas_used = 0;
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    header.difficulty = 0;
+    header.nonce = [_]u8{0} ** BlockHeader.NONCE_SIZE;
+    header.parent_hash = try BlockHeader.hash(parent, std.testing.allocator);
+    header.base_fee_per_gas = try calculate_base_fee_per_gas(
+        header.gas_limit,
+        parent.gas_limit,
+        parent.gas_used,
+        parent.base_fee_per_gas.?,
+    );
+    if (hardfork.hasEIP4844()) {
+        header.blob_gas_used = blob_gas_used;
+        header.excess_blob_gas = try calculate_excess_blob_gas(hardfork, parent);
+        header.parent_beacon_block_root = Hash.ZERO;
+    }
+    return header;
+}
+
+fn test_parent(excess_blob_gas: ?u64, blob_gas_used: ?u64) BlockHeader.BlockHeader {
+    var parent = BlockHeader.init();
+    parent.number = 1;
+    parent.timestamp = 1;
+    parent.gas_limit = 10_000;
+    parent.gas_used = 0;
+    parent.base_fee_per_gas = 1;
+    parent.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+    parent.excess_blob_gas = excess_blob_gas;
+    parent.blob_gas_used = blob_gas_used;
+    return parent;
+}
+
+test "merge_header_validator - fork, not candidate difficulty, selects PoS rules" {
+    const MergeValidator = merge_header_validator(AcceptAllPreMerge);
+    const parent = test_parent(null, null);
+    var header = try test_post_merge_child(.SHANGHAI, &parent, 0);
+    try MergeValidator.validate(&header, .{
+        .allocator = std.testing.allocator,
+        .hardfork = .SHANGHAI,
+        .parent_header = &parent,
+    });
+
+    // A forged nonzero difficulty must not route to the accept-all pre-merge validator.
+    header.difficulty = 1;
+    try std.testing.expectError(ValidationError.InvalidDifficulty, MergeValidator.validate(&header, .{
+        .allocator = std.testing.allocator,
+        .hardfork = .SHANGHAI,
+        .parent_header = &parent,
+    }));
+}
+
+test "merge_header_validator - parent TD at TTD selects PoS rules despite candidate difficulty" {
+    const MergeValidator = merge_header_validator(AcceptAllPreMerge);
+    const parent = test_parent(null, null);
+    var header = try test_post_merge_child(.MERGE, &parent, 0);
+    header.difficulty = 1;
+    const ttd: u256 = 1000;
+    try std.testing.expectError(ValidationError.InvalidDifficulty, MergeValidator.validate(&header, .{
+        .allocator = std.testing.allocator,
+        .hardfork = .MERGE,
+        .parent_header = &parent,
+        .terminal_total_difficulty = ttd,
+        .header_total_difficulty = ttd + 1,
+        .parent_total_difficulty = ttd,
+    }));
+}
+
+test "calculate_excess_blob_gas - Prague target 6 blobs, Cancun target 3 blobs" {
+    // Prague: parent excess 0 + 6 blobs used equals the target, so excess stays 0.
+    const prague_parent = test_parent(0, 786_432);
+    try std.testing.expectEqual(@as(u64, 0), try calculate_excess_blob_gas(.PRAGUE, &prague_parent));
+    // The same parent under Cancun exceeds the 3-blob target by 3 blobs.
+    try std.testing.expectEqual(@as(u64, 393_216), try calculate_excess_blob_gas(.CANCUN, &prague_parent));
+    // Cancun: 3 blobs used equals the target.
+    const cancun_parent = test_parent(0, 393_216);
+    try std.testing.expectEqual(@as(u64, 0), try calculate_excess_blob_gas(.CANCUN, &cancun_parent));
+    // Parent without blob fields (fork transition) counts as zero.
+    const pre_cancun_parent = test_parent(null, null);
+    try std.testing.expectEqual(@as(u64, 0), try calculate_excess_blob_gas(.CANCUN, &pre_cancun_parent));
+}
+
+test "calculate_excess_blob_gas - Osaka reserve price (EIP-7918)" {
+    // Parent base fee 1: BLOB_BASE_COST * 1 = 8192 < GAS_PER_BLOB * 1, so the
+    // Prague formula applies.
+    var parent = test_parent(0, 9 * GAS_PER_BLOB);
+    try std.testing.expectEqual(@as(u64, 3 * GAS_PER_BLOB), try calculate_excess_blob_gas(.OSAKA, &parent));
+    // Parent base fee 17: 8192 * 17 > 131072 * 1, so excess grows by
+    // blob_gas_used * (max - target) / max = 9 blobs * 3 / 9.
+    parent.base_fee_per_gas = 17;
+    try std.testing.expectEqual(@as(u64, 3 * GAS_PER_BLOB), try calculate_excess_blob_gas(.OSAKA, &parent));
+    parent.excess_blob_gas = 6 * GAS_PER_BLOB;
+    parent.blob_gas_used = 6 * GAS_PER_BLOB;
+    // Prague formula would give 6 blobs; the reserve price gives 6 + 6 * 3 / 9 = 8 blobs.
+    try std.testing.expectEqual(@as(u64, 6 * GAS_PER_BLOB), try calculate_excess_blob_gas(.PRAGUE, &parent));
+    try std.testing.expectEqual(@as(u64, 8 * GAS_PER_BLOB), try calculate_excess_blob_gas(.OSAKA, &parent));
+}
+
+test "merge_header_validator - Prague accepts excess 0 after 6-blob parent" {
+    const MergeValidator = merge_header_validator(AcceptAllPreMerge);
+    const parent = test_parent(0, 786_432);
+    const header = try test_post_merge_child(.PRAGUE, &parent, 0);
+    try std.testing.expectEqual(@as(?u64, 0), header.excess_blob_gas);
+    try MergeValidator.validate(&header, .{
+        .allocator = std.testing.allocator,
+        .hardfork = .PRAGUE,
+        .parent_header = &parent,
+    });
+}
+
+test "merge_header_validator - Cancun accepts excess 0 after 3-blob parent and rejects Prague value" {
+    const MergeValidator = merge_header_validator(AcceptAllPreMerge);
+    const parent = test_parent(0, 393_216);
+    var header = try test_post_merge_child(.CANCUN, &parent, 0);
+    const ctx = HeaderValidationContext{
+        .allocator = std.testing.allocator,
+        .hardfork = .CANCUN,
+        .parent_header = &parent,
+    };
+    try MergeValidator.validate(&header, ctx);
+
+    const six_blob_parent = test_parent(0, 786_432);
+    header = try test_post_merge_child(.CANCUN, &six_blob_parent, 0);
+    try std.testing.expectEqual(@as(?u64, 393_216), header.excess_blob_gas);
+    header.excess_blob_gas = 0;
+    try std.testing.expectError(ValidationError.InvalidExcessBlobGas, MergeValidator.validate(&header, .{
+        .allocator = std.testing.allocator,
+        .hardfork = .CANCUN,
+        .parent_header = &six_blob_parent,
+    }));
+}
+
+test "merge_header_validator - blob_gas_used above per-fork max rejected" {
+    const MergeValidator = merge_header_validator(AcceptAllPreMerge);
+    const parent = test_parent(0, 0);
+
+    // Cancun max is 6 blobs; Prague max is 9 blobs.
+    var cancun = try test_post_merge_child(.CANCUN, &parent, 6 * GAS_PER_BLOB);
+    const cancun_ctx = HeaderValidationContext{ .allocator = std.testing.allocator, .hardfork = .CANCUN, .parent_header = &parent };
+    try MergeValidator.validate(&cancun, cancun_ctx);
+    cancun.blob_gas_used = 7 * GAS_PER_BLOB;
+    try std.testing.expectError(ValidationError.InvalidBlobGasUsed, MergeValidator.validate(&cancun, cancun_ctx));
+
+    var prague = try test_post_merge_child(.PRAGUE, &parent, 9 * GAS_PER_BLOB);
+    const prague_ctx = HeaderValidationContext{ .allocator = std.testing.allocator, .hardfork = .PRAGUE, .parent_header = &parent };
+    try MergeValidator.validate(&prague, prague_ctx);
+    prague.blob_gas_used = 10 * GAS_PER_BLOB;
+    try std.testing.expectError(ValidationError.InvalidBlobGasUsed, MergeValidator.validate(&prague, prague_ctx));
+}
+
+test "merge_header_validator - blob_gas_used not a multiple of GAS_PER_BLOB rejected" {
+    const MergeValidator = merge_header_validator(AcceptAllPreMerge);
+    const parent = test_parent(0, 0);
+    const header = try test_post_merge_child(.PRAGUE, &parent, 1);
+    try std.testing.expectError(ValidationError.InvalidBlobGasUsed, MergeValidator.validate(&header, .{
+        .allocator = std.testing.allocator,
+        .hardfork = .PRAGUE,
+        .parent_header = &parent,
+    }));
+}
+
+test "merge_header_validator - Cancun+ requires parent_beacon_block_root" {
+    const MergeValidator = merge_header_validator(AcceptAllPreMerge);
+    const parent = test_parent(0, 0);
+    var header = try test_post_merge_child(.CANCUN, &parent, 0);
+    header.parent_beacon_block_root = null;
+    try std.testing.expectError(ValidationError.MissingParentBeaconBlockRoot, MergeValidator.validate(&header, .{
+        .allocator = std.testing.allocator,
+        .hardfork = .CANCUN,
+        .parent_header = &parent,
+    }));
+}
+
+test "merge_header_validator - pre-Cancun forbids parent_beacon_block_root" {
+    const MergeValidator = merge_header_validator(AcceptAllPreMerge);
+    const parent = test_parent(null, null);
+    var header = try test_post_merge_child(.SHANGHAI, &parent, 0);
+    header.parent_beacon_block_root = Hash.ZERO;
+    try std.testing.expectError(ValidationError.UnexpectedBlobFieldsPreCancun, MergeValidator.validate(&header, .{
+        .allocator = std.testing.allocator,
+        .hardfork = .SHANGHAI,
+        .parent_header = &parent,
+    }));
 }

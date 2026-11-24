@@ -47,7 +47,7 @@ const Harness = struct {
 
     /// Register a frame on the EVM frame stack (as the interpreter does) and return it.
     fn frame(self: *Harness, code: []const u8, gas: i64, calldata: []const u8) !*Frame {
-        try self.evm.frames.append(self.evm.arena.allocator(), try Frame.init(
+        try self.evm.frames.append(self.evm.tx_arena.allocator(), try Frame.init(
             self.allocator,
             code,
             gas,

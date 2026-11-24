@@ -78,7 +78,6 @@ fn bench_balance(n: usize) u64 {
             _ = host.getBalance(addr);
         }
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -101,7 +100,6 @@ fn bench_storage(n: usize) u64 {
             _ = host.getStorage(addr, slot);
         }
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -123,7 +121,6 @@ fn bench_nonce(n: usize) u64 {
             _ = host.getNonce(addr);
         }
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -147,7 +144,6 @@ fn bench_code(n: usize) u64 {
             _ = host.getCode(addr);
         }
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -193,7 +189,6 @@ fn bench_mixed(n: usize) u64 {
             }
         }
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -235,7 +230,6 @@ fn bench_checkpoint_revert(depth: usize) u64 {
         }
 
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -312,7 +306,6 @@ fn bench_block_processing() u64 {
         }
 
         total_ns += timer.read();
-        adapter.deinit();
         state.deinit();
     }
     return total_ns / BENCH_ITERS;
@@ -335,7 +328,6 @@ fn bench_vtable_overhead(n: usize) struct { direct_ns: u64, vtable_ns: u64 } {
             state.setBalance(addr, @intCast(i)) catch unreachable;
         }
         direct_total += timer.read();
-        adapter.deinit();
         state.deinit();
     }
 
@@ -356,7 +348,6 @@ fn bench_vtable_overhead(n: usize) struct { direct_ns: u64, vtable_ns: u64 } {
             host.setBalance(addr, @intCast(i));
         }
         vtable_total += timer.read();
-        adapter.deinit();
         state.deinit();
     }
 
@@ -402,7 +393,7 @@ pub fn main() !void {
     std.debug.print("\n", .{});
 
     // -- Mixed workload --
-    std.debug.print("--- Mixed Workload (60%% SLOAD, 20%% SSTORE, 10%% BALANCE, 10%% NONCE) ---\n", .{});
+    std.debug.print("--- Mixed Workload (60% SLOAD, 20% SSTORE, 10% BALANCE, 10% NONCE) ---\n", .{});
     print_result(make_result("mixed (1K ops, 100 accounts)", SMALL_N, bench_mixed(SMALL_N)));
     print_result(make_result("mixed (10K ops, 100 accounts)", MEDIUM_N, bench_mixed(MEDIUM_N)));
     print_result(make_result("mixed (100K ops, 100 accounts)", LARGE_N, bench_mixed(LARGE_N)));
@@ -427,7 +418,7 @@ pub fn main() !void {
 
     // -- Block processing simulation --
     std.debug.print("--- Block Processing Simulation ---\n", .{});
-    std.debug.print("  (200 txs/block, balance xfer + 5 SSTORE + 2 nested calls * 3 changes, 30%% revert)\n", .{});
+    std.debug.print("  (200 txs/block, balance xfer + 5 SSTORE + 2 nested calls * 3 changes, 30% revert)\n", .{});
     {
         const block_elapsed = bench_block_processing();
         const block_str = format_ns(block_elapsed);
@@ -462,7 +453,7 @@ pub fn main() !void {
                 @as(f64, @floatFromInt(vtable_per_op - direct_per_op)) / @as(f64, @floatFromInt(direct_per_op)) * 100.0
             else
                 0.0;
-            std.debug.print("  Vtable overhead:                     {d:.1}%%\n", .{overhead_pct});
+            std.debug.print("  Vtable overhead:                     {d:.1}%\n", .{overhead_pct});
         }
     }
     std.debug.print("\n", .{});
@@ -494,7 +485,7 @@ pub fn main() !void {
         const meets_target = blocks_per_sec >= 47.0;
 
         if (comfortable) {
-            std.debug.print("  Status:                          PASS - negligible overhead (<1%% of budget)\n", .{});
+            std.debug.print("  Status:                          PASS - negligible overhead (<1% of budget)\n", .{});
         } else if (meets_target) {
             std.debug.print("  Status:                          PASS - meets target but adapter overhead significant\n", .{});
         } else {
@@ -507,7 +498,7 @@ pub fn main() !void {
     std.debug.print("  - HostAdapter is a thin vtable bridge (ptr cast + fn call)\n", .{});
     std.debug.print("  - StateManager uses in-memory hash maps (no disk I/O)\n", .{});
     std.debug.print("  - Checkpoint/revert copies entire state cache (O(n) in modified entries)\n", .{});
-    std.debug.print("  - Error handling: getters return defaults, setters panic on failure\n", .{});
+    std.debug.print("  - Error handling: backend errors latch on the adapter (checkError), getters return defaults, setters drop the write\n", .{});
     std.debug.print("  - Arena allocator is used by StateManager internally\n", .{});
     std.debug.print("=" ** 100 ++ "\n\n", .{});
 }

@@ -48,9 +48,13 @@ type WorldStateJournalKey =
       readonly accountKey: AccountKey;
       readonly slotKey: StorageKey;
     };
+/** A null root marks local slot changes that have yet to be hashed. */
+type StoredAccount = Omit<AccountStateType, "storageRoot"> & {
+  readonly storageRoot: AccountStateType["storageRoot"] | null;
+};
 /** Journal value union for world state changes. */
 type WorldStateJournalValue =
-  | AccountStateType
+  | StoredAccount
   | StorageValueType
   | CodeValueType;
 type OriginalStorageJournalEntry = {
@@ -193,16 +197,14 @@ const cloneRuntimeCode = (
     ? EMPTY_CODE
     : new Uint8Array(code)) as RuntimeCode.RuntimeCodeType;
 
-// Use canonical byte-array equality helper from internal/bytes
-
-const accountsEqual = (
-  left: AccountStateType,
-  right: AccountStateType,
-): boolean =>
+const accountsEqual = (left: StoredAccount, right: StoredAccount): boolean =>
   left.nonce === right.nonce &&
   left.balance === right.balance &&
   bytes32Equals(left.codeHash, right.codeHash) &&
-  bytes32Equals(left.storageRoot, right.storageRoot);
+  (left.storageRoot === right.storageRoot ||
+    (left.storageRoot !== null &&
+      right.storageRoot !== null &&
+      bytes32Equals(left.storageRoot, right.storageRoot)));
 
 const makeWorldState = Effect.gen(function* () {
   const journal = (yield* Journal) as JournalService<
@@ -211,7 +213,8 @@ const makeWorldState = Effect.gen(function* () {
   >;
   const trieRoot = yield* TrieRoot;
   const stateMutation = (yield* Effect.makeSemaphore(1)).withPermits(1);
-  const accounts = new Map<AccountKey, AccountStateType>();
+  const accounts = new Map<AccountKey, StoredAccount>();
+  const dirtyStorageRoots = new Set<AccountKey>();
   const codes = new Map<AccountKey, RuntimeCode.RuntimeCodeType>();
   const storage = new Map<AccountKey, Map<StorageKey, StorageValueType>>();
   const createdAccounts = new Set<AccountKey>();
@@ -256,11 +259,78 @@ const makeWorldState = Effect.gen(function* () {
     originalStorageJournal.push({ accountKey: key, slotKey });
   };
 
-  const getAccountOptional = (address: Address.AddressType) =>
-    Effect.sync(() => {
-      const account = accounts.get(addressKey(address));
-      return account ? cloneAccount(account) : null;
+  const putAccount = (key: AccountKey, account: StoredAccount | null) => {
+    if (account === null) {
+      accounts.delete(key);
+    } else {
+      accounts.set(key, account);
+    }
+    if (account?.storageRoot === null) {
+      dirtyStorageRoots.add(key);
+    } else {
+      dirtyStorageRoots.delete(key);
+    }
+  };
+
+  const writeAccount = (key: AccountKey, account: StoredAccount) =>
+    Effect.gen(function* () {
+      const previous = accounts.get(key) ?? null;
+      if (previous && accountsEqual(previous, account)) {
+        return;
+      }
+      yield* journal.append({
+        key: accountJournalKey(key),
+        value: previous,
+        tag: previous === null ? ChangeTag.Create : ChangeTag.Update,
+      });
+      putAccount(key, account);
+    }).pipe(Effect.uninterruptible);
+
+  const materializeStorageRoot = (
+    key: AccountKey,
+    account: StoredAccount,
+  ): Effect.Effect<AccountStateType> =>
+    Effect.gen(function* () {
+      if (account.storageRoot !== null) {
+        return { ...account, storageRoot: account.storageRoot };
+      }
+
+      const entries: TrieRootEntry[] = [];
+      for (const [keyHex, slotValue] of storage.get(key) ?? []) {
+        // Storage leaves hold RLP of the minimal big-endian integer.
+        const firstNonZero = slotValue.findIndex((byte) => byte !== 0);
+        const encoded = yield* encodeRlp(
+          slotValue.subarray(firstNonZero),
+        ).pipe(Effect.orDie);
+        entries.push({
+          key: Hex.toBytes(keyHex) as BytesType,
+          value: encoded as BytesType,
+        });
+      }
+      const storageRoot = yield* trieRoot
+        .root(entries, { secured: true })
+        .pipe(Effect.orDie);
+      const next = {
+        ...account,
+        storageRoot: cloneBytes32(storageRoot) as AccountStateType["storageRoot"],
+      };
+      // Journal the cache update so restoring a snapshot can make it dirty again.
+      if (snapshotStack.length > 0) {
+        yield* writeAccount(key, next);
+      } else {
+        putAccount(key, next);
+      }
+      return next;
     });
+
+  const getAccountOptional = (address: Address.AddressType) =>
+    Effect.gen(function* () {
+      const key = addressKey(address);
+      const account = accounts.get(key);
+      return account
+        ? cloneAccount(yield* materializeStorageRoot(key, account))
+        : null;
+    }).pipe(stateMutation);
 
   const getAccount = (address: Address.AddressType) =>
     Effect.map(getAccountOptional(address), (account) =>
@@ -268,13 +338,13 @@ const makeWorldState = Effect.gen(function* () {
     );
 
   const hasAccount = (address: Address.AddressType) =>
-    Effect.map(getAccountOptional(address), (account) => account !== null);
+    Effect.sync(() => accounts.has(addressKey(address)));
 
   const accountExistsAndIsEmpty = (address: Address.AddressType) =>
-    Effect.map(
-      getAccountOptional(address),
-      (account) => account !== null && isEmpty(account),
-    );
+    Effect.sync(() => {
+      const account = accounts.get(addressKey(address));
+      return account !== undefined && isEmpty(account);
+    });
 
   const getCode = (address: Address.AddressType) =>
     Effect.sync(() => {
@@ -285,7 +355,7 @@ const makeWorldState = Effect.gen(function* () {
   const markAccountCreated = (address: Address.AddressType) =>
     Effect.gen(function* () {
       if (snapshotStack.length === 0) {
-        return yield* Effect.fail(new NoActiveSnapshotError({}));
+        return yield* Effect.fail(new NoActiveSnapshotError());
       }
       return yield* Effect.sync(() => {
         createdAccounts.add(addressKey(address));
@@ -389,44 +459,9 @@ const makeWorldState = Effect.gen(function* () {
         priorAccount !== null || !bytes32Equals(codeHash, EMPTY_CODE_HASH);
       if (shouldMaterialize) {
         const base = priorAccount ?? EMPTY_ACCOUNT;
-        const nextAccount: AccountStateType = {
-          ...base,
-          codeHash: cloneBytes32(codeHash) as AccountStateType["codeHash"],
-        };
-        // Use the same account journaling and equality checks.
-        yield* updateAccount(address, nextAccount);
+        yield* writeAccount(key, { ...base, codeHash });
       }
-    }).pipe(stateMutation);
-  const clearStorageForKey = (key: AccountKey) =>
-    Effect.gen(function* () {
-      const slots = storage.get(key);
-      if (!slots) {
-        return;
-      }
-      for (const [slotKey, value] of slots) {
-        recordOriginalStorageValue(key, slotKey, value);
-        yield* journal.append({
-          key: storageJournalKey(key, slotKey),
-          value: cloneStorageValue(value),
-          tag: ChangeTag.Delete,
-        });
-      }
-      storage.delete(key);
-    });
-
-  const clearCodeForKey = (key: AccountKey) =>
-    Effect.gen(function* () {
-      const previous = codes.get(key);
-      if (!previous) {
-        return;
-      }
-      yield* journal.append({
-        key: codeJournalKey(key),
-        value: cloneRuntimeCode(previous),
-        tag: ChangeTag.Delete,
-      });
-      codes.delete(key);
-    });
+    }).pipe(Effect.uninterruptible, stateMutation);
 
   const setStorage = (
     address: Address.AddressType,
@@ -449,119 +484,78 @@ const makeWorldState = Effect.gen(function* () {
         return;
       }
 
-      const nextSlots = new Map(slots);
+      yield* journal.append({
+        key: storageJournalKey(key, slotKey),
+        value: previous ? cloneStorageValue(previous) : null,
+        tag: deleting
+          ? ChangeTag.Delete
+          : previous
+            ? ChangeTag.Update
+            : ChangeTag.Create,
+      });
       if (deleting) {
-        nextSlots.delete(slotKey);
-      } else {
-        nextSlots.set(slotKey, cloneStorageValue(value));
-      }
-
-      const entries: TrieRootEntry[] = [];
-      for (const [keyHex, slotValue] of nextSlots) {
-        // Storage leaves hold RLP of the minimal big-endian integer.
-        const firstNonZero = slotValue.findIndex((byte) => byte !== 0);
-        const encoded = yield* encodeRlp(
-          slotValue.subarray(firstNonZero),
-        ).pipe(Effect.orDie);
-        entries.push({
-          key: Hex.toBytes(keyHex) as BytesType,
-          value: encoded as BytesType,
-        });
-      }
-      const storageRoot = yield* trieRoot
-        .root(entries, { secured: true })
-        .pipe(Effect.orDie);
-
-      // Publish the slot map and account root together once both are journaled.
-      yield* Effect.uninterruptible(
-        Effect.gen(function* () {
-          yield* journal.append({
-            key: storageJournalKey(key, slotKey),
-            value: previous ? cloneStorageValue(previous) : null,
-            tag: deleting
-              ? ChangeTag.Delete
-              : previous
-                ? ChangeTag.Update
-                : ChangeTag.Create,
-          });
-          yield* journal.append({
-            key: accountJournalKey(key),
-            value: cloneAccount(account),
-            tag: ChangeTag.Update,
-          });
-          if (nextSlots.size === 0) {
-            storage.delete(key);
-          } else {
-            storage.set(key, nextSlots);
-          }
-          accounts.set(key, {
-            ...account,
-            storageRoot: cloneBytes32(
-              storageRoot,
-            ) as AccountStateType["storageRoot"],
-          });
-        }),
-      );
-    }).pipe(stateMutation);
-
-  const updateAccount = (
-    address: Address.AddressType,
-    account: AccountStateType | null,
-  ) =>
-    Effect.gen(function* () {
-      const key = addressKey(address);
-      const previous = accounts.get(key) ?? null;
-
-      if (account === null) {
-        if (previous === null) {
-          yield* clearCodeForKey(key);
-          return;
+        slots?.delete(slotKey);
+        if (slots?.size === 0) {
+          storage.delete(key);
         }
+      } else {
+        const nextSlots = slots ?? new Map<StorageKey, StorageValueType>();
+        nextSlots.set(slotKey, cloneStorageValue(value));
+        if (!slots) {
+          storage.set(key, nextSlots);
+        }
+      }
+      if (account.storageRoot !== null) {
+        yield* writeAccount(key, { ...account, storageRoot: null });
+      }
+    }).pipe(Effect.uninterruptible, stateMutation);
+
+  // Callers hold stateMutation across the account, code, and storage changes.
+  const deleteAccount = (key: AccountKey) =>
+    Effect.gen(function* () {
+      for (const [slotKey, value] of storage.get(key) ?? []) {
+        recordOriginalStorageValue(key, slotKey, value);
         yield* journal.append({
-          key: accountJournalKey(key),
-          value: cloneAccount(previous),
+          key: storageJournalKey(key, slotKey),
+          value: cloneStorageValue(value),
           tag: ChangeTag.Delete,
         });
-        accounts.delete(key);
-        yield* clearCodeForKey(key);
-        return;
       }
-
-      const next = cloneAccount(account);
-
-      if (previous === null) {
+      const code = codes.get(key);
+      if (code) {
+        yield* journal.append({
+          key: codeJournalKey(key),
+          value: cloneRuntimeCode(code),
+          tag: ChangeTag.Delete,
+        });
+      }
+      const account = accounts.get(key);
+      if (account) {
         yield* journal.append({
           key: accountJournalKey(key),
-          value: null,
-          tag: ChangeTag.Create,
+          value: account,
+          tag: ChangeTag.Delete,
         });
-        accounts.set(key, next);
-        return;
       }
 
-      if (accountsEqual(previous, next)) {
-        return;
-      }
-
-      yield* journal.append({
-        key: accountJournalKey(key),
-        value: cloneAccount(previous),
-        tag: ChangeTag.Update,
-      });
-      accounts.set(key, next);
+      storage.delete(key);
+      codes.delete(key);
+      putAccount(key, null);
     });
 
   const setAccount = (
     address: Address.AddressType,
     account: AccountStateType | null,
-  ) => updateAccount(address, account).pipe(stateMutation);
+  ) =>
+    Effect.suspend(() => {
+      const key = addressKey(address);
+      return account === null
+        ? deleteAccount(key)
+        : writeAccount(key, cloneAccount(account));
+    }).pipe(Effect.uninterruptible, stateMutation);
 
   const destroyAccount = (address: Address.AddressType) =>
-    Effect.gen(function* () {
-      const key = addressKey(address);
-      yield* clearStorageForKey(key);
-      yield* updateAccount(address, null);
-    }).pipe(stateMutation);
+    setAccount(address, null);
 
   const destroyTouchedEmptyAccounts = (
     touchedAccounts: Iterable<Address.AddressType>,
@@ -570,12 +564,14 @@ const makeWorldState = Effect.gen(function* () {
       touchedAccounts,
       (address) =>
         Effect.gen(function* () {
-          if (yield* accountExistsAndIsEmpty(address)) {
-            yield* destroyAccount(address);
+          const key = addressKey(address);
+          const account = accounts.get(key);
+          if (account && isEmpty(account)) {
+            yield* deleteAccount(key);
           }
         }),
       { discard: true },
-    );
+    ).pipe(Effect.uninterruptible, stateMutation);
 
   const takeSnapshot = () =>
     Effect.gen(function* () {
@@ -600,12 +596,7 @@ const makeWorldState = Effect.gen(function* () {
       const key = entry.key;
       if (typeof key === "object" && key) {
         if (key.kind === "account") {
-          const accKey = key.key;
-          if (entry.value === null) {
-            accounts.delete(accKey);
-          } else {
-            accounts.set(accKey, cloneAccount(entry.value as AccountStateType));
-          }
+          putAccount(key.key, entry.value as StoredAccount | null);
           return;
         }
 
@@ -690,21 +681,25 @@ const makeWorldState = Effect.gen(function* () {
       yield* journal.restore(entry.journalSnapshot, applyRevert);
       revertOriginalStorage(entry.originalStorageLength);
       dropSnapshotsFrom(index);
-    }).pipe(stateMutation);
+    }).pipe(Effect.uninterruptible, stateMutation);
 
   const commitSnapshot = (snapshot: WorldStateSnapshot) =>
     Effect.gen(function* () {
       const { index, entry } = yield* lookupSnapshot(snapshot);
       // A parent rollback still needs the child slot and account entries.
       if (index === 0) {
+        for (const key of dirtyStorageRoots) {
+          yield* materializeStorageRoot(key, accounts.get(key)!);
+        }
         yield* journal.commit(entry.journalSnapshot);
       }
       dropSnapshotsFrom(index);
-    }).pipe(stateMutation);
+    }).pipe(Effect.uninterruptible, stateMutation);
 
   const clear = () =>
     Effect.gen(function* () {
       accounts.clear();
+      dirtyStorageRoots.clear();
       codes.clear();
       storage.clear();
       createdAccounts.clear();
@@ -712,7 +707,7 @@ const makeWorldState = Effect.gen(function* () {
       originalStorageJournal.length = 0;
       snapshotStack.length = 0;
       yield* journal.clear();
-    }).pipe(stateMutation);
+    }).pipe(Effect.uninterruptible, stateMutation);
 
   return {
     getAccountOptional,

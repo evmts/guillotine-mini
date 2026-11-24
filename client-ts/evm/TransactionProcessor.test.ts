@@ -37,6 +37,7 @@ import {
   runInCallFrameBoundary,
   runInTransactionBoundary,
   settlePostExecutionBalances,
+  TransactionBlobGasLimitExceededError,
   TransactionGasLimitExceededError,
   TransactionNonceTooHighError,
   TransactionNonceTooLowError,
@@ -818,6 +819,59 @@ describe("TransactionProcessor.checkInclusionAvailabilityAndSenderCode", () => {
           toBigInt(Blob.GAS_PER_BLOB) * 2n,
         );
         assert.strictEqual(result.senderHasDelegationCode, true);
+      }),
+    ),
+  );
+
+  it.effect("rejects delegated sender code before EIP-7702", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xc2);
+        yield* setCode(sender, makeDelegationCode(makeAddress(0xd1)));
+        const outcome = yield* Effect.either(
+          checkInclusionAvailabilityAndSenderCode(
+            makeLegacyTx(10n),
+            sender,
+            130_000n,
+            0n,
+            maxBlobGasPerBlock,
+            0n,
+          ).pipe(Effect.provide(ReleaseSpecLive(Hardfork.CANCUN))),
+        );
+
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.instanceOf(outcome.left, InvalidSenderAccountCodeError);
+        }
+      }),
+    ),
+  );
+
+  it.effect("enforces Osaka's six-blob transaction cap independently of block headroom", () =>
+    provideExecutionProcessor(
+      Effect.gen(function* () {
+        const sender = makeAddress(0xc6);
+        const include = (blobCount: number, hardfork: Hardfork.HardforkType) =>
+          checkInclusionAvailabilityAndSenderCode(
+            makeEip4844Tx(10n, 1n, 2n, Array(blobCount).fill(makeBlobHash(0x01))),
+            sender,
+            130_000n,
+            0n,
+            maxBlobGasPerBlock,
+            0n,
+          ).pipe(Effect.provide(ReleaseSpecLive(hardfork)));
+
+        const blobGas = toBigInt(Blob.GAS_PER_BLOB);
+        const osaka = yield* include(6, Hardfork.OSAKA);
+        assert.strictEqual(osaka.txBlobGasUsed, 6n * blobGas);
+        const prague = yield* include(7, Hardfork.PRAGUE);
+        assert.strictEqual(prague.txBlobGasUsed, 7n * blobGas);
+
+        const outcome = yield* Effect.either(include(7, Hardfork.OSAKA));
+        assert.isTrue(Either.isLeft(outcome));
+        if (Either.isLeft(outcome)) {
+          assert.instanceOf(outcome.left, TransactionBlobGasLimitExceededError);
+        }
       }),
     ),
   );

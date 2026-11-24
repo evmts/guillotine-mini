@@ -3,7 +3,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
-import { Bytes, Rlp } from "voltaire-effect/primitives";
+import { Rlp } from "voltaire-effect/primitives";
 import type {
   BytesType,
   EncodedNode,
@@ -55,7 +55,8 @@ export const EMPTY_TRIE_ROOT: HashType = hashFromHex(
 );
 
 export const isEmptyTrieRoot = (hash: HashType): boolean =>
-  Bytes.equals(hash, EMPTY_TRIE_ROOT);
+  hash.length === EMPTY_TRIE_ROOT.length &&
+  hash.every((byte, index) => byte === EMPTY_TRIE_ROOT[index]);
 
 const wrapTrieHashError = (cause: TrieHashError) =>
   new TrieRootError({

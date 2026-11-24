@@ -133,11 +133,35 @@ const ExecutionContext = struct {
     /// Code copies made by evm_set_code. The EVM's code map only borrows them,
     /// so each copy is freed here on replacement and in evm_destroy.
     owned_code: std.AutoHashMapUnmanaged(Address, []u8) = .empty,
-    /// Address where evm_execute installed `bytecode` in the EVM's code map.
-    bytecode_installed_at: ?Address = null,
     /// Injector created by evm_enable_storage_injector, freed in evm_destroy.
     injector: ?*StorageInjector = null,
+    /// True while evm_execute, evm_call_ffi or evm_continue_ffi runs on this
+    /// handle. A host callback (js_opcode_callback, js_precompile_callback)
+    /// fires inside that window with frames borrowing the handle's buffers, so
+    /// execution entries and mutating setters are rejected and evm_destroy is
+    /// deferred. Read-only getters stay available.
+    in_flight: bool = false,
+    /// Set by evm_destroy while `in_flight`; the outermost entry destroys the
+    /// handle on exit.
+    destroy_pending: bool = false,
 };
+
+/// Context for an operation that mutates the handle or starts execution:
+/// null for a null handle or while the handle is executing.
+fn idleContextOf(handle: ?*EvmHandle) ?*ExecutionContext {
+    const ctx = contextOf(handle) orelse return null;
+    if (ctx.in_flight) return null;
+    return ctx;
+}
+
+/// Leave an execution entry. Returns false when evm_destroy was requested
+/// during the entry and the handle has now been destroyed.
+fn leaveExecution(ctx: *ExecutionContext) bool {
+    ctx.in_flight = false;
+    if (!ctx.destroy_pending) return true;
+    destroyContext(ctx);
+    return false;
+}
 
 // ----- Boundary helpers: every pointer from C/JS is optional -----
 
@@ -164,24 +188,6 @@ fn inputSlice(ptr: ?[*]const u8, len: usize) ?[]const u8 {
     if (len == 0) return &.{};
     const p = ptr orelse return null;
     return p[0..len];
-}
-
-fn sameAddress(a: Address, b: Address) bool {
-    return std.mem.eql(u8, &a.bytes, &b.bytes);
-}
-
-/// Remove the borrowed `ctx.bytecode` entry evm_execute left in the EVM's code
-/// map, so the map never points at a buffer that is about to be freed.
-fn uninstallBytecode(ctx: *ExecutionContext) void {
-    const address = ctx.bytecode_installed_at orelse return;
-    ctx.bytecode_installed_at = null;
-    const current = ctx.evm.code.get(address) orelse return;
-    if (current.ptr != ctx.bytecode.ptr or current.len != ctx.bytecode.len) return;
-    if (ctx.owned_code.get(address)) |owned| {
-        ctx.evm.code.putAssumeCapacity(address, owned);
-    } else {
-        _ = ctx.evm.code.remove(address);
-    }
 }
 
 /// Create a new Evm instance with optional hardfork name (null/empty = default from config)
@@ -229,9 +235,19 @@ pub export fn evm_create(hardfork_name: ?[*]const u8, hardfork_len: usize, log_l
     return @ptrCast(ctx);
 }
 
-/// Destroy an EVM instance
+/// Destroy an EVM instance. Called from a host callback while the handle is
+/// executing, destruction is deferred until that execution returns; the
+/// handle must not be used after this call either way.
 pub export fn evm_destroy(handle: ?*EvmHandle) void {
     const ctx = contextOf(handle) orelse return;
+    if (ctx.in_flight) {
+        ctx.destroy_pending = true;
+        return;
+    }
+    destroyContext(ctx);
+}
+
+fn destroyContext(ctx: *ExecutionContext) void {
     ctx.evm.deinit();
     if (ctx.injector) |injector| {
         injector.deinit();
@@ -251,11 +267,10 @@ pub export fn evm_destroy(handle: ?*EvmHandle) void {
 
 /// Set bytecode for execution. `bytecode` may be null when `bytecode_len` is 0.
 pub export fn evm_set_bytecode(handle: ?*EvmHandle, bytecode: ?[*]const u8, bytecode_len: usize) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
     const source = inputSlice(bytecode, bytecode_len) orelse return false;
     const bytecode_copy = allocator.dupe(u8, source) catch return false;
 
-    uninstallBytecode(ctx);
     allocator.free(ctx.bytecode);
     ctx.bytecode = bytecode_copy;
     return true;
@@ -274,7 +289,7 @@ pub export fn evm_set_execution_context(
     calldata: ?[*]const u8,
     calldata_len: usize,
 ) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
 
     // Validate everything and allocate before publishing any field.
     if (gas < 0) return false;
@@ -296,7 +311,7 @@ pub export fn evm_set_execution_context(
 /// Set the transaction origin reported by ORIGIN and warmed as the sender
 /// (EIP-2929). Defaults to the zero address. Persists across calls.
 pub export fn evm_set_origin(handle: ?*EvmHandle, origin_bytes: ?[*]const u8) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
     ctx.evm.origin = readAddress(origin_bytes) orelse return false;
     return true;
 }
@@ -304,7 +319,7 @@ pub export fn evm_set_origin(handle: ?*EvmHandle, origin_bytes: ?[*]const u8) bo
 /// Set the effective gas price reported by GASPRICE (32-byte big-endian).
 /// Defaults to zero. Persists across calls.
 pub export fn evm_set_gas_price(handle: ?*EvmHandle, gas_price_bytes: ?[*]const u8) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
     ctx.evm.gas_price = readWord(gas_price_bytes) orelse return false;
     return true;
 }
@@ -323,7 +338,7 @@ export fn evm_set_blockchain_context(
     block_base_fee_bytes: ?[*]const u8, // 32 bytes
     blob_base_fee_bytes: ?[*]const u8, // 32 bytes
 ) void {
-    const ctx = contextOf(handle) orelse return;
+    const ctx = idleContextOf(handle) orelse return;
 
     const chain_id = readWord(chain_id_bytes) orelse return;
     const block_difficulty = readWord(block_difficulty_bytes) orelse return;
@@ -352,7 +367,7 @@ export fn evm_set_access_list_addresses(
     addresses: ?[*]const u8, // Packed 20-byte addresses
     count: usize,
 ) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
 
     if (count == 0) {
         allocator.free(ctx.access_list_addresses);
@@ -381,7 +396,7 @@ export fn evm_set_access_list_storage_keys(
     slots: ?[*]const u8, // Packed 32-byte slots
     count: usize,
 ) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
 
     if (count == 0) {
         allocator.free(ctx.access_list_storage_keys);
@@ -413,7 +428,7 @@ export fn evm_set_blob_hashes(
     hashes: ?[*]const u8, // Packed 32-byte hashes
     count: usize,
 ) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
 
     if (count == 0) {
         if (ctx.blob_versioned_hashes) |old_hashes| allocator.free(old_hashes);
@@ -502,13 +517,26 @@ pub fn freeAccessList(gpa_allocator: std.mem.Allocator, access_list: ?[]AccessLi
 /// Execute the EVM with current context.
 /// Returns the EVM success flag. A false return with no readable result
 /// (evm_get_output_len == 0, evm_is_success == false) also covers a null
-/// handle and allocation failure. Calling an address with no code succeeds.
+/// handle, allocation failure, a call made while the handle is already
+/// executing, and a handle destroyed by a host callback during the call.
+/// Calling an address with no code succeeds.
+///
+/// Code installed with evm_set_code (including an EIP-7702 delegation
+/// designator) takes precedence; evm_set_bytecode supplies the code only for
+/// a target that has none. Starting a synchronous call cancels any async
+/// transaction suspended by evm_call_ffi.
 export fn evm_execute(handle: ?*EvmHandle) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
+    ctx.in_flight = true;
+    const success = executeSync(ctx);
+    return leaveExecution(ctx) and success;
+}
 
+fn executeSync(ctx: *ExecutionContext) bool {
     // A failed call must never leave the previous call's result readable.
     ctx.result = null;
     if (ctx.gas < 0) return false;
+    cancelAsync(ctx);
 
     const access_list = buildAccessList(allocator, ctx.access_list_addresses, ctx.access_list_storage_keys) catch return false;
     defer freeAccessList(allocator, access_list);
@@ -520,25 +548,39 @@ export fn evm_execute(handle: ?*EvmHandle) bool {
     const call_params = buildCallParams(ctx);
 
     // Set bytecode, access list, and blob hashes. An empty slice clears hashes
-    // left behind by an earlier blob transaction.
+    // left behind by an earlier blob transaction. `call()` consumes the
+    // pending bytecode only when the target has no installed code, and never
+    // writes it into the code map.
     ctx.evm.setBytecode(ctx.bytecode);
     ctx.evm.setAccessList(access_list);
     ctx.evm.setBlobVersionedHashes(ctx.blob_versioned_hashes orelse &.{});
 
-    // The synchronous call API resolves code by address. pending_bytecode
-    // is consumed only by the async executor, so install the supplied code
-    // here as well or a WASM host receives success without executing it.
-    // With no bytecode set, code installed through evm_set_code is used.
-    uninstallBytecode(ctx);
-    if (ctx.bytecode.len > 0) {
-        ctx.evm.code.put(ctx.address, ctx.bytecode) catch return false;
-        ctx.bytecode_installed_at = ctx.address;
-    }
     const result = ctx.evm.call(call_params);
 
     ctx.result = result;
     ctx.result_gas_limit = ctx.gas;
     return result.success;
+}
+
+/// True when evm_set_code (or a previous transaction) installed nonempty code
+/// at the call target. Such code always takes precedence over evm_set_bytecode.
+fn hasInstalledCode(ctx: *ExecutionContext) bool {
+    const code = ctx.evm.code.get(ctx.address) orelse return false;
+    return code.len > 0;
+}
+
+/// Abandon an async transaction left suspended (awaiting data or commit) by
+/// evm_call_ffi, so a later evm_continue_ffi fails instead of resuming stale
+/// frames or replaying the previous transaction's result.
+fn cancelAsync(ctx: *ExecutionContext) void {
+    ctx.evm.pending_precompile_result = null;
+    const executor = ctx.evm.async_executor orelse return;
+    if (executor.phase != .idle) {
+        ctx.evm.frames.clearRetainingCapacity();
+        if (ctx.injector) |injector| injector.clearDirty();
+    }
+    ctx.evm.storage.clear_async_request();
+    ctx.evm.async_executor = null;
 }
 
 /// Get gas remaining after execution
@@ -594,7 +636,7 @@ export fn evm_set_storage(
     slot_bytes: ?[*]const u8, // 32 bytes
     value_bytes: ?[*]const u8, // 32 bytes
 ) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
     const address = readAddress(address_bytes) orelse return false;
     const slot = readWord(slot_bytes) orelse return false;
     const value = readWord(value_bytes) orelse return false;
@@ -625,7 +667,7 @@ export fn evm_set_balance(
     address_bytes: ?[*]const u8, // 20 bytes
     balance_bytes: ?[*]const u8, // 32 bytes
 ) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
     const address = readAddress(address_bytes) orelse return false;
     const balance = readWord(balance_bytes) orelse return false;
 
@@ -642,7 +684,7 @@ export fn evm_set_code(
     code: ?[*]const u8,
     code_len: usize,
 ) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
     const address = readAddress(address_bytes) orelse return false;
     const source = inputSlice(code, code_len) orelse return false;
 
@@ -659,9 +701,6 @@ export fn evm_set_code(
     if (ctx.owned_code.fetchPutAssumeCapacity(address, code_copy)) |previous| {
         allocator.free(previous.value);
     }
-    if (ctx.bytecode_installed_at) |installed| {
-        if (sameAddress(installed, address)) ctx.bytecode_installed_at = null;
-    }
     return true;
 }
 
@@ -671,7 +710,7 @@ export fn evm_set_nonce(
     address_bytes: ?[*]const u8, // 20 bytes
     nonce: u64,
 ) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
     const address = readAddress(address_bytes) orelse return false;
 
     ctx.evm.nonces.put(address, nonce) catch return false;
@@ -790,6 +829,13 @@ fn packOutput(output: Evm.CallOrContinueOutput, ctx: *ExecutionContext, request_
     }
 }
 
+/// Reject a request on a null or currently executing handle without touching
+/// the handle's state.
+fn rejectRequest(request: *AsyncRequest) bool {
+    request.output_type = 255;
+    return false;
+}
+
 /// Report a host-side failure: tag 255 and no readable result.
 fn failRequest(ctx: *ExecutionContext, request_out: *AsyncRequest) bool {
     ctx.result = null;
@@ -814,14 +860,21 @@ fn buildCallParams(ctx: *ExecutionContext) CallParams {
 /// Start EVM execution (async protocol)
 /// Returns request in request_out, or sets output_type=0 if done.
 /// A revert or exceptional halt is a completed call: the function returns true
-/// with output_type=0 and evm_is_success reports false.
+/// with output_type=0 and evm_is_success reports false. A null handle or a
+/// handle that is already executing (a re-entrant host callback) returns false
+/// with output_type=255 and leaves the handle untouched.
 pub export fn evm_call_ffi(
     handle: ?*EvmHandle,
     request_out: ?*AsyncRequest,
 ) bool {
-    const ctx = contextOf(handle) orelse return false;
     const request = request_out orelse return false;
+    const ctx = idleContextOf(handle) orelse return rejectRequest(request);
+    ctx.in_flight = true;
+    const ok = startAsync(ctx, request);
+    return leaveExecution(ctx) and ok;
+}
 
+fn startAsync(ctx: *ExecutionContext, request: *AsyncRequest) bool {
     // A failed call must never leave the previous call's result readable.
     ctx.result = null;
     if (ctx.gas < 0) return failRequest(ctx, request);
@@ -835,7 +888,9 @@ pub export fn evm_call_ffi(
 
     // Set bytecode, access list, and blob hashes BEFORE calling. The executor
     // copies bytecode and calldata, so a suspended frame survives later setters.
-    ctx.evm.setBytecode(ctx.bytecode);
+    // The executor prefers pending bytecode over account code, so pass it only
+    // for a target with no installed code, matching evm_execute.
+    ctx.evm.setBytecode(if (hasInstalledCode(ctx)) &.{} else ctx.bytecode);
     ctx.evm.setAccessList(access_list);
     ctx.evm.setBlobVersionedHashes(ctx.blob_versioned_hashes orelse &.{});
 
@@ -861,8 +916,20 @@ pub export fn evm_continue_ffi(
     data_len: usize,
     request_out: ?*AsyncRequest,
 ) bool {
-    const ctx = contextOf(handle) orelse return false;
     const request = request_out orelse return false;
+    const ctx = idleContextOf(handle) orelse return rejectRequest(request);
+    ctx.in_flight = true;
+    const ok = continueAsync(ctx, continue_type, data_ptr, data_len, request);
+    return leaveExecution(ctx) and ok;
+}
+
+fn continueAsync(
+    ctx: *ExecutionContext,
+    continue_type: u8,
+    data_ptr: ?[*]const u8,
+    data_len: usize,
+    request: *AsyncRequest,
+) bool {
     const data = inputSlice(data_ptr, data_len) orelse return failRequest(ctx, request);
 
     // Build continue input based on type
@@ -911,17 +978,6 @@ pub export fn evm_continue_ffi(
     return packOutput(output, ctx, request);
 }
 
-// The WASI reactor build passes an explicit linker export list in build.zig.
-// Mark exports that list does not name in the object file as well, so the
-// reactor exposes them (idempotent once build.zig lists them too).
-comptime {
-    if (builtin.target.cpu.arch.isWasm()) {
-        asm (".export_name evm_get_state_changes_len, evm_get_state_changes_len");
-        asm (".export_name evm_set_origin, evm_set_origin");
-        asm (".export_name evm_set_gas_price, evm_set_gas_price");
-    }
-}
-
 /// Get the full byte length of the pending state-changes JSON (valid when output_type == 5).
 pub export fn evm_get_state_changes_len(handle: ?*EvmHandle) usize {
     const ctx = contextOf(handle) orelse return 0;
@@ -944,7 +1000,7 @@ pub export fn evm_get_state_changes(
 /// Enable async storage injection.
 /// Must be called before evm_call_ffi if using StateInterface. Idempotent if already enabled.
 pub export fn evm_enable_storage_injector(handle: ?*EvmHandle) bool {
-    const ctx = contextOf(handle) orelse return false;
+    const ctx = idleContextOf(handle) orelse return false;
     if (ctx.injector != null) return true;
 
     // The handle owns the injector and releases it in evm_destroy(). The
@@ -1283,13 +1339,16 @@ test "C ABI - repeated evm_set_code frees every replaced copy" {
     }
     try testing.expectEqual(@as(usize, 5), contextOf(handle).?.owned_code.count());
 
-    // A transaction resets the EVM's code map; the handle still owns the copies
-    // and replacing them afterwards must not double free or leak.
-    try testSetCall(handle, &[_]u8{0x00}, 50_000);
+    // The handle still owns the copies after a transaction, and replacing them
+    // afterwards must not double free or leak. Installed code runs in place of
+    // the evm_set_bytecode buffer: STOP succeeds, INVALID halts.
+    try testing.expect(evm_set_code(handle, &test_target, &[_]u8{0x00}, 1));
+    try testSetCall(handle, &[_]u8{0xfe}, 50_000);
     try testing.expect(evm_execute(handle));
     try testing.expect(evm_set_bytecode(handle, &[_]u8{ 0x00, 0x00 }, 2));
     try testing.expect(evm_set_code(handle, &test_target, &[_]u8{0xfe}, 1));
-    try testing.expect(evm_execute(handle));
+    try testing.expect(!evm_execute(handle));
+    try testing.expectEqual(@as(i64, 50_000), evm_get_gas_used(handle));
 }
 
 test "C ABI - create, configure and destroy cycles leak nothing" {
@@ -1313,7 +1372,9 @@ test "C ABI - create, configure and destroy cycles leak nothing" {
         try testing.expect(evm_set_access_list_storage_keys(handle, &buffer, &buffer, 2));
         try testing.expect(evm_set_blob_hashes(handle, &buffer, 3));
         try testing.expect(evm_set_blob_hashes(handle, &buffer, 1));
-        try testing.expect(evm_set_code(handle, &test_target, &buffer, 200));
+        // Install code away from the call target: installed code takes
+        // precedence over evm_set_bytecode, and 0x11 bytes would underflow.
+        try testing.expect(evm_set_code(handle, buffer[0..20], &buffer, 200));
 
         // Run a transaction with the access list in place, then inspect the EVM:
         // it must not keep a pointer to the freed list.
@@ -1576,6 +1637,132 @@ test "C ABI - storage change list reports cleared slots and skips slots only rea
     try testing.expectEqual(@as(u8, 1), slot[31]);
     try testing.expect(std.mem.allEqual(u8, &value, 0));
     try testing.expect(!evm_get_storage_change(handle, 1, &address, &slot, &value));
+}
+
+test "C ABI - evm_execute keeps evm_set_code and EIP-7702 designators intact" {
+    const scope = TestAllocatorScope.enter();
+    defer scope.exit();
+    const handle = try testHandle();
+    defer evm_destroy(handle);
+    var buffer: [32]u8 = undefined;
+
+    // Installed code at the target returns 0x2a; the evm_set_bytecode buffer would return 0x07.
+    const installed = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    const supplied = [_]u8{ 0x60, 0x07, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    try testing.expect(evm_set_code(handle, &test_target, &installed, installed.len));
+    const owned = contextOf(handle).?.owned_code.get(.{ .bytes = test_target }).?;
+    try testSetCall(handle, &supplied, 100_000);
+
+    try testing.expect(evm_execute(handle));
+    try testing.expectEqual(@as(u8, 0x2a), testOutput(handle, &buffer)[31]);
+    // The code map still points at the handle-owned copy, not the bytecode buffer.
+    const after = handle_evm(handle).code.get(.{ .bytes = test_target }).?;
+    try testing.expectEqual(owned.ptr, after.ptr);
+
+    // A later async call sees the same installed code.
+    var request: AsyncRequest = undefined;
+    try testing.expect(evm_call_ffi(handle, &request));
+    try testing.expectEqual(@as(u8, 0), request.output_type);
+    try testing.expectEqual(@as(u8, 0x2a), testOutput(handle, &buffer)[31]);
+
+    // An EIP-7702 designator at the target delegates to code at another address.
+    var delegate = test_target;
+    delegate[0] = 0xd1;
+    try testing.expect(evm_set_code(handle, &delegate, &installed, installed.len));
+    const designator = [_]u8{ 0xef, 0x01, 0x00 } ++ delegate;
+    try testing.expect(evm_set_code(handle, &test_target, &designator, designator.len));
+    try testing.expect(evm_execute(handle));
+    try testing.expectEqual(@as(u8, 0x2a), testOutput(handle, &buffer)[31]);
+    try testing.expectEqualSlices(u8, &designator, handle_evm(handle).code.get(.{ .bytes = test_target }).?);
+
+    // With no installed code, the evm_set_bytecode buffer runs and is never
+    // left behind in the code map.
+    try testing.expect(evm_set_code(handle, &test_target, null, 0));
+    _ = handle_evm(handle).code.remove(.{ .bytes = test_target });
+    try testing.expect(evm_execute(handle));
+    try testing.expectEqual(@as(u8, 0x07), testOutput(handle, &buffer)[31]);
+    try testing.expect(handle_evm(handle).code.get(.{ .bytes = test_target }) == null);
+}
+
+test "C ABI - evm_execute cancels a suspended async transaction" {
+    const scope = TestAllocatorScope.enter();
+    defer scope.exit();
+    const handle = try testHandle();
+    defer evm_destroy(handle);
+    try testing.expect(evm_enable_storage_injector(handle));
+    var request: AsyncRequest = undefined;
+    var buffer: [32]u8 = undefined;
+
+    // SLOAD(0) suspends for storage.
+    const load = [_]u8{ 0x60, 0x00, 0x54, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    try testSetCall(handle, &load, 100_000);
+    try testing.expect(evm_call_ffi(handle, &request));
+    try testing.expectEqual(@as(u8, 1), request.output_type);
+
+    const ret = [_]u8{ 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    try testSetCall(handle, &ret, 100_000);
+    try testing.expect(evm_execute(handle));
+    try testing.expectEqual(@as(u8, 0x2a), testOutput(handle, &buffer)[31]);
+
+    // The abandoned request cannot be answered, and the sync result survives.
+    var reply = [_]u8{0} ** 84;
+    @memcpy(reply[0..20], &test_target);
+    reply[83] = 5;
+    try testing.expect(!evm_continue_ffi(handle, 1, &reply, reply.len, &request));
+    try testing.expectEqual(@as(u8, 255), request.output_type);
+
+    // Same for a transaction awaiting commit: the acknowledgement must not
+    // replay the abandoned result.
+    try testSetCall(handle, &ret, 100_000);
+    try testing.expect(evm_call_ffi(handle, &request));
+    try testing.expectEqual(@as(u8, 5), request.output_type);
+    try testSetCall(handle, &[_]u8{0x00}, 100_000);
+    try testing.expect(evm_execute(handle));
+    try testing.expect(!evm_continue_ffi(handle, 5, null, 0, &request));
+    try testing.expectEqual(@as(u8, 255), request.output_type);
+}
+
+test "C ABI - an executing handle rejects re-entry and mutation and defers destroy" {
+    const scope = TestAllocatorScope.enter();
+    defer scope.exit();
+    const handle = try testHandle();
+    try testSetCall(handle, &[_]u8{0x00}, 100_000);
+    try testing.expect(evm_set_code(handle, &test_target, &[_]u8{0x00}, 1));
+    const ctx = contextOf(handle).?;
+    const word = test_zero_word;
+    var request: AsyncRequest = undefined;
+
+    // Simulate a host callback running inside evm_execute.
+    ctx.in_flight = true;
+    try testing.expect(!evm_execute(handle));
+    try testing.expect(!evm_call_ffi(handle, &request));
+    try testing.expectEqual(@as(u8, 255), request.output_type);
+    try testing.expect(!evm_continue_ffi(handle, 5, null, 0, &request));
+    try testing.expect(!evm_set_bytecode(handle, &[_]u8{0xfe}, 1));
+    try testing.expect(!evm_set_execution_context(handle, 1, &test_zero_address, &test_target, &word, null, 0));
+    try testing.expect(!evm_set_code(handle, &test_target, &[_]u8{0xfe}, 1));
+    try testing.expect(!evm_set_storage(handle, &test_target, &word, &word));
+    try testing.expect(!evm_set_balance(handle, &test_target, &word));
+    try testing.expect(!evm_set_nonce(handle, &test_target, 1));
+    try testing.expect(!evm_set_origin(handle, &test_target));
+    try testing.expect(!evm_set_gas_price(handle, &word));
+    try testing.expect(!evm_set_access_list_addresses(handle, null, 0));
+    try testing.expect(!evm_set_access_list_storage_keys(handle, null, null, 0));
+    try testing.expect(!evm_set_blob_hashes(handle, null, 0));
+    try testing.expect(!evm_enable_storage_injector(handle));
+    // Read-only getters still work.
+    var out: [32]u8 = undefined;
+    try testing.expect(evm_get_storage(handle, &test_target, &word, &out));
+    // Nothing was replaced.
+    try testing.expectEqualSlices(u8, &[_]u8{0x00}, ctx.bytecode);
+    try testing.expectEqual(@as(i64, 100_000), ctx.gas);
+    try testing.expectEqualSlices(u8, &[_]u8{0x00}, handle_evm(handle).code.get(.{ .bytes = test_target }).?);
+
+    // Destroy is deferred to the end of the outermost entry; testing.allocator
+    // fails the test if the handle leaks.
+    evm_destroy(handle);
+    try testing.expect(ctx.destroy_pending);
+    try testing.expect(!leaveExecution(ctx));
 }
 
 test "evm_alloc returns 16-byte aligned buffers" {

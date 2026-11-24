@@ -3,7 +3,6 @@ import type {
   ChainEventSource,
   ExEx,
   ExExContext,
-  ExExNotification,
   EVMBlock,
   TransactionReceipt,
 } from './types';
@@ -17,7 +16,7 @@ export interface ExExRegistration<Block = EVMBlock, Receipt = TransactionReceipt
   id: string;
   /** The ExEx async generator function */
   exex: ExEx<Block, Receipt>;
-  /** If provided, manager will backfill from this point */
+  /** If provided, notifications resume after this block */
   startFrom?: BlockId;
 }
 
@@ -35,7 +34,7 @@ export type ExExContextFactory<Block = EVMBlock, Receipt = TransactionReceipt> =
 
 export class ExExManager<Block = EVMBlock, Receipt = TransactionReceipt> {
   private runners: Map<string, AsyncGenerator<BlockId, never, undefined>> = new Map();
-  private finishedHeights: Map<string, BlockId> = new Map();
+  private finishedHeights: Map<string, BlockId | null> = new Map();
   private abortControllers: Map<string, AbortController> = new Map();
 
   constructor(
@@ -48,27 +47,32 @@ export class ExExManager<Block = EVMBlock, Receipt = TransactionReceipt> {
    */
   async run(registration: ExExRegistration<Block, Receipt>): Promise<void> {
     const { id, exex, startFrom } = registration;
-    const baseCtx = await this.contextFactory();
+    if (this.abortControllers.has(id)) {
+      throw new Error('ExEx already running: ' + id);
+    }
 
-    // Create abort controller for this ExEx
     const abortController = new AbortController();
     this.abortControllers.set(id, abortController);
-
-    // Create notification stream (with optional backfill)
-    const notifications = this.createNotificationStream(startFrom, baseCtx.head, abortController.signal);
-
-    // Create full context
-    const ctx: ExExContext<Block, Receipt> = { ...baseCtx, notifications };
-
-    // Run the generator
-    const generator = exex(ctx);
-    this.runners.set(id, generator);
+    // Register before startup can suspend. A restart must acknowledge again.
+    this.finishedHeights.set(id, null);
 
     try {
+      const baseCtx = await this.contextFactory();
+      if (abortController.signal.aborted) return;
+
+      const { head, notifications } = await this.source.subscribeFrom(
+        startFrom,
+        abortController.signal
+      );
+      if (abortController.signal.aborted) return;
+
+      const generator = exex({ ...baseCtx, head, notifications });
+      this.runners.set(id, generator);
       for await (const finishedHeight of generator) {
         this.finishedHeights.set(id, finishedHeight);
       }
     } finally {
+      abortController.abort();
       this.runners.delete(id);
       this.abortControllers.delete(id);
     }
@@ -101,12 +105,13 @@ export class ExExManager<Block = EVMBlock, Receipt = TransactionReceipt> {
   }
 
   /**
-   * Get the lowest finished height across all ExExes.
-   * This is the safe point up to which the node can prune data.
+   * Get the lowest acknowledged height across all registered ExExes.
+   * Pruning must wait until every registration has acknowledged a height.
    */
   getFinishedHeight(): BlockId | null {
     let lowest: BlockId | null = null;
     for (const height of this.finishedHeights.values()) {
+      if (height === null) return null;
       if (!lowest || height.number < lowest.number) {
         lowest = height;
       }
@@ -133,28 +138,5 @@ export class ExExManager<Block = EVMBlock, Receipt = TransactionReceipt> {
    */
   getRunningExExIds(): string[] {
     return Array.from(this.runners.keys());
-  }
-
-  private async *createNotificationStream(
-    startFrom: BlockId | undefined,
-    head: BlockId,
-    signal: AbortSignal
-  ): AsyncIterable<ExExNotification<Block, Receipt>> {
-    // Check for abort before starting
-    if (signal.aborted) return;
-
-    // Backfill if starting behind head
-    if (startFrom && startFrom.number < head.number) {
-      for await (const notification of this.source.replayRange(startFrom.number + 1n, head.number)) {
-        if (signal.aborted) return;
-        yield notification;
-      }
-    }
-
-    // Then stream live
-    for await (const notification of this.source.subscribe()) {
-      if (signal.aborted) return;
-      yield notification;
-    }
   }
 }

@@ -36,14 +36,28 @@ zig build test
 # Run execution-spec tests (generation happens automatically)
 zig build specs
 
-# Interactive runner
-zig build test-watch
+# Run unit tests or just the test runner utility tests
+zig build unit
+zig build test-utils
 
 # Build and exercise the WASM artifact (Node 22+ for tests)
 rustup target add wasm32-unknown-unknown
 zig build wasm
 zig build test-wasm
 ```
+
+The optional `zig build nethermind-diff` target requires .NET 8 and a separate
+Nethermind checkout at `nethermind/`. The trie harness previously used
+Nethermind revision `20df13577b86ea71526a3bd0234f1d86bd809fc6`.
+
+Run the TypeScript client suite from `client-ts/` with
+`bun install --frozen-lockfile` and `bun run test`. The trie tests use the
+`ethereum-tests` submodule. `EvmExecutorLive` is a placeholder that returns
+`EvmExecutionError` for every call.
+
+The CI workflow can be dispatched manually to run Lean differential fuzzing.
+With Elan installed, run the same check locally with
+`LEAN_DIFF_REQUIRE=1 zig build lean-diff -Doptimize=ReleaseFast`.
 
 ## Running Spec Subsets (fast iteration)
 
@@ -70,18 +84,29 @@ zig build specs-frontier-opcodes
 # Shanghai
 zig build specs-shanghai-push0
 zig build specs-shanghai-warmcoinbase
-zig build specs-shanghai-initcode
+zig build specs-shanghai-initcode-basic
+zig build specs-shanghai-initcode-eof
 zig build specs-shanghai-withdrawals
 
 # Cancun
 zig build specs-cancun-tstore-basic
 zig build specs-cancun-tstore-reentrancy
-zig build specs-cancun-tstore-contexts
+zig build specs-cancun-tstore-contexts-execution
+zig build specs-cancun-tstore-contexts-tload-reentrancy
+zig build specs-cancun-tstore-contexts-reentrancy
+zig build specs-cancun-tstore-contexts-create
+zig build specs-cancun-tstore-contexts-selfdestruct
+zig build specs-cancun-tstore-contexts-clear
 zig build specs-cancun-mcopy
-zig build specs-cancun-selfdestruct
+zig build specs-cancun-selfdestruct-basic
+zig build specs-cancun-selfdestruct-collision
+zig build specs-cancun-selfdestruct-reentrancy
+zig build specs-cancun-selfdestruct-revert
 zig build specs-cancun-blobbasefee
-zig build specs-cancun-blob-precompile
-zig build specs-cancun-blob-opcodes
+zig build specs-cancun-blob-precompile-basic
+zig build specs-cancun-blob-precompile-gas
+zig build specs-cancun-blob-opcodes-basic
+zig build specs-cancun-blob-opcodes-contexts
 zig build specs-cancun-blob-tx-small
 zig build specs-cancun-blob-tx-subtraction
 zig build specs-cancun-blob-tx-insufficient

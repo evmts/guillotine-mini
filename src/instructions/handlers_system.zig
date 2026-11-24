@@ -67,6 +67,13 @@ pub fn Handlers(FrameType: type) type {
             const length = try frame.popStack();
             const salt: u256 = if (is_create2) try frame.popStack() else 0;
 
+            // EIP-3860 (Shanghai+): reject oversize initcode before expanding or copying
+            // memory. Exceptional halt: all gas is consumed.
+            if (evm.hardfork.isAtLeast(.SHANGHAI) and length > GasConstants.MaxInitcodeSize) {
+                frame.gas_remaining = 0;
+                return error.OutOfGas;
+            }
+
             // A zero-length init code never touches memory, whatever its offset.
             const range = try frame.memoryRange(offset, length);
             const len: u32 = if (range) |r| r.len else 0;
@@ -349,6 +356,10 @@ pub fn Handlers(FrameType: type) type {
             // EIP-214: SELFDESTRUCT cannot be executed in static call context
             // This check must happen AFTER gas charging (Python reference line 525)
             if (frame.is_static) return error.StaticCallViolation;
+
+            // EIP-161: SELFDESTRUCT touches the beneficiary, so an existing empty
+            // beneficiary is deleted at transaction end even for a 0-wei transfer.
+            try evm_ptr.touchAccount(beneficiary);
 
             // Transfer balance from originator to beneficiary
             // Pre-Cancun vs Cancun+ have different balance transfer semantics

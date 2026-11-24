@@ -565,7 +565,8 @@ pub fn runMemGas(h: *Harness) !void {
 
 const SSTORE_GAS = [_]u64{ 0, 2300, 2301, 2899, 2900, 4999, 5000, 19999, 20000, 22099, 22100, 1_000_000 };
 const SSTORE_SLOT: u256 = 0x5107;
-/// Refund counter seed so a negative refund delta is observable (the counter is u64).
+/// Refund counter seed, kept positive so refund deltas compare with the Lean spec
+/// (the Zig counter is a signed i64 and may also go negative mid-transaction).
 const REFUND_SEED: u64 = 1 << 40;
 
 fn zigSstore(h: *Harness, fork: Hardfork, original: u256, current: u256, new: u256, cold: bool, gas: u64) !void {
@@ -886,8 +887,9 @@ fn zigExec(h: *Harness, fork: Hardfork, gas: u64, code: []const u8, calldata: []
     defer evm.deinit();
     try evm.initTransactionState(null);
     try evm.preWarmTransaction(SELF);
-    const arena = evm.arena.allocator();
-    try evm.frames.append(arena, try FrameT.init(arena, code, @intCast(gas), CALLER, SELF, 0, calldata, @ptrCast(&evm), fork, false));
+    // Same allocator as `Evm.call`: `initTransactionState` reserves `frames` in `tx_arena`.
+    const tx_alloc = evm.tx_arena.allocator();
+    try evm.frames.append(tx_alloc, try FrameT.init(tx_alloc, code, @intCast(gas), CALLER, SELF, 0, calldata, @ptrCast(&evm), fork, false));
     const idx = evm.frames.items.len - 1;
     const result = evm.frames.items[idx].execute();
     const frame = &evm.frames.items[idx];

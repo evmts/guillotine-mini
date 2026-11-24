@@ -9,7 +9,7 @@ zig build              # Build all modules
 zig build test         # Run unit + spec tests
 zig build specs        # Run ethereum/tests validation
 zig build wasm         # Build WebAssembly library
-zig build test-watch   # Interactive test runner
+zig build unit         # Run unit tests
 
 # Debug failing tests (recommended)
 bun scripts/isolate-test.ts "test_name"  # Max debug output + analysis
@@ -31,7 +31,6 @@ src/
 ├── evm.zig               # Orchestrator: state, storage, gas refunds, nested calls
 ├── frame.zig             # Bytecode interpreter: stack, memory, PC, per-opcode logic
 ├── host.zig              # Abstract state backend interface
-├── hardfork.zig          # Hardfork detection and feature flags
 ├── opcode.zig            # Opcode definitions and utilities
 ├── trace.zig             # EIP-3155 trace generation
 └── errors.zig            # Error types
@@ -60,11 +59,10 @@ External Dependencies (fetched via zig build):
 
 | Type | Purpose | Command |
 |------|---------|---------|
-| Unit tests | Inline `test` blocks | `zig build test` |
+| Unit tests | Inline `test` blocks | `zig build unit` |
 | Spec tests | ethereum/tests GeneralStateTests | `zig build specs` |
 | Filtered tests | By hardfork/EIP/opcode | `TEST_FILTER="Cancun" zig build specs` |
 | Trace tests | EIP-3155 trace capture/comparison | `zig build test-trace` |
-| Watch mode | Auto-reload on changes | `zig build test-watch` |
 | Engine tests | Consensus-layer format tests | `INCLUDE_ENGINE_TESTS=1 zig build specs` |
 
 ### Engine API Tests (Optional)
@@ -148,18 +146,29 @@ zig build specs-frontier-opcodes
 # Shanghai
 zig build specs-shanghai-push0
 zig build specs-shanghai-warmcoinbase
-zig build specs-shanghai-initcode
+zig build specs-shanghai-initcode-basic
+zig build specs-shanghai-initcode-eof
 zig build specs-shanghai-withdrawals
 
 # Cancun
 zig build specs-cancun-tstore-basic
 zig build specs-cancun-tstore-reentrancy
-zig build specs-cancun-tstore-contexts
+zig build specs-cancun-tstore-contexts-execution
+zig build specs-cancun-tstore-contexts-tload-reentrancy
+zig build specs-cancun-tstore-contexts-reentrancy
+zig build specs-cancun-tstore-contexts-create
+zig build specs-cancun-tstore-contexts-selfdestruct
+zig build specs-cancun-tstore-contexts-clear
 zig build specs-cancun-mcopy
-zig build specs-cancun-selfdestruct
+zig build specs-cancun-selfdestruct-basic
+zig build specs-cancun-selfdestruct-collision
+zig build specs-cancun-selfdestruct-reentrancy
+zig build specs-cancun-selfdestruct-revert
 zig build specs-cancun-blobbasefee
-zig build specs-cancun-blob-precompile
-zig build specs-cancun-blob-opcodes
+zig build specs-cancun-blob-precompile-basic
+zig build specs-cancun-blob-precompile-gas
+zig build specs-cancun-blob-opcodes-basic
+zig build specs-cancun-blob-opcodes-contexts
 zig build specs-cancun-blob-tx-small
 zig build specs-cancun-blob-tx-subtraction
 zig build specs-cancun-blob-tx-insufficient
@@ -330,16 +339,10 @@ Test implementation: `test/specs/test_host.zig`
 </details>
 
 <details>
-<summary><b>Hardfork Support (src/hardfork.zig)</b></summary>
+<summary><b>Hardfork Support</b></summary>
 
-```zig
-pub const Hardfork = enum(u8) {
-    FRONTIER, HOMESTEAD, TANGERINE, SPURIOUS, BYZANTIUM,
-    CONSTANTINOPLE, ISTANBUL, BERLIN, LONDON, MERGE,
-    SHANGHAI, CANCUN, PRAGUE,
-    pub const DEFAULT = Hardfork.CANCUN;
-};
-```
+`src/root.zig` re-exports Voltaire's `Hardfork` enum. Its `Hardfork.DEFAULT` is `.PRAGUE`.
+Pass `.OSAKA` explicitly to run with Osaka rules.
 
 **Methods:** `isAtLeast(fork)`, `isBefore(fork)`, `fromString(name)`
 
@@ -435,7 +438,9 @@ See `src/root_c.zig` for full API.
 | `zig build test` | Unit + spec tests |
 | `zig build specs` | Spec tests only |
 | `zig build wasm` | WASM library + size report |
-| `zig build test-watch` | Interactive test runner |
+| `zig build unit` | Unit tests |
+| `zig build test-utils` | Test runner utility tests |
+| `zig build check-bench-evm` | Compile and link the EVM benchmark |
 | `zig build test-trace` | Trace capture tests |
 
 ### Adding New Features
@@ -731,20 +736,19 @@ This repo is evolving from an EVM-only library into a full Ethereum execution cl
 **Plan:** See `prd/GUILLOTINE_CLIENT_PLAN.md` for the phased implementation plan.
 **Spec reference:** See `prd/ETHEREUM_SPECS_REFERENCE.md` for the full source map.
 
-### Cloned Submodules (canonical specs and tests)
+### Submodules for specs and tests
 
 | Submodule | Purpose |
 |---|---|
 | `execution-specs/` | EELS - authoritative Python EL spec (state transitions, fork rules) |
 | `EIPs/` | Ethereum Improvement Proposals (normative change log) |
-| `yellowpaper/` | Yellow Paper (background only, outdated past Shanghai) |
-| `devp2p/` | Networking specs: RLPx, eth/68, snap/1, discv4/v5, ENR |
 | `execution-apis/` | JSON-RPC + Engine API (OpenRPC spec) |
 | `ethereum-tests/` | Classic JSON test fixtures (TrieTests, GeneralStateTests, BlockchainTests) |
 | `execution-spec-tests/` | Python-generated EVM + state transition test fixtures |
-| `hive/` | End-to-end integration test harness (RPC, Engine API, devp2p, sync) |
-| `consensus-specs/` | Consensus-layer specs (beacon chain, SSZ - future reference) |
-| `nethermind/` | C# reference implementation (architecture reference only) |
+
+External references include devp2p for networking formats, Hive for integration
+tests, the consensus specs for beacon chain and SSZ, the Yellow Paper for
+historical background, and Nethermind for architecture.
 
 ### Existing Zig Libraries
 
@@ -756,14 +760,14 @@ This repo is evolving from an EVM-only library into a full Ethereum execution cl
 ### Source Priority (when in doubt)
 
 1. `execution-specs/` + `EIPs/` - for EVM + state transition behavior
-2. `devp2p/` - for networking wire formats
+2. devp2p - for networking wire formats
 3. `execution-apis/` - for JSON-RPC and Engine API
 4. `ethereum-tests/` + `execution-spec-tests/` - for correctness validation
-5. `nethermind/` - architecture reference only (not behavioral truth)
+5. Nethermind - external architecture reference
 
 ### Key Rules for Full Client Work
 
-- Never modify files in submodules (`execution-specs`, `EIPs`, `devp2p`, etc.)
+- Never modify files in submodules (`execution-specs`, `EIPs`, etc.)
 - Use Voltaire primitives for all types (Address, Block, Tx, Hash, RLP, Crypto, etc.)
 - Use guillotine-mini EVM for execution (do not build a new EVM)
 - Validate every phase against official test suites (see plan for mapping)
