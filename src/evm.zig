@@ -986,7 +986,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 return result;
             }
 
-            const resolved = self.resolveCodeBytes(address, bytecode orelse self.getRawCode(address));
+            const resolved = if (bytecode) |override| self.resolveCodeBytes(address, override) else self.resolveCallCode(address);
             // EIP-7702: the destination's delegate is warm for the whole
             // transaction (prague `process_message_call`).
             if (resolved.is_delegated) self.pre_warm_addresses(&.{resolved.address}) catch |err| return self.failed(0, err);
@@ -1441,7 +1441,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Follows the same API pattern as guillotine performance EVM.
         pub fn inner_call(self: *Self, params: CallParams) CallResult {
             const address = params.get_to().?;
-            const resolved = self.resolveCode(address);
+            const resolved = self.resolveCallCode(address);
             const parent = self.getCurrentFrame();
             const caller = if (parent) |frame| frame.address else self.origin;
             const is_static = params == .staticcall or (parent != null and parent.?.is_static);
@@ -2116,6 +2116,16 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         fn resolveCode(self: *Self, address: Address) ResolvedCode {
             return self.resolveCodeBytes(address, self.getRawCode(address));
+        }
+
+        /// Resolves the code a message to `address` runs. An active native
+        /// precompile wins over account code at its address, as EELS
+        /// `execute_code` checks `PRECOMPILED_CONTRACTS` first. EIP-7702
+        /// delegation disables precompiles, so it still resolves to the delegate.
+        fn resolveCallCode(self: *Self, address: Address) ResolvedCode {
+            const resolved = self.resolveCode(address);
+            if (!resolved.is_delegated and isPrecompile(address, self.hardfork)) return .{ .code = &.{}, .address = address };
+            return resolved;
         }
 
         fn resolveCodeBytes(self: *Self, address: Address, code: []const u8) ResolvedCode {

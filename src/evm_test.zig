@@ -807,3 +807,289 @@ test "state hooks report storage, transient slots, logs, balances and SELFDESTRU
     try std.testing.expect(probe.beneficiary_access and probe.log_seen and probe.selfdestruct_seen);
     try std.testing.expectEqualDeep(trace.StorageEntry{ .slot = 0, .value = 42 }, tracer.entries.items[4].storage.?[0]);
 }
+
+// ============================================================================
+// EIP-7951: P256VERIFY precompile dispatch at 0x0100 (Osaka)
+// ============================================================================
+
+const p256_reference_hex = "4cee90eb86eaa050036147a12d49004b6b9c72bd725d39d4785011fe190f0b4d" ++
+    "a73bd4903f0ce3b639bbbf6e8e80d16931ff4bcf5993d58468e8fb19086e8cac" ++
+    "36dbcd03009df8c59286b162af3bd7fcc0450c9aa81be5d10d312af6c66b1d60" ++
+    "4aebd3099c618202fcfe16ae7770b0c49ab5eadf74b754204a3bb6060e44eff3" ++
+    "7618b065f9832de4ca6ca971a7a1adc826d0f7c00181a5fb2ddf79ae00b4e10e";
+
+// NIST CAVP FIPS 186-4 SigVer, P-256/SHA-256.
+const p256_nist_hex = "d1b8ef21eb4182ee270638061063a3f3c16c114e33937f69fb232cc833965a94" ++
+    "bf96b99aa49c705c910be33142017c642ff540c76349b9dab72f981fd9347f4f" ++
+    "17c55095819089c2e03b9cd415abdf12444e323075d98f31920b9e0f57ec871c" ++
+    "e424dc61d4bb3cb7ef4344a7f8957a0c5134e16f7a67c074f82e6e12f49abf3c" ++
+    "970eed7aa2bc48651545949de1dddaf0127e5965ac85d1243d6f60e7dfaee927";
+
+fn p256HexBytes(comptime hex: []const u8) [160]u8 {
+    var out: [160]u8 = undefined;
+    _ = std.fmt.hexToBytes(&out, hex) catch unreachable;
+    return out;
+}
+
+test "P256VERIFY top-level call enforces EIP-7951 semantics, code precedence, and OOG error_info" {
+    const testing = std.testing;
+    const Address = primitives.Address;
+    const origin = Address.fromU256(0x200);
+    const p256_addr = Address.fromU256(0x0100);
+    const valid_ref = p256HexBytes(p256_reference_hex);
+    const valid_nist = p256HexBytes(p256_nist_hex);
+    const expected_valid = ([_]u8{0} ** 31) ++ [_]u8{1};
+    const p256_n: u256 = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551;
+
+    // 1. Pre-Osaka (Cancun, Prague): empty account no-op, 0 gas consumed even with gas = 1.
+    for ([_]primitives.Hardfork{ .CANCUN, .PRAGUE }) |fork| {
+        var instance: Evm = undefined;
+        try instance.init(testing.allocator, null, fork, null, origin, 0, null);
+        defer instance.deinit();
+
+        for ([_]u64{ 1, 6900, 100_000 }) |gas_limit| {
+            const res = instance.call(.{ .call = .{
+                .caller = origin,
+                .to = p256_addr,
+                .value = 0,
+                .input = &valid_ref,
+                .gas = gas_limit,
+            } });
+            try testing.expect(res.success);
+            try testing.expectEqual(gas_limit, res.gas_left);
+            try testing.expectEqual(@as(usize, 0), res.output.len);
+        }
+    }
+
+    // 2. Osaka valid signatures (Wycheproof, NIST CAVP, high-s) and precompile-over-code precedence.
+    {
+        var high_s_input = valid_ref;
+        const s = std.mem.readInt(u256, valid_ref[64..96], .big);
+        std.mem.writeInt(u256, high_s_input[64..96], p256_n - s, .big);
+
+        for ([_][160]u8{ valid_ref, valid_nist, high_s_input }) |input| {
+            var instance: Evm = undefined;
+            try instance.init(testing.allocator, null, .OSAKA, null, origin, 0, null);
+            defer instance.deinit();
+            // Account code at 0x0100 must not shadow the active native precompile.
+            try instance.code.put(p256_addr, &.{0xfe});
+
+            const res = instance.call(.{ .call = .{
+                .caller = origin,
+                .to = p256_addr,
+                .value = 0,
+                .input = &input,
+                .gas = 20_000,
+            } });
+            try testing.expect(res.success);
+            try testing.expectEqual(@as(u64, 20_000 - 6900), res.gas_left);
+            try testing.expectEqualSlices(u8, &expected_valid, res.output);
+        }
+    }
+
+    // 3. Osaka invalid inputs (wrong length, bad sig, r=0, s=n, infinity (0,0), off-curve):
+    //    succeed WITHOUT revert, return empty bytes, consume exactly 6900 gas.
+    {
+        var flipped_hash = valid_ref;
+        flipped_hash[0] ^= 0x01;
+        var zero_r = valid_ref;
+        @memset(zero_r[32..64], 0);
+        var s_eq_n = valid_ref;
+        std.mem.writeInt(u256, s_eq_n[64..96], p256_n, .big);
+        var infinity = valid_ref;
+        @memset(infinity[96..160], 0);
+        var off_curve = valid_ref;
+        off_curve[159] ^= 0x01;
+
+        const invalid_cases = [_][]const u8{
+            &[_]u8{},
+            valid_ref[0..159],
+            &(valid_ref ++ [_]u8{0}),
+            &flipped_hash,
+            &zero_r,
+            &s_eq_n,
+            &infinity,
+            &off_curve,
+        };
+        for (invalid_cases) |bad_input| {
+            var instance: Evm = undefined;
+            try instance.init(testing.allocator, null, .OSAKA, null, origin, 0, null);
+            defer instance.deinit();
+
+            const res = instance.call(.{ .call = .{
+                .caller = origin,
+                .to = p256_addr,
+                .value = 0,
+                .input = bad_input,
+                .gas = 10_000,
+            } });
+            try testing.expect(res.success);
+            try testing.expectEqual(@as(u64, 10_000 - 6900), res.gas_left);
+            try testing.expectEqual(@as(usize, 0), res.output.len);
+        }
+    }
+
+    // 4. Exact 6900 gas succeeds with 0 left; 6899 fails with gas_left = 0 and error_info = "OutOfGas".
+    {
+        var instance: Evm = undefined;
+        try instance.init(testing.allocator, null, .OSAKA, null, origin, 0, null);
+        defer instance.deinit();
+
+        const exact = instance.call(.{ .call = .{
+            .caller = origin,
+            .to = p256_addr,
+            .value = 0,
+            .input = &valid_nist,
+            .gas = 6900,
+        } });
+        try testing.expect(exact.success);
+        try testing.expectEqual(@as(u64, 0), exact.gas_left);
+        try testing.expectEqualSlices(u8, &expected_valid, exact.output);
+
+        const oog = instance.call(.{ .call = .{
+            .caller = origin,
+            .to = p256_addr,
+            .value = 0,
+            .input = &valid_nist,
+            .gas = 6899,
+        } });
+        try testing.expect(!oog.success);
+        try testing.expectEqual(@as(u64, 0), oog.gas_left);
+        try testing.expectEqual(@as(usize, 0), oog.output.len);
+        try testing.expectEqualStrings("OutOfGas", oog.error_info.?);
+    }
+}
+
+test "P256VERIFY inner_call charges exact 6900 gas and ignores code at 0x0100 in Osaka" {
+    const testing = std.testing;
+    const Address = primitives.Address;
+    const caller = Address.fromU256(0x200);
+    const p256_addr = Address.fromU256(0x0100);
+    const valid_input = p256HexBytes(p256_reference_hex);
+    const expected_valid = ([_]u8{0} ** 31) ++ [_]u8{1};
+
+    var instance: Evm = undefined;
+    try instance.init(testing.allocator, null, .OSAKA, null, caller, 0, null);
+    defer instance.deinit();
+    try instance.initTransactionState(null);
+    try instance.code.put(p256_addr, &.{0xfe});
+
+    const valid = instance.inner_call(.{ .staticcall = .{
+        .caller = caller,
+        .to = p256_addr,
+        .input = &valid_input,
+        .gas = 10_000,
+    } });
+    try testing.expect(valid.success);
+    try testing.expectEqualSlices(u8, &expected_valid, valid.output);
+    try testing.expectEqual(@as(u64, 10_000 - 6900), valid.gas_left);
+
+    const oog = instance.inner_call(.{ .staticcall = .{
+        .caller = caller,
+        .to = p256_addr,
+        .input = &valid_input,
+        .gas = 6899,
+    } });
+    try testing.expect(!oog.success);
+    try testing.expectEqual(@as(u64, 0), oog.gas_left);
+}
+
+test "P256VERIFY STATICCALL from contract verifies gas, EIP-2929 warm access, and OOG" {
+    const testing = std.testing;
+    const Address = primitives.Address;
+    const origin = Address.fromU256(0x200);
+    const caller_contract = Address.fromU256(0x300);
+    const valid_input = p256HexBytes(p256_reference_hex);
+
+    // Bytecode (29 bytes):
+    // CALLDATASIZE PUSH0 PUSH0 CALLDATACOPY
+    // PUSH1 0x20 PUSH1 0xa0 CALLDATASIZE PUSH0 PUSH2 0x0100 PUSH2 <gas_hi><gas_lo> STATICCALL
+    // RETURNDATASIZE PUSH1 0xc0 MSTORE
+    // PUSH1 0xe0 MSTORE (stores STATICCALL success at 0xe0)
+    // PUSH1 0x60 PUSH1 0xa0 RETURN ([0xa0..0xc0]=out, [0xc0..0xe0]=rds, [0xe0..0x100]=ok)
+    const buildWrapper = struct {
+        fn code(fwd_gas: u16) [29]u8 {
+            return .{
+                0x36, 0x5f, 0x5f,                   0x37,
+                0x60, 0x20, 0x60,                   0xa0,
+                0x36, 0x5f, 0x61,                   0x01,
+                0x00, 0x61, @intCast(fwd_gas >> 8), @intCast(fwd_gas & 0xff),
+                0xfa, 0x3d, 0x60,                   0xc0,
+                0x52, 0x60, 0xe0,                   0x52,
+                0x60, 0x60, 0x60,                   0xa0,
+                0xf3,
+            };
+        }
+    }.code;
+
+    // Osaka with 10_000 forwarded gas on valid input: ok=1, rds=32, out=1.
+    const wrapper_ok = buildWrapper(10_000);
+    var osaka_gas_used: u64 = 0;
+    {
+        var instance: Evm = undefined;
+        try instance.init(testing.allocator, null, .OSAKA, null, origin, 0, null);
+        defer instance.deinit();
+        try instance.code.put(caller_contract, &wrapper_ok);
+
+        const res = instance.call(.{ .call = .{
+            .caller = origin,
+            .to = caller_contract,
+            .value = 0,
+            .input = &valid_input,
+            .gas = 100_000,
+        } });
+        try testing.expect(res.success);
+        try testing.expectEqual(@as(usize, 96), res.output.len);
+        try testing.expectEqual(@as(u256, 1), std.mem.readInt(u256, res.output[0..32], .big));
+        try testing.expectEqual(@as(u256, 32), std.mem.readInt(u256, res.output[32..64], .big));
+        try testing.expectEqual(@as(u256, 1), std.mem.readInt(u256, res.output[64..96], .big));
+        osaka_gas_used = 100_000 - res.gas_left;
+    }
+
+    // Prague with same wrapper: cold 0x0100 (+2500 over warm), 0 precompile gas (-6900), ok=1, rds=0, out=0.
+    {
+        var instance: Evm = undefined;
+        try instance.init(testing.allocator, null, .PRAGUE, null, origin, 0, null);
+        defer instance.deinit();
+        try instance.code.put(caller_contract, &wrapper_ok);
+
+        const res = instance.call(.{ .call = .{
+            .caller = origin,
+            .to = caller_contract,
+            .value = 0,
+            .input = &valid_input,
+            .gas = 100_000,
+        } });
+        try testing.expect(res.success);
+        try testing.expectEqual(@as(usize, 96), res.output.len);
+        try testing.expectEqual(@as(u256, 0), std.mem.readInt(u256, res.output[0..32], .big));
+        try testing.expectEqual(@as(u256, 0), std.mem.readInt(u256, res.output[32..64], .big));
+        try testing.expectEqual(@as(u256, 1), std.mem.readInt(u256, res.output[64..96], .big));
+        const prague_gas_used = 100_000 - res.gas_left;
+        // Osaka pays warm (100) + 6900 = 7000; Prague pays cold (2600) + 0 = 2600; delta = 4400.
+        try testing.expectEqual(@as(u64, 4400), osaka_gas_used - prague_gas_used);
+    }
+
+    // Osaka with 6899 forwarded gas: STATICCALL pushes ok=0, rds=0, consumes all 6899 forwarded gas.
+    const wrapper_oog = buildWrapper(6899);
+    {
+        var instance: Evm = undefined;
+        try instance.init(testing.allocator, null, .OSAKA, null, origin, 0, null);
+        defer instance.deinit();
+        try instance.code.put(caller_contract, &wrapper_oog);
+
+        const res = instance.call(.{ .call = .{
+            .caller = origin,
+            .to = caller_contract,
+            .value = 0,
+            .input = &valid_input,
+            .gas = 100_000,
+        } });
+        try testing.expect(res.success);
+        try testing.expectEqual(@as(usize, 96), res.output.len);
+        try testing.expectEqual(@as(u256, 0), std.mem.readInt(u256, res.output[0..32], .big));
+        try testing.expectEqual(@as(u256, 0), std.mem.readInt(u256, res.output[32..64], .big));
+        try testing.expectEqual(@as(u256, 0), std.mem.readInt(u256, res.output[64..96], .big));
+        try testing.expectEqual(osaka_gas_used - 1, 100_000 - res.gas_left);
+    }
+}
