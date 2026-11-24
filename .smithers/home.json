@@ -1,0 +1,39 @@
+{
+  "blocks": [
+    {
+      "type": "text",
+      "title": "guillotine-mini factory",
+      "text": "Python execution-specs are authoritative: gas order, hardfork guards and error mapping must match them exactly. Zig, WASM and client-ts checks run incrementally through Smithers with a local-first cache synced to build.smithers.sh; benchmarks are exclusive and always explicit."
+    },
+    {
+      "type": "prompt",
+      "title": "Ask about guillotine-mini",
+      "placeholder": "Describe a failing spec test, opcode, gas or ABI issue…"
+    },
+    {
+      "type": "flows",
+      "title": "Review, fix specs and reproduce"
+    },
+    {
+      "type": "links",
+      "links": [
+        {
+          "label": "Repository",
+          "url": "https://github.com/evmts/guillotine-mini"
+        },
+        {
+          "label": "CI",
+          "url": "https://github.com/evmts/guillotine-mini/actions/workflows/ci.yml"
+        },
+        {
+          "label": "Docs",
+          "url": "https://mini.tevm.sh"
+        },
+        {
+          "label": "execution-specs",
+          "url": "https://github.com/ethereum/execution-specs"
+        }
+      ]
+    }
+  ]
+}

@@ -1,17 +1,23 @@
 import { Smithers as S } from "@smthrs/targets"
 
 export const Workspace = S.Workspace("guillotine-mini", {
-  repository: "git+https://github.com/evmts/guillotine-mini.git",
+  repository: "evmts/guillotine-mini",
   cache: S.Cache({
-    directory: ".flows",
+    directory: ".smithers/cache",
     hostDirectories: [
       ".zig-cache",
       "zig-out",
       "client-ts/node_modules",
       "docs/node_modules",
     ],
+    // Local-first; syncs through Cloudflare when the tokens are set locally or in CI.
+    remote: S.RemoteCache.make({
+      endpoint: "https://build.smithers.sh",
+      read: S.Secret("SMITHERS_CACHE_READ_TOKEN"),
+      write: S.Secret("SMITHERS_CACHE_WRITE_TOKEN"),
+    }),
   }),
-  host: S.Host({ bins: ["zig", "bun", "node"] }),
+  host: S.Host({ bins: ["zig", "bun", "node", "sh"] }),
   sandboxes: S.Sandboxes({
     default: S.Sandbox.None(),
   }),
@@ -22,6 +28,8 @@ export const Workspace = S.Workspace("guillotine-mini", {
       ".zig-cache-local",
       "zig-out",
       ".flows",
+      ".smithers/cache",
+      ".smithers/reports",
       ".bench-results",
       "client-ts/node_modules",
       "docs/node_modules",

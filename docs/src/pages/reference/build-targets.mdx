@@ -61,17 +61,17 @@ Run Zig benchmarks with `-Doptimize=ReleaseFast` for accurate timings. Set `BENC
 | `node test/wasm.bench.mjs` | WASI reactor instantiation & execution benchmarks (after `zig build wasm`) |
 | `bun scripts/bench-summary.ts` | Unified summary & baseline diff across all `.bench-results/*.json` and `**/.bench-result.json` |
 
-## Incremental Smithers targets (`WORKSPACE.ts` / `PACKAGE.ts`)
+## Incremental Smithers targets (`.smithers/WORKSPACE.ts` / `PACKAGE.ts`)
 
 | Command | Action |
 | --- | --- |
-| `smithers-build targets` | List all 98 declared targets across 29 packages |
-| `smithers-build affected test '//...' --include-exclusive --verbose` | Run only tests and benchmarks whose inputs changed |
-| `smithers-build affected test '//:bench_all' --include-exclusive --verbose` | Run only affected benchmarks (Zig, WASM, TypeScript, `client-ts`) |
-| `smithers-build test //:bench_core --verbose` | Run all 7 Core EVM & WASM benchmarks exclusively |
-| `smithers-build test //:bench_client_zig --verbose` | Run all 11 Zig client benchmarks exclusively |
-| `smithers-build test //:bench_ts --verbose` | Run all 13 TypeScript & `client-ts` benchmarks exclusively |
-| `smithers-build run //:bench_summary` | Print aggregated benchmark summary table |
+| `smthrs targets` | List declared targets across all packages |
+| `smthrs ci '//...'` | Build, format-check, test and verify the factory; cached results replay |
+| `smthrs affected test '//...' --include-exclusive --verbose` | Run only tests and benchmarks whose inputs changed |
+| `smthrs test --include-exclusive '//...'` | Run every test and every exclusive benchmark |
+| `smthrs test //:bench_opcodes --verbose` | Run one benchmark exclusively |
+| `smthrs target //.smithers:factory-write --write` | Regenerate `.smithers/factory.json` and `home.json` after editing `FACTORY.ts` |
+| `smthrs run //:bench_summary` | Print aggregated benchmark summary table |
 
 ## Build options (`-D`) & environment variables
 
@@ -80,7 +80,7 @@ Run Zig benchmarks with `-Doptimize=ReleaseFast` for accurate timings. Set `BENC
 | `-Doptimize=ReleaseFast` / `ReleaseSmall` / `ReleaseSafe` | Standard Zig optimization mode |
 | `-Dnethermind-diff=false` | Skip Nethermind trie differential test during `zig build test` |
 | `-Drefresh-specs=true` | Force regeneration of `execution-specs` fixtures |
-| `BENCH_JSON_OUT="<path>"` | Emit structured JSON benchmark metrics for Smithers `outFiles` / `bench-summary.ts` |
+| `BENCH_JSON_OUT="<path>"` | Emit structured JSON benchmark metrics for `bench-summary.ts` |
 | `TEST_FILTER="<substring>"` | Filter `zig build specs` tests by name, fork, EIP, or opcode |
 | `TEST_SEQUENTIAL=1` | Run filtered spec tests sequentially for readable divergence logs |
 | `INCLUDE_ENGINE_TESTS=1` | Include `blockchain_test_engine` fixtures in `zig build specs` |

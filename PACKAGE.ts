@@ -12,7 +12,6 @@ import { Package as clientRpcPkg } from "./client/rpc/PACKAGE.ts"
 import { Package as clientEnginePkg } from "./client/engine/PACKAGE.ts"
 import { Package as clientSyncPkg } from "./client/sync/PACKAGE.ts"
 import { Package as tsUtilsPkg } from "./src/utils/PACKAGE.ts"
-import { Package as tsExexPkg } from "./ts/exex/PACKAGE.ts"
 import { Package as clientTsDbPkg } from "./client-ts/db/PACKAGE.ts"
 import { Package as clientTsStatePkg } from "./client-ts/state/PACKAGE.ts"
 import { Package as clientTsTriePkg } from "./client-ts/trie/PACKAGE.ts"
@@ -27,29 +26,28 @@ import { Package as clientTsTxpoolPkg } from "./client-ts/txpool/PACKAGE.ts"
 
 const { bytecode_srcs, storage_srcs, frame_srcs, evm_srcs, ffi_srcs } = srcPkg
 const { bench_utils, cli_srcs } = clientPkg
-const { bench: clientDbBench, test: clientDbTest } = clientDbPkg
-const { bench: clientTrieBench, test: clientTrieTest } = clientTriePkg
-const { bench: clientStateBench, test: clientStateTest } = clientStatePkg
-const { bench: clientEvmBench, test: clientEvmTest } = clientEvmPkg
-const { bench: clientBlockchainBench, test: clientBlockchainTest } = clientBlockchainPkg
-const { bench: clientTxpoolBench, test: clientTxpoolTest } = clientTxpoolPkg
-const { bench: clientNetworkBench, test: clientNetworkTest } = clientNetworkPkg
-const { bench: clientRpcBench, test: clientRpcTest } = clientRpcPkg
-const { bench: clientEngineBench, test: clientEngineTest } = clientEnginePkg
-const { bench: clientSyncBench, test: clientSyncTest } = clientSyncPkg
-const { bench: tsUtilsBench, test: tsUtilsTest } = tsUtilsPkg
-const { bench: tsExexBench } = tsExexPkg
-const { bench: clientTsDbBench, test: clientTsDbTest } = clientTsDbPkg
-const { bench: clientTsStateBench, test: clientTsStateTest } = clientTsStatePkg
-const { bench: clientTsTrieBench, test: clientTsTrieTest } = clientTsTriePkg
-const { bench: clientTsEvmBench, test: clientTsEvmTest } = clientTsEvmPkg
-const { bench: clientTsBlockchainBench, test: clientTsBlockchainTest } = clientTsBlockchainPkg
-const { bench: clientTsEngineBench, test: clientTsEngineTest } = clientTsEnginePkg
-const { bench: clientTsNetworkBench, test: clientTsNetworkTest } = clientTsNetworkPkg
-const { bench: clientTsRpcBench, test: clientTsRpcTest } = clientTsRpcPkg
-const { bench: clientTsRunnerBench, test: clientTsRunnerTest } = clientTsRunnerPkg
-const { bench: clientTsSyncBench, test: clientTsSyncTest } = clientTsSyncPkg
-const { bench: clientTsTxpoolBench, test: clientTsTxpoolTest } = clientTsTxpoolPkg
+const { test: clientDbTest } = clientDbPkg
+const { test: clientTrieTest } = clientTriePkg
+const { test: clientStateTest } = clientStatePkg
+const { test: clientEvmTest } = clientEvmPkg
+const { test: clientBlockchainTest } = clientBlockchainPkg
+const { test: clientTxpoolTest } = clientTxpoolPkg
+const { test: clientNetworkTest } = clientNetworkPkg
+const { test: clientRpcTest } = clientRpcPkg
+const { test: clientEngineTest } = clientEnginePkg
+const { test: clientSyncTest } = clientSyncPkg
+const { test: tsUtilsTest } = tsUtilsPkg
+const { test: clientTsDbTest } = clientTsDbPkg
+const { test: clientTsStateTest } = clientTsStatePkg
+const { test: clientTsTrieTest } = clientTsTriePkg
+const { test: clientTsEvmTest } = clientTsEvmPkg
+const { test: clientTsBlockchainTest } = clientTsBlockchainPkg
+const { test: clientTsEngineTest } = clientTsEnginePkg
+const { test: clientTsNetworkTest } = clientTsNetworkPkg
+const { test: clientTsRpcTest } = clientTsRpcPkg
+const { test: clientTsRunnerTest } = clientTsRunnerPkg
+const { test: clientTsSyncTest } = clientTsSyncPkg
+const { test: clientTsTxpoolTest } = clientTsTxpoolPkg
 
 const build_files = S.Filegroup({
   srcs: [S.file("build.zig"), S.file("build.zig.zon")],
@@ -90,61 +88,61 @@ const misc_files = S.Filegroup({
 // ---------------------------------------------------------------------------
 
 const bench_bytecode = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "bench-bytecode", "-Doptimize=ReleaseFast"],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "bench-bytecode", "-Doptimize=ReleaseFast"],
   env: { BENCH_JSON_OUT: ".bench-results/core-bytecode.json" },
-  data: [build_files, bench_utils, bytecode_srcs],
-  outFiles: [".bench-results/core-bytecode.json"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, bench_utils, bytecode_srcs],
   exclusive: true,
   sandbox: "none",
 })
 
 const bench_storage = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "bench-storage", "-Doptimize=ReleaseFast"],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "bench-storage", "-Doptimize=ReleaseFast"],
   env: { BENCH_JSON_OUT: ".bench-results/core-storage.json" },
-  data: [build_files, bench_utils, storage_srcs],
-  outFiles: [".bench-results/core-storage.json"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, bench_utils, storage_srcs],
   exclusive: true,
   sandbox: "none",
 })
 
 const bench_frame = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "bench-frame", "-Doptimize=ReleaseFast"],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "bench-frame", "-Doptimize=ReleaseFast"],
   env: { BENCH_JSON_OUT: ".bench-results/core-frame.json" },
-  data: [build_files, bench_utils, frame_srcs],
-  outFiles: [".bench-results/core-frame.json"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, bench_utils, frame_srcs],
   exclusive: true,
   sandbox: "none",
 })
 
 const bench_opcodes = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "bench-opcodes", "-Doptimize=ReleaseFast"],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "bench-opcodes", "-Doptimize=ReleaseFast"],
   env: { BENCH_JSON_OUT: ".bench-results/core-opcodes.json" },
-  data: [build_files, bench_utils, evm_srcs],
-  outFiles: [".bench-results/core-opcodes.json"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, bench_utils, evm_srcs],
   exclusive: true,
   sandbox: "none",
 })
 
 const bench_evm_core = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "bench-evm-core", "-Doptimize=ReleaseFast"],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "bench-evm-core", "-Doptimize=ReleaseFast"],
   env: { BENCH_JSON_OUT: ".bench-results/core-evm.json" },
-  data: [build_files, bench_utils, evm_srcs],
-  outFiles: [".bench-results/core-evm.json"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, bench_utils, evm_srcs],
   exclusive: true,
   sandbox: "none",
 })
 
 const bench_ffi = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "bench-ffi", "-Doptimize=ReleaseFast"],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "bench-ffi", "-Doptimize=ReleaseFast"],
   env: { BENCH_JSON_OUT: ".bench-results/core-ffi.json" },
-  data: [build_files, bench_utils, ffi_srcs],
-  outFiles: [".bench-results/core-ffi.json"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, bench_utils, ffi_srcs],
   exclusive: true,
   sandbox: "none",
 })
@@ -153,17 +151,16 @@ const bench_wasm = S.Shell.Test({
   shell: "zig build wasm && node test/wasm.bench.mjs",
   env: { BENCH_JSON_OUT: ".bench-results/wasm.json" },
   data: [build_files, ffi_srcs, S.file("test/wasm.bench.mjs")],
-  outFiles: [".bench-results/wasm.json"],
   exclusive: true,
   sandbox: "none",
 })
 
 const bench_cli = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "bench-cli", "-Doptimize=ReleaseFast"],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "bench-cli", "-Doptimize=ReleaseFast"],
   env: { BENCH_JSON_OUT: ".bench-results/client-cli.json" },
-  data: [build_files, bench_utils, cli_srcs],
-  outFiles: [".bench-results/client-cli.json"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, bench_utils, cli_srcs],
   exclusive: true,
   sandbox: "none",
 })
@@ -173,35 +170,42 @@ const bench_cli = S.Shell.Test({
 // ---------------------------------------------------------------------------
 
 const test_unit = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "unit"],
-  data: [build_files, evm_srcs, cli_srcs],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "unit"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, evm_srcs, cli_srcs],
   sandbox: "none",
 })
 
 const test_trace = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "test-trace"],
-  data: [build_files, evm_srcs, S.file("test_trace.zig")],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "test-trace"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, evm_srcs, S.file("test_trace.zig")],
   sandbox: "none",
 })
 
 const test_runner = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "test-runner"],
-  data: [build_files, evm_srcs, cli_srcs],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "test-runner"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, evm_srcs, cli_srcs],
   sandbox: "none",
 })
 
 const test_wasm = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "test-wasm"],
-  data: [build_files, ffi_srcs, S.file("test/wasm.test.mjs")],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "test-wasm"],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, ffi_srcs, S.file("test/wasm.test.mjs")],
   sandbox: "none",
 })
 
 // ---------------------------------------------------------------------------
-// Benchmark summary tool & aggregate suites
+// Benchmark summary tool
+// Benchmarks are exclusive tests: select them explicitly or with
+// `smthrs test --include-exclusive //...`. A Suite over them would make every
+// wildcard `smthrs ci //...` refuse, so none is declared.
 // ---------------------------------------------------------------------------
 
 const bench_summary = S.Shell.Run({
@@ -209,56 +213,6 @@ const bench_summary = S.Shell.Run({
   args: ["scripts/bench-summary.ts"],
   data: [S.file("scripts/bench-summary.ts")],
   sandbox: "none",
-})
-
-const bench_core = S.Suite({
-  tests: [
-    bench_bytecode,
-    bench_storage,
-    bench_frame,
-    bench_opcodes,
-    bench_evm_core,
-    bench_ffi,
-    bench_wasm,
-  ],
-})
-
-const bench_client_zig = S.Suite({
-  tests: [
-    clientDbBench,
-    clientTrieBench,
-    clientStateBench,
-    clientEvmBench,
-    clientBlockchainBench,
-    clientTxpoolBench,
-    clientNetworkBench,
-    clientRpcBench,
-    clientEngineBench,
-    clientSyncBench,
-    bench_cli,
-  ],
-})
-
-const bench_ts = S.Suite({
-  tests: [
-    tsUtilsBench,
-    tsExexBench,
-    clientTsDbBench,
-    clientTsStateBench,
-    clientTsTrieBench,
-    clientTsEvmBench,
-    clientTsBlockchainBench,
-    clientTsEngineBench,
-    clientTsNetworkBench,
-    clientTsRpcBench,
-    clientTsRunnerBench,
-    clientTsSyncBench,
-    clientTsTxpoolBench,
-  ],
-})
-
-const bench_all = S.Suite({
-  tests: [bench_core, bench_client_zig, bench_ts],
 })
 
 const test_all = S.Suite({
@@ -311,10 +265,6 @@ export const Package = S.Package({
     test_runner,
     test_wasm,
     bench_summary,
-    bench_core,
-    bench_client_zig,
-    bench_ts,
-    bench_all,
     test_all,
   },
 })

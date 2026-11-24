@@ -52,3 +52,57 @@ jobs:
         run: zig build test
       - name: Unit and native trace regressions
         run: zig build unit test-trace -Doptimize=ReleaseSafe
+
+  smithers:
+    # Dogfoods the incremental Smithers graph: fmt, native/WASM build, Zig and
+    # client-ts tests, and the factory projection check. Benchmarks are
+    # exclusive and stay out of `ci //...`.
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: guillotine-mini
+    env:
+      SMITHERS_CACHE_READ_TOKEN: ${{ secrets.SMITHERS_CACHE_READ_TOKEN }}
+      SMITHERS_CACHE_WRITE_TOKEN: ${{ secrets.SMITHERS_CACHE_WRITE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: guillotine-mini
+          submodules: recursive
+      - name: Read native dependency pin
+        id: native
+        working-directory: .
+        run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          repository: evmts/voltaire
+          ref: ${{ steps.native.outputs.voltaire }}
+          path: voltaire
+          submodules: recursive
+      - name: Install Zig 0.15.2
+        uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a # v1
+        with:
+          version: 0.15.2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.1
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build native crypto archive
+        working-directory: voltaire
+        run: cargo build --release --lib
+      - name: Install client-ts dependencies
+        run: bun install --frozen-lockfile
+        working-directory: guillotine-mini/client-ts
+      - name: smthrs ci
+        run: npx -y smthrs@next ci '//...' --verbose

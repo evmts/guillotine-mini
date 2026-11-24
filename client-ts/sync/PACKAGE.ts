@@ -15,14 +15,13 @@ const bench = S.Shell.Test({
   ],
   env: { BENCH_JSON_OUT: "client-ts/sync/.bench-result.json" },
   data: [srcs, S.file("//scripts/run-client-ts-bench.ts"), S.file("//scripts/bench-ts-utils.ts")],
-  outFiles: [".bench-result.json"],
   exclusive: true,
   sandbox: "none",
 })
 
 const test = S.Shell.Test({
-  bin: S.Host.bin("bun"),
-  args: ["--cwd", "client-ts", "exec", "vitest", "run", "sync"],
+  shell: "cd client-ts && bun x vitest run sync",
+  tools: [S.Host.bin("bun")],
   data: [srcs],
   sandbox: "none",
 })

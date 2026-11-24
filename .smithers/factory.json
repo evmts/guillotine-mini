@@ -1,0 +1,209 @@
+{
+  "summary": "guillotine-mini: spec-compliant Zig EVM with WASM/C bindings; incremental checks for execution-specs parity, gas and opcodes.",
+  "flows": [
+    {
+      "id": "checks/review",
+      "description": "Review a guillotine-mini change for execution-specs parity, gas and hardfork correctness, Zig memory safety and C/WASM ABI stability.",
+      "summary": "Review gas, hardfork gating, state rollback, Zig memory safety and ABI changes.",
+      "featured": true,
+      "kind": "mdx",
+      "path": ".smithers/flows/checks/review/flow.mdx",
+      "capabilities": [
+        "fs:read:**"
+      ],
+      "model": null,
+      "modelInvocable": true,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": [
+        "coding/ReviewCheck"
+      ]
+    },
+    {
+      "id": "spec-fix",
+      "description": "Fix one failing ethereum/tests or execution-spec-tests case in guillotine-mini by following the 7-checkpoint trace-and-reference method.",
+      "summary": "Fix a failing ethereum/tests or execution-spec-tests case against the Python reference.",
+      "featured": true,
+      "kind": "mdx",
+      "path": ".smithers/flows/spec-fix/flow.mdx",
+      "capabilities": [
+        "fs:read:**",
+        "fs:write:src/**",
+        "proc:spawn:rg *",
+        "proc:spawn:jj --no-pager *",
+        "proc:spawn:zig build *",
+        "proc:spawn:bun scripts/*"
+      ],
+      "model": "sol",
+      "modelInvocable": true,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": [],
+      "budget": {
+        "tokens": 120000,
+        "milliseconds": 3600000
+      }
+    },
+    {
+      "id": "issue/repro",
+      "description": "Reproduce a guillotine-mini EVM defect with a minimal input and trace divergence before any implementation.",
+      "summary": "Reproduce an EVM defect with a trace divergence before planning a fix.",
+      "featured": true,
+      "kind": "mdx",
+      "path": ".smithers/flows/issue/repro/flow.mdx",
+      "capabilities": [
+        "fs:read:**",
+        "proc:spawn:rg *",
+        "proc:spawn:jj --no-pager *",
+        "proc:spawn:zig build *",
+        "proc:spawn:bun scripts/*"
+      ],
+      "model": "sol",
+      "modelInvocable": true,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": [],
+      "budget": {
+        "tokens": 64000,
+        "milliseconds": 1800000
+      }
+    },
+    {
+      "id": "issue/poc",
+      "description": "Implement a bounded guillotine-mini fix with a failing regression first, spec evidence and Zig memory-safety checks.",
+      "summary": "Implement a bounded fix with a focused regression and spec evidence.",
+      "featured": true,
+      "kind": "mdx",
+      "path": ".smithers/flows/issue/poc/flow.mdx",
+      "capabilities": [
+        "fs:read:**",
+        "fs:write:**",
+        "proc:spawn:rg *",
+        "proc:spawn:jj --no-pager *",
+        "proc:spawn:zig *",
+        "proc:spawn:bun scripts/*",
+        "proc:spawn:smthrs *"
+      ],
+      "model": "sol",
+      "modelInvocable": true,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": [],
+      "budget": {
+        "tokens": 100000,
+        "milliseconds": 3600000
+      }
+    },
+    {
+      "id": "pr-triage",
+      "description": "Triage a guillotine-mini pull request from supplied metadata and diff without executing its code.",
+      "summary": "Assess PR readiness from its diff and supplied CI evidence.",
+      "featured": true,
+      "kind": "mdx",
+      "path": ".smithers/flows/pr-triage/flow.mdx",
+      "capabilities": [
+        "fs:read:**",
+        "fs:write:.smithers/reports/pr-triage.json",
+        "proc:spawn:rg *"
+      ],
+      "model": "sol",
+      "modelInvocable": true,
+      "inputSchema": {
+        "dialect": "draft-2020-12",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "additionalProperties": true
+        },
+        "definitions": {}
+      },
+      "flows": [],
+      "budget": {
+        "tokens": 64000,
+        "milliseconds": 600000
+      }
+    }
+  ],
+  "on": [],
+  "github": {
+    "mirror": "pull",
+    "issues": "read",
+    "changes": "send-upstream",
+    "protectedPaths": [
+      "src/evm.zig",
+      "src/frame.zig",
+      "src/instructions",
+      "src/precompiles",
+      "src/root_c.zig",
+      "build.zig.zon",
+      "native-dependencies.json"
+    ],
+    "maintainers": [
+      "roninjin10",
+      "fucory"
+    ]
+  }
+}

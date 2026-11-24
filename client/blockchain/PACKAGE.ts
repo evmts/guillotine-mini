@@ -7,19 +7,20 @@ const srcs = S.Filegroup({
 })
 
 const bench = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "bench-blockchain", "-Doptimize=ReleaseFast"],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "bench-blockchain", "-Doptimize=ReleaseFast"],
   env: { BENCH_JSON_OUT: "client/blockchain/.bench-result.json" },
-  data: [srcs, bench_utils, S.file("//build.zig"), S.file("//build.zig.zon")],
-  outFiles: [".bench-result.json"],
+  data: [S.file("//.smithers/run-zig.sh"), srcs, bench_utils, S.file("//build.zig"), S.file("//build.zig.zon")],
   exclusive: true,
   sandbox: "none",
 })
 
 const test = S.Shell.Test({
-  bin: S.Host.bin("zig"),
-  args: ["build", "test-blockchain"],
-  data: [srcs, S.file("//build.zig"), S.file("//build.zig.zon")],
+  bin: S.Host.bin("sh"),
+  tools: [S.Host.bin("zig")],
+  args: [".smithers/run-zig.sh", "build", "test-blockchain"],
+  data: [S.file("//.smithers/run-zig.sh"), srcs, S.file("//build.zig"), S.file("//build.zig.zon")],
   sandbox: "none",
 })
 

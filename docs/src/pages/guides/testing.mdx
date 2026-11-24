@@ -96,22 +96,22 @@ bun scripts/isolate-test.ts "exact_test_name"
 
 ## Performance benchmarks (incremental via Smithers)
 
-Every core EVM module, Zig client subsystem, WASI WASM reactor, C-FFI bridge, and TypeScript/`client-ts` package has an incremental benchmark target declared in `WORKSPACE.ts` and per-module `PACKAGE.ts` files. Benchmarks run with `exclusive: true` (to avoid CPU contention), emit JSON metrics via `BENCH_JSON_OUT` / `outFiles`, and replay cached benchmark output on cache hits when `--verbose` is passed:
+Every core EVM module, Zig client subsystem, WASI WASM reactor, C-FFI bridge, and TypeScript/`client-ts` package has an incremental benchmark target declared in per-module `PACKAGE.ts` files. Benchmarks run with `exclusive: true` (to avoid CPU contention), so wildcard `smthrs ci '//...'` omits them; select them explicitly or with `--include-exclusive`. They emit JSON metrics via `BENCH_JSON_OUT`:
 
 ```sh
 # Preview which tests & benchmarks are affected by your current diff
-smithers-build affected test '//...' --include-exclusive --list
+smthrs affected test '//...' --include-exclusive --list
 
 # Run ONLY affected benchmarks (skips unchanged modules automatically)
-smithers-build affected test '//:bench_all' --include-exclusive --verbose
+smthrs affected test '//...' --include-exclusive --verbose
 
 # Run a single module benchmark
-smithers-build test //:bench_opcodes --verbose
-smithers-build test //client/trie:bench --verbose
-smithers-build test //client-ts/db:bench --verbose
+smthrs test //:bench_opcodes --verbose
+smthrs test //client/trie:bench --verbose
+smthrs test //client-ts/db:bench --verbose
 
 # Aggregate all JSON benchmark artifacts into a single table (or diff against a baseline)
-smithers-build run //:bench_summary
+smthrs run //:bench_summary
 bun scripts/bench-summary.ts --save /tmp/baseline.json
 bun scripts/bench-summary.ts --baseline /tmp/baseline.json
 ```

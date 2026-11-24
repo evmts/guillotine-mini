@@ -9,7 +9,6 @@ const bench = S.Shell.Test({
   args: ["ts/exex/bench.ts"],
   env: { BENCH_JSON_OUT: "ts/exex/.bench-result.json" },
   data: [srcs, S.file("//scripts/bench-ts-utils.ts")],
-  outFiles: [".bench-result.json"],
   exclusive: true,
   sandbox: "none",
 })

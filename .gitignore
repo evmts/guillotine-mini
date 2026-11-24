@@ -26,7 +26,8 @@ worktrees/
 
 # Smithers workflow DB files and incremental build/bench caches
 *.db
-.smithers/
+.smithers/cache/
+.smithers/reports/
 .flows/
 .bench-results/
 **/.bench-result.json
