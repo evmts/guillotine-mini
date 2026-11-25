@@ -2,7 +2,7 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type { Address, Balance, Bytes } from "voltaire-effect/primitives";
+import type { Address, Balance } from "voltaire-effect/primitives";
 import { Hash, Receipt } from "voltaire-effect/primitives";
 import type { TransactionEnvironment } from "./TransactionEnvironmentBuilder";
 import type { EvmTransactionExecutionOutput } from "./TransactionProcessor";
@@ -10,7 +10,7 @@ import type { EvmTransactionExecutionOutput } from "./TransactionProcessor";
 /** Parameters for executing a top-level EVM message (call or create). */
 export type EvmCallParams = {
   readonly to: Address.AddressType | null;
-  readonly input: Bytes.BytesType;
+  readonly input: Uint8Array;
   readonly value: Balance.BalanceType;
   readonly isStatic: boolean;
 };

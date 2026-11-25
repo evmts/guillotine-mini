@@ -140,3 +140,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
         }
     };
 }
+
+test {
+    _ = @import("clz_test.zig");
+}

@@ -16,25 +16,7 @@
  * - Factory contracts
  */
 
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
-
-// Helper functions
-async function loadWasm() {
-  const wasmPath = resolve(__dirname, '../../zig-out/bin/guillotine_mini.wasm');
-  const wasmBuffer = readFileSync(wasmPath);
-  const wasmModule = await WebAssembly.compile(wasmBuffer);
-
-  const imports = {
-    env: {
-      js_opcode_callback: () => 0,
-      js_precompile_callback: () => 0,
-    }
-  };
-
-  const instance = await WebAssembly.instantiate(wasmModule, imports);
-  return instance.exports;
-}
+import { loadWasm } from './basic-usage.ts';
 
 function hexToAddress(hex: string): Uint8Array {
   const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
@@ -83,15 +65,9 @@ async function example1_nestedCalls() {
   console.log('Example 1: Nested Contract Calls (A → B → C)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  const wasm = await loadWasm();
+  const { api: wasm, alloc, release, createEvm, readOutput } = await loadWasm();
 
-  const hardforkName = 'Cancun';
-  const hardforkBytes = new TextEncoder().encode(hardforkName);
-  const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
-
-  if (!evmHandle) {
-    throw new Error('Failed to create EVM instance');
-  }
+  const evmHandle = createEvm('Cancun');
 
   try {
     // Contract addresses
@@ -166,22 +142,22 @@ async function example1_nestedCalls() {
     console.log('\nExpected flow: C returns 42 → B returns 42+10=52 → A returns 52*2=104\n');
 
     // Set contract codes
-    (wasm as any).evm_set_code(evmHandle, contractC, codeC, codeC.length);
-    (wasm as any).evm_set_code(evmHandle, contractB, codeB, codeB.length);
-    (wasm as any).evm_set_bytecode(evmHandle, codeA, codeA.length);
+    wasm.evm_set_code(evmHandle, alloc(contractC), alloc(codeC), codeC.length);
+    wasm.evm_set_code(evmHandle, alloc(contractB), alloc(codeB), codeB.length);
+    wasm.evm_set_bytecode(evmHandle, alloc(codeA), codeA.length);
 
     const gas = 1000000n;
     const caller = hexToAddress('0x1000000000000000000000000000000000000001');
     const value = u256ToBytes(0n);
     const calldata = new Uint8Array(0);
 
-    (wasm as any).evm_set_execution_context(
+    wasm.evm_set_execution_context(
       evmHandle,
-      Number(gas),
-      caller,
-      contractA,
-      value,
-      calldata,
+      gas,
+      alloc(caller),
+      alloc(contractA),
+      alloc(value),
+      alloc(calldata),
       calldata.length
     );
 
@@ -195,33 +171,31 @@ async function example1_nestedCalls() {
     const blockBaseFee = u256ToBytes(1000000000n);
     const blobBaseFee = u256ToBytes(1n);
 
-    (wasm as any).evm_set_blockchain_context(
+    wasm.evm_set_blockchain_context(
       evmHandle,
-      chainId,
-      Number(blockNumber),
-      Number(blockTimestamp),
-      blockDifficulty,
-      blockPrevrandao,
-      blockCoinbase,
-      Number(blockGasLimit),
-      blockBaseFee,
-      blobBaseFee
+      alloc(chainId),
+      blockNumber,
+      blockTimestamp,
+      alloc(blockDifficulty),
+      alloc(blockPrevrandao),
+      alloc(blockCoinbase),
+      blockGasLimit,
+      alloc(blockBaseFee),
+      alloc(blobBaseFee)
     );
 
     // Execute
     console.log('🚀 Executing contract A...\n');
-    const success = (wasm as any).evm_execute(evmHandle);
+    const success = wasm.evm_execute(evmHandle);
 
     console.log('✅ Execution:', success ? 'SUCCESS' : 'FAILED');
 
-    const gasUsed = (wasm as any).evm_get_gas_used(evmHandle);
+    const gasUsed = wasm.evm_get_gas_used(evmHandle);
     console.log(`⛽ Gas used: ${gasUsed}\n`);
 
     // Get output
-    const outputLen = (wasm as any).evm_get_output_len(evmHandle);
-    if (outputLen > 0) {
-      const outputBuffer = new Uint8Array(outputLen);
-      (wasm as any).evm_get_output(evmHandle, outputBuffer, outputLen);
+    const outputBuffer = readOutput(evmHandle);
+    if (outputBuffer.length > 0) {
 
       const result = bytesToU256(outputBuffer);
       console.log(`📤 Final result: ${result}`);
@@ -231,7 +205,8 @@ async function example1_nestedCalls() {
     console.log('');
 
   } finally {
-    (wasm as any).evm_destroy(evmHandle);
+    wasm.evm_destroy(evmHandle);
+    release();
   }
 }
 
@@ -245,15 +220,9 @@ async function example2_valueTransfers() {
   console.log('Example 2: Value Transfers and Balance Tracking');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  const wasm = await loadWasm();
+  const { api: wasm, alloc, release, createEvm, readOutput } = await loadWasm();
 
-  const hardforkName = 'Cancun';
-  const hardforkBytes = new TextEncoder().encode(hardforkName);
-  const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
-
-  if (!evmHandle) {
-    throw new Error('Failed to create EVM instance');
-  }
+  const evmHandle = createEvm('Cancun');
 
   try {
     const sender = hexToAddress('0x1000000000000000000000000000000000000001');
@@ -261,11 +230,11 @@ async function example2_valueTransfers() {
     const executor = hexToAddress('0x3000000000000000000000000000000000000003');
 
     // Set initial balances
-    const senderBalance = 1000000000000000000n; // 1 ETH
-    (wasm as any).evm_set_balance(evmHandle, sender, u256ToBytes(senderBalance));
+    const executorBalance = 1000000000000000000n; // 1 ETH
+    wasm.evm_set_balance(evmHandle, alloc(executor), alloc(u256ToBytes(executorBalance)));
 
     console.log('Initial Balances:');
-    console.log(`  Sender (${addressToHex(sender)}): ${senderBalance} wei (1 ETH)`);
+    console.log(`  Executor (${addressToHex(executor)}): ${executorBalance} wei (1 ETH)`);
     console.log(`  Recipient (${addressToHex(recipient)}): 0 wei`);
     console.log('');
 
@@ -279,9 +248,7 @@ async function example2_valueTransfers() {
       0x60, 0x00,       // PUSH1 0 (retOffset)
       0x60, 0x00,       // PUSH1 0 (argsSize)
       0x60, 0x00,       // PUSH1 0 (argsOffset)
-      // PUSH17 value (0.5 ETH = 0x06F05B59D3B20000)
-      0x70, 0x06, 0xf0, 0x5b, 0x59, 0xd3, 0xb2, 0x00, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x67, ...u256ToBytes(transferAmount).slice(-8), // PUSH8 value
       // PUSH20 recipient address
       0x73, ...Array.from(recipient),
       0x61, 0xff, 0xff, // PUSH2 65535 (gas)
@@ -297,19 +264,19 @@ async function example2_valueTransfers() {
 
     console.log(`Transferring ${transferAmount} wei (0.5 ETH) to recipient...\n`);
 
-    (wasm as any).evm_set_bytecode(evmHandle, bytecode, bytecode.length);
+    wasm.evm_set_bytecode(evmHandle, alloc(bytecode), bytecode.length);
 
     const gas = 1000000n;
     const value = u256ToBytes(0n); // No direct value in transaction
     const calldata = new Uint8Array(0);
 
-    (wasm as any).evm_set_execution_context(
+    wasm.evm_set_execution_context(
       evmHandle,
-      Number(gas),
-      sender,
-      executor,
-      value,
-      calldata,
+      gas,
+      alloc(sender),
+      alloc(executor),
+      alloc(value),
+      alloc(calldata),
       calldata.length
     );
 
@@ -323,32 +290,30 @@ async function example2_valueTransfers() {
     const blockBaseFee = u256ToBytes(1000000000n);
     const blobBaseFee = u256ToBytes(1n);
 
-    (wasm as any).evm_set_blockchain_context(
+    wasm.evm_set_blockchain_context(
       evmHandle,
-      chainId,
-      Number(blockNumber),
-      Number(blockTimestamp),
-      blockDifficulty,
-      blockPrevrandao,
-      blockCoinbase,
-      Number(blockGasLimit),
-      blockBaseFee,
-      blobBaseFee
+      alloc(chainId),
+      blockNumber,
+      blockTimestamp,
+      alloc(blockDifficulty),
+      alloc(blockPrevrandao),
+      alloc(blockCoinbase),
+      blockGasLimit,
+      alloc(blockBaseFee),
+      alloc(blobBaseFee)
     );
 
     // Execute
-    const success = (wasm as any).evm_execute(evmHandle);
+    const success = wasm.evm_execute(evmHandle);
 
     console.log('✅ Execution:', success ? 'SUCCESS' : 'FAILED');
 
-    const gasUsed = (wasm as any).evm_get_gas_used(evmHandle);
+    const gasUsed = wasm.evm_get_gas_used(evmHandle);
     console.log(`⛽ Gas used: ${gasUsed}\n`);
 
     // Get output (call success)
-    const outputLen = (wasm as any).evm_get_output_len(evmHandle);
-    if (outputLen > 0) {
-      const outputBuffer = new Uint8Array(outputLen);
-      (wasm as any).evm_get_output(evmHandle, outputBuffer, outputLen);
+    const outputBuffer = readOutput(evmHandle);
+    if (outputBuffer.length > 0) {
 
       const callSuccess = bytesToU256(outputBuffer);
       console.log(`📤 Call result: ${callSuccess === 1n ? 'SUCCESS' : 'FAILED'}\n`);
@@ -357,7 +322,8 @@ async function example2_valueTransfers() {
     console.log('💡 Note: Balance tracking requires host integration for full support\n');
 
   } finally {
-    (wasm as any).evm_destroy(evmHandle);
+    wasm.evm_destroy(evmHandle);
+    release();
   }
 }
 
@@ -371,15 +337,9 @@ async function example3_transientStorage() {
   console.log('Example 3: Transient Storage (EIP-1153, Cancun+)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  const wasm = await loadWasm();
+  const { api: wasm, alloc, release, createEvm, readOutput } = await loadWasm();
 
-  const hardforkName = 'Cancun';
-  const hardforkBytes = new TextEncoder().encode(hardforkName);
-  const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
-
-  if (!evmHandle) {
-    throw new Error('Failed to create EVM instance');
-  }
+  const evmHandle = createEvm('Cancun');
 
   try {
     console.log('Transient storage is transaction-scoped and always warm (100 gas)\n');
@@ -430,7 +390,7 @@ async function example3_transientStorage() {
     console.log('  4. SLOAD from slot 1');
     console.log('  5. Return both values\n');
 
-    (wasm as any).evm_set_bytecode(evmHandle, bytecode, bytecode.length);
+    wasm.evm_set_bytecode(evmHandle, alloc(bytecode), bytecode.length);
 
     const gas = 1000000n;
     const caller = hexToAddress('0x1000000000000000000000000000000000000001');
@@ -438,13 +398,13 @@ async function example3_transientStorage() {
     const value = u256ToBytes(0n);
     const calldata = new Uint8Array(0);
 
-    (wasm as any).evm_set_execution_context(
+    wasm.evm_set_execution_context(
       evmHandle,
-      Number(gas),
-      caller,
-      address,
-      value,
-      calldata,
+      gas,
+      alloc(caller),
+      alloc(address),
+      alloc(value),
+      alloc(calldata),
       calldata.length
     );
 
@@ -458,35 +418,33 @@ async function example3_transientStorage() {
     const blockBaseFee = u256ToBytes(1000000000n);
     const blobBaseFee = u256ToBytes(1n);
 
-    (wasm as any).evm_set_blockchain_context(
+    wasm.evm_set_blockchain_context(
       evmHandle,
-      chainId,
-      Number(blockNumber),
-      Number(blockTimestamp),
-      blockDifficulty,
-      blockPrevrandao,
-      blockCoinbase,
-      Number(blockGasLimit),
-      blockBaseFee,
-      blobBaseFee
+      alloc(chainId),
+      blockNumber,
+      blockTimestamp,
+      alloc(blockDifficulty),
+      alloc(blockPrevrandao),
+      alloc(blockCoinbase),
+      blockGasLimit,
+      alloc(blockBaseFee),
+      alloc(blobBaseFee)
     );
 
     // Execute
-    const success = (wasm as any).evm_execute(evmHandle);
+    const success = wasm.evm_execute(evmHandle);
 
     console.log('✅ Execution:', success ? 'SUCCESS' : 'FAILED');
 
-    const gasUsed = (wasm as any).evm_get_gas_used(evmHandle);
-    const gasRefund = (wasm as any).evm_get_gas_refund(evmHandle);
+    const gasUsed = wasm.evm_get_gas_used(evmHandle);
+    const gasRefund = wasm.evm_get_gas_refund(evmHandle);
 
     console.log(`⛽ Gas used: ${gasUsed}`);
     console.log(`💰 Gas refund: ${gasRefund}\n`);
 
     // Get output
-    const outputLen = (wasm as any).evm_get_output_len(evmHandle);
-    if (outputLen >= 64) {
-      const outputBuffer = new Uint8Array(outputLen);
-      (wasm as any).evm_get_output(evmHandle, outputBuffer, outputLen);
+    const outputBuffer = readOutput(evmHandle);
+    if (outputBuffer.length >= 64) {
 
       const transientValue = bytesToU256(outputBuffer.slice(0, 32));
       const persistentValue = bytesToU256(outputBuffer.slice(32, 64));
@@ -501,7 +459,8 @@ async function example3_transientStorage() {
     console.log('\n💡 Note: Transient storage is cleared after transaction, persistent remains\n');
 
   } finally {
-    (wasm as any).evm_destroy(evmHandle);
+    wasm.evm_destroy(evmHandle);
+    release();
   }
 }
 
@@ -515,16 +474,15 @@ async function example4_accessList() {
   console.log('Example 4: Access List Optimization (EIP-2930)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  const wasm = await loadWasm();
-
-  const hardforkName = 'Cancun';
-  const hardforkBytes = new TextEncoder().encode(hardforkName);
+  const { api: wasm, alloc, release, createEvm } = await loadWasm();
 
   console.log('Comparing gas costs with and without access list:\n');
 
+  let gasWithoutAccessList: bigint;
+
   // Without access list
   {
-    const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
+    const evmHandle = createEvm('Cancun');
 
     try {
       const address = hexToAddress('0x2000000000000000000000000000000000000002');
@@ -537,20 +495,20 @@ async function example4_accessList() {
         0x00               // STOP
       ]);
 
-      (wasm as any).evm_set_bytecode(evmHandle, bytecode, bytecode.length);
+      wasm.evm_set_bytecode(evmHandle, alloc(bytecode), bytecode.length);
 
       const gas = 1000000n;
       const caller = hexToAddress('0x1000000000000000000000000000000000000001');
       const value = u256ToBytes(0n);
       const calldata = new Uint8Array(0);
 
-      (wasm as any).evm_set_execution_context(
+      wasm.evm_set_execution_context(
         evmHandle,
-        Number(gas),
-        caller,
-        address,
-        value,
-        calldata,
+        gas,
+        alloc(caller),
+        alloc(address),
+        alloc(value),
+        alloc(calldata),
         calldata.length
       );
 
@@ -564,35 +522,34 @@ async function example4_accessList() {
       const blockBaseFee = u256ToBytes(1000000000n);
       const blobBaseFee = u256ToBytes(1n);
 
-      (wasm as any).evm_set_blockchain_context(
+      wasm.evm_set_blockchain_context(
         evmHandle,
-        chainId,
-        Number(blockNumber),
-        Number(blockTimestamp),
-        blockDifficulty,
-        blockPrevrandao,
-        blockCoinbase,
-        Number(blockGasLimit),
-        blockBaseFee,
-        blobBaseFee
+        alloc(chainId),
+        blockNumber,
+        blockTimestamp,
+        alloc(blockDifficulty),
+        alloc(blockPrevrandao),
+        alloc(blockCoinbase),
+        blockGasLimit,
+        alloc(blockBaseFee),
+        alloc(blobBaseFee)
       );
 
-      (wasm as any).evm_execute(evmHandle);
+      wasm.evm_execute(evmHandle);
 
-      const gasUsed1 = (wasm as any).evm_get_gas_used(evmHandle);
-      console.log(`⛽ WITHOUT access list: ${gasUsed1} gas`);
+      gasWithoutAccessList = wasm.evm_get_gas_used(evmHandle);
+      console.log(`⛽ WITHOUT access list: ${gasWithoutAccessList} gas`);
       console.log('   (Cold access: 2100 gas per SLOAD)\n');
 
-      (wasm as any).evm_destroy(evmHandle);
-
-    } catch (e) {
-      console.error(e);
+    } finally {
+      wasm.evm_destroy(evmHandle);
+      release();
     }
   }
 
   // With access list
   {
-    const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
+    const evmHandle = createEvm('Cancun');
 
     try {
       const address = hexToAddress('0x2000000000000000000000000000000000000002');
@@ -601,16 +558,16 @@ async function example4_accessList() {
       const accessListAddresses = new Uint8Array(20);
       accessListAddresses.set(address, 0);
 
-      (wasm as any).evm_set_access_list_addresses(evmHandle, accessListAddresses, 1);
+      wasm.evm_set_access_list_addresses(evmHandle, alloc(accessListAddresses), 1);
 
-      // Pack storage keys: address(20) + slot(32) for each slot
-      const accessListKeys = new Uint8Array(3 * (20 + 32));
+      // The ABI accepts separate packed address and slot arrays.
+      const storageAddresses = new Uint8Array(3 * 20);
+      const storageSlots = new Uint8Array(3 * 32);
       for (let i = 0; i < 3; i++) {
-        accessListKeys.set(address, i * 52);
-        accessListKeys.set(u256ToBytes(BigInt(i)), i * 52 + 20);
+        storageAddresses.set(address, i * 20);
+        storageSlots.set(u256ToBytes(BigInt(i)), i * 32);
       }
-
-      (wasm as any).evm_set_access_list_storage_keys(evmHandle, accessListAddresses, accessListKeys.slice(20), 3);
+      wasm.evm_set_access_list_storage_keys(evmHandle, alloc(storageAddresses), alloc(storageSlots), 3);
 
       // Same bytecode
       const bytecode = new Uint8Array([
@@ -620,20 +577,20 @@ async function example4_accessList() {
         0x00               // STOP
       ]);
 
-      (wasm as any).evm_set_bytecode(evmHandle, bytecode, bytecode.length);
+      wasm.evm_set_bytecode(evmHandle, alloc(bytecode), bytecode.length);
 
       const gas = 1000000n;
       const caller = hexToAddress('0x1000000000000000000000000000000000000001');
       const value = u256ToBytes(0n);
       const calldata = new Uint8Array(0);
 
-      (wasm as any).evm_set_execution_context(
+      wasm.evm_set_execution_context(
         evmHandle,
-        Number(gas),
-        caller,
-        address,
-        value,
-        calldata,
+        gas,
+        alloc(caller),
+        alloc(address),
+        alloc(value),
+        alloc(calldata),
         calldata.length
       );
 
@@ -647,33 +604,32 @@ async function example4_accessList() {
       const blockBaseFee = u256ToBytes(1000000000n);
       const blobBaseFee = u256ToBytes(1n);
 
-      (wasm as any).evm_set_blockchain_context(
+      wasm.evm_set_blockchain_context(
         evmHandle,
-        chainId,
-        Number(blockNumber),
-        Number(blockTimestamp),
-        blockDifficulty,
-        blockPrevrandao,
-        blockCoinbase,
-        Number(blockGasLimit),
-        blockBaseFee,
-        blobBaseFee
+        alloc(chainId),
+        blockNumber,
+        blockTimestamp,
+        alloc(blockDifficulty),
+        alloc(blockPrevrandao),
+        alloc(blockCoinbase),
+        blockGasLimit,
+        alloc(blockBaseFee),
+        alloc(blobBaseFee)
       );
 
-      (wasm as any).evm_execute(evmHandle);
+      wasm.evm_execute(evmHandle);
 
-      const gasUsed2 = (wasm as any).evm_get_gas_used(evmHandle);
+      const gasUsed2 = wasm.evm_get_gas_used(evmHandle);
       console.log(`⛽ WITH access list: ${gasUsed2} gas`);
       console.log('   (Warm access: 100 gas per SLOAD)\n');
 
-      const savings = Number(BigInt(21000) - BigInt(21000));
-      console.log(`💰 Potential savings: ~6000 gas (3 slots × 2000 gas/slot)\n`);
+      const savings = gasWithoutAccessList - gasUsed2;
+      console.log(`💰 Execution gas saved: ${savings}\n`);
       console.log('💡 Access lists are especially beneficial for multi-slot operations\n');
 
-      (wasm as any).evm_destroy(evmHandle);
-
-    } catch (e) {
-      console.error(e);
+    } finally {
+      wasm.evm_destroy(evmHandle);
+      release();
     }
   }
 }

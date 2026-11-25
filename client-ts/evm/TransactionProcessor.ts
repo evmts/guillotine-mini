@@ -10,6 +10,7 @@ import {
   BaseFeePerGas,
   Blob,
   GasPrice,
+  Hardfork,
   Receipt,
   Transaction,
 } from "voltaire-effect/primitives";
@@ -31,8 +32,10 @@ import {
 } from "../state/TransactionBoundary";
 import {
   calculateClaimableRefund,
+  type RefundCalculator,
   type RefundCalculatorError,
 } from "./RefundCalculator";
+import { ReleaseSpec } from "./ReleaseSpec";
 
 /** Effective gas price breakdown for transaction execution. */
 export type EffectiveGasPrice = {
@@ -111,7 +114,9 @@ const BalanceSchema = Balance.BigInt as unknown as Schema.Schema<
 >;
 const toBigInt = (value: bigint | number): bigint =>
   typeof value === "bigint" ? value : BigInt(value);
+const OSAKA_TRANSACTION_GAS_LIMIT = 16_777_216n;
 const BLOB_GAS_PER_BLOB = toBigInt(Blob.GAS_PER_BLOB);
+const OSAKA_TRANSACTION_BLOB_GAS_LIMIT = 6n * BLOB_GAS_PER_BLOB;
 const EOA_DELEGATION_CODE_LENGTH = 23;
 const EOA_DELEGATION_MARKER_0 = 0xef;
 const EOA_DELEGATION_MARKER_1 = 0x01;
@@ -238,12 +243,28 @@ export class TransactionNonceTooHighError extends Data.TaggedError(
   readonly senderNonce: bigint;
 }> {}
 
+/** Error raised when tx gas exceeds the EIP-7825 per-transaction cap. */
+export class TransactionGasLimitExceededError extends Data.TaggedError(
+  "TransactionGasLimitExceededError",
+)<{
+  readonly txGasLimit: bigint;
+  readonly maxGasLimit: bigint;
+}> {}
+
 /** Error raised when tx gas exceeds remaining block gas capacity. */
 export class BlockGasLimitExceededError extends Data.TaggedError(
   "BlockGasLimitExceededError",
 )<{
   readonly txGasLimit: bigint;
   readonly gasAvailable: bigint;
+}> {}
+
+/** Error raised when tx blob gas exceeds the EIP-7594 per-transaction cap. */
+export class TransactionBlobGasLimitExceededError extends Data.TaggedError(
+  "TransactionBlobGasLimitExceededError",
+)<{
+  readonly txBlobGasUsed: bigint;
+  readonly maxBlobGasLimit: bigint;
 }> {}
 
 /** Error raised when tx blob gas exceeds remaining block blob-gas capacity. */
@@ -270,7 +291,7 @@ export class CalldataFloorGasExceedsGasLimitError extends Data.TaggedError(
   readonly calldataFloorGas: bigint;
 }> {}
 
-/** Error raised when sender has non-empty code that is not delegation code. */
+/** Error raised when sender code is ineligible under the active release spec. */
 export class InvalidSenderAccountCodeError extends Data.TaggedError(
   "InvalidSenderAccountCodeError",
 )<{
@@ -308,7 +329,9 @@ export type GasPurchaseError =
 /** Union of pre-execution inclusion check errors. */
 export type PreExecutionInclusionCheckError =
   | InvalidTransactionError
+  | TransactionGasLimitExceededError
   | BlockGasLimitExceededError
+  | TransactionBlobGasLimitExceededError
   | BlockBlobGasLimitExceededError
   | InvalidSenderAccountCodeError;
 
@@ -365,7 +388,7 @@ export interface TransactionProcessorService {
   ) => Effect.Effect<
     PreExecutionInclusionCheck,
     PreExecutionInclusionCheckError,
-    WorldState
+    ReleaseSpec | WorldState
   >;
   readonly processTransaction: (
     tx: Transaction.Any,
@@ -379,7 +402,7 @@ export interface TransactionProcessorService {
   ) => Effect.Effect<
     ProcessTransactionPreExecution,
     PreExecutionInclusionCheckError | GasPurchaseError,
-    WorldState
+    ReleaseSpec | WorldState
   >;
   readonly settlePostExecutionBalances: (
     txGasLimit: bigint,
@@ -393,7 +416,7 @@ export interface TransactionProcessorService {
   ) => Effect.Effect<
     PostExecutionSettlement,
     PostExecutionSettlementError,
-    WorldState
+    WorldState | RefundCalculator
   >;
   readonly finalizeTransactionExecution: (
     txGasLimit: bigint,
@@ -407,7 +430,7 @@ export interface TransactionProcessorService {
   ) => Effect.Effect<
     FinalizedTransactionExecution,
     PostExecutionSettlementError,
-    WorldState
+    WorldState | RefundCalculator
   >;
   readonly executeEvmCall: (
     env: TransactionEnvironment,
@@ -853,6 +876,17 @@ const makeTransactionProcessor = Effect.gen(function* () {
     Effect.gen(function* () {
       const parsedTx = yield* decodeTransaction(tx);
 
+      const { hardfork, isEip7702Enabled } = yield* ReleaseSpec;
+      const isOsakaOrLater = Hardfork.isAtLeast(hardfork, Hardfork.OSAKA);
+      if (isOsakaOrLater && parsedTx.gasLimit > OSAKA_TRANSACTION_GAS_LIMIT) {
+        return yield* Effect.fail(
+          new TransactionGasLimitExceededError({
+            txGasLimit: parsedTx.gasLimit,
+            maxGasLimit: OSAKA_TRANSACTION_GAS_LIMIT,
+          }),
+        );
+      }
+
       const gasAvailable = blockGasLimit - blockGasUsed;
       if (parsedTx.gasLimit > gasAvailable) {
         return yield* Effect.fail(
@@ -864,6 +898,15 @@ const makeTransactionProcessor = Effect.gen(function* () {
       }
 
       const txBlobGasUsed = calculateTransactionBlobGasUsed(parsedTx);
+      if (isOsakaOrLater && txBlobGasUsed > OSAKA_TRANSACTION_BLOB_GAS_LIMIT) {
+        return yield* Effect.fail(
+          new TransactionBlobGasLimitExceededError({
+            txBlobGasUsed,
+            maxBlobGasLimit: OSAKA_TRANSACTION_BLOB_GAS_LIMIT,
+          }),
+        );
+      }
+
       const blobGasAvailable = maxBlobGasPerBlock - blockBlobGasUsed;
       if (txBlobGasUsed > blobGasAvailable) {
         return yield* Effect.fail(
@@ -876,10 +919,9 @@ const makeTransactionProcessor = Effect.gen(function* () {
 
       const worldState = yield* WorldState;
       const senderCode = yield* worldState.getCode(sender);
-      if (
-        senderCode.length > 0 &&
-        !isValidDelegationDesignationCode(senderCode)
-      ) {
+      const senderHasDelegationCode =
+        isEip7702Enabled && isValidDelegationDesignationCode(senderCode);
+      if (senderCode.length > 0 && !senderHasDelegationCode) {
         return yield* Effect.fail(
           new InvalidSenderAccountCodeError({
             sender,
@@ -890,7 +932,7 @@ const makeTransactionProcessor = Effect.gen(function* () {
 
       return {
         txBlobGasUsed,
-        senderHasDelegationCode: senderCode.length > 0,
+        senderHasDelegationCode,
       } satisfies PreExecutionInclusionCheck;
     });
 
@@ -992,20 +1034,26 @@ const makeTransactionProcessor = Effect.gen(function* () {
 
       const worldState = yield* WorldState;
       const senderAccount = yield* worldState.getAccount(sender);
-      const coinbaseAccount = yield* worldState.getAccount(coinbase);
+      const sameAccount = Address.equals(sender, coinbase);
+      const coinbaseAccount = sameAccount
+        ? senderAccount
+        : yield* worldState.getAccount(coinbase);
       const senderBalanceAfterRefund = yield* decodeBalance(
         senderAccount.balance + gasRefundAmount,
         "sender post-refund",
       );
       const coinbaseBalanceAfterFee = yield* decodeBalance(
-        coinbaseAccount.balance + transactionFee,
+        (sameAccount ? senderBalanceAfterRefund : coinbaseAccount.balance) +
+          transactionFee,
         "coinbase post-fee",
       );
 
-      yield* worldState.setAccount(sender, {
-        ...senderAccount,
-        balance: senderBalanceAfterRefund,
-      });
+      if (!sameAccount) {
+        yield* worldState.setAccount(sender, {
+          ...senderAccount,
+          balance: senderBalanceAfterRefund,
+        });
+      }
       yield* worldState.setAccount(coinbase, {
         ...coinbaseAccount,
         balance: coinbaseBalanceAfterFee,

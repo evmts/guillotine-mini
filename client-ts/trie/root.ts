@@ -54,6 +54,10 @@ export const EMPTY_TRIE_ROOT: HashType = hashFromHex(
   "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
 );
 
+export const isEmptyTrieRoot = (hash: HashType): boolean =>
+  hash.length === EMPTY_TRIE_ROOT.length &&
+  hash.every((byte, index) => byte === EMPTY_TRIE_ROOT[index]);
+
 const wrapTrieHashError = (cause: TrieHashError) =>
   new TrieRootError({
     message: "Failed to encode trie node",

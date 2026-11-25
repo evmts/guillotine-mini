@@ -653,8 +653,7 @@ describe("TxPool", () => {
 
   it.effect("fails when configuration is invalid", () =>
     Effect.gen(function* () {
-      // The admission validator takes an already-decoded config, so build it
-      // from the defaults; only TxPoolLive sees the input it must reject.
+      // Give the admission validator decoded defaults so TxPoolLive validates the invalid input.
       const outcome = yield* Effect.either(
         getPendingCount().pipe(
           Effect.provide(
@@ -662,6 +661,7 @@ describe("TxPool", () => {
               Layer.provide(
                 TxPoolAdmissionValidatorLive(
                   Schema.decodeSync(TxPoolConfigSchema)(TxPoolConfigDefaults),
+                  TxPoolHeadInfoDefaults,
                 ),
               ),
             ),

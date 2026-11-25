@@ -70,6 +70,7 @@ pub fn build(b: *std.Build) void {
         // Later on we'll use this module as the root module of a test executable
         // which requires us to specify a target.
         .target = target,
+        .optimize = optimize,
         .imports = &.{
             .{ .name = "build_options", .module = evm_options_mod },
             .{ .name = "voltaire", .module = primitives_mod },
@@ -105,7 +106,7 @@ pub fn build(b: *std.Build) void {
     // A run step that will run the test executable.
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
-    // A top level step for running all tests (includes unit tests + spec tests)
+    // Run native tests and opt in to external differential and spec suites.
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
 
@@ -113,18 +114,21 @@ pub fn build(b: *std.Build) void {
     const unit_test_step = b.step("unit", "Run unit tests only (fast)");
     unit_test_step.dependOn(&run_mod_tests.step);
 
-    // Create EVM module (used by spec tests and client EVM adapter)
-    const evm_mod = b.addModule("evm", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "build_options", .module = evm_options_mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "precompiles", .module = precompiles_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-        },
+    const utils_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/utils.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
+    const run_utils_tests = b.addRunArtifact(utils_tests);
+    const utils_test_step = b.step("test-utils", "Run test runner utility tests");
+    utils_test_step.dependOn(&run_utils_tests.step);
+    unit_test_step.dependOn(utils_test_step);
+    test_step.dependOn(utils_test_step);
+
+    // Keep the public "evm" name as an alias so both imports share the same types.
+    b.modules.put("evm", mod) catch @panic("OOM");
 
     const examples = b.addExecutable(.{
         .name = "guillotine-examples",
@@ -133,13 +137,22 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "guillotine_mini", .module = evm_mod },
+                .{ .name = "guillotine_mini", .module = mod },
                 .{ .name = "voltaire", .module = primitives_mod },
             },
         }),
     });
     linkRustSupport(examples);
     @import("examples/build.zig").addRunSteps(b, examples);
+    b.step("examples", "Compile the Zig examples").dependOn(&examples.step);
+    const run_examples = b.step("run-examples", "Run all Zig examples");
+    const example_catalog = comptime std.meta.declarations(@import("examples/catalog.zig"));
+    inline for (example_catalog) |example| {
+        const run_step = &b.top_level_steps.get("run-" ++ example.name).?.step;
+        run_examples.dependOn(run_step);
+        b.step("run-example-" ++ example.name, "Run the " ++ example.name ++ " example").dependOn(run_step);
+    }
+    @import("test/differential/build_steps.zig").registerLeanDiff(b, target, optimize, mod, primitives_mod);
 
     const osaka_properties = b.addTest(.{
         .name = "osaka-properties",
@@ -148,7 +161,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "evm", .module = evm_mod },
+                .{ .name = "evm", .module = mod },
                 .{ .name = "voltaire", .module = primitives_mod },
             },
         }),
@@ -198,8 +211,25 @@ pub fn build(b: *std.Build) void {
     linkRustSupport(client_trie_tests);
 
     const run_client_trie_tests = b.addRunArtifact(client_trie_tests);
-    test_step.dependOn(&run_client_trie_tests.step);
-    unit_test_step.dependOn(&run_client_trie_tests.step);
+
+    // client/trie/fixtures.zig reads ethereum-tests/TrieTests at run time. A
+    // standard clone has no submodules, so `test` and `unit` run the
+    // fixture-free trie tests unless the fixtures are checked out.
+    // `zig build test-trie` always runs the full suite.
+    const has_trie_fixtures = pathExists(b, "ethereum-tests/TrieTests/trietest.json");
+    if (has_trie_fixtures) {
+        test_step.dependOn(&run_client_trie_tests.step);
+        unit_test_step.dependOn(&run_client_trie_tests.step);
+    } else {
+        const client_trie_unit_tests = b.addTest(.{
+            .root_module = client_trie_mod,
+            .filters = &.{ "hash.test.", "root.test.", "node.test." },
+        });
+        linkRustSupport(client_trie_unit_tests);
+        const run_client_trie_unit_tests = b.addRunArtifact(client_trie_unit_tests);
+        test_step.dependOn(&run_client_trie_unit_tests.step);
+        unit_test_step.dependOn(&run_client_trie_unit_tests.step);
+    }
 
     const client_trie_test_step = b.step("test-trie", "Run Merkle Patricia Trie tests");
     client_trie_test_step.dependOn(&run_client_trie_tests.step);
@@ -224,7 +254,7 @@ pub fn build(b: *std.Build) void {
     const run_nethermind_trie_diff = b.addRunArtifact(nethermind_trie_diff_exe);
     const nethermind_diff_step = b.step("nethermind-diff", "Run Nethermind trie differential test");
     nethermind_diff_step.dependOn(&run_nethermind_trie_diff.step);
-    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test") orelse true;
+    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test (requires .NET and a Nethermind checkout at nethermind/)") orelse false;
     if (include_nethermind_diff) {
         test_step.dependOn(&run_nethermind_trie_diff.step);
     }
@@ -354,7 +384,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "crypto", .module = crypto_mod },
             .{ .name = "jsonrpc", .module = jsonrpc_mod },
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
         },
     });
 
@@ -401,7 +431,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
         },
     });
 
@@ -411,8 +441,24 @@ pub fn build(b: *std.Build) void {
     linkRustSupport(client_runner_tests);
 
     const run_client_runner_tests = b.addRunArtifact(client_runner_tests);
-    test_step.dependOn(&run_client_runner_tests.step);
-    unit_test_step.dependOn(&run_client_runner_tests.step);
+
+    // "runner parses CLI flags and emits config" loads the Sepolia genesis from
+    // the execution-specs submodule. Without it, `test` and `unit` run the
+    // other runner tests; `zig build test-runner` always runs all of them.
+    const has_genesis_assets = pathExists(b, "execution-specs/src/ethereum/assets/sepolia.json");
+    if (has_genesis_assets) {
+        test_step.dependOn(&run_client_runner_tests.step);
+        unit_test_step.dependOn(&run_client_runner_tests.step);
+    } else {
+        const client_runner_unit_tests = b.addTest(.{
+            .root_module = client_runner_mod,
+            .filters = &.{ "cli.test.", "config.test.", "main.test.runner main accepts default args" },
+        });
+        linkRustSupport(client_runner_unit_tests);
+        const run_client_runner_unit_tests = b.addRunArtifact(client_runner_unit_tests);
+        test_step.dependOn(&run_client_runner_unit_tests.step);
+        unit_test_step.dependOn(&run_client_runner_unit_tests.step);
+    }
 
     const client_runner_test_step = b.step("test-runner", "Run runner CLI tests");
     client_runner_test_step.dependOn(&run_client_runner_tests.step);
@@ -426,7 +472,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
             .{ .name = "state-manager", .module = state_manager_mod },
         },
     });
@@ -478,7 +524,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "bench_utils", .module = bench_utils_mod },
             .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
             .{ .name = "state-manager", .module = state_manager_mod },
         },
     });
@@ -488,6 +534,9 @@ pub fn build(b: *std.Build) void {
         .root_module = client_evm_bench_mod,
     });
     linkRustSupport(client_evm_bench);
+
+    const check_bench_evm_step = b.step("check-bench-evm", "Compile and link EVM benchmarks");
+    check_bench_evm_step.dependOn(&client_evm_bench.step);
 
     const run_client_evm_bench = b.addRunArtifact(client_evm_bench);
     const bench_evm_step = b.step("bench-evm", "Run EVM ↔ WorldState integration benchmarks");
@@ -622,7 +671,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "bench_utils", .module = bench_utils_mod },
             .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
         },
     });
     const bench_frame_exe = b.addExecutable(.{ .name = "bench_frame", .root_module = bench_frame_mod });
@@ -637,7 +686,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "bench_utils", .module = bench_utils_mod },
             .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
         },
     });
     const bench_opcodes_exe = b.addExecutable(.{ .name = "bench_opcodes", .root_module = bench_opcodes_mod });
@@ -668,7 +717,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "bench_utils", .module = bench_utils_mod },
             .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
         },
     });
     const bench_evm_core_exe = b.addExecutable(.{ .name = "bench_evm_core", .root_module = bench_evm_core_mod });
@@ -773,136 +822,68 @@ pub fn build(b: *std.Build) void {
     bench_all_step.dependOn(&run_client_sync_bench.step);
     bench_all_step.dependOn(&run_client_cli_bench.step);
 
-    // Add execution-specs tests
-    // Build option to force refreshing the generated Python fixtures
-    const refresh_specs_opt = b.option(bool, "refresh-specs", "Force refresh of execution-specs fixtures");
-    const force_refresh = refresh_specs_opt orelse false;
-
-    // First, add a build step to generate test fixtures using Python fill command
-    const fill_specs = if (force_refresh)
-        b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            // Force refresh: always run fill (with --clean) for all deployed forks
-            "cd execution-specs && " ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean",
-        })
-    else
-        b.addSystemCommand(&.{
-            "sh",
-            "-c",
-            // No-op only if all fork fixtures are present; otherwise fill all
-            "OUT_DIR=execution-specs/tests/eest/static/state_tests; " ++ "if [ -d \"$OUT_DIR\" ] && find \"$OUT_DIR\" -type f -name '*.json' | grep -q .; then " ++ "echo 'Specs already built, skipping fill'; " ++ "else cd execution-specs && " ++ "uv run --extra fill --extra test fill tests/eest --output tests/eest/static/state_tests --clean; fi",
-        });
-
-    // Generate Zig test wrappers from JSON fixtures for STATE TESTS
-    const generate_zig_state_tests = b.addSystemCommand(&.{
-        "python3",
-        "scripts/generate_spec_tests.py",
-        "state",
+    const state_fixture_stamp = "execution-specs/tests/eest/static/state_tests/.filled";
+    const force_refresh = b.option(bool, "refresh-specs", "Force refresh of execution-specs state fixtures") orelse false;
+    const use_existing = b.option(bool, "specs-use-existing", "Run against an already filled, possibly scoped state fixture directory") orelse false;
+    const fill_specs = b.addSystemCommand(&.{
+        "sh",               "-eu",               "-c",
+        \\if [ "$2" = false ] && [ -f "$1" ]; then
+        \\    exit 0
+        \\fi
+        \\rm -f "$1"
+        \\(cd execution-specs && uv run --extra fill --extra test fill tests/eest -m state_test \
+        \\    --output tests/eest/static/state_tests --clean)
+        \\touch "$1"
+        ,
+        "fill-state-specs", state_fixture_stamp,
+        if (force_refresh) "true" else "false",
     });
-    generate_zig_state_tests.step.dependOn(&fill_specs.step);
 
-    // Generate Zig test wrappers from JSON fixtures for BLOCKCHAIN TESTS
-    const generate_zig_blockchain_tests = b.addSystemCommand(&.{
-        "python3",
-        "scripts/generate_spec_tests.py",
-        "blockchain",
-    });
-    generate_zig_blockchain_tests.step.dependOn(&fill_specs.step);
+    fill_specs.setCwd(b.path("."));
 
-    // Update test/specs/root.zig with generated test imports for STATE TESTS
-    const update_spec_root_state = b.addSystemCommand(&.{
-        "python3",
-        "scripts/update_spec_root.py",
-        "state",
-    });
-    update_spec_root_state.step.dependOn(&generate_zig_state_tests.step);
-
-    // Update test/specs/root.zig with generated test imports for BLOCKCHAIN TESTS
-    const update_spec_root_blockchain = b.addSystemCommand(&.{
-        "python3",
-        "scripts/update_spec_root.py",
-        "blockchain",
-    });
-    update_spec_root_blockchain.step.dependOn(&generate_zig_blockchain_tests.step);
-
-    const spec_runner_mod = b.addModule("spec_runner", .{
-        .root_source_file = b.path("test/specs/root.zig"),
+    const spec_runner_options: std.Build.Module.CreateOptions = .{
+        .root_source_file = b.path("test/specs/runner.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "evm", .module = evm_mod },
+            .{ .name = "evm", .module = mod },
             .{ .name = "voltaire", .module = primitives_mod },
             .{ .name = "client_blockchain", .module = client_blockchain_mod },
         },
-    });
+    };
+    const spec_runner_mod = b.createModule(spec_runner_options);
+    // Preserve the package module and its public runner declaration.
+    var exported_spec_runner = spec_runner_options;
+    exported_spec_runner.root_source_file = b.path("test/specs/root.zig");
+    _ = b.addModule("spec_runner", exported_spec_runner);
 
-    // Compile and run runner.zig's own tests without execution-specs fixtures.
-    // The spec suites only compile runner.zig after the fixture pipeline, so
-    // a Voltaire API change (for example a new Hardfork variant) would
-    // otherwise break `zig build test` without failing `zig build unit`.
-    const spec_runner_unit_tests = b.addTest(.{
-        .name = "spec-runner",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test/specs/runner.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "evm", .module = evm_mod },
-                .{ .name = "voltaire", .module = primitives_mod },
-                .{ .name = "client_blockchain", .module = client_blockchain_mod },
-            },
-        }),
-    });
-    linkRustSupport(spec_runner_unit_tests);
-    const run_spec_runner_unit_tests = b.addRunArtifact(spec_runner_unit_tests);
-    unit_test_step.dependOn(&run_spec_runner_unit_tests.step);
-    test_step.dependOn(&run_spec_runner_unit_tests.step);
-    b.step("test-spec-runner", "Run spec runner unit tests (no fixtures needed)").dependOn(&run_spec_runner_unit_tests.step);
+    const state_root = generateSpecRoot(b, "state");
+    if (force_refresh or !use_existing) state_root.step.dependOn(&fill_specs.step);
+    const blockchain_root = generateSpecRoot(b, "blockchain");
+    const spec_tests_state = addSpecTests(b, state_root.root, spec_runner_mod, target, optimize);
+    const spec_tests_blockchain = addSpecTests(b, blockchain_root.root, spec_runner_mod, target, optimize);
 
-    // Create separate test executables for state tests and blockchain tests
-    const spec_tests_state = b.addTest(.{
-        .root_module = spec_runner_mod,
-        .test_runner = .{
-            .path = b.path("test_runner.zig"),
-            .mode = .simple,
-        },
-    });
-    linkRustSupport(spec_tests_state);
-
-    const spec_tests_blockchain = b.addTest(.{
-        .root_module = spec_runner_mod,
-        .test_runner = .{
-            .path = b.path("test_runner.zig"),
-            .mode = .simple,
-        },
-    });
-    linkRustSupport(spec_tests_blockchain);
-
-    // Make spec test compilation depend on test generation pipeline
-    spec_tests_state.step.dependOn(&update_spec_root_state.step);
-    spec_tests_blockchain.step.dependOn(&update_spec_root_blockchain.step);
-
-    // Run artifacts for state tests
     const run_spec_tests_state = b.addRunArtifact(spec_tests_state);
-    run_spec_tests_state.setCwd(b.path(".")); // Set working directory to project root for test file paths
-    run_spec_tests_state.setEnvironmentVariable("TEST_TYPE", "state");
+    run_spec_tests_state.setCwd(b.path("."));
 
-    // Run artifacts for blockchain tests
     const run_spec_tests_blockchain = b.addRunArtifact(spec_tests_blockchain);
-    run_spec_tests_blockchain.setCwd(b.path(".")); // Set working directory to project root for test file paths
-    run_spec_tests_blockchain.setEnvironmentVariable("TEST_TYPE", "blockchain");
+    run_spec_tests_blockchain.setCwd(b.path("."));
 
-    // Main spec test step - runs STATE TESTS ONLY by default
     const spec_test_step = b.step("specs", "Run execution-specs STATE tests");
     spec_test_step.dependOn(&run_spec_tests_state.step);
 
-    // Blockchain test step - runs BLOCKCHAIN TESTS ONLY
     const spec_blockchain_test_step = b.step("specs-blockchain", "Run execution-specs BLOCKCHAIN tests");
     spec_blockchain_test_step.dependOn(&run_spec_tests_blockchain.step);
 
-    // Add state tests to main test step (default behavior)
-    test_step.dependOn(&run_spec_tests_state.step);
+    const include_specs = b.option(bool, "specs", "Run filled state fixtures during zig build test (default: false)") orelse false;
+    if (include_specs) test_step.dependOn(&run_spec_tests_state.step);
+
+    const spec_runner_unit_tests = b.addTest(.{ .root_module = spec_runner_mod });
+    linkRustSupport(spec_runner_unit_tests);
+    const run_spec_runner_unit_tests = b.addRunArtifact(spec_runner_unit_tests);
+    test_step.dependOn(&run_spec_runner_unit_tests.step);
+    unit_test_step.dependOn(&run_spec_runner_unit_tests.step);
+    b.step("test-spec-runner", "Run spec runner unit tests (no fixtures needed)").dependOn(&run_spec_runner_unit_tests.step);
 
     // Create hardfork-specific test suites
     const hardforks = [_]struct { name: []const u8, desc: []const u8 }{
@@ -1067,21 +1048,9 @@ pub fn build(b: *std.Build) void {
         const steps = fork_sub_steps_map.getPtr(config.fork_name).?;
 
         for (config.targets) |sub_target| {
-            const sub_tests = b.addTest(.{
-                .root_module = spec_runner_mod,
-                .test_runner = .{
-                    .path = b.path("test_runner.zig"),
-                    .mode = .simple,
-                },
-            });
-            linkRustSupport(sub_tests);
-
-            sub_tests.step.dependOn(&update_spec_root_state.step);
-
-            const run_sub_tests = b.addRunArtifact(sub_tests);
+            const run_sub_tests = b.addRunArtifact(spec_tests_state);
             run_sub_tests.setCwd(b.path("."));
             run_sub_tests.setEnvironmentVariable("TEST_FILTER", sub_target.filter);
-            run_sub_tests.setEnvironmentVariable("TEST_TYPE", "state");
 
             const step_name = b.fmt("specs-{s}", .{sub_target.name});
             const sub_step = b.step(step_name, sub_target.desc);
@@ -1092,21 +1061,9 @@ pub fn build(b: *std.Build) void {
     }
 
     for (hardforks) |fork| {
-        const fork_tests = b.addTest(.{
-            .root_module = spec_runner_mod,
-            .test_runner = .{
-                .path = b.path("test_runner.zig"),
-                .mode = .simple,
-            },
-        });
-        linkRustSupport(fork_tests);
-
-        fork_tests.step.dependOn(&update_spec_root_state.step);
-
-        const run_fork_tests = b.addRunArtifact(fork_tests);
+        const run_fork_tests = b.addRunArtifact(spec_tests_state);
         run_fork_tests.setCwd(b.path("."));
         run_fork_tests.setEnvironmentVariable("TEST_FILTER", fork.name);
-        run_fork_tests.setEnvironmentVariable("TEST_TYPE", "state");
 
         const step_name = b.fmt("specs-{s}", .{fork.name});
         const fork_step = b.step(step_name, fork.desc);
@@ -1127,21 +1084,9 @@ pub fn build(b: *std.Build) void {
     const eip_suites = [_]struct { name: []const u8, filter: []const u8, desc: []const u8 }{};
 
     for (eip_suites) |suite| {
-        const eip_tests = b.addTest(.{
-            .root_module = spec_runner_mod,
-            .test_runner = .{
-                .path = b.path("test_runner.zig"),
-                .mode = .simple,
-            },
-        });
-        linkRustSupport(eip_tests);
-
-        eip_tests.step.dependOn(&update_spec_root_state.step);
-
-        const run_eip_tests = b.addRunArtifact(eip_tests);
+        const run_eip_tests = b.addRunArtifact(spec_tests_state);
         run_eip_tests.setCwd(b.path("."));
         run_eip_tests.setEnvironmentVariable("TEST_FILTER", suite.filter);
-        run_eip_tests.setEnvironmentVariable("TEST_TYPE", "state");
 
         const step_name = b.fmt("specs-{s}", .{suite.name});
         const eip_step = b.step(step_name, suite.desc);
@@ -1361,6 +1306,8 @@ fn addWasmEvm(
         "evm_continue_ffi",
         "evm_get_state_changes",
         "evm_get_state_changes_len",
+        "evm_set_origin",
+        "evm_set_gas_price",
         "evm_enable_storage_injector",
         "evm_set_nonce",
         "evm_get_log_count",
@@ -1384,16 +1331,93 @@ fn addWasmEvm(
     return wasm_lib;
 }
 
-/// Voltaire's exported crypto/primitives/precompiles modules carry the Rust
-/// `libcrypto_wrappers.a` archive (its own test steps call `addObjectFile` on
-/// the shared root module). Rust std inside that archive needs the GCC unwinder,
-/// which Zig does not link by default on Linux or Windows GNU. macOS gets
-/// `_Unwind_*` from libSystem, and MSVC from its own runtime.
+fn generateSpecRoot(b: *std.Build, family: []const u8) struct { step: *std.Build.Step, root: std.Build.LazyPath } {
+    const generate = b.addSystemCommand(&.{
+        "python3", "-B", "-c",
+        \\import json
+        \\import runpy
+        \\import sys
+        \\from pathlib import Path
+        \\
+        \\family, script, output, depfile = sys.argv[1:]
+        \\repo = Path.cwd()
+        \\generator = runpy.run_path(script)
+        \\output = Path(output)
+        \\wrappers = output / "generated"
+        \\if family == "state":
+        \\    fixtures = repo / "execution-specs/tests/eest/static/state_tests"
+        \\else:
+        \\    fixtures = repo / "execution-spec-tests/fixtures/blockchain_tests"
+        \\    legacy = repo / "ethereum-tests/BlockchainTests"
+        \\    if not any(fixtures.rglob("*.json")):
+        \\        if any(legacy.rglob("*.json")):
+        \\            fixtures = legacy
+        \\        elif (repo / "ethereum-tests/fixtures_blockchain_tests.tgz").is_file():
+        \\            generator["ensure_blockchain_fixtures"](fixtures, repo)
+        \\
+        \\imports = []
+        \\inputs = []
+        \\for fixture in sorted(fixtures.rglob("*.json")):
+        \\    if ".meta" in fixture.relative_to(fixtures).parts:
+        \\        continue
+        \\    if not generator["generate_test_file"](fixture, wrappers, fixtures, repo):
+        \\        raise SystemExit(f"No tests could be generated from {fixture}")
+        \\    wrapper = (wrappers / fixture.relative_to(fixtures).with_suffix(".zig")).relative_to(output)
+        \\    imports.append(f'test {{ _ = @import({json.dumps(wrapper.as_posix())}); }}')
+        \\    inputs.append(str(fixture))
+        \\if not imports:
+        \\    raise SystemExit(f"No {family} fixture JSON found in {fixtures}")
+        \\
+        \\root = 'pub const runner = @import("spec_runner");\n' + "\n".join(imports) + "\n"
+        \\(output / "root.zig").write_text(root, encoding="utf-8")
+        \\# Track fixture inputs and publish the generated tree through Zig's cache.
+        \\Path(depfile).write_text("root.zig: " + " ".join(path.replace(" ", "\\ ") for path in inputs) + "\n")
+        ,
+        family,
+    });
+    generate.setCwd(b.path("."));
+    generate.addFileArg(b.path("scripts/generate_spec_tests.py"));
+    const output = generate.addOutputDirectoryArg(b.fmt("specs-{s}", .{family}));
+    _ = generate.addDepFileOutputArg("fixtures.d");
+    // Rescan the fixture directory so additions and deletions are picked up.
+    generate.has_side_effects = true;
+    return .{ .step = &generate.step, .root = output.path(b, "root.zig") };
+}
+
+fn addSpecTests(
+    b: *std.Build,
+    root: std.Build.LazyPath,
+    runner: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Compile {
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = root,
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "spec_runner", .module = runner }},
+        }),
+        .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
+    });
+    linkRustSupport(tests);
+    return tests;
+}
+
+/// Voltaire's Rust archive (libcrypto_wrappers.a) references the platform
+/// unwinder (`_Unwind_*`), which Zig does not link implicitly. Link libgcc_s on
+/// Linux and libgcc_eh on Windows GNU. macOS gets the unwinder from libSystem;
+/// wasm32 has none and needs none.
 fn linkRustSupport(compile: *std.Build.Step.Compile) void {
-    const target = compile.rootModuleTarget();
-    if (target.os.tag == .linux) {
-        compile.linkSystemLibrary("gcc_s");
-    } else if (target.os.tag == .windows and target.abi == .gnu) {
-        compile.linkSystemLibrary("gcc_eh");
+    const t = compile.rootModuleTarget();
+    switch (t.os.tag) {
+        .linux => compile.root_module.linkSystemLibrary("gcc_s", .{}),
+        .windows => if (t.abi.isGnu()) compile.root_module.linkSystemLibrary("gcc_eh", .{}),
+        else => {},
     }
+}
+
+fn pathExists(b: *std.Build, sub_path: []const u8) bool {
+    b.build_root.handle.access(sub_path, .{}) catch return false;
+    return true;
 }

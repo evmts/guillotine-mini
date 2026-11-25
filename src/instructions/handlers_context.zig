@@ -6,7 +6,8 @@ const GasConstants = primitives.GasConstants;
 const Address = primitives.Address;
 
 /// Handlers struct - provides execution context operation handlers for a Frame type
-/// The FrameType must have methods: consumeGas, popStack, pushStack, writeMemory, readMemory
+/// The FrameType must have methods: consumeGas, popStack, pushStack, getEvm, memoryRange,
+/// memoryRangeCost, copyToMemory
 /// and fields: pc, address, caller, value, calldata, bytecode, return_data, hardfork
 pub fn Handlers(FrameType: type) type {
     return HandlersWithConfig(FrameType, .{});
@@ -20,21 +21,27 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             if (config.charge_gas) try frame.consumeGas(amount);
         }
 
-        /// Calculate copy gas cost based on size
+        /// True when a miss-aware `Evm` getter has requested host data the async
+        /// transaction has not supplied yet. Evm types without async support never suspend.
+        inline fn asyncPending(evm: anytype) bool {
+            if (comptime @hasField(@TypeOf(evm.*), "async_restart_pending")) return evm.async_restart_pending;
+            return false;
+        }
+
+        /// Copy gas: 3 per 32-byte word.
         fn copyGasCost(size: u32) u64 {
-            const words = wordCount(@as(u64, size));
-            return GasConstants.CopyGas * words;
+            return GasConstants.CopyGas * ((@as(u64, size) + 31) / 32);
         }
 
-        /// Calculate number of 32-byte words needed for size bytes
-        fn wordCount(size: u64) u64 {
-            return (size + 31) / 32;
-        }
-
-        /// Calculate word-aligned memory size for EVM compliance
-        fn wordAlignedSize(bytes: u64) u32 {
-            const words = wordCount(bytes);
-            return @intCast(words * 32);
+        /// Shared CALLDATACOPY / CODECOPY / EXTCODECOPY body after pops and `extra_cost`.
+        /// A zero-length copy charges no expansion and ignores both offsets. Source bytes
+        /// past the end of `src` (at any offset, including >= 2^64) read as zero.
+        fn copyPadded(frame: *FrameType, extra_cost: u64, dest_offset: u256, src_offset: u256, length: u256, src: []const u8) FrameType.EvmError!void {
+            const range = try frame.memoryRange(dest_offset, length);
+            const len: u32 = if (range) |r| r.len else 0;
+            try charge(frame, extra_cost +| copyGasCost(len) +| frame.memoryRangeCost(range));
+            if (range) |r| try frame.copyToMemory(r, src, src_offset);
+            frame.pc += 1;
         }
 
         /// ADDRESS opcode (0x30) - Get address of currently executing account
@@ -99,20 +106,13 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
         pub fn calldataload(frame: *FrameType) FrameType.EvmError!void {
             try charge(frame, GasConstants.GasFastestStep);
             const offset = try frame.popStack();
-            if (offset >= frame.calldata.len) {
-                try frame.pushStack(0);
-            } else {
-                const off_usize: usize = @intCast(offset);
-                const result: u256 = if (frame.calldata.len - off_usize >= 32)
-                    std.mem.readInt(u256, frame.calldata[off_usize..][0..32], .big)
-                else blk: {
-                    var buf: [32]u8 = [_]u8{0} ** 32;
-                    const avail = frame.calldata.len - off_usize;
-                    @memcpy(buf[0..avail], frame.calldata[off_usize .. off_usize + avail]);
-                    break :blk std.mem.readInt(u256, &buf, .big);
-                };
-                try frame.pushStack(result);
+            var word: [32]u8 = [_]u8{0} ** 32;
+            if (offset < frame.calldata.len) {
+                const start: usize = @intCast(offset);
+                const n = @min(32, frame.calldata.len - start);
+                @memcpy(word[0..n], frame.calldata[start..][0..n]);
             }
+            try frame.pushStack(std.mem.readInt(u256, &word, .big));
             frame.pc += 1;
         }
 
@@ -128,28 +128,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const dest_offset = try frame.popStack();
             const offset = try frame.popStack();
             const length = try frame.popStack();
-
-            // Per Yellow Paper, zero-length copies charge only base gas with no memory expansion
-            // and do not validate dest_offset or source offset bounds.
-            if (length == 0) {
-                try charge(frame, GasConstants.GasFastestStep);
-                frame.pc += 1;
-                return;
-            }
-
-            const dest_off = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-            const src_off: u64 = std.math.cast(u64, offset) orelse std.math.maxInt(u64);
-            const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
-
-            // Charge base + memory expansion + copy per word
-            const end_bytes_copy: u64 = @as(u64, dest_off) + @as(u64, len);
-            const mem_cost4 = frame.memoryExpansionCost(end_bytes_copy);
-            const copy_cost = copyGasCost(len);
-            try charge(frame, GasConstants.GasFastestStep +| mem_cost4 +| copy_cost);
-
-            // Copy calldata to memory (reads past calldata.len are zero-padded)
-            try frame.writeMemoryZeroPadded(dest_off, frame.calldata, src_off, len);
-            frame.pc += 1;
+            try copyPadded(frame, GasConstants.GasFastestStep, dest_offset, offset, length, frame.calldata);
         }
 
         /// CODESIZE opcode (0x38) - Get size of code running in current environment
@@ -164,27 +143,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const dest_offset = try frame.popStack();
             const offset = try frame.popStack();
             const length = try frame.popStack();
-
-            // Per Yellow Paper, zero-length copies charge only base gas with no memory expansion
-            // and do not validate dest_offset or source offset bounds.
-            if (length == 0) {
-                try charge(frame, GasConstants.GasFastestStep);
-                frame.pc += 1;
-                return;
-            }
-
-            const dest_off = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-            const src_off: u64 = std.math.cast(u64, offset) orelse std.math.maxInt(u64);
-            const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
-
-            const end_bytes_code: u64 = @as(u64, dest_off) + @as(u64, len);
-            const mem_cost5 = frame.memoryExpansionCost(end_bytes_code);
-            const copy_cost = copyGasCost(len);
-            try charge(frame, GasConstants.GasFastestStep +| mem_cost5 +| copy_cost);
-
-            // Copy code to memory (reads past bytecode.code.len are zero-padded)
-            try frame.writeMemoryZeroPadded(dest_off, frame.bytecode.code, src_off, len);
-            frame.pc += 1;
+            try copyPadded(frame, GasConstants.GasFastestStep, dest_offset, offset, length, frame.bytecode.code);
         }
 
         /// GASPRICE opcode (0x3a) - Get price of gas in current environment
@@ -216,8 +175,8 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                 @as(u64, 20);
             try charge(frame, access_cost);
 
-            // Get the code from the external address
-            const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
+            const code = evm.get_raw_code(ext_addr);
+            if (asyncPending(evm)) return error.NeedAsyncData;
             try frame.pushStack(code.len);
             frame.pc += 1;
         }
@@ -245,38 +204,12 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             else
                 @as(u64, 20);
 
-            // Per Yellow Paper, zero-length EXTCODECOPY charges only account access gas
-            // with no memory expansion and no dest_offset overflow check.
-            if (size == 0) {
-                try charge(frame, access_cost);
-                frame.pc += 1;
-                return;
-            }
-
-            const dest = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-            // Per spec, code offset may exceed code length; reads beyond code return zero bytes.
-            // Do NOT error on large code offsets; treat them as valid but out-of-range.
-            const off_u64: u64 = std.math.cast(u64, offset) orelse std.math.maxInt(u64);
-            const len = std.math.cast(u32, size) orelse return error.OutOfBounds;
-
-            const copy_cost = copyGasCost(len);
-            const end_bytes: u64 = @as(u64, dest) + @as(u64, len);
-            const mem_cost = frame.memoryExpansionCost(end_bytes);
-
-            // Charge all costs at once
-            try charge(frame, access_cost + copy_cost +| mem_cost);
-
-            // Update memory size after charging for expansion (per EVM spec)
-            // Subsequent memory-expanding ops must not be double-charged for the same range
-            const aligned = wordAlignedSize(end_bytes);
-            if (aligned > frame.memory_size) frame.memory_size = aligned;
-
-            // Get the code from the external address
-            const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
-
-            // Copy code to memory
-            try frame.writeMemoryZeroPadded(dest, code, off_u64, len);
-            frame.pc += 1;
+            // Miss-aware read: an unsupplied code field suspends before any charge.
+            const code = evm.get_raw_code(ext_addr);
+            if (asyncPending(evm)) return error.NeedAsyncData;
+            // A zero-length copy charges only account access gas, with no memory expansion
+            // and no offset checks; code bytes past the end read as zero.
+            try copyPadded(frame, access_cost, dest_offset, offset, size, code);
         }
 
         /// RETURNDATASIZE opcode (0x3d) - Get size of output data from the previous call
@@ -300,29 +233,18 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const offset = try frame.popStack();
             const length = try frame.popStack();
 
-            const dest_off = std.math.cast(u32, dest_offset) orelse return error.OutOfBounds;
-            const src_off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-            const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
+            const range = try frame.memoryRange(dest_offset, length);
+            const len: u32 = if (range) |r| r.len else 0;
+            try charge(frame, GasConstants.GasFastestStep +| copyGasCost(len) +| frame.memoryRangeCost(range));
 
-            // Check bounds with overflow-safety
-            const rd_len: usize = frame.return_data.len;
-            const src_usize: usize = @intCast(src_off);
-            const len_usize: usize = @intCast(len);
-            if (src_usize > rd_len or len_usize > rd_len - src_usize) {
+            // EIP-211: reading past the end of the return data is an exceptional halt,
+            // even for a zero-length copy.
+            const rd_len = frame.return_data.len;
+            if (offset > rd_len or length > rd_len - @as(usize, @intCast(offset))) {
                 return error.OutOfBounds;
             }
 
-            const end_bytes_ret: u64 = @as(u64, dest_off) + @as(u64, len);
-            const mem_cost6 = frame.memoryExpansionCost(end_bytes_ret);
-            const copy_cost = copyGasCost(len);
-            try charge(frame, GasConstants.GasFastestStep +| mem_cost6 +| copy_cost);
-
-            // Update memory size after charging for expansion
-            const aligned_ret = wordAlignedSize(end_bytes_ret);
-            if (aligned_ret > frame.memory_size) frame.memory_size = aligned_ret;
-
-            // Copy return data to memory
-            try frame.writeMemorySlice(dest_off, frame.return_data[src_usize .. src_usize + len_usize]);
+            if (range) |r| try frame.copyToMemory(r, frame.return_data, offset);
             frame.pc += 1;
         }
 
@@ -349,11 +271,14 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                 @as(u64, 400);
             try charge(frame, access_cost);
 
-            // Get the code from the external address
-            const code = if (evm.host) |h| h.getCode(ext_addr) else evm.code.get(ext_addr) orelse &[_]u8{};
+            const code = evm.get_raw_code(ext_addr);
+            if (asyncPending(evm)) return error.NeedAsyncData;
 
             if (code.len == 0) {
-                if (evm.accountIsEmpty(ext_addr)) {
+                // EIP-161 emptiness reads balance and nonce through the miss-aware getters.
+                const is_empty = evm.accountIsEmpty(ext_addr);
+                if (asyncPending(evm)) return error.NeedAsyncData;
+                if (is_empty) {
                     try frame.pushStack(0);
                 } else if (evm.accountExists(ext_addr)) {
                     var empty_hash: [32]u8 = undefined;

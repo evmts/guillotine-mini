@@ -13,20 +13,10 @@ inline fn logGasCost(topic_count: u8, data_size: u32) u64 {
     return base_cost + topic_cost + data_cost;
 }
 
-/// Calculate word count (32-byte words)
-inline fn wordCount(bytes: u64) u64 {
-    return (bytes + 31) / 32;
-}
-
-/// Calculate word-aligned memory size for EVM compliance
-inline fn wordAlignedSize(bytes: u64) u32 {
-    const words = wordCount(bytes);
-    return @intCast(words * 32);
-}
-
 /// Handlers struct - provides log operation handlers for a Frame type
-/// The FrameType must have methods: consumeGas, popStack, memoryExpansionCost
-/// and fields: pc, memory_size, is_static
+/// The FrameType must have methods: consumeGas, popStack, getEvm, memoryRange,
+/// memoryRangeCost, expandMemory, readMemoryAlloc
+/// and fields: pc, address, frame_id, is_static
 pub fn Handlers(FrameType: type) type {
     return HandlersWithConfig(FrameType, .{});
 }
@@ -49,57 +39,32 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const offset = try frame.popStack();
             const length = try frame.popStack();
 
-            // Gas cost + memory expansion for log data
-            const off_u32 = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-            const length_u32 = std.math.cast(u32, length) orelse return error.OutOfBounds;
-            const log_cost = logGasCost(topic_count, length_u32);
-            try charge(frame, log_cost);
-            if (length_u32 > 0) {
-                const end_bytes: u64 = @as(u64, off_u32) + @as(u64, length_u32);
-                const mem_cost = frame.memoryExpansionCost(end_bytes);
-                try charge(frame, mem_cost);
-                const aligned = wordAlignedSize(end_bytes);
-                if (aligned > frame.memory_size) frame.memory_size = aligned;
-            }
+            // Pop every operand first (execution-specs order), so a short stack is a
+            // StackUnderflow even when the memory range is unpayable.
+            var topics_tmp: [4]u256 = undefined;
+            for (topics_tmp[0..topic_count]) |*topic| topic.* = try frame.popStack();
+
+            // Gas cost + memory expansion for log data. Zero-length data ignores the offset.
+            const range = try frame.memoryRange(offset, length);
+            const length_u32: u32 = if (range) |r| r.len else 0;
+            try charge(frame, logGasCost(topic_count, length_u32) +| frame.memoryRangeCost(range));
+            if (range) |r| try frame.expandMemory(r.end);
 
             const evm = frame.getEvm();
+            // Logs live for one transaction: allocate them in the transaction arena.
+            const alloc = if (comptime @hasField(@TypeOf(evm.*), "tx_arena"))
+                evm.tx_arena.allocator()
+            else
+                evm.arena.allocator();
 
-            // Read topics (store them so we can add to log)
-            const topics_len: usize = topic_count;
-            var topics_tmp: [4]u256 = undefined; // max 4 topics
-            var ti: usize = 0;
-            while (ti < topics_len) : (ti += 1) {
-                topics_tmp[ti] = try frame.popStack();
-            }
+            const data_slice: []u8 = if (range) |r| try frame.readMemoryAlloc(alloc, r) else &[_]u8{};
+            const topics_slice: []u256 = if (topic_count > 0) try alloc.dupe(u256, topics_tmp[0..topic_count]) else &[_]u256{};
 
-            // Read data from memory
-            var data_slice: []u8 = &[_]u8{};
-            if (length_u32 > 0) {
-                const alloc = evm.arena.allocator();
-                const buf = try alloc.alloc(u8, length_u32);
-                try frame.copyFromMemory(buf, off_u32);
-                data_slice = buf;
-            }
-
-            // Allocate topics in arena and copy (reverse order if needed)
-            var topics_slice: []u256 = &[_]u256{};
-            if (topics_len > 0) {
-                const alloc = evm.arena.allocator();
-                const topics_buf = try alloc.alloc(u256, topics_len);
-                var k: usize = 0;
-                while (k < topics_len) : (k += 1) {
-                    topics_buf[k] = topics_tmp[k];
-                }
-                topics_slice = topics_buf;
-            }
-
-            // Append log to EVM logs buffer
-            const log_entry = call_result.Log{
+            try evm.logs.append(alloc, call_result.Log{
                 .address = frame.address,
                 .topics = topics_slice,
                 .data = data_slice,
-            };
-            try evm.logs.append(evm.arena.allocator(), log_entry);
+            });
             if (evm.inspector) |sink| {
                 @branchHint(.unlikely);
                 var topics: [4][32]u8 = undefined;
@@ -107,7 +72,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                 sink.onLog(.{
                     .frame_id = frame.frame_id,
                     .address = frame.address,
-                    .topics = topics[0..topics_len],
+                    .topics = topics[0..topic_count],
                     .data = data_slice,
                 });
             }

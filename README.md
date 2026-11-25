@@ -6,7 +6,7 @@
   </h1>
   <sup>
     <a href="https://github.com/evmts/guillotine-mini">
-       <img src="https://img.shields.io/badge/zig-0.15.1+-orange.svg" alt="zig version" />
+       <img src="https://img.shields.io/badge/zig-0.15.2-orange.svg" alt="zig version" />
     </a>
     <a href="https://github.com/evmts/guillotine-mini/actions/workflows/ci.yml">
       <img src="https://github.com/evmts/guillotine-mini/actions/workflows/ci.yml/badge.svg" alt="CI" />
@@ -21,10 +21,10 @@
 
 ## Requirements
 
-- Zig 0.15.1+ (CI uses 0.15.2)
+- Zig 0.15.2
 - Cargo (Voltaire builds its Rust crypto archive)
 - A `../voltaire` checkout at the revision pinned in `native-dependencies.json`
-- Python 3 and [uv](https://docs.astral.sh/uv/) for `zig build test` and `zig build specs` (execution-specs fills fixtures with Python 3.11+)
+- Python 3 and [uv](https://docs.astral.sh/uv/) for `zig build specs` (execution-specs fills fixtures with Python 3.11+)
 - Binaryen `wasm-opt` for building either WASM EVM reactor (CI uses 132.0.0)
 - Node 22+ for `zig build test-wasm` and `examples/wasm.mjs`
 
@@ -37,9 +37,10 @@ adjacent `../voltaire` directory. Clone both repositories side by side and check
 out the Voltaire revision pinned in `native-dependencies.json`:
 
 ```bash
-git clone --recurse-submodules https://github.com/evmts/guillotine-mini.git
+git clone https://github.com/evmts/guillotine-mini.git
 git clone https://github.com/evmts/voltaire.git
 git -C voltaire checkout "$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)"
+git -C voltaire submodule update --init packages/voltaire-zig/lib/libwally-core vendor/execution-apis
 cd guillotine-mini
 zig build
 ```
@@ -47,14 +48,6 @@ zig build
 The first build runs Cargo inside `../voltaire` to compile the Rust crypto
 archive. Plain `zig build` installs no artifacts; use `zig build native` for the
 C ABI static library and `zig build wasm` for the WASI reactor.
-
-`zig build test` runs the unit tests and the execution-specs state tests. It reads
-fixtures from the `execution-specs` and `ethereum-tests` submodules and, on the
-first run, uses `uv` to fill the execution-specs fixtures and `python3` to generate
-the spec test wrappers. If you cloned without submodules, run
-`git submodule update --init execution-specs ethereum-tests`. The Nethermind
-trie diff runs only when `dotnet` is installed; pass `-Dnethermind-diff=false` to
-skip it explicitly.
 
 **Use as a Zig dependency**
 
@@ -94,16 +87,33 @@ Run a value-transferring contract call with `zig build run-simple-call`.
 The [Zig examples](examples/README.md) include nine more runnable programs and their expected output.
 
 ```bash
-zig build
+zig build examples
+zig build run-examples
 zig build test
-zig build specs
-zig build wasm
-zig build test-wasm
 ```
 
+## Conformance tests
+
+Initialize `ethereum-tests` for the full trie suite and `execution-specs` for
+the Sepolia runner fixture and state conformance tests. `zig build test` runs
+the native suite. State conformance and Nethermind differential tests are
+opt-in via `-Dspecs=true` and `-Dnethermind-diff=true`.
+
 ```bash
+git submodule update --init execution-specs ethereum-tests
+zig build specs
 TEST_FILTER="push0" zig build specs
+zig build specs-blockchain
 ```
+
+See the [contributor guide](CONTRIBUTING.md#running-spec-subsets) for fixture
+generation and the optional Nethermind checkout.
+
+The [Lean 4 reference specification](spec/lean/README.md) models core EVM
+semantics and includes machine-checked theorems. With Elan installed,
+`zig build lean-diff -Doptimize=ReleaseFast` builds the oracle with the pinned
+Lean toolchain and compares 14,784 vectors against the Zig EVM. The
+`lean-diff-unit` target tests the Zig harness.
 
 ## WebAssembly
 
@@ -192,6 +202,11 @@ flowchart TB
 
 ## Benchmarks (Incremental via Smithers)
 
+CI uses Node 26 and Bun 1.4.2 for Smithers. With `smthrs@next` rc.16,
+the workflow plans the full graph using the CLI's bundled dependencies and
+runs native targets through Smithers. The client job runs against its
+own Effect installation.
+
 Performance benchmarks cover every Zig core EVM module, Zig client subsystem, WASI WASM reactor, C-FFI bridge, and TypeScript / `client-ts` package. Each module declares fine-grained `PACKAGE.ts` targets so Smithers only re-runs benchmarks whose dependencies changed and replays cached output on hits:
 
 ```bash
@@ -219,12 +234,14 @@ zig build bench -Doptimize=ReleaseFast
 - `CONTRIBUTING.md` — setup, test suites, and contribution workflow
 - `NATIVE_RELEASE.md` — native ZEVM embedding notes
 - `CLAUDE.md` — project guide for devs and AI assistants
+- [Glamsterdam hardfork roadmap](docs/HARDFORK_ROADMAP.md) — audit baseline and staged implementation
+- [Audit review reports](docs/reviews/) — findings from three review rounds
 
 ## Highlights
 
-- Full hardfork support (Frontier → Osaka)
+- Hardfork rules from Frontier through Osaka, including an Osaka property test suite
 - 20+ EIPs implemented (EIP-1153, EIP-2537, EIP-4844, EIP-6780, EIP-7702, EIP-7939 `CLZ`, EIP-7951 `P256VERIFY`)
-- Bounded EIP-3155 tracing (`Tracer.max_entries`) and `TraceDiff`
+- Bounded EIP-3155 tracing, execution inspectors, built-in tracers, and JSON-RPC tracing
 - WASI Preview 1 WASM reactor with linked crypto precompiles (`zig build wasm`)
 - Flat C ABI static archive (`zig build native`)
 

@@ -2,64 +2,116 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: "1.99.0"
 
 jobs:
   build-test:
-    # Zig 0.15.x cannot link against the latest macOS SDK; revisit with Zig upgrades.
-    runs-on: macos-15
+    if: github.event_name != 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        # Zig 0.15.x cannot link against newer macOS SDKs.
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: guillotine-mini
     steps:
-      - uses: actions/checkout@v5
+      - &checkout_project
+        uses: actions/checkout@v5
         with:
           path: guillotine-mini
-          submodules: recursive
-      - name: Read native dependency pin
+      - &checkout_fixtures
+        name: Check out native test fixtures
+        run: git submodule update --init --depth 1 -- execution-specs ethereum-tests
+      - &read_native_pin
+        name: Read native dependency pin
         id: native
         working-directory: .
         run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v5
+      - &checkout_voltaire
+        uses: actions/checkout@v5
         with:
           repository: evmts/voltaire
           ref: ${{ steps.native.outputs.voltaire }}
           path: voltaire
-          submodules: recursive
-      - name: Install Zig 0.15.2
+      - &checkout_voltaire_submodules
+        name: Check out Voltaire HTTPS submodules
+        working-directory: voltaire
+        run: git submodule update --init --depth 1 -- packages/voltaire-zig/lib/libwally-core vendor/execution-apis
+      - &install_zig
+        name: Install Zig 0.15.2
         uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a # v1
         with:
           version: 0.15.2
-      - name: Install .NET SDK for Nethermind
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '10.0.x'
-      - name: Cache cargo
+      - name: Check Zig build formatting
+        run: zig fmt --check build.zig build.zig.zon
+      - &install_rust
+        name: Install pinned Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - &cache_cargo
+        name: Cache Cargo downloads
         uses: actions/cache@v5
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build native crypto archive
+          key: ${{ runner.os }}-cargo-${{ hashFiles('voltaire/Cargo.lock') }}
+      - &build_native_crypto
+        name: Build native crypto archive
         working-directory: voltaire
         run: cargo build --release --lib
-      - name: Run all Zig examples and compare the EIP-3155 trace
-        run: sh test/examples.sh
       - name: Build
         run: zig build
-      - name: Test
+      - name: Build native static library
+        run: zig build native
+      - name: Compile Zig examples
+        run: zig build examples
+      - name: Run all Zig examples and compare the EIP-3155 trace
+        run: sh test/examples.sh
+      - name: Test Lean differential harness
+        run: zig build lean-diff-unit
+      - name: Unit tests
+        run: zig build unit
+      - name: Native trace regressions
+        run: zig build test-trace -Doptimize=ReleaseSafe
+      - name: Native test suite
         run: zig build test
-      - name: Unit and native trace regressions
-        run: zig build unit test-trace -Doptimize=ReleaseSafe
+      - name: Test utilities, blockchain, and EVM adapter
+        run: zig build test-utils test-blockchain test-evm-adapter
+      - name: Install uv for spec fixtures
+        if: runner.os == 'Linux'
+        uses: astral-sh/setup-uv@v7
+      - name: Fill PUSH0 state fixtures
+        if: runner.os == 'Linux'
+        working-directory: guillotine-mini/execution-specs
+        run: |
+          rm -f tests/eest/static/state_tests/.filled
+          uv run --python 3.12 --extra fill --extra test fill tests/eest/shanghai/eip3855_push0 \
+            -m state_test --output tests/eest/static/state_tests --clean
+      - name: Run execution-specs smoke tests
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TEST_FORMAT: json
+        run: |
+          zig build specs-shanghai-push0 -Dspecs-use-existing=true | tee "$RUNNER_TEMP/spec-smoke.log"
+          sed -n '/^{/p' "$RUNNER_TEMP/spec-smoke.log" | jq -es 'any(.[]; .success and .passed > 0)'
+      - name: Compile EVM benchmarks
+        run: zig build check-bench-evm
 
   smithers:
-    # Dogfoods the incremental Smithers graph: fmt, native/WASM build, Zig and
-    # client-ts tests, and the factory projection check. Benchmarks are
-    # exclusive and stay out of `ci //...`.
     runs-on: macos-15
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: guillotine-mini
@@ -67,48 +119,87 @@ jobs:
       SMITHERS_CACHE_READ_TOKEN: ${{ secrets.SMITHERS_CACHE_READ_TOKEN }}
       SMITHERS_CACHE_WRITE_TOKEN: ${{ secrets.SMITHERS_CACHE_WRITE_TOKEN }}
     steps:
-      - uses: actions/checkout@v5
-        with:
-          path: guillotine-mini
-          submodules: recursive
-      - name: Read native dependency pin
-        id: native
-        working-directory: .
-        run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v5
-        with:
-          repository: evmts/voltaire
-          ref: ${{ steps.native.outputs.voltaire }}
-          path: voltaire
-          submodules: recursive
-      - name: Install Zig 0.15.2
-        uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a # v1
-        with:
-          version: 0.15.2
+      - *checkout_project
+      - *checkout_fixtures
+      - *read_native_pin
+      - *checkout_voltaire
+      - *checkout_voltaire_submodules
+      - *install_zig
+      - *install_rust
+      - *cache_cargo
+      - *build_native_crypto
       - uses: actions/setup-node@v5
         with:
-          node-version: '24'
+          node-version: '26'
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.1
-      - name: Cache cargo
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build native crypto archive
-        working-directory: voltaire
-        run: cargo build --release --lib
-      - name: Install client-ts dependencies
-        run: bun install --frozen-lockfile
-        working-directory: guillotine-mini/client-ts
+          bun-version: '1.4.2'
       - name: Install WASM optimizer
         run: npm install --global --ignore-scripts binaryen@132.0.0
       - name: Install Rust WASM target
         run: rustup target add wasm32-unknown-unknown
-      - name: smthrs ci
-        run: npx -y smthrs@next ci '//...' --verbose
+      # The published CLI rejects a separate Effect install while loading
+      # declarations. The client-ts job installs those dependencies and tests the client.
+      - name: Plan the Smithers CI graph
+        run: npx --yes smthrs@next ci '//...' --plan
+      - name: Run the native Smithers CI targets
+        run: |
+          npx --yes smthrs@next ci '//.smithers/...' '//client/...' '//src/...' \
+            '//:test_unit' '//:test_spec_runner' '//:test_runner' '//:test_trace' '//:test_wasm' --verbose
+
+  client-ts:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: guillotine-mini
+    steps:
+      - *checkout_project
+      - *checkout_fixtures
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.12.0'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - name: Run TypeScript client tests
+        working-directory: guillotine-mini/client-ts
+        run: |
+          bun install --frozen-lockfile
+          bun run test
+      - name: Type-check client code
+        working-directory: guillotine-mini/client-ts
+        run: |
+          # Smithers evaluates PACKAGE.ts declarations in its own CI job.
+          config=$(mktemp ./tsconfig.ci.XXXXXX)
+          trap 'rm -f "$config"' EXIT
+          printf '%s\n' '{"extends":"./tsconfig.json","exclude":["node_modules","**/PACKAGE.ts"]}' > "$config"
+          bun run tsc --project "$config"
+      - name: Run ExEx manager tests
+        run: bun test ./ts/exex/manager.test.ts
+
+  lean-diff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: guillotine-mini
+    steps:
+      - *checkout_project
+      - *read_native_pin
+      - *checkout_voltaire
+      - *checkout_voltaire_submodules
+      - *install_zig
+      - *install_rust
+      - *cache_cargo
+      - *build_native_crypto
+      - name: Install the pinned Lean 4 toolchain
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: guillotine-mini/spec/lean
+          auto-config: 'false'
+          use-mathlib-cache: 'false'
+          use-github-cache: 'false'
+      - name: Fuzz EVM execution against the Lean oracle
+        run: LEAN_DIFF_REQUIRE=1 zig build lean-diff -Doptimize=ReleaseFast

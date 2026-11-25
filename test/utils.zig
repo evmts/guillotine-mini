@@ -57,6 +57,8 @@ pub const TestResult = struct {
     test_name: []const u8,
     passed: bool,
     todo: bool = false,
+    /// The test returned error.SkipZigTest. Skipped tests also set `passed`.
+    skipped: bool = false,
     error_msg: ?[]const u8,
     duration_ns: u64,
     file_path: ?[]const u8 = null,
@@ -67,8 +69,8 @@ pub fn extractSuiteName(full_name: []const u8) []const u8 {
     // Find the last occurrence of ".test."
     var last_test_pos: ?usize = null;
     var i: usize = 0;
-    while (i < full_name.len - 5) : (i += 1) {
-        if (std.mem.eql(u8, full_name[i..@min(i + 6, full_name.len)], ".test.")) {
+    while (i + 6 <= full_name.len) : (i += 1) {
+        if (std.mem.eql(u8, full_name[i .. i + 6], ".test.")) {
             last_test_pos = i;
         }
     }
@@ -89,8 +91,8 @@ pub fn extractTestName(full_name: []const u8) []const u8 {
     // Find the last occurrence of ".test."
     var last_test_pos: ?usize = null;
     var i: usize = 0;
-    while (i < full_name.len - 5) : (i += 1) {
-        if (std.mem.eql(u8, full_name[i..@min(i + 6, full_name.len)], ".test.")) {
+    while (i + 6 <= full_name.len) : (i += 1) {
+        if (std.mem.eql(u8, full_name[i .. i + 6], ".test.")) {
             last_test_pos = i + 6;
         }
     }
@@ -158,6 +160,65 @@ pub fn printProgress(writer: anytype, current: usize, total: usize, suite_name: 
     try std.fmt.format(writer, " {s}[{d}/{d}]{s}", .{ Color.dim, current, total, Color.reset });
 }
 
+/// Exit codes a forked test child reports to the parent.
+pub const ChildExit = struct {
+    pub const pass: u8 = 0;
+    pub const fail: u8 = 1;
+    pub const leak: u8 = 2;
+    pub const skip: u8 = 3;
+};
+
+/// Maps a test function's error to a child exit code.
+/// error.SkipZigTest is a skip, not a failure.
+pub fn errorExitCode(err: anyerror) u8 {
+    return if (err == error.SkipZigTest) ChildExit.skip else ChildExit.fail;
+}
+
+/// Records the outcome for `exit_code` in `result`.
+pub fn applyExitCode(allocator: std.mem.Allocator, result: *TestResult, exit_code: u8) !void {
+    switch (exit_code) {
+        ChildExit.pass => result.passed = true,
+        ChildExit.skip => {
+            result.passed = true;
+            result.skipped = true;
+        },
+        ChildExit.fail => {
+            result.passed = false;
+            result.error_msg = try allocator.dupe(u8, "test failed");
+        },
+        ChildExit.leak => {
+            result.passed = false;
+            result.error_msg = try allocator.dupe(u8, "memory leak detected");
+        },
+        else => {
+            result.passed = false;
+            result.error_msg = try std.fmt.allocPrint(allocator, "exited with code {d}", .{exit_code});
+        },
+    }
+}
+
+/// Runs `func` with a fresh testing allocator and returns its exit code.
+fn runTestFunction(name: []const u8, func: *const fn () anyerror!void) u8 {
+    std.testing.allocator_instance = .{};
+    const exit_code: u8 = if (func()) |_| ChildExit.pass else |err| blk: {
+        if (err != error.SkipZigTest) std.debug.print("{s}: {s}\n", .{ name, @errorName(err) });
+        break :blk errorExitCode(err);
+    };
+    const leaked = std.testing.allocator_instance.deinit() == .leak;
+    if (exit_code == ChildExit.pass and leaked) return ChildExit.leak;
+    return exit_code;
+}
+
+/// A worker count of 0 would schedule tests on no thread, so clamp to >= 1.
+/// Unparseable values fall back to `default_count`.
+pub fn parseWorkerCount(env_value: ?[]const u8, default_count: usize) usize {
+    const requested = if (env_value) |value|
+        std.fmt.parseInt(usize, value, 10) catch default_count
+    else
+        default_count;
+    return @max(requested, 1);
+}
+
 pub fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestResult {
     const t = builtin.test_functions[test_index];
     const suite_name = extractSuiteName(t.name);
@@ -174,92 +235,75 @@ pub fn runTestInProcess(allocator: std.mem.Allocator, test_index: usize) !TestRe
 
     const test_start = std.time.nanoTimestamp();
 
-    // Allow disabling fork to get full panic traces when debugging
-    const nofork = std.posix.getenv("TEST_NOFORK") != null;
-    // Fork to isolate test execution (unless TEST_NOFORK is set)
-    const pid = if (!nofork) try std.posix.fork() else 0;
+    // TEST_NOFORK=1 runs the test in this process so panics print full
+    // traces. The runner then continues with the next test.
+    if (std.posix.getenv("TEST_NOFORK") != null) {
+        const exit_code = runTestFunction(t.name, t.func);
+        test_result.duration_ns = @intCast(std.time.nanoTimestamp() - test_start);
+        try applyExitCode(allocator, &test_result, exit_code);
+        return test_result;
+    }
+
+    // Fork to isolate test execution. A failed fork is a failed test, not a
+    // runner error, so the parallel scheduler always records an outcome.
+    const pid = std.posix.fork() catch |err| {
+        test_result.passed = false;
+        test_result.error_msg = try std.fmt.allocPrint(allocator, "fork failed: {s}", .{@errorName(err)});
+        return test_result;
+    };
 
     if (pid == 0) {
-        // Child process - run the test
-        std.testing.allocator_instance = .{};
-        const exit_code: u8 = if (t.func()) |_| 0 else |err| blk: {
-            std.debug.print("{s}: {s}\n", .{ t.name, @errorName(err) });
-            break :blk 1;
-        };
+        std.posix.exit(runTestFunction(t.name, t.func));
+    }
 
-        if (std.testing.allocator_instance.deinit() == .leak) {
-            std.posix.exit(2); // Exit code 2 for memory leak
+    // Parent process - wait for child with 60 second timeout
+    const timeout_ns: i128 = 60 * std.time.ns_per_s;
+    const deadline = std.time.nanoTimestamp() + timeout_ns;
+
+    var timed_out = false;
+    var wait_result: std.posix.WaitPidResult = undefined;
+
+    while (true) {
+        // Try non-blocking wait
+        wait_result = std.posix.waitpid(pid, std.posix.W.NOHANG);
+
+        // Check if child has exited
+        if (wait_result.pid == pid) {
+            break;
         }
 
-        std.posix.exit(exit_code);
+        // Check timeout
+        const now = std.time.nanoTimestamp();
+        if (now >= deadline) {
+            // Timeout - kill the child process
+            std.posix.kill(pid, std.posix.SIG.KILL) catch |err| {
+                // If we can't kill the process, report it but continue cleanup
+                std.debug.print("Warning: Failed to kill timed-out test process {d}: {}\n", .{ pid, err });
+            };
+            _ = std.posix.waitpid(pid, 0); // Clean up zombie
+            timed_out = true;
+            break;
+        }
+
+        // Sleep a bit before checking again
+        std.Thread.sleep(3 * std.time.ns_per_ms);
+    }
+
+    const test_end = std.time.nanoTimestamp();
+    test_result.duration_ns = @intCast(test_end - test_start);
+
+    if (timed_out) {
+        test_result.passed = false;
+        test_result.error_msg = try allocator.dupe(u8, "test timeout (60s)");
+    } else if (std.posix.W.IFEXITED(wait_result.status)) {
+        try applyExitCode(allocator, &test_result, std.posix.W.EXITSTATUS(wait_result.status));
+    } else if (std.posix.W.IFSIGNALED(wait_result.status)) {
+        const signal = std.posix.W.TERMSIG(wait_result.status);
+        test_result.passed = false;
+        test_result.error_msg = try std.fmt.allocPrint(allocator, "crashed with signal {d}", .{signal});
     } else {
-        if (nofork) {
-            // No fork mode: we already executed in current process.
-            const test_end = std.time.nanoTimestamp();
-            test_result.duration_ns = @intCast(test_end - test_start);
-            return test_result;
-        }
-        // Parent process - wait for child with 60 second timeout
-        const timeout_ns: i128 = 60 * std.time.ns_per_s;
-        const deadline = std.time.nanoTimestamp() + timeout_ns;
-
-        var timed_out = false;
-        var wait_result: std.posix.WaitPidResult = undefined;
-
-        while (true) {
-            // Try non-blocking wait
-            wait_result = std.posix.waitpid(pid, std.posix.W.NOHANG);
-
-            // Check if child has exited
-            if (wait_result.pid == pid) {
-                break;
-            }
-
-            // Check timeout
-            const now = std.time.nanoTimestamp();
-            if (now >= deadline) {
-                // Timeout - kill the child process
-                std.posix.kill(pid, std.posix.SIG.KILL) catch |err| {
-                    // If we can't kill the process, report it but continue cleanup
-                    std.debug.print("Warning: Failed to kill timed-out test process {d}: {}\n", .{ pid, err });
-                };
-                _ = std.posix.waitpid(pid, 0); // Clean up zombie
-                timed_out = true;
-                break;
-            }
-
-            // Sleep a bit before checking again
-            std.Thread.sleep(3 * std.time.ns_per_ms);
-        }
-
-        const test_end = std.time.nanoTimestamp();
-        test_result.duration_ns = @intCast(test_end - test_start);
-
-        if (timed_out) {
-            test_result.passed = false;
-            test_result.error_msg = try allocator.dupe(u8, "test timeout (60s)");
-        } else if (std.posix.W.IFEXITED(wait_result.status)) {
-            const exit_code = std.posix.W.EXITSTATUS(wait_result.status);
-            if (exit_code == 0) {
-                test_result.passed = true;
-            } else if (exit_code == 1) {
-                test_result.passed = false;
-                test_result.error_msg = try allocator.dupe(u8, "test failed");
-            } else if (exit_code == 2) {
-                test_result.passed = false;
-                test_result.error_msg = try allocator.dupe(u8, "memory leak detected");
-            } else {
-                test_result.passed = false;
-                test_result.error_msg = try std.fmt.allocPrint(allocator, "exited with code {d}", .{exit_code});
-            }
-        } else if (std.posix.W.IFSIGNALED(wait_result.status)) {
-            const signal = std.posix.W.TERMSIG(wait_result.status);
-            test_result.passed = false;
-            test_result.error_msg = try std.fmt.allocPrint(allocator, "crashed with signal {d}", .{signal});
-        } else {
-            test_result.passed = false;
-            test_result.error_msg = try allocator.dupe(u8, "abnormal termination");
-        }
+        test_result.passed = false;
+        test_result.error_msg = try allocator.dupe(u8, "abnormal termination");
     }
 
     return test_result;
@@ -300,6 +344,7 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
     var passed_count: u32 = 0;
     var failed_count: u32 = 0;
     var todo_count: u32 = 0;
+    var skipped_count: u32 = 0;
     var failed_tests = std.ArrayListUnmanaged(TestResult){};
     defer failed_tests.deinit(allocator);
 
@@ -320,6 +365,8 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
             if (t.todo) {
                 suite_todo += 1;
                 todo_count += 1;
+            } else if (t.skipped) {
+                skipped_count += 1;
             } else if (t.passed) {
                 suite_passed += 1;
                 passed_count += 1;
@@ -419,6 +466,13 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
                     Color.yellow,
                     t.test_name,
                     Color.yellow,
+                    Color.reset,
+                });
+            } else if (t.skipped) {
+                try std.fmt.format(writer, "   {s}{s} {s}(SKIP){s}\n", .{
+                    Color.gray,
+                    t.test_name,
+                    Color.dim,
                     Color.reset,
                 });
             } else if (t.passed) {
@@ -535,6 +589,15 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
             });
         }
     }
+    if (skipped_count > 0) {
+        try std.fmt.format(writer, " {s}|{s} {s}{d} skipped{s}", .{
+            Color.dim,
+            Color.reset,
+            Color.gray,
+            skipped_count,
+            Color.reset,
+        });
+    }
     try std.fmt.format(writer, " {s}({d}){s}\n", .{
         Color.dim,
         results.len,
@@ -558,10 +621,13 @@ pub fn outputJSON(writer: anytype, results: []TestResult, duration_ns: u64) !voi
     var passed: usize = 0;
     var failed: usize = 0;
     var todo: usize = 0;
+    var skipped: usize = 0;
 
     for (results) |r| {
         if (r.todo) {
             todo += 1;
+        } else if (r.skipped) {
+            skipped += 1;
         } else if (r.passed) {
             passed += 1;
         } else {
@@ -575,6 +641,7 @@ pub fn outputJSON(writer: anytype, results: []TestResult, duration_ns: u64) !voi
     try std.fmt.format(writer, "\"passed\":{d},", .{passed});
     try std.fmt.format(writer, "\"failed\":{d},", .{failed});
     try std.fmt.format(writer, "\"todo\":{d},", .{todo});
+    try std.fmt.format(writer, "\"skipped\":{d},", .{skipped});
     try std.fmt.format(writer, "\"duration_ms\":{d:.2},", .{@as(f64, @floatFromInt(duration_ns)) / 1_000_000.0});
     try std.fmt.format(writer, "\"tests\":[", .{});
 
@@ -583,7 +650,7 @@ pub fn outputJSON(writer: anytype, results: []TestResult, duration_ns: u64) !voi
         try std.fmt.format(writer, "\"name\":\"{s}\",", .{escapeJSON(r.name)});
         try std.fmt.format(writer, "\"suite\":\"{s}\",", .{escapeJSON(r.suite)});
         try std.fmt.format(writer, "\"test_name\":\"{s}\",", .{escapeJSON(r.test_name)});
-        try std.fmt.format(writer, "\"status\":\"{s}\",", .{if (r.todo) "todo" else if (r.passed) "passed" else "failed"});
+        try std.fmt.format(writer, "\"status\":\"{s}\",", .{if (r.todo) "todo" else if (r.skipped) "skipped" else if (r.passed) "passed" else "failed"});
         try std.fmt.format(writer, "\"duration_ms\":{d:.2}", .{@as(f64, @floatFromInt(r.duration_ns)) / 1_000_000.0});
 
         if (r.error_msg) |msg| {
@@ -605,7 +672,7 @@ pub fn outputJUnit(writer: anytype, allocator: std.mem.Allocator, results: []Tes
     var skipped: usize = 0;
 
     for (results) |r| {
-        if (r.todo) {
+        if (r.todo or r.skipped) {
             skipped += 1;
         } else if (r.passed) {
             passed += 1;
@@ -653,7 +720,7 @@ pub fn outputJUnit(writer: anytype, allocator: std.mem.Allocator, results: []Tes
 
         for (tests.items) |t| {
             suite_duration += t.duration_ns;
-            if (t.todo) {
+            if (t.todo or t.skipped) {
                 suite_skipped += 1;
             } else if (!t.passed) {
                 suite_failed += 1;
@@ -678,8 +745,8 @@ pub fn outputJUnit(writer: anytype, allocator: std.mem.Allocator, results: []Tes
                 test_duration_s,
             });
 
-            if (t.todo) {
-                try std.fmt.format(writer, ">\n      <skipped message=\"TODO\"/>\n    </testcase>\n", .{});
+            if (t.todo or t.skipped) {
+                try std.fmt.format(writer, ">\n      <skipped message=\"{s}\"/>\n    </testcase>\n", .{if (t.todo) "TODO" else "SkipZigTest"});
             } else if (!t.passed) {
                 try std.fmt.format(writer, ">\n      <failure message=\"{s}\"/>\n    </testcase>\n", .{
                     if (t.error_msg) |msg| escapeXML(msg) else "Test failed",
@@ -781,8 +848,8 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
         task.* = .{ .index = test_indices[i] };
     }
 
-    // Create worker threads
-    const worker_count = @min(max_workers, test_indices.len);
+    // Create worker threads (at least one, so a nonempty selection always runs)
+    const worker_count = @max(@min(max_workers, test_indices.len), 1);
     const threads = try allocator.alloc(std.Thread, worker_count);
     defer allocator.free(threads);
 
@@ -812,11 +879,19 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
                 ctx.next_idx.* += 1;
                 ctx.mutex.unlock();
 
-                // Run the test
+                // Run the test. Every scheduled test records exactly one
+                // outcome, so the progress loop below always terminates.
                 const task = &ctx.tasks_ptr[task_idx];
-                const result = runTestInProcess(ctx.allocator, task.index) catch |err| {
-                    std.debug.print("Error running test {d}: {}\n", .{ task.index, err });
-                    continue;
+                const result = runTestInProcess(ctx.allocator, task.index) catch |err| blk: {
+                    const t = builtin.test_functions[task.index];
+                    break :blk TestResult{
+                        .name = t.name,
+                        .suite = extractSuiteName(t.name),
+                        .test_name = extractTestName(t.name),
+                        .passed = false,
+                        .error_msg = std.fmt.allocPrint(ctx.allocator, "runner error: {s}", .{@errorName(err)}) catch null,
+                        .duration_ns = 0,
+                    };
                 };
 
                 task.mutex.lock();
@@ -831,18 +906,26 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
         }
     }.run;
 
-    // Launch workers
-    for (threads, 0..) |*thread, i| {
-        thread.* = try std.Thread.spawn(.{}, workerFn, .{WorkerContext{
-            .tasks_ptr = tasks.ptr,
-            .tasks_len = tasks.len,
-            .next_idx = &next_task_idx,
-            .completed = &completed_count,
-            .mutex = &task_mutex,
-            .allocator = allocator,
-        }});
-        _ = i;
+    const worker_ctx = WorkerContext{
+        .tasks_ptr = tasks.ptr,
+        .tasks_len = tasks.len,
+        .next_idx = &next_task_idx,
+        .completed = &completed_count,
+        .mutex = &task_mutex,
+        .allocator = allocator,
+    };
+
+    // Launch workers. If a spawn fails, the workers already running drain the
+    // queue; if none started, run every test on this thread.
+    var spawned: usize = 0;
+    for (threads) |*thread| {
+        thread.* = std.Thread.spawn(.{}, workerFn, .{worker_ctx}) catch |err| {
+            std.debug.print("Warning: failed to spawn test worker: {s}\n", .{@errorName(err)});
+            break;
+        };
+        spawned += 1;
     }
+    if (spawned == 0) workerFn(worker_ctx);
 
     // Show progress while tests run
     const stdout = std.fs.File.stdout();
@@ -916,7 +999,7 @@ pub fn runTestsParallel(allocator: std.mem.Allocator, test_indices: []const usiz
     try writer.print("\n", .{});
 
     // Wait for all workers
-    for (threads) |thread| {
+    for (threads[0..spawned]) |thread| {
         thread.join();
     }
 
@@ -957,8 +1040,8 @@ pub fn printSlowestTests(writer: anytype, allocator: std.mem.Allocator, results:
     try std.fmt.format(writer, "{s}─────────────────────────────────────────{s}\n\n", .{ Color.dim, Color.reset });
 
     for (sorted.items[0..display_count]) |t| {
-        const icon = if (t.passed) Icons.check else Icons.cross;
-        const color = if (t.passed) Color.green else Color.red;
+        const icon = if (t.skipped) Icons.dot else if (t.passed) Icons.check else Icons.cross;
+        const color = if (t.skipped) Color.gray else if (t.passed) Color.green else Color.red;
 
         try std.fmt.format(writer, " {s}{s}{s} {s}{s}.{s}{s} ", .{
             color,
@@ -972,4 +1055,44 @@ pub fn printSlowestTests(writer: anytype, allocator: std.mem.Allocator, results:
         try formatDuration(writer, t.duration_ns);
         try std.fmt.format(writer, "\n", .{});
     }
+}
+
+test "parseWorkerCount clamps zero and falls back on garbage" {
+    try std.testing.expectEqual(@as(usize, 1), parseWorkerCount("0", 8));
+    try std.testing.expectEqual(@as(usize, 3), parseWorkerCount("3", 8));
+    try std.testing.expectEqual(@as(usize, 8), parseWorkerCount("lots", 8));
+    try std.testing.expectEqual(@as(usize, 8), parseWorkerCount(null, 8));
+    try std.testing.expectEqual(@as(usize, 1), parseWorkerCount(null, 0));
+}
+
+test "SkipZigTest maps to a skip, other errors to a failure" {
+    try std.testing.expectEqual(ChildExit.skip, errorExitCode(error.SkipZigTest));
+    try std.testing.expectEqual(ChildExit.fail, errorExitCode(error.TestUnexpectedResult));
+}
+
+test "applyExitCode records skipped tests as non-failures" {
+    const allocator = std.testing.allocator;
+    var r = TestResult{ .name = "a.test.b", .suite = "a", .test_name = "b", .passed = false, .error_msg = null, .duration_ns = 0 };
+    try applyExitCode(allocator, &r, ChildExit.skip);
+    try std.testing.expect(r.passed and r.skipped);
+    try std.testing.expect(r.error_msg == null);
+
+    var f = TestResult{ .name = "a.test.b", .suite = "a", .test_name = "b", .passed = true, .error_msg = null, .duration_ns = 0 };
+    try applyExitCode(allocator, &f, 42);
+    defer allocator.free(f.error_msg.?);
+    try std.testing.expect(!f.passed and !f.skipped);
+    try std.testing.expectEqualStrings("exited with code 42", f.error_msg.?);
+}
+
+test "extractSuiteName and extractTestName handle short names" {
+    try std.testing.expectEqualStrings("abc", extractSuiteName("abc"));
+    try std.testing.expectEqualStrings("", extractTestName(""));
+    try std.testing.expectEqualStrings("mod", extractSuiteName("mod.test.name"));
+    try std.testing.expectEqualStrings("name", extractTestName("mod.test.name"));
+}
+
+// Exercised by `zig test test/utils.zig --test-runner test_runner.zig`:
+// a skip must not fail the run.
+test "SkipZigTest is reported as skipped" {
+    return error.SkipZigTest;
 }

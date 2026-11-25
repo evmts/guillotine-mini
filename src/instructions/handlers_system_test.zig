@@ -1720,3 +1720,8 @@ test "SELFDESTRUCT: Spurious Dragon does NOT charge new-account gas when balance
     const gas_consumed = initial_gas - frame.gas_remaining;
     try testing.expect(gas_consumed < GasConstants.CallNewAccountGas);
 }
+
+test {
+    _ = @import("r1_regression_test.zig");
+    _ = @import("r2_regression_test.zig");
+}

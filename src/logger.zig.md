@@ -418,10 +418,10 @@ Modern logging often uses structured formats (JSON, key-value pairs) for machine
 ## 6. Usage Analysis
 
 ### 6.1 Current Usage
-Grep shows 6 files importing the logger:
+Five source files import the logger.
+
 - `src/async_executor.zig`
 - `src/evm.zig`
-- `src/evm_c.zig`
 - `src/frame.zig`
 - `src/root_c.zig`
 - `src/storage.zig`

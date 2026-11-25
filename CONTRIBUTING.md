@@ -4,18 +4,18 @@ Thanks for helping improve Guillotine Mini. This guide covers setup, workflows, 
 
 ## Prerequisites
 
-- Zig `0.15.1` or later (CI uses `0.15.2`)
+- Zig `0.15.2`
 - Cargo (Rust build tool), required for Voltaire's cryptographic archive
 - A `../voltaire` checkout at the revision pinned in `native-dependencies.json` (see the README "Build from source" section)
 - Python 3 and uv (`brew install uv`); execution-specs fills fixtures with Python `3.11+`, which uv can install
 - Bun (TypeScript scripts/agents and `client-ts`): `brew install bun`
 - Node 22+ and `rustup target add wasm32-unknown-unknown` for the WASM build and tests
-- macOS or Linux (CI runs on macOS)
+- macOS or Linux (CI runs on both)
 
 ## One‑Time Setup
 
 ```bash
-# Fetch the fixture submodules read by `zig build test` and `zig build specs`
+# Fetch trie fixtures and the execution-specs source
 git submodule update --init execution-specs ethereum-tests
 
 # Ensure Python deps and virtualenv for execution-specs are created on first fill
@@ -35,8 +35,13 @@ zig build
 zig build unit
 zig build test-trace
 
-# Run all tests (unit + spec tests)
+# Run the native suite and test runner utility tests
 zig build test
+zig build test-utils
+
+# Compile the EVM benchmark and run all ten Zig examples
+zig build check-bench-evm
+zig build run-examples
 
 # Run execution-spec tests (generation happens automatically)
 zig build specs
@@ -47,14 +52,38 @@ zig build native
 # Build and exercise the WASM artifact (Node 22+ for tests)
 rustup target add wasm32-unknown-unknown
 npm install --global --ignore-scripts binaryen@132.0.0
-zig build wasm
+zig build wasm wasm-modular
 zig build test-wasm test-wasm-size
 
 # Build the documentation site (Vocs)
 cd docs && npm ci && npm run build && cd -
 ```
 
-## Running Spec Subsets (fast iteration)
+State fixtures and Nethermind comparison are opt-in for `zig build test` using
+`-Dspecs=true` and `-Dnethermind-diff=true`. The `zig build nethermind-diff`
+target requires the .NET SDK and a separate checkout at `nethermind/`.
+
+Run the TypeScript client suite with `bun install --frozen-lockfile` and
+`bun run test` from `client-ts/`. The trie tests use the `ethereum-tests`
+submodule. `EvmExecutorLive` is a placeholder that returns
+`EvmExecutionError` for every call. Run the ExEx regressions from the root
+with `bun test ./ts/exex/manager.test.ts`.
+
+## Lean differential tests
+
+Install Elan and run `zig build lean-diff -Doptimize=ReleaseFast` to compare
+against the executable [Lean 4 specification](spec/lean/README.md). CI runs
+this target on pull requests, pushes to main, and manual dispatches.
+Run `zig build lean-diff-unit` to test the harness without Lean.
+
+## Running Spec Subsets
+
+A successful full state fill records
+`execution-specs/tests/eest/static/state_tests/.filled`. Pass
+`-Drefresh-specs=true` to `zig build specs` to regenerate those fixtures.
+If you filled a subset, pass `-Dspecs-use-existing=true` to the corresponding
+target, as CI does for the PUSH0 smoke test. The state and blockchain suites
+generate independent Zig test roots in the build cache.
 
 `build.zig` defines a `specs-<fork>` step per hardfork and finer `specs-<fork>-<area>`
 sub-steps. List them all with:
@@ -141,5 +170,9 @@ If `ANTHROPIC_API_KEY` is not set, the script still runs tests but skips auto‑
 
 ## Known Status
 
-Not every execution-spec state test passes yet, so `zig build test` can fail on `main`. The CI badge in the README shows the current result. Fix failures against the Python execution-specs, which are authoritative for gas order, hardfork guards and error mapping.
-
+Use the Python execution specs to resolve discrepancies in gas order,
+hardfork guards, and error mapping. The
+[Glamsterdam hardfork roadmap](docs/HARDFORK_ROADMAP.md) records the audit
+baseline and fork work. The [review reports](docs/reviews/) cover all three
+audit rounds. See the [Smithers workspace guide](.smithers/README.md) for
+incremental CI, source targets, and benchmarks.

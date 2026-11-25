@@ -563,7 +563,7 @@ test "SSTORE: refund calculation (London+)" {
 
     // Verify refund was added (EIP-3529: 4800 for clearing)
     const refund_delta = evm.gas_refund - initial_refund;
-    try testing.expectEqual(@as(u64, GasConstants.SstoreRefundGas), refund_delta);
+    try testing.expectEqual(@as(@TypeOf(refund_delta), GasConstants.SstoreRefundGas), refund_delta);
 }
 
 test "SSTORE: restore to original value refund (London+)" {
@@ -607,7 +607,7 @@ test "SSTORE: restore to original value refund (London+)" {
     const refund_delta = evm.gas_refund - initial_refund;
     // London+: refund for restoring to original non-zero value
     const expected_refund = GasConstants.SstoreResetGas - GasConstants.ColdSloadCost - GasConstants.WarmStorageReadCost;
-    try testing.expectEqual(@as(u64, expected_refund), refund_delta);
+    try testing.expectEqual(@as(@TypeOf(refund_delta), expected_refund), refund_delta);
 }
 
 test "SSTORE: pre-Istanbul simple gas rules" {

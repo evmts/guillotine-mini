@@ -28,6 +28,9 @@ pub fn CallParams(comptime config: EvmConfig) type {
             to: Address,
             input: []const u8,
             gas: u64,
+            /// Call value inherited from the parent frame (EIP-7). Visible to CALLVALUE in
+            /// the child; never transferred.
+            value: u256 = 0,
         },
         /// STATICCALL operation (read-only)
         staticcall: struct {
@@ -60,39 +63,20 @@ pub fn CallParams(comptime config: EvmConfig) type {
             InvalidStaticCallValue,
         };
 
-        /// Validate call parameters to ensure they meet EVM requirements.
-        /// Checks gas limits and other critical constraints.
+        /// Validate call parameters against fork-independent invariants.
+        ///
+        /// Protocol size limits are fork-dependent and enforced during execution:
+        /// EIP-3860 initcode limits run in `Evm.inner_create` (Shanghai+ only), and
+        /// calldata has no protocol size cap beyond the gas it costs.
         pub fn validate(self: @This()) ValidationError!void {
-            return self.validateForHardfork(config.hardfork);
+            _ = self;
         }
 
+        /// EIP-3860 applies only to creation on Shanghai and later forks.
         pub fn validateForHardfork(self: @This(), hardfork: primitives.Hardfork) ValidationError!void {
-            const MAX_INPUT_SIZE = 1024 * 1024 * 4; // 4MB practical limit for input data
-            if (self.isCreate() and hardfork.isAtLeast(.SHANGHAI) and self.getInput().len > config.max_initcode_size) {
-                return ValidationError.InvalidInitCodeSize;
-            }
-
-            switch (self) {
-                .call => |params| {
-                    // Validate input data size
-                    if (params.input.len > MAX_INPUT_SIZE) return ValidationError.InvalidInputSize;
-                },
-                .callcode => |params| {
-                    // Validate input data size
-                    if (params.input.len > MAX_INPUT_SIZE) return ValidationError.InvalidInputSize;
-                },
-                .delegatecall => |params| {
-                    // Validate input data size
-                    if (params.input.len > MAX_INPUT_SIZE) return ValidationError.InvalidInputSize;
-                    // DELEGATECALL doesn't transfer value, validation happens at protocol level
-                },
-                .staticcall => |params| {
-                    // Validate input data size
-                    if (params.input.len > MAX_INPUT_SIZE) return ValidationError.InvalidInputSize;
-                    // STATICCALL cannot have value (enforced by not having value field)
-                },
-                .create, .create2 => {},
-            }
+            try self.validate();
+            if (self.isCreate() and hardfork.isAtLeast(.SHANGHAI) and self.getInput().len > config.max_initcode_size)
+                return error.InvalidInitCodeSize;
         }
 
         /// Get the gas limit for this call operation
@@ -202,6 +186,7 @@ pub fn CallParams(comptime config: EvmConfig) type {
                         .to = params.to,
                         .input = cloned_input,
                         .gas = params.gas,
+                        .value = params.value,
                     } };
                 },
                 .staticcall => |params| blk: {

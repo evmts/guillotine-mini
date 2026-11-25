@@ -9,11 +9,17 @@
 ///
 /// - `HostInterface` vtable functions are non-failable (return `u256`, not `!u256`),
 ///   but `StateManager` methods return error unions (`!u256`). The adapter bridges
-///   this gap with a fail-fast policy:
-///   - **Getters** (getBalance, getCode, etc.): Panic on error. Missing accounts
-///     are handled by `StateManager` and return safe defaults (0/empty) without error.
-///   - **Setters** (setBalance, setCode, etc.): Panic on failure. State write failures
-///     are consensus-critical — silently dropping a write would cause state divergence.
+///   this gap with a sticky error latch:
+///   - The first backend error is stored in `HostAdapter.err` and logged. Later
+///     errors are logged but do not overwrite it.
+///   - **Getters** (getBalance, getCode, etc.) return a safe default (0 or an
+///     empty slice) after a backend error. Missing accounts are not errors:
+///     `StateManager` returns 0/empty for them without failing.
+///   - **Setters** (setBalance, setCode, etc.) drop the write after a backend error.
+///   - Execution results produced after a latched error are invalid. Callers
+///     must call `checkError()` or `takeError()` after every execution and
+///     discard or roll back the state on error. A latched error is a backend
+///     (infrastructure) failure, not an EVM revert.
 /// - The adapter holds a pointer to a `StateManager`, not an owned copy. The caller
 ///   is responsible for the `StateManager` lifetime.
 /// - This follows the same vtable pattern used in `test/specs/test_host.zig`.
@@ -40,16 +46,32 @@ const Address = primitives.Address;
 ///
 /// var adapter = HostAdapter.init(&state);
 /// const host = adapter.host_interface();
-/// // Pass `host` to EVM configuration
+/// // Pass `host` to EVM configuration and execute.
+/// try adapter.checkError(); // Backend failure invalidates the result.
 /// ```
 pub const HostAdapter = struct {
     state: *StateManager,
+    /// First backend error seen since construction or the last `takeError()`.
+    /// Non-null means a vtable call returned a default value or dropped a write.
+    err: ?anyerror = null,
 
     const Self = @This();
 
     /// Create a new HostAdapter wrapping the given StateManager.
     pub fn init(state: *StateManager) Self {
         return .{ .state = state };
+    }
+
+    /// Return the latched backend error and clear the latch.
+    pub fn takeError(self: *Self) ?anyerror {
+        const err = self.err;
+        self.err = null;
+        return err;
+    }
+
+    /// Return the latched backend error, if any, without clearing it.
+    pub fn checkError(self: *const Self) anyerror!void {
+        if (self.err) |err| return err;
     }
 
     /// Return a `HostInterface` vtable that delegates to the wrapped StateManager.
@@ -69,59 +91,58 @@ pub const HostAdapter = struct {
         .setStorage = set_storage,
         .getNonce = get_nonce,
         .setNonce = set_nonce,
+        .accountHasStorage = account_has_storage,
+        .deleteAccount = delete_account,
     };
 
     const log = std.log.scoped(.host_adapter);
 
-    fn panic_state_error(comptime fmt: []const u8, args: anytype) noreturn {
-        log.err(fmt, args);
-        std.debug.panic(fmt, args);
+    /// Record a backend error. The first error wins; every error is logged.
+    /// Logs at warn level: the caller decides whether the error is fatal.
+    fn latch(self: *Self, err: anyerror, comptime fmt: []const u8, args: anytype) void {
+        log.warn(fmt ++ ": {s}", args ++ .{@errorName(err)});
+        if (self.err == null) self.err = err;
     }
 
     // -- vtable implementations ------------------------------------------------
     //
-    // Error policy:
-    //   Getters → @panic on error (non-existent account is normal and returns default).
-    //   Setters → @panic. A failed state write is consensus-critical.
+    // Error policy: latch the error, then return a safe default (getters) or
+    // drop the write (setters). Callers must check the latch after execution.
 
     fn get_balance(ptr: *anyopaque, address: Address) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getBalance(address) catch |err| panic_state_error(
-            "{s} failed for {any}: {any}",
-            .{ "getBalance", address, err },
-        );
+        return self.state.getBalance(address) catch |err| {
+            self.latch(err, "getBalance failed for {any}", .{address});
+            return 0;
+        };
     }
 
     fn set_balance(ptr: *anyopaque, address: Address, balance: u256) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setBalance(address, balance) catch |err| panic_state_error(
-            "{s} failed for {any}: {any}",
-            .{ "setBalance", address, err },
-        );
+        self.state.setBalance(address, balance) catch |err|
+            self.latch(err, "setBalance failed for {any}", .{address});
     }
 
     fn get_code(ptr: *anyopaque, address: Address) []const u8 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getCode(address) catch |err| panic_state_error(
-            "{s} failed for {any}: {any}",
-            .{ "getCode", address, err },
-        );
+        return self.state.getCode(address) catch |err| {
+            self.latch(err, "getCode failed for {any}", .{address});
+            return &[_]u8{};
+        };
     }
 
     fn set_code(ptr: *anyopaque, address: Address, code: []const u8) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setCode(address, code) catch |err| panic_state_error(
-            "{s} failed for {any}: {any}",
-            .{ "setCode", address, err },
-        );
+        self.state.setCode(address, code) catch |err|
+            self.latch(err, "setCode failed for {any}", .{address});
     }
 
     fn get_storage(ptr: *anyopaque, address: Address, slot: u256) u256 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.get_storage_checked(address, slot) catch |err| panic_state_error(
-            "{s} failed for {any} slot {}: {any}",
-            .{ "getStorage", address, slot, err },
-        );
+        return self.get_storage_checked(address, slot) catch |err| {
+            self.latch(err, "getStorage failed for {any} slot {}", .{ address, slot });
+            return 0;
+        };
     }
 
     fn get_storage_checked(self: *Self, address: Address, slot: u256) !u256 {
@@ -130,26 +151,59 @@ pub const HostAdapter = struct {
 
     fn set_storage(ptr: *anyopaque, address: Address, slot: u256, value: u256) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setStorage(address, slot, value) catch |err| panic_state_error(
-            "{s} failed for {any} slot {}: {any}",
-            .{ "setStorage", address, slot, err },
-        );
+        self.state.setStorage(address, slot, value) catch |err|
+            self.latch(err, "setStorage failed for {any} slot {}", .{ address, slot });
     }
 
     fn get_nonce(ptr: *anyopaque, address: Address) u64 {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        return self.state.getNonce(address) catch |err| panic_state_error(
-            "{s} failed for {any}: {any}",
-            .{ "getNonce", address, err },
-        );
+        return self.state.getNonce(address) catch |err| {
+            self.latch(err, "getNonce failed for {any}", .{address});
+            return 0;
+        };
+    }
+
+    /// Storage slots of `address` held in the journaled (local) storage cache.
+    fn cached_slots(self: *Self, address: Address) ?*std.AutoHashMap(u256, u256) {
+        return self.state.journaled_state.storage_cache.cache.getPtr(address);
+    }
+
+    fn account_has_storage(ptr: *anyopaque, address: Address) bool {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        const slots = self.cached_slots(address) orelse return false;
+        var it = slots.valueIterator();
+        while (it.next()) |value| {
+            if (value.* != 0) return true;
+        }
+        return false;
+    }
+
+    /// Delete an account: zero every cached storage slot, then reset balance,
+    /// nonce, and code.
+    ///
+    /// Slots are zeroed in place instead of removed so a fork backend cannot
+    /// refill them from the remote chain. Checkpoints deep-copy the storage
+    /// map, so `StateManager.revert` restores the slots. Limitation: with a
+    /// fork backend, a remote slot that was never read into the cache can still
+    /// be fetched after deletion; closing that needs a storage-wipe marker in
+    /// Voltaire's `JournaledState`.
+    fn delete_account(ptr: *anyopaque, address: Address) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        if (self.cached_slots(address)) |slots| {
+            var it = slots.valueIterator();
+            while (it.next()) |value| value.* = 0;
+        }
+        self.state.journaled_state.putAccount(address, state_manager_mod.AccountState.init()) catch |err| {
+            self.latch(err, "deleteAccount failed for {any}", .{address});
+            return;
+        };
+        set_code(ptr, address, &[_]u8{});
     }
 
     fn set_nonce(ptr: *anyopaque, address: Address, nonce: u64) void {
         const self: *Self = @ptrCast(@alignCast(ptr));
-        self.state.setNonce(address, nonce) catch |err| panic_state_error(
-            "{s} failed for {any} nonce {}: {any}",
-            .{ "setNonce", address, nonce, err },
-        );
+        self.state.setNonce(address, nonce) catch |err|
+            self.latch(err, "setNonce failed for {any} nonce {}", .{ address, nonce });
     }
 };
 
@@ -307,13 +361,34 @@ test "HostAdapter — storage read surfaces backend errors" {
     try std.testing.expectError(error.RpcPending, result);
 }
 
-test "HostAdapter — setters panic on failure (policy check)" {
-    // This test verifies the *compile-time* error-handling policy:
-    //   - Setter vtable functions call `std.debug.panic` on error, not `catch return`.
-    //   - We cannot trigger a real StateManager error in unit tests (in-memory backend),
-    //     but we verify the vtable is wired correctly by confirming that a successful
-    //     write followed by a read returns the expected value.  The panic path is
-    //     validated by code review and the `std.debug.panic` calls in the source.
+test "HostAdapter — backend error is latched, not panicked" {
+    const allocator = std.testing.allocator;
+    var fork = try ForkBackend.init(allocator, "latest", .{});
+    defer fork.deinit();
+
+    var state = try StateManager.init(allocator, &fork);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    const host = adapter.host_interface();
+    const addr = make_address(0xAC);
+
+    try adapter.checkError();
+
+    // The unfetched remote slot fails with RpcPending; the getter returns 0.
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(addr, 1));
+    try std.testing.expectError(error.RpcPending, adapter.checkError());
+
+    // checkError does not clear; later errors do not overwrite the first.
+    _ = host.getStorage(addr, 2);
+    try std.testing.expectEqual(@as(?anyerror, error.RpcPending), adapter.takeError());
+
+    // takeError clears the latch.
+    try std.testing.expectEqual(@as(?anyerror, null), adapter.takeError());
+    try adapter.checkError();
+}
+
+test "HostAdapter — successful writes leave the latch empty" {
     const allocator = std.testing.allocator;
     var state = try StateManager.init(allocator, null);
     defer state.deinit();
@@ -334,4 +409,78 @@ test "HostAdapter — setters panic on failure (policy check)" {
     try std.testing.expectEqual(@as(u64, 10), host.getNonce(addr));
     try std.testing.expectEqual(@as(u256, 77), host.getStorage(addr, 7));
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x60, 0x00 }, host.getCode(addr));
+    try adapter.checkError();
+}
+
+test "HostAdapter — deleteAccount removes storage, balance, nonce, and code" {
+    const allocator = std.testing.allocator;
+    var state = try StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    const host = adapter.host_interface();
+
+    const victim = make_address(0x51);
+    const bystander = make_address(0x52);
+
+    host.setBalance(victim, 500);
+    host.setNonce(victim, 4);
+    host.setCode(victim, &[_]u8{ 0x60, 0x01 });
+    host.setStorage(victim, 1, 11);
+    host.setStorage(victim, 2, 22);
+    host.setStorage(victim, std.math.maxInt(u256), 33);
+    host.setStorage(bystander, 1, 99);
+
+    try std.testing.expect(host.accountHasStorage(victim));
+    host.deleteAccount(victim);
+
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(victim, 1));
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(victim, 2));
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(victim, std.math.maxInt(u256)));
+    try std.testing.expectEqual(@as(u256, 0), host.getBalance(victim));
+    try std.testing.expectEqual(@as(u64, 0), host.getNonce(victim));
+    try std.testing.expectEqual(@as(usize, 0), host.getCode(victim).len);
+    try std.testing.expect(!host.accountHasStorage(victim));
+    try std.testing.expect(!host.accountExists(victim));
+
+    try std.testing.expectEqual(@as(u256, 99), host.getStorage(bystander, 1));
+    try std.testing.expect(host.accountHasStorage(bystander));
+}
+
+test "HostAdapter — recreated account does not see previous incarnation's storage" {
+    const allocator = std.testing.allocator;
+    var state = try StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    const host = adapter.host_interface();
+    const addr = make_address(0x53);
+
+    host.setStorage(addr, 7, 0xdead);
+    host.deleteAccount(addr);
+    host.setNonce(addr, 1);
+    host.setCode(addr, &[_]u8{0x00});
+
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(addr, 7));
+}
+
+test "HostAdapter — revert restores storage removed by deleteAccount" {
+    const allocator = std.testing.allocator;
+    var state = try StateManager.init(allocator, null);
+    defer state.deinit();
+
+    var adapter = HostAdapter.init(&state);
+    const host = adapter.host_interface();
+    const addr = make_address(0x54);
+
+    host.setBalance(addr, 10);
+    host.setStorage(addr, 3, 33);
+
+    try state.checkpoint();
+    host.deleteAccount(addr);
+    try std.testing.expectEqual(@as(u256, 0), host.getStorage(addr, 3));
+    state.revert();
+
+    try std.testing.expectEqual(@as(u256, 33), host.getStorage(addr, 3));
+    try std.testing.expectEqual(@as(u256, 10), host.getBalance(addr));
 }

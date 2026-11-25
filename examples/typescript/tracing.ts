@@ -15,25 +15,7 @@
  * - Security auditing
  */
 
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
-
-// Helper functions
-async function loadWasm() {
-  const wasmPath = resolve(__dirname, '../../zig-out/bin/guillotine_mini.wasm');
-  const wasmBuffer = readFileSync(wasmPath);
-  const wasmModule = await WebAssembly.compile(wasmBuffer);
-
-  const imports = {
-    env: {
-      js_opcode_callback: () => 0,
-      js_precompile_callback: () => 0,
-    }
-  };
-
-  const instance = await WebAssembly.instantiate(wasmModule, imports);
-  return instance.exports;
-}
+import { loadWasm } from './basic-usage.ts';
 
 function hexToAddress(hex: string): Uint8Array {
   const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
@@ -81,15 +63,9 @@ async function example1_storageChanges() {
   console.log('Example 1: Inspecting Storage Changes');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  const wasm = await loadWasm();
+  const { api: wasm, alloc, read, release, createEvm } = await loadWasm();
 
-  const hardforkName = 'Cancun';
-  const hardforkBytes = new TextEncoder().encode(hardforkName);
-  const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
-
-  if (!evmHandle) {
-    throw new Error('Failed to create EVM instance');
-  }
+  const evmHandle = createEvm('Cancun');
 
   try {
     // Bytecode: Write to multiple storage slots
@@ -114,7 +90,7 @@ async function example1_storageChanges() {
 
     console.log('Bytecode: Write to storage slots 0, 1, and 5\n');
 
-    (wasm as any).evm_set_bytecode(evmHandle, bytecode, bytecode.length);
+    wasm.evm_set_bytecode(evmHandle, alloc(bytecode), bytecode.length);
 
     const gas = 100000n;
     const caller = hexToAddress('0x1000000000000000000000000000000000000001');
@@ -122,13 +98,13 @@ async function example1_storageChanges() {
     const value = u256ToBytes(0n);
     const calldata = new Uint8Array(0);
 
-    (wasm as any).evm_set_execution_context(
+    wasm.evm_set_execution_context(
       evmHandle,
-      Number(gas),
-      caller,
-      address,
-      value,
-      calldata,
+      gas,
+      alloc(caller),
+      alloc(address),
+      alloc(value),
+      alloc(calldata),
       calldata.length
     );
 
@@ -142,45 +118,45 @@ async function example1_storageChanges() {
     const blockBaseFee = u256ToBytes(1000000000n);
     const blobBaseFee = u256ToBytes(1n);
 
-    (wasm as any).evm_set_blockchain_context(
+    wasm.evm_set_blockchain_context(
       evmHandle,
-      chainId,
-      Number(blockNumber),
-      Number(blockTimestamp),
-      blockDifficulty,
-      blockPrevrandao,
-      blockCoinbase,
-      Number(blockGasLimit),
-      blockBaseFee,
-      blobBaseFee
+      alloc(chainId),
+      blockNumber,
+      blockTimestamp,
+      alloc(blockDifficulty),
+      alloc(blockPrevrandao),
+      alloc(blockCoinbase),
+      blockGasLimit,
+      alloc(blockBaseFee),
+      alloc(blobBaseFee)
     );
 
     // Execute
-    const success = (wasm as any).evm_execute(evmHandle);
+    const success = wasm.evm_execute(evmHandle);
 
     console.log('✅ Execution:', success ? 'SUCCESS' : 'FAILED');
 
-    const gasUsed = (wasm as any).evm_get_gas_used(evmHandle);
-    const gasRemaining = (wasm as any).evm_get_gas_remaining(evmHandle);
-    const gasRefund = (wasm as any).evm_get_gas_refund(evmHandle);
+    const gasUsed = wasm.evm_get_gas_used(evmHandle);
+    const gasRemaining = wasm.evm_get_gas_remaining(evmHandle);
+    const gasRefund = wasm.evm_get_gas_refund(evmHandle);
 
     console.log(`⛽ Gas used: ${gasUsed}`);
     console.log(`⛽ Gas remaining: ${gasRemaining}`);
     console.log(`💰 Gas refund: ${gasRefund}\n`);
 
     // Inspect storage changes
-    const storageChangeCount = (wasm as any).evm_get_storage_change_count(evmHandle);
+    const storageChangeCount = wasm.evm_get_storage_change_count(evmHandle);
     console.log(`📦 Storage Changes (${storageChangeCount} slots modified):\n`);
 
+    const addressOut = alloc(20);
+    const slotOut = alloc(32);
+    const valueOut = alloc(32);
     for (let i = 0; i < storageChangeCount; i++) {
-      const addressOut = new Uint8Array(20);
-      const slotOut = new Uint8Array(32);
-      const valueOut = new Uint8Array(32);
 
-      const ok = (wasm as any).evm_get_storage_change(evmHandle, i, addressOut, slotOut, valueOut);
+      const ok = wasm.evm_get_storage_change(evmHandle, i, addressOut, slotOut, valueOut);
       if (ok) {
-        const slot = bytesToU256(slotOut);
-        const value = bytesToU256(valueOut);
+        const slot = bytesToU256(read(slotOut, 32));
+        const value = bytesToU256(read(valueOut, 32));
         console.log(`  Slot ${slot}: ${value}`);
       }
     }
@@ -188,7 +164,8 @@ async function example1_storageChanges() {
     console.log('');
 
   } finally {
-    (wasm as any).evm_destroy(evmHandle);
+    wasm.evm_destroy(evmHandle);
+    release();
   }
 }
 
@@ -202,15 +179,9 @@ async function example2_eventLogs() {
   console.log('Example 2: Event Log Analysis');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  const wasm = await loadWasm();
+  const { api: wasm, alloc, read, release, createEvm } = await loadWasm();
 
-  const hardforkName = 'Cancun';
-  const hardforkBytes = new TextEncoder().encode(hardforkName);
-  const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
-
-  if (!evmHandle) {
-    throw new Error('Failed to create EVM instance');
-  }
+  const evmHandle = createEvm('Cancun');
 
   try {
     // Bytecode: Emit multiple LOG events
@@ -223,9 +194,9 @@ async function example2_eventLogs() {
       0x52,             // MSTORE
 
       // LOG1: 1 topic, 5 bytes of data
+      0x7f, ...new Array(31).fill(0xaa), 0xaa, // PUSH32 topic1 (0xAAAA...)
       0x60, 0x05,       // PUSH1 5 (data length)
       0x60, 0x00,       // PUSH1 0 (data offset)
-      0x7f, ...new Array(31).fill(0xaa), 0xaa, // PUSH32 topic1 (0xAAAA...)
       0xa1,             // LOG1
 
       // Prepare data in memory: "World" at offset 32
@@ -234,10 +205,10 @@ async function example2_eventLogs() {
       0x52,             // MSTORE
 
       // LOG2: 2 topics, 5 bytes of data
-      0x60, 0x05,       // PUSH1 5 (data length)
-      0x60, 0x20,       // PUSH1 32 (data offset)
       0x7f, ...new Array(31).fill(0xcc), 0xcc, // PUSH32 topic2 (0xCCCC...)
       0x7f, ...new Array(31).fill(0xbb), 0xbb, // PUSH32 topic1 (0xBBBB...)
+      0x60, 0x05,       // PUSH1 5 (data length)
+      0x60, 0x20,       // PUSH1 32 (data offset)
       0xa2,             // LOG2
 
       0x00              // STOP
@@ -245,7 +216,7 @@ async function example2_eventLogs() {
 
     console.log('Bytecode: Emit LOG1 and LOG2 events\n');
 
-    (wasm as any).evm_set_bytecode(evmHandle, bytecode, bytecode.length);
+    wasm.evm_set_bytecode(evmHandle, alloc(bytecode), bytecode.length);
 
     const gas = 100000n;
     const caller = hexToAddress('0x1000000000000000000000000000000000000001');
@@ -253,13 +224,13 @@ async function example2_eventLogs() {
     const value = u256ToBytes(0n);
     const calldata = new Uint8Array(0);
 
-    (wasm as any).evm_set_execution_context(
+    wasm.evm_set_execution_context(
       evmHandle,
-      Number(gas),
-      caller,
-      address,
-      value,
-      calldata,
+      gas,
+      alloc(caller),
+      alloc(address),
+      alloc(value),
+      alloc(calldata),
       calldata.length
     );
 
@@ -273,39 +244,40 @@ async function example2_eventLogs() {
     const blockBaseFee = u256ToBytes(1000000000n);
     const blobBaseFee = u256ToBytes(1n);
 
-    (wasm as any).evm_set_blockchain_context(
+    wasm.evm_set_blockchain_context(
       evmHandle,
-      chainId,
-      Number(blockNumber),
-      Number(blockTimestamp),
-      blockDifficulty,
-      blockPrevrandao,
-      blockCoinbase,
-      Number(blockGasLimit),
-      blockBaseFee,
-      blobBaseFee
+      alloc(chainId),
+      blockNumber,
+      blockTimestamp,
+      alloc(blockDifficulty),
+      alloc(blockPrevrandao),
+      alloc(blockCoinbase),
+      blockGasLimit,
+      alloc(blockBaseFee),
+      alloc(blobBaseFee)
     );
 
     // Execute
-    const success = (wasm as any).evm_execute(evmHandle);
+    const success = wasm.evm_execute(evmHandle);
 
     console.log('✅ Execution:', success ? 'SUCCESS' : 'FAILED');
 
-    const gasUsed = (wasm as any).evm_get_gas_used(evmHandle);
+    const gasUsed = wasm.evm_get_gas_used(evmHandle);
     console.log(`⛽ Gas used: ${gasUsed}\n`);
 
     // Inspect logs
-    const logCount = (wasm as any).evm_get_log_count(evmHandle);
+    const logCount = wasm.evm_get_log_count(evmHandle);
     console.log(`📝 Event Logs (${logCount} emitted):\n`);
 
+    const addressOut = alloc(20);
+    const topicsCountOut = alloc(4);
+    const topicsOut = alloc(4 * 32);
+    const dataLenOut = alloc(4);
+    const dataCapacity = 1024;
+    const dataOut = alloc(dataCapacity);
     for (let i = 0; i < logCount; i++) {
-      const addressOut = new Uint8Array(20);
-      const topicsCountOut = new Uint32Array(1);
-      const topicsOut = new Uint8Array(4 * 32); // Up to 4 topics
-      const dataLenOut = new Uint32Array(1);
-      const dataOut = new Uint8Array(1024); // Max 1KB data
 
-      const ok = (wasm as any).evm_get_log(
+      const ok = wasm.evm_get_log(
         evmHandle,
         i,
         addressOut,
@@ -313,22 +285,24 @@ async function example2_eventLogs() {
         topicsOut,
         dataLenOut,
         dataOut,
-        dataOut.length
+        dataCapacity
       );
 
       if (ok) {
+        const metadata = new DataView(wasm.memory.buffer);
+        const topicsCount = metadata.getUint32(topicsCountOut, true);
         console.log(`  Log ${i}:`);
-        console.log(`    Address: ${addressToHex(addressOut)}`);
-        console.log(`    Topics (${topicsCountOut[0]}):`);
+        console.log(`    Address: ${addressToHex(read(addressOut, 20))}`);
+        console.log(`    Topics (${topicsCount}):`);
 
-        for (let j = 0; j < topicsCountOut[0]; j++) {
-          const topicBytes = topicsOut.slice(j * 32, (j + 1) * 32);
+        for (let j = 0; j < topicsCount; j++) {
+          const topicBytes = read(topicsOut + j * 32, 32);
           const topic = bytesToU256(topicBytes);
           console.log(`      [${j}] ${topic.toString(16).padStart(64, '0')}`);
         }
 
-        const dataLen = dataLenOut[0];
-        const data = dataOut.slice(0, dataLen);
+        const dataLen = metadata.getUint32(dataLenOut, true);
+        const data = read(dataOut, Math.min(dataLen, dataCapacity));
         console.log(`    Data (${dataLen} bytes): ${bytesToHex(data)}`);
 
         // Try to decode as ASCII
@@ -341,7 +315,8 @@ async function example2_eventLogs() {
     }
 
   } finally {
-    (wasm as any).evm_destroy(evmHandle);
+    wasm.evm_destroy(evmHandle);
+    release();
   }
 }
 
@@ -355,24 +330,18 @@ async function example3_gasRefundAnalysis() {
   console.log('Example 3: Gas Refund Analysis (SSTORE Refunds)');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  const wasm = await loadWasm();
+  const { api: wasm, alloc, read, release, createEvm } = await loadWasm();
 
-  const hardforkName = 'Cancun';
-  const hardforkBytes = new TextEncoder().encode(hardforkName);
-  const evmHandle = (wasm as any).evm_create(hardforkBytes, hardforkBytes.length, 0);
-
-  if (!evmHandle) {
-    throw new Error('Failed to create EVM instance');
-  }
+  const evmHandle = createEvm('Cancun');
 
   try {
     // Pre-set storage to generate refunds
     const address = hexToAddress('0x2000000000000000000000000000000000000002');
-    (wasm as any).evm_set_storage(
+    wasm.evm_set_storage(
       evmHandle,
-      address,
-      u256ToBytes(0n),
-      u256ToBytes(100n)
+      alloc(address),
+      alloc(u256ToBytes(0n)),
+      alloc(u256ToBytes(100n))
     );
 
     // Bytecode: Clear storage slot 0 (triggers refund)
@@ -386,20 +355,20 @@ async function example3_gasRefundAnalysis() {
     console.log('Bytecode: Clear storage slot 0 (100 -> 0)\n');
     console.log('Note: Clearing storage (nonzero -> zero) triggers gas refund\n');
 
-    (wasm as any).evm_set_bytecode(evmHandle, bytecode, bytecode.length);
+    wasm.evm_set_bytecode(evmHandle, alloc(bytecode), bytecode.length);
 
     const gas = 100000n;
     const caller = hexToAddress('0x1000000000000000000000000000000000000001');
     const value = u256ToBytes(0n);
     const calldata = new Uint8Array(0);
 
-    (wasm as any).evm_set_execution_context(
+    wasm.evm_set_execution_context(
       evmHandle,
-      Number(gas),
-      caller,
-      address,
-      value,
-      calldata,
+      gas,
+      alloc(caller),
+      alloc(address),
+      alloc(value),
+      alloc(calldata),
       calldata.length
     );
 
@@ -413,27 +382,27 @@ async function example3_gasRefundAnalysis() {
     const blockBaseFee = u256ToBytes(1000000000n);
     const blobBaseFee = u256ToBytes(1n);
 
-    (wasm as any).evm_set_blockchain_context(
+    wasm.evm_set_blockchain_context(
       evmHandle,
-      chainId,
-      Number(blockNumber),
-      Number(blockTimestamp),
-      blockDifficulty,
-      blockPrevrandao,
-      blockCoinbase,
-      Number(blockGasLimit),
-      blockBaseFee,
-      blobBaseFee
+      alloc(chainId),
+      blockNumber,
+      blockTimestamp,
+      alloc(blockDifficulty),
+      alloc(blockPrevrandao),
+      alloc(blockCoinbase),
+      blockGasLimit,
+      alloc(blockBaseFee),
+      alloc(blobBaseFee)
     );
 
     // Execute
-    const success = (wasm as any).evm_execute(evmHandle);
+    const success = wasm.evm_execute(evmHandle);
 
     console.log('✅ Execution:', success ? 'SUCCESS' : 'FAILED\n');
 
-    const gasUsed = (wasm as any).evm_get_gas_used(evmHandle);
-    const gasRemaining = (wasm as any).evm_get_gas_remaining(evmHandle);
-    const gasRefund = (wasm as any).evm_get_gas_refund(evmHandle);
+    const gasUsed = wasm.evm_get_gas_used(evmHandle);
+    const gasRemaining = wasm.evm_get_gas_remaining(evmHandle);
+    const gasRefund = wasm.evm_get_gas_refund(evmHandle);
 
     console.log(`⛽ Gas Metrics:`);
     console.log(`   Initial gas: ${gas}`);
@@ -445,18 +414,18 @@ async function example3_gasRefundAnalysis() {
     console.log(`   Actual refund: ${gasRefund}\n`);
 
     // Check storage changes
-    const storageChangeCount = (wasm as any).evm_get_storage_change_count(evmHandle);
+    const storageChangeCount = wasm.evm_get_storage_change_count(evmHandle);
     console.log(`📦 Storage Changes:`);
 
+    const addressOut = alloc(20);
+    const slotOut = alloc(32);
+    const valueOut = alloc(32);
     for (let i = 0; i < storageChangeCount; i++) {
-      const addressOut = new Uint8Array(20);
-      const slotOut = new Uint8Array(32);
-      const valueOut = new Uint8Array(32);
 
-      const ok = (wasm as any).evm_get_storage_change(evmHandle, i, addressOut, slotOut, valueOut);
+      const ok = wasm.evm_get_storage_change(evmHandle, i, addressOut, slotOut, valueOut);
       if (ok) {
-        const slot = bytesToU256(slotOut);
-        const value = bytesToU256(valueOut);
+        const slot = bytesToU256(read(slotOut, 32));
+        const value = bytesToU256(read(valueOut, 32));
         console.log(`   Slot ${slot}: 100 -> ${value} (cleared)`);
       }
     }
@@ -464,7 +433,8 @@ async function example3_gasRefundAnalysis() {
     console.log('');
 
   } finally {
-    (wasm as any).evm_destroy(evmHandle);
+    wasm.evm_destroy(evmHandle);
+    release();
   }
 }
 
