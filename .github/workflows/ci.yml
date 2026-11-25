@@ -136,8 +136,12 @@ jobs:
           bun-version: '1.4.2'
       - name: Install WASM optimizer
         run: npm install --global --ignore-scripts binaryen@132.0.0
-      - name: Install Rust WASM target
-        run: rustup target add wasm32-unknown-unknown
+      - name: Install Rust WASM target and build WASM crypto archive
+        working-directory: voltaire
+        run: |
+          rustup default "$RUSTUP_TOOLCHAIN"
+          rustup target add wasm32-unknown-unknown --toolchain "$RUSTUP_TOOLCHAIN"
+          cargo build --release --target wasm32-unknown-unknown --no-default-features --features portable
       # The published CLI rejects a separate Effect install while loading
       # declarations. The client-ts job installs those dependencies and tests the client.
       - name: Plan the Smithers CI graph
