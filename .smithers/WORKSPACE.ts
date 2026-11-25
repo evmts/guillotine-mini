@@ -1,7 +1,12 @@
 import { Smithers as S } from "@smthrs/targets"
 
+const runtime = S.Runtime.Bun({ version: "1.4.1" })
+
 export const Workspace = S.Workspace("guillotine-mini", {
   repository: "evmts/guillotine-mini",
+  runtime,
+  packageManager: S.PackageManager.BunPackages({ runtime }),
+  nodeModules: S.Npm.NodeModules({ packageJson: S.file("//client-ts/package.json") }),
   cache: S.Cache({
     directory: ".smithers/cache",
     hostDirectories: [

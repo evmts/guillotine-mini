@@ -111,4 +111,4 @@ jobs:
       - name: Install Rust WASM target
         run: rustup target add wasm32-unknown-unknown
       - name: smthrs ci
-        run: npx -y smthrs@next ci '//...' --verbose
+        run: npx -y smthrs@1.0.0-rc.16 ci '//...' --verbose

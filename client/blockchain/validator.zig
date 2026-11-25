@@ -337,6 +337,29 @@ test "merge_header_validator - enforces PoS constants post-merge" {
     try std.testing.expectError(ValidationError.InvalidNonce, MergeValidator.validate(&header, ctx));
 }
 
+test "post-merge header validation propagates malformed parent encoding" {
+    var parent = BlockHeader.init();
+    parent.number = 1;
+    parent.timestamp = 1;
+    parent.gas_limit = 10_000;
+    parent.gas_used = 5_000;
+    parent.base_fee_per_gas = 100;
+    parent.requests_hash = Hash.ZERO;
+
+    var header = BlockHeader.init();
+    header.number = 2;
+    header.timestamp = 2;
+    header.gas_limit = parent.gas_limit;
+    header.base_fee_per_gas = parent.base_fee_per_gas;
+    header.ommers_hash = BlockHeader.EMPTY_OMMERS_HASH;
+
+    try std.testing.expectError(ValidationError.InvalidBlockHeader, validate_post_merge_header(&header, .{
+        .allocator = std.testing.allocator,
+        .hardfork = .MERGE,
+        .parent_header = &parent,
+    }));
+}
+
 test "validate_timestamp_strictly_greater - accepts strictly greater" {
     var parent = BlockHeader.init();
     parent.timestamp = 10;

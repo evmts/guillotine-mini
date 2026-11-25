@@ -213,7 +213,7 @@ pub fn runJsonTestWithPathAndName(allocator: std.mem.Allocator, test_case: std.j
             defer hardforks_to_test.deinit(allocator);
 
             // Check for each hardfork in order
-            inline for (&[_][]const u8{ "Osaka", "Prague", "Cancun", "Shanghai", "Paris", "Merge", "London", "Berlin" }) |fork_name| {
+            inline for (&[_][]const u8{ "Amsterdam", "Glamsterdam", "Osaka", "Prague", "Cancun", "Shanghai", "Paris", "Merge", "London", "Berlin" }) |fork_name| {
                 if (p.object.get(fork_name)) |_| {
                     if (Hardfork.fromString(fork_name)) |hf| {
                         try hardforks_to_test.append(allocator, hf);
@@ -626,6 +626,29 @@ fn hardforkToString(hf: Hardfork) []const u8 {
     };
 }
 
+fn postForHardfork(post: std.json.ObjectMap, fork: Hardfork) ?std.json.Value {
+    return post.get(hardforkToString(fork)) orelse switch (fork) {
+        .PETERSBURG => post.get("ConstantinopleFix"),
+        .MERGE => post.get("Paris"),
+        .AMSTERDAM => post.get("Glamsterdam"),
+        else => null,
+    };
+}
+
+test "extractHardfork recognizes Amsterdam state fixture keys" {
+    const allocator = testing.allocator;
+    for ([_][]const u8{
+        "{\"post\":{\"Amsterdam\":[]}}",
+        "{\"post\":{\"Glamsterdam\":[]}}",
+    }) |json| {
+        const owned = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+        defer owned.deinit();
+        try testing.expectEqual(@as(?Hardfork, .AMSTERDAM), extractHardfork(owned.value));
+        const post = owned.value.object.get("post").?.object;
+        try testing.expect(postForHardfork(post, .AMSTERDAM) != null);
+    }
+}
+
 test "hardforkToString names every Hardfork that fromString parses back" {
     for (std.enums.values(Hardfork)) |hf| {
         try testing.expectEqual(@as(?Hardfork, hf), Hardfork.fromString(hardforkToString(hf)));
@@ -649,7 +672,7 @@ fn extractHardfork(test_case: std.json.Value) ?Hardfork {
         if (post == .object) {
             // Try common hardfork names (in reverse chronological order, preferring older forks for multi-fork tests)
             // Include common aliases
-            inline for (&[_][]const u8{ "Osaka", "Prague", "Cancun", "Shanghai", "Paris", "Merge", "London", "Berlin", "Istanbul", "ConstantinopleFix", "Constantinople", "Byzantium", "Homestead" }) |fork_name| {
+            inline for (&[_][]const u8{ "Amsterdam", "Glamsterdam", "Osaka", "Prague", "Cancun", "Shanghai", "Paris", "Merge", "London", "Berlin", "Istanbul", "ConstantinopleFix", "Constantinople", "Byzantium", "Homestead" }) |fork_name| {
                 if (post.object.get(fork_name)) |_| {
                     if (Hardfork.fromString(fork_name)) |hf| {
                         return hf;
@@ -1042,6 +1065,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         if (pre == .object) {
             var it = pre.object.iterator();
             while (it.next()) |kv| {
+                if (std.mem.startsWith(u8, kv.key_ptr.*, "//")) continue;
                 const address = try parseAddress(kv.key_ptr.*);
                 const account = kv.value_ptr.*;
 
@@ -1075,6 +1099,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     if (storage == .object) {
                         var storage_it = storage.object.iterator();
                         while (storage_it.next()) |storage_kv| {
+                            if (std.mem.startsWith(u8, storage_kv.key_ptr.*, "//")) continue;
                             const key = try std.fmt.parseInt(u256, storage_kv.key_ptr.*, 0);
                             const value_str = storage_kv.value_ptr.*.string;
                             const value: u256 = if (std.mem.startsWith(u8, value_str, "<") and std.mem.endsWith(u8, value_str, ">")) blk: {
@@ -1646,11 +1671,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 if (to == null) {
                     // Transaction should be rejected - check if test expects this
                     if (test_case.object.get("post")) |post| {
-                        const fork_data = if (hardfork) |hf| switch (hf) {
-                            .PRAGUE => post.object.get("Prague"),
-                            .CANCUN => post.object.get("Cancun"),
-                            else => post.object.get("Cancun"),
-                        } else post.object.get("Cancun");
+                        const fork_data = postForHardfork(post.object, hardfork orelse .CANCUN);
 
                         if (fork_data) |fd| {
                             if (fd == .array and fd.array.items.len > 0) {
@@ -1676,13 +1697,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 var max_blobs: usize = 6; // Default for Cancun
                 if (test_case.object.get("config")) |config| {
                     if (config.object.get("blobSchedule")) |schedule| {
-                        const fork_name = if (hardfork) |hf| switch (hf) {
-                            .PRAGUE => "Prague",
-                            .CANCUN => "Cancun",
-                            else => "Cancun",
-                        } else "Cancun";
-
-                        if (schedule.object.get(fork_name)) |fork_config| {
+                        if (postForHardfork(schedule.object, hardfork orelse .CANCUN)) |fork_config| {
                             if (fork_config.object.get("max")) |max_val| {
                                 max_blobs = try parseIntFromJson(max_val);
                             }
@@ -1694,11 +1709,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                 if (blob_count > max_blobs) {
                     // Transaction should be rejected - check if test expects this
                     if (test_case.object.get("post")) |post| {
-                        const fork_data = if (hardfork) |hf| switch (hf) {
-                            .PRAGUE => post.object.get("Prague"),
-                            .CANCUN => post.object.get("Cancun"),
-                            else => post.object.get("Cancun"),
-                        } else post.object.get("Cancun");
+                        const fork_data = postForHardfork(post.object, hardfork orelse .CANCUN);
 
                         if (fork_data) |fd| {
                             if (fd == .array and fd.array.items.len > 0) {
@@ -1735,11 +1746,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     if (hash[0] != 0x01) {
                         // Transaction should be rejected - check if test expects this
                         if (test_case.object.get("post")) |post| {
-                            const fork_data = if (hardfork) |hf| switch (hf) {
-                                .PRAGUE => post.object.get("Prague"),
-                                .CANCUN => post.object.get("Cancun"),
-                                else => post.object.get("Cancun"),
-                            } else post.object.get("Cancun");
+                            const fork_data = postForHardfork(post.object, hardfork orelse .CANCUN);
 
                             if (fork_data) |fd| {
                                 if (fd == .array and fd.array.items.len > 0) {
@@ -1881,7 +1888,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                     .MERGE => post.object.get("Merge") orelse post.object.get("Paris"),
                                     .LONDON => post.object.get("London"),
                                     .BERLIN => post.object.get("Berlin"),
-                                    else => post.object.get(hardforkToString(fork)),
+                                    else => postForHardfork(post.object, fork),
                                 } else null;
 
                                 if (fork_data) |fd| {
@@ -1924,7 +1931,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                         .MERGE => post.object.get("Merge") orelse post.object.get("Paris"),
                         .LONDON => post.object.get("London"),
                         .BERLIN => post.object.get("Berlin"),
-                        else => post.object.get(hardforkToString(hf)),
+                        else => postForHardfork(post.object, hf),
                     } else null;
 
                     if (fork_data) |fd| {
@@ -2326,20 +2333,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
             if (post == .object) {
                 // Check if this is the nested format (has hardfork keys)
                 // Use the same hardfork that was detected earlier
-                var fork_data: ?std.json.Value = null;
-                if (hardfork) |hf| {
-                    // Try canonical name first
-                    fork_data = post.object.get(hardforkToString(hf));
-
-                    // If not found, try known aliases
-                    if (fork_data == null) {
-                        if (hf == .PETERSBURG) {
-                            fork_data = post.object.get("ConstantinopleFix");
-                        } else if (hf == .MERGE) {
-                            fork_data = post.object.get("Paris");
-                        }
-                    }
-                }
+                const fork_data = if (hardfork) |hf| postForHardfork(post.object, hf) else null;
 
                 if (fork_data) |fd| {
                     if (fd == .array and fd.array.items.len > 0) {
@@ -2363,6 +2357,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
         if (post_state == .object) {
             var it = post_state.object.iterator();
             while (it.next()) |kv| {
+                if (std.mem.startsWith(u8, kv.key_ptr.*, "//")) continue;
                 const address = try parseAddress(kv.key_ptr.*);
                 // std.debug.print("DEBUG: Validating account {any}\n", .{address.bytes});
                 const expected = kv.value_ptr.*;
@@ -2414,6 +2409,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     if (storage == .object) {
                         var storage_it = storage.object.iterator();
                         while (storage_it.next()) |storage_kv| {
+                            if (std.mem.startsWith(u8, storage_kv.key_ptr.*, "//")) continue;
                             const key = try std.fmt.parseInt(u256, storage_kv.key_ptr.*, 0);
                             const exp_value: u256 = if (std.mem.startsWith(u8, storage_kv.value_ptr.*.string, "<") and std.mem.endsWith(u8, storage_kv.value_ptr.*.string, ">")) blk: {
                                 const addr = try parseAddress(storage_kv.value_ptr.*.string);
@@ -2452,6 +2448,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                     if (result == .object) {
                         var it = result.object.iterator();
                         while (it.next()) |kv| {
+                            if (std.mem.startsWith(u8, kv.key_ptr.*, "//")) continue;
                             const address = try parseAddress(kv.key_ptr.*);
                             const expected = kv.value_ptr.*;
 
@@ -2500,6 +2497,7 @@ fn runJsonTestImplWithOptionalFork(allocator: std.mem.Allocator, test_case: std.
                                 if (storage == .object) {
                                     var storage_it = storage.object.iterator();
                                     while (storage_it.next()) |storage_kv| {
+                                        if (std.mem.startsWith(u8, storage_kv.key_ptr.*, "//")) continue;
                                         const key = try std.fmt.parseInt(u256, storage_kv.key_ptr.*, 0);
                                         const exp_value: u256 = if (std.mem.startsWith(u8, storage_kv.value_ptr.*.string, "<") and std.mem.endsWith(u8, storage_kv.value_ptr.*.string, ">")) blk: {
                                             const addr = try parseAddress(storage_kv.value_ptr.*.string);

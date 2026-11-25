@@ -20,6 +20,8 @@ pub const BlockContext = evm.BlockContext;
 // Export CallParams and CallResult (polymorphic API with guillotine core)
 pub const call_params = @import("call_params.zig");
 pub const call_result = @import("call_result.zig");
+pub const CallParams = Evm(.{}).CallParams;
+pub const CallResult = Evm(.{}).CallResult;
 pub const Log = @import("voltaire").logs.Log;
 pub const SelfDestructRecord = call_result.SelfDestructRecord;
 pub const StorageAccess = call_result.StorageAccess;

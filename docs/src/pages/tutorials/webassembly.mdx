@@ -15,6 +15,11 @@ import {
 
 You do not need a native Zig binary to run Guillotine Mini. `zig build wasm` compiles the entire EVM — **including Voltaire's Rust crypto precompiles (SHA256, BN254 pairing, BLS12-381, KZG)** — into a single **WASI Preview 1 reactor** (`zig-out/bin/guillotine_mini.wasm`) that runs in Node 22+ with zero npm dependencies.
 
+The shipped modules target `wasm32-wasi` and require a WASI Preview 1 host. The
+monolithic reactor includes BN254 and KZG. To load precompiles independently,
+build the smaller core and the companion modules with `zig build wasm-modular`.
+Run `zig build test-wasm-size` to check the size budgets for both builds.
+
 <WasmBoundaryDiagram />
 
 ## Step 1: Build and test the WASM reactor

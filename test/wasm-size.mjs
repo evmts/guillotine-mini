@@ -5,9 +5,11 @@ import { basename } from 'node:path'
 // Raw shipped bytes, before HTTP transfer compression.
 const budgets = new Map([
   ['guillotine_mini_core.wasm', 230_721],
-  ['guillotine_mini.wasm', 580_000],
+  // Includes the pinned Voltaire crypto implementation in the monolithic reactor.
+  ['guillotine_mini.wasm', 590_000],
   // Per-address ceilings keep the lightweight contracts independently small.
-  ['precompile-01.wasm', 40_000],
+  // Voltaire's secp256k1 recovery module ships 51,930 bytes.
+  ['precompile-01.wasm', 54_000],
   ['precompile-02.wasm', 10_000],
   ['precompile-03.wasm', 5_000],
   ['precompile-04.wasm', 3_200],
