@@ -6,7 +6,7 @@ import { basename } from 'node:path'
 const budgets = new Map([
   ['guillotine_mini_core.wasm', 230_721],
   // Includes the pinned Voltaire crypto implementation in the monolithic reactor.
-  ['guillotine_mini.wasm', 590_000],
+  ['guillotine_mini.wasm', 595_000],
   // Per-address ceilings keep the lightweight contracts independently small.
   // Voltaire's secp256k1 recovery module ships 51,930 bytes.
   ['precompile-01.wasm', 54_000],

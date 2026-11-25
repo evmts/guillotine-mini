@@ -3872,7 +3872,7 @@ test "multi-fork post runs every fork" {
 /// pays a withdrawal to 0xee..ee; block 2 runs the contract again and spends
 /// that withdrawal; block 3 is rejected and its withdrawal is dropped.
 fn multiBlockFixture(comptime block3: []const u8, comptime post: []const u8) []const u8 {
-    return
+    return 
     \\{"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}},
     \\  "0xc0de000000000000000000000000000000000000": {"balance": "0x00", "nonce": "0x01", "code": "0x434355", "storage": {}}},
     \\"blocks": [
@@ -3889,10 +3889,10 @@ fn multiBlockFixture(comptime block3: []const u8, comptime post: []const u8) []c
     \\   "transactions": [{"data": "0x", "gasLimit": "0x5208", "gasPrice": "0x0a", "nonce": "0x00",
     \\     "sender": "0xdddddddddddddddddddddddddddddddddddddddd", "to": "0x1000000000000000000000000000000000000000", "value": "0x00"}],
     \\   "withdrawals": [{"index": "0x01", "validatorIndex": "0x00", "address": "0xffffffffffffffffffffffffffffffffffffff00", "amount": "0x05"}]
-    ++ block3 ++
-        \\}],
-        \\"postState": {
-    ++ post ++ "}}";
+++ block3 ++
+    \\}],
+    \\"postState": {
+++ post ++ "}}";
 }
 
 test "multi-block fixtures run each block in its own context with its own withdrawals" {
@@ -3927,7 +3927,7 @@ test "multi-block fixtures run each block in its own context with its own withdr
 /// A Shanghai chain whose only block raises its gas limit far beyond the
 /// 1/1024 bound, so header validation fails with INVALID_GASLIMIT.
 fn badGasLimitFixture(comptime expect: []const u8) []const u8 {
-    return
+    return 
     \\{"network": "Shanghai",
     \\"genesisBlockHeader": {"number": "0x00", "timestamp": "0x00", "gasLimit": "0x01000000", "gasUsed": "0x00", "baseFeePerGas": "0x07",
     \\  "difficulty": "0x00", "nonce": "0x0000000000000000", "uncleHash": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"},
@@ -3937,9 +3937,9 @@ fn badGasLimitFixture(comptime expect: []const u8) []const u8 {
     \\    "withdrawalsRoot": "0x0000000000000000000000000000000000000000000000000000000000000000"},
     \\  "withdrawals": [{"index": "0x00", "validatorIndex": "0x00", "address": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "amount": "0x01"}],
     \\  "expectException": "
-    ++ expect ++
-        \\"}],
-        \\"postState": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00"}}}
+++ expect ++
+    \\"}],
+    \\"postState": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00"}}}
     ;
 }
 

@@ -835,7 +835,8 @@ pub fn build(b: *std.Build) void {
         \\    --output tests/eest/static/state_tests --clean)
         \\touch "$1"
         ,
-        "fill-state-specs", state_fixture_stamp, if (force_refresh) "true" else "false",
+        "fill-state-specs", state_fixture_stamp,
+        if (force_refresh) "true" else "false",
     });
 
     fill_specs.setCwd(b.path("."));
