@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const primitives = @import("voltaire");
 const Hardfork = primitives.Hardfork;
 const Address = primitives.Address.Address;
@@ -46,7 +45,9 @@ pub const EvmConfig = struct {
     /// Memory configuration
     memory_initial_capacity: usize = 4096,
 
-    memory_limit: u64 = 0xFFFFFF,
+    /// Maximum linear memory in bytes. By default, gas and the frame's u32
+    /// address space bound expansion. Embedders can impose a smaller ceiling.
+    memory_limit: u64 = std.math.maxInt(u32) - 31,
 
     /// Maximum call depth allowed in the EVM (defaults to 1024 levels)
     max_call_depth: u16 = 1024,
@@ -61,10 +62,11 @@ pub const EvmConfig = struct {
     /// Set to empty slice for no overrides
     precompile_overrides: []const PrecompileOverride = &.{},
 
-    /// Loop quota for safety counters to prevent infinite loops
-    /// null = disabled (default for optimized builds)
-    /// value = maximum opcodes per frame before ExecutionTimeout
-    loop_quota: ?u32 = if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) 1_000_000 else null,
+    /// Optional per-frame opcode step limit for sandboxes and fuzzers.
+    /// null (default in every build mode) = unlimited; gas alone bounds execution,
+    /// as consensus requires. A value N makes a frame return `error.ExecutionTimeout`
+    /// after N steps, which is NOT consensus-safe.
+    loop_quota: ?u32 = null,
 
     /// Enable system contract updates (EIP-4788 beacon roots, EIP-2935 historical block hashes)
     /// When true, these contracts are updated at the start of each transaction
@@ -95,7 +97,9 @@ pub const EvmConfig = struct {
         return config;
     }
 
-    /// Get the hardfork enum from a string
+    /// Get the hardfork enum from a build-option string.
+    /// Accepts any `Hardfork` tag name (e.g. "OSAKA") plus legacy short aliases.
+    /// Unknown strings select the default fork.
     fn getHardforkFromString(hardfork_str: []const u8) Hardfork {
         if (std.ascii.eqlIgnoreCase(hardfork_str, "TANGERINE")) return .TANGERINE_WHISTLE;
         if (std.ascii.eqlIgnoreCase(hardfork_str, "SPURIOUS")) return .SPURIOUS_DRAGON;
@@ -133,7 +137,7 @@ test "EvmConfig - default initialization" {
     try testing.expectEqual(@as(u32, 49152), config.max_initcode_size);
     try testing.expectEqual(@as(u64, 30_000_000), config.block_gas_limit);
     try testing.expectEqual(@as(usize, 4096), config.memory_initial_capacity);
-    try testing.expectEqual(@as(u64, 0xFFFFFF), config.memory_limit);
+    try testing.expectEqual(@as(u64, std.math.maxInt(u32) - 31), config.memory_limit);
     try testing.expectEqual(@as(u16, 1024), config.max_call_depth);
 }
 
@@ -211,6 +215,10 @@ test "EvmConfig - precompile overrides" {
 }
 
 test "EvmConfig - loop quota" {
+    // Default is unlimited in every build mode: execution is bounded by gas only.
+    const default_config = EvmConfig{};
+    try testing.expectEqual(@as(?u32, null), default_config.loop_quota);
+
     const debug_config = EvmConfig{ .loop_quota = 1_000_000 };
     try testing.expectEqual(@as(?u32, 1_000_000), debug_config.loop_quota);
 
@@ -230,4 +238,27 @@ test "EvmConfig - system contract flags" {
     try testing.expectEqual(false, config.enable_historical_block_hashes);
     try testing.expectEqual(false, config.enable_validator_deposits);
     try testing.expectEqual(false, config.enable_validator_withdrawals);
+}
+
+test "EvmConfig - getHardforkFromString parses every Hardfork tag" {
+    inline for (@typeInfo(Hardfork).@"enum".fields) |field| {
+        const expected: Hardfork = @enumFromInt(field.value);
+        try testing.expectEqual(expected, EvmConfig.getHardforkFromString(field.name));
+    }
+}
+
+test "EvmConfig - getHardforkFromString parses OSAKA and PRAGUE" {
+    try testing.expectEqual(Hardfork.OSAKA, EvmConfig.getHardforkFromString("OSAKA"));
+    try testing.expectEqual(Hardfork.PRAGUE, EvmConfig.getHardforkFromString("PRAGUE"));
+}
+
+test "EvmConfig - getHardforkFromString legacy aliases" {
+    try testing.expectEqual(Hardfork.TANGERINE_WHISTLE, EvmConfig.getHardforkFromString("TANGERINE"));
+    try testing.expectEqual(Hardfork.SPURIOUS_DRAGON, EvmConfig.getHardforkFromString("SPURIOUS"));
+}
+
+test "EvmConfig - getHardforkFromString unknown falls back to the default fork" {
+    try testing.expectEqual(Hardfork.DEFAULT, EvmConfig.getHardforkFromString("NOT_A_FORK"));
+    try testing.expectEqual(Hardfork.DEFAULT, EvmConfig.getHardforkFromString(""));
+    try testing.expectEqual(Hardfork.OSAKA, EvmConfig.getHardforkFromString("osaka"));
 }

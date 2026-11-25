@@ -344,7 +344,7 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
                 const opcode = try getOpcode(op_name);
                 if (opcode >= 0x60 and opcode <= 0x7f) {
                     if (items.len != 2 or items[1] != .number) return error.InvalidFormat;
-                    return compilePush(allocator, opcode - 0x5f, items[1].number);
+                    return compilePushImmediate(allocator, opcode, items[1].number);
                 }
 
                 // Regular opcode with arguments - compile in REVERSE order
@@ -377,6 +377,19 @@ fn compileLllExpr(allocator: std.mem.Allocator, expr: LllExpr, labels: *std.Stri
             return error.InvalidFormat;
         },
     }
+}
+
+// Emit PUSHn followed by `value` as an n-byte big-endian immediate.
+fn compilePushImmediate(allocator: std.mem.Allocator, opcode: u8, value: u256) ![]u8 {
+    const size: u16 = opcode - 0x5f;
+    if (size < 32 and value >> @intCast(size * 8) != 0) return error.PushValueTooLarge;
+    const bytecode = try allocator.alloc(u8, 1 + size);
+    bytecode[0] = opcode;
+    var i: u16 = 0;
+    while (i < size) : (i += 1) {
+        bytecode[1 + i] = @truncate(value >> @intCast((size - 1 - i) * 8));
+    }
+    return bytecode;
 }
 
 // Helper to compile a PUSH for a value
@@ -642,21 +655,18 @@ fn compileSingleExpression(allocator: std.mem.Allocator, code: []const u8) ![]u8
         // Check for PUSH opcodes that need immediate values
         if (std.ascii.startsWithIgnoreCase(token, "PUSH")) {
             const opcode = try getOpcode(token);
-            try bytecode.append(allocator, opcode);
 
-            // If it's a PUSH opcode (not PUSH0), get the immediate value
-            if (opcode >= 0x60 and opcode <= 0x7f and i + 1 < tokens.items.len) {
-                const push_size = opcode - 0x5f;
+            // PUSH1..PUSH32 take exactly one numeric immediate; PUSH0 takes none.
+            if (opcode >= 0x60 and opcode <= 0x7f) {
+                if (i + 1 >= tokens.items.len) return error.MissingPushImmediate;
                 i += 1;
                 const value_token = tokens.items[i];
-                const value = try parseNumber(value_token);
-
-                // Write the value bytes in big-endian order
-                var bytes_written: u8 = 0;
-                while (bytes_written < push_size) : (bytes_written += 1) {
-                    const shift: u8 = @intCast((push_size - 1 - bytes_written) * 8);
-                    try bytecode.append(allocator, @intCast((value >> shift) & 0xFF));
-                }
+                if (!isNumber(value_token)) return error.MissingPushImmediate;
+                const push_bytes = try compilePushImmediate(allocator, opcode, try parseNumber(value_token));
+                defer allocator.free(push_bytes);
+                try bytecode.appendSlice(allocator, push_bytes);
+            } else {
+                try bytecode.append(allocator, opcode);
             }
         } else if (isNumber(token)) {
             const push = try compilePushValue(allocator, try parseNumber(token));
@@ -733,7 +743,7 @@ fn getOpcode(token: []const u8) !u8 {
     if (std.mem.eql(u8, name, "SHL")) return 0x1b;
     if (std.mem.eql(u8, name, "SHR")) return 0x1c;
     if (std.mem.eql(u8, name, "SAR")) return 0x1d;
-    if (std.mem.eql(u8, name, "CLZ")) return 0x1e;
+    if (std.mem.eql(u8, name, "CLZ")) return 0x1e; // EIP-7939 (Osaka)
 
     // SHA3
     if (std.mem.eql(u8, name, "SHA3") or std.mem.eql(u8, name, "KECCAK256")) return 0x20;
@@ -766,6 +776,8 @@ fn getOpcode(token: []const u8) !u8 {
     if (std.mem.eql(u8, name, "CHAINID")) return 0x46;
     if (std.mem.eql(u8, name, "SELFBALANCE")) return 0x47;
     if (std.mem.eql(u8, name, "BASEFEE")) return 0x48;
+    if (std.mem.eql(u8, name, "BLOBHASH")) return 0x49; // EIP-4844 (Cancun)
+    if (std.mem.eql(u8, name, "BLOBBASEFEE")) return 0x4a; // EIP-7516 (Cancun)
 
     // Memory
     if (std.mem.eql(u8, name, "POP")) return 0x50;
@@ -780,6 +792,9 @@ fn getOpcode(token: []const u8) !u8 {
     if (std.mem.eql(u8, name, "MSIZE")) return 0x59;
     if (std.mem.eql(u8, name, "GAS")) return 0x5a;
     if (std.mem.eql(u8, name, "JUMPDEST")) return 0x5b;
+    if (std.mem.eql(u8, name, "TLOAD")) return 0x5c; // EIP-1153 (Cancun)
+    if (std.mem.eql(u8, name, "TSTORE")) return 0x5d; // EIP-1153 (Cancun)
+    if (std.mem.eql(u8, name, "MCOPY")) return 0x5e; // EIP-5656 (Cancun)
 
     // Push operations
     if (std.mem.eql(u8, name, "PUSH0")) return 0x5f;
@@ -904,7 +919,7 @@ test "compile { } format assembly" {
     const bytecode1 = try compileAssembly(allocator, asm1);
     defer allocator.free(bytecode1);
 
-    // The brace-delimited sequence adds an implicit STOP.
+    // Expected: PUSH1 0x01, PUSH1 0x02, ADD, then the implicit STOP that ends every { } sequence
     const expected1 = [_]u8{ 0x60, 0x01, 0x60, 0x02, 0x01, 0x00 };
     try std.testing.expectEqualSlices(u8, &expected1, bytecode1);
 }
@@ -922,4 +937,81 @@ test "compile LLL storage reads and lowercase opcode names" {
     const bytecode = try compileAssembly(allocator, "{ (sstore 1 (add @@0 @2)) }");
     defer allocator.free(bytecode);
     try std.testing.expectEqualSlices(u8, &.{ 0x60, 2, 0x51, 0x60, 0, 0x54, 0x01, 0x60, 1, 0x55, 0x00 }, bytecode);
+}
+
+test "LLL (PUSHn value) uses value as the immediate" {
+    const allocator = std.testing.allocator;
+
+    const bytecode = try compileAssembly(allocator, "{ (PUSH2 0x0102) }");
+    defer allocator.free(bytecode);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x61, 0x01, 0x02, 0x00 }, bytecode);
+
+    try std.testing.expectError(error.PushValueTooLarge, compileAssembly(allocator, "{ (PUSH1 0x0100) }"));
+}
+
+test "getOpcode knows Shanghai, Cancun and Osaka opcodes" {
+    try std.testing.expectEqual(@as(u8, 0x5f), try getOpcode("PUSH0"));
+    try std.testing.expectEqual(@as(u8, 0x5c), try getOpcode("TLOAD"));
+    try std.testing.expectEqual(@as(u8, 0x5d), try getOpcode("TSTORE"));
+    try std.testing.expectEqual(@as(u8, 0x5e), try getOpcode("MCOPY"));
+    try std.testing.expectEqual(@as(u8, 0x49), try getOpcode("BLOBHASH"));
+    try std.testing.expectEqual(@as(u8, 0x4a), try getOpcode("BLOBBASEFEE"));
+    try std.testing.expectEqual(@as(u8, 0x1e), try getOpcode("CLZ"));
+    try std.testing.expectError(error.UnknownOpcode, getOpcode("NOTANOPCODE"));
+}
+
+test "compile assembly using Shanghai, Cancun and Osaka opcodes" {
+    const allocator = std.testing.allocator;
+
+    // TSTORE(0, 1); TLOAD(0); MCOPY(0, 0, 32); BLOBHASH(0); BLOBBASEFEE; CLZ(1); PUSH0
+    const code = "(asm 1 0 TSTORE 0 TLOAD 32 0 0 MCOPY 0 BLOBHASH BLOBBASEFEE 1 CLZ PUSH0)";
+    const bytecode = try compileAssembly(allocator, code);
+    defer allocator.free(bytecode);
+
+    const expected = [_]u8{
+        0x60, 0x01, 0x60, 0x00, 0x5d, // TSTORE
+        0x60, 0x00, 0x5c, // TLOAD
+        0x60, 0x20, 0x60, 0x00, 0x60, 0x00, 0x5e, // MCOPY
+        0x60, 0x00, 0x49, // BLOBHASH
+        0x4a, // BLOBBASEFEE
+        0x60, 0x01, 0x1e, // CLZ
+        0x5f, // PUSH0
+    };
+    try std.testing.expectEqualSlices(u8, &expected, bytecode);
+}
+
+test "compile LLL using Cancun and Osaka opcodes" {
+    const allocator = std.testing.allocator;
+
+    const bytecode = try compileAssembly(allocator, "{ (TSTORE 0 1) (CLZ 1) }");
+    defer allocator.free(bytecode);
+    // Arguments are pushed in reverse so the first argument is on top.
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x60, 0x01, 0x60, 0x00, 0x5d, 0x60, 0x01, 0x1e, 0x00 }, bytecode);
+}
+
+test ":asm PUSHn validates its immediate" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectError(error.PushValueTooLarge, compileAssembly(allocator, ":asm PUSH1 0x100"));
+    try std.testing.expectError(error.PushValueTooLarge, compileAssembly(allocator, ":asm PUSH2 0x10000"));
+    try std.testing.expectError(error.MissingPushImmediate, compileAssembly(allocator, ":asm PUSH1"));
+    try std.testing.expectError(error.MissingPushImmediate, compileAssembly(allocator, ":asm PUSH1 0x01 PUSH1"));
+    try std.testing.expectError(error.MissingPushImmediate, compileAssembly(allocator, ":asm PUSH1 ADD"));
+
+    const push0 = try compileAssembly(allocator, ":asm PUSH0");
+    defer allocator.free(push0);
+    try std.testing.expectEqualSlices(u8, &[_]u8{0x5f}, push0);
+
+    const push2 = try compileAssembly(allocator, ":asm PUSH2 0x01");
+    defer allocator.free(push2);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x61, 0x00, 0x01 }, push2);
+
+    const push1_dec = try compileAssembly(allocator, ":asm PUSH1 255 ADD");
+    defer allocator.free(push1_dec);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x60, 0xff, 0x01 }, push1_dec);
+
+    const push32 = try compileAssembly(allocator, ":asm PUSH32 0xffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100");
+    defer allocator.free(push32);
+    const expected32 = [_]u8{0x7f} ++ [_]u8{ 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00 } ** 2;
+    try std.testing.expectEqualSlices(u8, &expected32, push32);
 }

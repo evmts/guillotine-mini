@@ -234,8 +234,8 @@ test "JUMP: out of bounds destination error" {
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
     const result = ControlFlowHandlers.jump(&frame);
 
-    // Verify OutOfBounds error
-    try testing.expectError(error.OutOfBounds, result);
+    // Verify InvalidJumpDestination error
+    try testing.expectError(error.InvalidJumpDestination, result);
 }
 
 test "JUMP: stack underflow error" {
@@ -762,8 +762,8 @@ test "RETURN: out of bounds offset error" {
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
     const result = ControlFlowHandlers.ret(&frame);
 
-    // Verify OutOfBounds error
-    try testing.expectError(error.OutOfBounds, result);
+    // Verify OutOfGas error
+    try testing.expectError(error.OutOfGas, result);
 }
 
 test "RETURN: out of bounds length error" {
@@ -788,8 +788,8 @@ test "RETURN: out of bounds length error" {
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
     const result = ControlFlowHandlers.ret(&frame);
 
-    // Verify OutOfBounds error
-    try testing.expectError(error.OutOfBounds, result);
+    // Verify OutOfGas error
+    try testing.expectError(error.OutOfGas, result);
 }
 
 test "RETURN: offset + length overflow error" {
@@ -813,8 +813,8 @@ test "RETURN: offset + length overflow error" {
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
     const result = ControlFlowHandlers.ret(&frame);
 
-    // Verify OutOfBounds error
-    try testing.expectError(error.OutOfBounds, result);
+    // Verify OutOfGas error
+    try testing.expectError(error.OutOfGas, result);
 }
 
 test "RETURN: stack underflow error" {
@@ -1017,8 +1017,8 @@ test "REVERT: out of bounds offset error" {
     const ControlFlowHandlers = @import("handlers_control_flow.zig").Handlers(@TypeOf(frame));
     const result = ControlFlowHandlers.revert(&frame);
 
-    // Verify OutOfBounds error
-    try testing.expectError(error.OutOfBounds, result);
+    // Verify OutOfGas error
+    try testing.expectError(error.OutOfGas, result);
 }
 
 test "REVERT: stack underflow error" {

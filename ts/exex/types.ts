@@ -220,8 +220,24 @@ export type ExEx<Block = EVMBlock, Receipt = TransactionReceipt> = (
 // EVENT SOURCE - What the node implements
 // ============================================================================
 
+export interface ChainSubscription<Block, Receipt> {
+  /** Canonical head at the point the subscription was opened. */
+  head: BlockId;
+  notifications: AsyncIterable<ExExNotification<Block, Receipt>>;
+}
+
 export interface ChainEventSource<Block = EVMBlock, Receipt = TransactionReceipt> {
-  subscribe(): AsyncIterable<ExExNotification<Block, Receipt>>;
-  getHead(): Promise<BlockId>;
-  replayRange(from: bigint, to: bigint): AsyncIterable<ExExNotification<Block, Receipt>>;
+  /**
+   * Open an atomic replay-to-live subscription. Replay starts after the supplied
+   * block (number and hash) and runs through the captured head before delivering
+   * later canonical events in order. The source owns that handoff, including
+   * buffering events that arrive during replay, without gaps or duplicates.
+   * With no cursor, only events after the captured head are delivered.
+   * Reject a cursor that cannot be resumed. Abort must release the subscription
+   * and wake any pending reads.
+   */
+  subscribeFrom(
+    cursor: BlockId | undefined,
+    signal: AbortSignal
+  ): Promise<ChainSubscription<Block, Receipt>>;
 }

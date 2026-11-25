@@ -32,7 +32,9 @@ export const makeAccount = (
 export const EMPTY_ACCOUNT: AccountStateType = makeAccount();
 
 /** True if the account has zero nonce and balance with empty code. */
-export const isEmpty = (account: AccountStateType): boolean =>
+export const isEmpty = (
+  account: Pick<AccountStateType, "nonce" | "balance" | "codeHash">,
+): boolean =>
   account.nonce === 0n &&
   account.balance === 0n &&
   bytes32Equals(account.codeHash, EMPTY_CODE_HASH);

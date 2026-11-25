@@ -5,8 +5,10 @@
 Set up Zig 0.15.2, Cargo and the pinned sibling Voltaire checkout using the [native build instructions](../README.md#install). Run these commands from the Guillotine Mini repository root.
 
 ```sh
+zig build examples                # compile the example executable
+zig build run-examples            # run all ten Zig examples
 zig build run-simple-call
-zig build run-example            # list example names
+zig build run-example             # list example names
 zig build run-example -- tracing # emit EIP-3155 JSON Lines to stdout
 ```
 

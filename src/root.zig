@@ -99,6 +99,9 @@ pub const EvmcHostBridge = evmc_adapter.EvmcHostBridge;
 pub const opcode = @import("opcode.zig");
 pub const getOpName = opcode.getOpName;
 
+// Export Glamsterdam/Osaka hardfork readiness hooks
+pub const hardfork_hooks = @import("hardfork_hooks.zig");
+
 // Export instruction dispatcher
 pub const dispatcher = @import("instructions/dispatcher.zig");
 pub const Dispatcher = dispatcher.Dispatcher;

@@ -276,6 +276,7 @@ pub const TestHelper = struct {
             const end = offset + @as(u32, @intCast(data.len));
             try self.frame.ensureMemoryBytes(end);
             @memcpy(self.frame.memory.items[offset..end], data);
+            // Preserve the helper's exact (non word-aligned) size semantics.
             if (end > self.frame.memory_size) {
                 self.frame.memory_size = end;
             }

@@ -7,7 +7,8 @@ const Address = primitives.Address.Address;
 const precompiles = @import("precompiles");
 
 /// Handlers struct - provides system operation handlers for a Frame type
-/// The FrameType must have methods: getEvm, consumeGas, popStack, pushStack
+/// The FrameType must have methods: getEvm, consumeGas, popStack, pushStack,
+/// memoryRange, memoryRangeCost, expandMemory, readMemoryAlloc, writeMemorySlice
 /// and fields appropriate for system operations
 pub fn Handlers(FrameType: type) type {
     return HandlersWithConfig(FrameType, .{});
@@ -23,7 +24,9 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             if (config.charge_gas) try frame.consumeGas(amount);
         }
 
-        /// Helper functions
+        const CallKind = enum { call, callcode, delegatecall, staticcall };
+
+        /// Base CALL-family cost before EIP-2929 (Berlin) replaced it with access costs.
         inline fn preBerlinCallGas(hardfork: primitives.Hardfork) u64 {
             return if (hardfork.isBefore(.TANGERINE_WHISTLE))
                 GasConstants.CallBaseCost
@@ -31,25 +34,50 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                 GasConstants.CallCodeCost;
         }
 
-        inline fn wordCount(bytes: u64) u64 {
-            return (bytes + 31) / 32;
+        /// Low 160 bits of a stack word as an address.
+        fn addressFromWord(word: u256) Address {
+            var bytes: [20]u8 = undefined;
+            var i: usize = 0;
+            while (i < 20) : (i += 1) {
+                bytes[19 - i] = @truncate(word >> @intCast(i * 8));
+            }
+            return Address{ .bytes = bytes };
         }
 
-        fn memoryRangeEnd(offset: u256, length: u256) u64 {
-            if (length == 0) return 0;
-            const start = std.math.cast(u64, offset) orelse return std.math.maxInt(u64);
-            const size = std.math.cast(u64, length) orelse return std.math.maxInt(u64);
-            return start +| size;
+        fn addressToWord(address: Address) u256 {
+            var val: u256 = 0;
+            for (address.bytes) |b| val = (val << 8) | b;
+            return val;
         }
 
-        inline fn wordAlignedSize(bytes: u64) u32 {
-            const words = wordCount(bytes);
-            return @intCast(words * 32);
+        /// EIP-161 "alive": the account has a balance, code, or a nonce.
+        ///
+        /// Reads go through the miss-aware `Evm` getters. In an async transaction a field the
+        /// host has not supplied yet is `error.NeedAsyncData`, never a guessed zero: a wrong
+        /// guess changes the 25,000 new-account charge.
+        fn accountIsAlive(evm: anytype, address: Address) error{NeedAsyncData}!bool {
+            const alive = evm.get_balance(address) > 0 or
+                evm.get_raw_code(address).len > 0 or
+                evm.getNonce(address) > 0;
+            if (asyncPending(evm)) return error.NeedAsyncData;
+            return alive;
         }
 
-        /// CREATE opcode (0xf0) - Create a new contract
-        pub fn create(frame: *FrameType) FrameType.EvmError!void {
-            // EIP-214: CREATE cannot be executed in static call context
+        /// True when a miss-aware `Evm` getter has requested host data the async
+        /// transaction has not supplied yet. Evm types without async support never suspend.
+        inline fn asyncPending(evm: anytype) bool {
+            if (comptime @hasField(@TypeOf(evm.*), "async_restart_pending")) return evm.async_restart_pending;
+            return false;
+        }
+
+        /// Shared CREATE / CREATE2 implementation.
+        fn createCommon(frame: *FrameType, comptime is_create2: bool) FrameType.EvmError!void {
+            const evm = frame.getEvm();
+
+            // EIP-1014: CREATE2 opcode was introduced in Constantinople hardfork
+            if (is_create2 and evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
+
+            // EIP-214: CREATE/CREATE2 cannot be executed in static call context
             if (frame.is_static) return error.StaticCallViolation;
 
             // Clear return_data at the start (per Python reference implementation)
@@ -58,35 +86,31 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const value = try frame.popStack();
             const offset = try frame.popStack();
             const length = try frame.popStack();
+            const salt: u256 = if (is_create2) try frame.popStack() else 0;
 
-            const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
-            const gas_cost = frame.createGasCost(len);
-            try charge(frame, gas_cost);
+            // EIP-3860 (Shanghai+): reject oversize initcode before expanding or copying
+            // memory. Exceptional halt: all gas is consumed.
+            if (evm.hardfork.isAtLeast(.SHANGHAI) and length > GasConstants.MaxInitcodeSize) {
+                frame.gas_remaining = 0;
+                return error.OutOfGas;
+            }
+
+            // A zero-length init code never touches memory, whatever its offset.
+            const range = try frame.memoryRange(offset, length);
+            const len: u32 = if (range) |r| r.len else 0;
+            const base_cost = if (is_create2) frame.create2GasCost(len) else frame.createGasCost(len);
+            try charge(frame, base_cost +| frame.memoryRangeCost(range));
 
             // Read init code from memory
             var init_code: []const u8 = &.{};
             var init_code_buf: ?[]u8 = null;
-            const allocator = frame.allocator;
-            defer if (init_code_buf) |buf| allocator.free(buf);
-            if (length > 0 and length <= std.math.maxInt(u32)) {
-                const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-
-                // Check memory bounds and charge for expansion
-                const end_bytes = @as(u64, off) + @as(u64, len);
-                const mem_cost = frame.memoryExpansionCost(end_bytes);
-                try charge(frame, mem_cost);
-
-                // Update logical memory size
-                const aligned = wordAlignedSize(end_bytes);
-                if (aligned > frame.memory_size) frame.memory_size = aligned;
-
-                const code = try frame.allocator.alloc(u8, len);
+            defer if (init_code_buf) |buf| frame.allocator.free(buf);
+            if (range) |r| {
+                try frame.expandMemory(r.end);
+                const code = try frame.readMemoryAlloc(frame.allocator, r);
                 init_code_buf = code;
-                try frame.copyFromMemory(code, off);
                 init_code = code;
             }
-
-            const evm = frame.getEvm();
 
             // Calculate available gas
             const remaining_gas = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
@@ -97,8 +121,8 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             else
                 remaining_gas;
 
-            // Perform CREATE
-            const result = try evm.inner_create(value, init_code, max_gas, null);
+            const result = try evm.inner_create(value, init_code, max_gas, if (is_create2) salt else null);
+            // Nested execution may move frames; re-fetch the active frame.
             const active_frame = evm.getCurrentFrame() orelse frame;
 
             // Update gas
@@ -114,722 +138,240 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             // Set return_data according to CREATE semantics:
             // - On success: return_data is empty
             // - On failure: return_data is the child's output
-            if (result.success) {
-                active_frame.return_data = &[_]u8{};
-            } else {
-                active_frame.return_data = result.output;
-            }
+            active_frame.return_data = if (result.success) &[_]u8{} else result.output;
 
             // Push address onto stack (0 if failed)
-            const addr_u256 = if (result.success) blk: {
-                var val: u256 = 0;
-                for (result.address.bytes) |b| {
-                    val = (val << 8) | b;
-                }
-                break :blk val;
-            } else 0;
-            try active_frame.pushStack(addr_u256);
+            try active_frame.pushStack(if (result.success) addressToWord(result.address) else 0);
 
             active_frame.pc += 1;
         }
 
-        /// CALL opcode (0xf1) - Message call into an account
-        pub fn call(frame: *FrameType) FrameType.EvmError!void {
-            // Pop all 7 arguments
+        /// Shared CALL / CALLCODE / DELEGATECALL / STATICCALL implementation.
+        ///
+        /// Mirrors execution-specs `system.py`: compute memory expansion and extra gas,
+        /// derive the forwarded gas, charge everything at once, then expand memory.
+        fn callCommon(frame: *FrameType, comptime kind: CallKind) FrameType.EvmError!void {
+            const evm = frame.getEvm();
+
+            // EIP-7: DELEGATECALL was introduced in Homestead hardfork
+            if (kind == .delegatecall and evm.hardfork.isBefore(.HOMESTEAD)) return error.InvalidOpcode;
+            // EIP-214: STATICCALL was introduced in Byzantium hardfork
+            if (kind == .staticcall and evm.hardfork.isBefore(.BYZANTIUM)) return error.InvalidOpcode;
+
+            const has_value_arg = kind == .call or kind == .callcode;
             const gas = try frame.popStack();
             const address_u256 = try frame.popStack();
-            const value_arg = try frame.popStack();
+            const value_arg: u256 = if (has_value_arg) try frame.popStack() else 0;
             const in_offset = try frame.popStack();
             const in_length = try frame.popStack();
             const out_offset = try frame.popStack();
             const out_length = try frame.popStack();
 
             // EIP-214: CALL with non-zero value cannot be executed in static call context
-            if (frame.is_static and value_arg > 0) return error.StaticCallViolation;
+            if (kind == .call and frame.is_static and value_arg > 0) return error.StaticCallViolation;
 
-            // Convert address
-            var addr_bytes: [20]u8 = undefined;
-            var i: usize = 0;
-            while (i < 20) : (i += 1) {
-                addr_bytes[19 - i] = @as(u8, @truncate(address_u256 >> @intCast(i * 8)));
-            }
-            const call_address = Address{ .bytes = addr_bytes };
+            const call_address = addressFromWord(address_u256);
 
-            const evm = frame.getEvm();
-
-            // Gas cost calculation based on hardfork
-            var gas_cost: u64 = 0;
-
-            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat base cost
-            // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
-            // Pre-Tangerine Whistle: Use 40 gas base cost
-            if (evm.hardfork.isBefore(.BERLIN)) {
-                gas_cost = preBerlinCallGas(evm.hardfork);
-            }
-
-            if (value_arg > 0) {
-                gas_cost += GasConstants.CallValueTransferGas;
-            }
-
-            // New-account gas (25,000):
-            // Pre-Spurious-Dragon: charged whenever the target does NOT exist
-            //   in the state trie, regardless of value (Yellow Paper C_new).
-            //   Uses accountExists (actual trie presence, not emptiness).
-            // Spurious Dragon+ (EIP-161): charged only when value > 0 AND
-            //   target is empty (balance=0, nonce=0, no code).
-            if (evm.hardfork.isBefore(.SPURIOUS_DRAGON)) {
-                if (!evm.accountExists(call_address)) {
-                    gas_cost += GasConstants.CallNewAccountGas;
-                }
-            } else if (value_arg > 0) {
-                if (evm.accountIsEmpty(call_address)) {
-                    gas_cost += GasConstants.CallNewAccountGas;
-                }
-            }
-            // EIP-2929 (Berlin+): access target account (warm/cold)
-            // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
-            const access_cost = try evm.accessAddress(call_address);
-            gas_cost += access_cost;
-
-            // Calculate memory expansion cost for BOTH input and output regions together
-            // Per Python reference (gas.py:179-192), calculate_gas_extend_memory processes
-            // all memory extensions together, updating current_size between iterations
-            // This ensures we only charge for the INCREMENTAL expansion, not double-charge
-            const in_end = memoryRangeEnd(in_offset, in_length);
-            const out_end = memoryRangeEnd(out_offset, out_length);
+            // Memory regions. Zero-length regions ignore their offsets entirely; a
+            // non-empty region past the u32 memory model is unaffordable (OutOfGas).
+            const in_range = try frame.memoryRange(in_offset, in_length);
+            const out_range = try frame.memoryRange(out_offset, out_length);
+            const in_end: u64 = if (in_range) |r| r.end else 0;
+            const out_end: u64 = if (out_range) |r| r.end else 0;
             const max_end = @max(in_end, out_end);
-            if (max_end > 0) {
-                const mem_cost = frame.memoryExpansionCost(max_end);
-                gas_cost +|= mem_cost;
+            // Both regions are charged together, so only the incremental expansion is paid.
+            const mem_cost: u64 = if (max_end > 0) frame.memoryExpansionCost(max_end) else 0;
+
+            // Extra gas: base cost (pre-Berlin), value transfer, new account, access costs.
+            var gas_cost: u64 = mem_cost;
+            if (evm.hardfork.isBefore(.BERLIN)) {
+                gas_cost +|= preBerlinCallGas(evm.hardfork);
+            }
+            if (has_value_arg and value_arg > 0) {
+                gas_cost +|= GasConstants.CallValueTransferGas;
+            }
+            if (kind == .call) {
+                // Before EIP-161 (Spurious Dragon) any call to a non-existent account pays
+                // the new-account charge. From Spurious Dragon only a value-bearing call to
+                // a dead (empty) account pays it.
+                const charge_new_account = if (evm.hardfork.isBefore(.SPURIOUS_DRAGON))
+                    !evm.accountExists(call_address)
+                else
+                    value_arg > 0 and !(try accountIsAlive(evm, call_address));
+                // `accountExists` reads balance and code through the miss-aware getters too.
+                if (asyncPending(evm)) return error.NeedAsyncData;
+                if (charge_new_account) gas_cost +|= GasConstants.CallNewAccountGas;
             }
 
-            // Calculate available gas BEFORE charging (per Python execution-specs)
-            // Python: gas = min(gas, max_message_call_gas(gas_left - memory_cost - extra_gas))
-            // We simulate the post-charge state to calculate max forwardable gas
-            const remaining_gas_before_charge = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-            const gas_after_charge = if (remaining_gas_before_charge >= gas_cost)
-                remaining_gas_before_charge - gas_cost
-            else
-                0;
+            // EIP-2929 (Berlin+): access target account (warm/cold).
+            // Returns 0 pre-Berlin, 100 warm, 2600 cold.
+            gas_cost +|= try evm.accessAddress(call_address);
 
-            // Pre-Tangerine-Whistle: requested gas must be affordable — OOG if not.
-            // From Tangerine Whistle (EIP-150): cap at 63/64 of remaining.
-            const available_gas_without_stipend = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) blk: {
-                const gas_limit = std.math.cast(u64, gas) orelse return error.OutOfGas;
-                if (gas_limit > gas_after_charge) return error.OutOfGas;
+            // EIP-7702 (Prague+): a delegated target also charges for accessing its delegate.
+            if (comptime @hasDecl(@TypeOf(evm.*), "get_delegated_target")) {
+                if (evm.get_delegated_target(call_address)) |delegate| {
+                    gas_cost +|= try evm.accessAddress(delegate);
+                }
+            }
+
+            // Forwarded gas.
+            const gas_limit: u64 = std.math.cast(u64, gas) orelse std.math.maxInt(u64);
+            const forwarded_gas: u64 = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) blk: {
+                // Before EIP-150 the requested gas is charged in full; asking for more
+                // than remains is an out-of-gas halt, not a clamp.
+                try charge(frame, gas_cost +| gas_limit);
                 break :blk gas_limit;
             } else blk: {
-                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
-                const max_gas = gas_after_charge - (gas_after_charge / 64);
-                break :blk @min(gas_limit, max_gas);
+                // EIP-150: forward at most all but 1/64th of the gas left after extra costs.
+                const remaining: u64 = @intCast(@max(frame.gas_remaining, 0));
+                const after_charge = remaining -| gas_cost;
+                const max_gas = after_charge - (after_charge / 64);
+                const forwarded = @min(gas_limit, max_gas);
+                try charge(frame, gas_cost +| forwarded);
+                break :blk forwarded;
             };
 
-            // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
-            const available_gas = if (value_arg > 0)
-                available_gas_without_stipend + GasConstants.CallStipend
+            // The stipend is free to the caller.
+            const available_gas: u64 = if (has_value_arg and value_arg > 0)
+                forwarded_gas +| GasConstants.CallStipend
             else
-                available_gas_without_stipend;
+                forwarded_gas;
 
-            // NOW charge the total cost (extra costs + forwardable gas)
-            // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
-            // where message_call_gas.cost = gas + extra_gas
-            const total_cost = gas_cost +| available_gas_without_stipend;
-            try charge(frame, total_cost);
-            const aligned_size = wordAlignedSize(max_end);
-            if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
+            // Memory grows only once the charge has succeeded.
+            try frame.expandMemory(max_end);
 
             // Read input data from memory
             var input_data: []const u8 = &.{};
             var input_data_buf: ?[]u8 = null;
             const frame_allocator = frame.allocator;
             defer if (input_data_buf) |buf| frame_allocator.free(buf);
-            if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
-                const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
-                const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
-
-                // Check if in_off + in_len would overflow
-                const end_offset = in_off +% in_len;
-                if (end_offset >= in_off) {
-                    const data = try frame.allocator.alloc(u8, in_len);
-                    input_data_buf = data;
-                    try frame.copyFromMemory(data, in_off);
-                    input_data = data;
-                }
-                // else: overflow occurred, use empty input data
+            if (in_range) |r| {
+                const data = try frame.readMemoryAlloc(frame_allocator, r);
+                input_data_buf = data;
+                input_data = data;
             }
 
-            // Perform the inner call (regular CALL)
-            const params = CallParams{ .call = .{
-                .caller = frame.address,
-                .to = call_address,
-                .value = value_arg,
-                .input = input_data,
-                .gas = available_gas,
-            } };
+            const params = switch (kind) {
+                .call => CallParams{ .call = .{
+                    .caller = frame.address,
+                    .to = call_address,
+                    .value = value_arg,
+                    .input = input_data,
+                    .gas = available_gas,
+                } },
+                .callcode => CallParams{ .callcode = .{
+                    .caller = frame.address,
+                    .to = call_address,
+                    .value = value_arg,
+                    .input = input_data,
+                    .gas = available_gas,
+                } },
+                // EIP-7: DELEGATECALL keeps the parent's caller and call value.
+                .delegatecall => CallParams{ .delegatecall = .{
+                    .caller = frame.caller,
+                    .to = call_address,
+                    .input = input_data,
+                    .gas = available_gas,
+                    .value = frame.value,
+                } },
+                .staticcall => CallParams{ .staticcall = .{
+                    .caller = frame.address,
+                    .to = call_address,
+                    .input = input_data,
+                    .gas = available_gas,
+                } },
+            };
             const result = evm.inner_call(params);
+            // Nested execution may move frames; re-fetch the active frame.
             const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
 
-            // Write output to memory
-            // Note: Memory expansion cost was already charged upfront
-            if (out_length > 0 and result.output.len > 0) {
-                const out_off = std.math.cast(u32, out_offset) orelse return error.OutOfBounds;
-                const out_len_u32 = std.math.cast(u32, out_length) orelse return error.OutOfBounds;
-                const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
-                const copy_len = @min(out_len_u32, result_len_u32);
-
-                try active_frame.writeMemorySlice(out_off, result.output[0..copy_len]);
+            // Write output to memory (expansion was charged upfront). Only the bytes the
+            // child returned are written; the rest of the output region is untouched.
+            if (out_range) |r| {
+                const copy_len = @min(@as(usize, r.len), result.output.len);
+                try active_frame.writeMemorySlice(r.offset, result.output[0..copy_len]);
             }
 
-            // Store return data
             active_frame.return_data = result.output;
+            try active_frame.pushStack(if (result.success) 1 else 0);
 
-            // Push success status
-            const success_val: u256 = if (result.success) 1 else 0;
-            try active_frame.pushStack(success_val);
-
-            // Refund unused gas (including any unused stipend)
+            // Refund unused gas (including any unused stipend).
             // Per Python: evm.gas_left += child_evm.gas_left
-            // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
             const gas_to_refund = @min(result.gas_left, available_gas);
             if (active_frame.step_metering) active_frame.step_child_gas_spent = available_gas - gas_to_refund;
             const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
             active_frame.gas_remaining = active_frame.gas_remaining +| gas_to_refund_i64;
 
             active_frame.pc += 1;
+        }
+        /// CREATE opcode (0xf0) - Create a new contract
+        pub fn create(frame: *FrameType) FrameType.EvmError!void {
+            return createCommon(frame, false);
+        }
+
+        /// CALL opcode (0xf1) - Message call into an account
+        pub fn call(frame: *FrameType) FrameType.EvmError!void {
+            return callCommon(frame, .call);
         }
 
         /// CALLCODE opcode (0xf2) - Message call into this account with another account's code
         pub fn callcode(frame: *FrameType) FrameType.EvmError!void {
-            // Similar to CALL but executes code in current context
-            // Pop all 7 arguments
-            const gas = try frame.popStack();
-            const address_u256 = try frame.popStack();
-            const value_arg = try frame.popStack();
-            const in_offset = try frame.popStack();
-            const in_length = try frame.popStack();
-            const out_offset = try frame.popStack();
-            const out_length = try frame.popStack();
-
-            // Convert address
-            var addr_bytes: [20]u8 = undefined;
-            var i: usize = 0;
-            while (i < 20) : (i += 1) {
-                addr_bytes[19 - i] = @as(u8, @truncate(address_u256 >> @intCast(i * 8)));
-            }
-            const call_address = Address{ .bytes = addr_bytes };
-
-            const evm = frame.getEvm();
-
-            // Gas cost calculation based on hardfork
-            var gas_cost: u64 = 0;
-
-            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat base cost
-            // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
-            // Pre-Tangerine Whistle: Use 40 gas base cost
-            if (evm.hardfork.isBefore(.BERLIN)) {
-                gas_cost = preBerlinCallGas(evm.hardfork);
-            }
-
-            if (value_arg > 0) {
-                gas_cost += GasConstants.CallValueTransferGas;
-            }
-            // EIP-2929 (Berlin+): access target account (warm/cold)
-            // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
-            const access_cost = try evm.accessAddress(call_address);
-            gas_cost += access_cost;
-
-            // Calculate memory expansion cost for BOTH input and output regions together
-            const in_end = memoryRangeEnd(in_offset, in_length);
-            const out_end = memoryRangeEnd(out_offset, out_length);
-            const max_end = @max(in_end, out_end);
-            if (max_end > 0) {
-                const mem_cost = frame.memoryExpansionCost(max_end);
-                gas_cost +|= mem_cost;
-            }
-
-            // Calculate available gas BEFORE charging (per Python execution-specs)
-            const remaining_gas_before_charge = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-            const gas_after_charge = if (remaining_gas_before_charge >= gas_cost)
-                remaining_gas_before_charge - gas_cost
-            else
-                0;
-
-            // Pre-Tangerine-Whistle: requested gas must be affordable — OOG if not.
-            // From Tangerine Whistle (EIP-150): cap at 63/64 of remaining.
-            const available_gas_without_stipend = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) blk: {
-                const gas_limit = std.math.cast(u64, gas) orelse return error.OutOfGas;
-                if (gas_limit > gas_after_charge) return error.OutOfGas;
-                break :blk gas_limit;
-            } else blk: {
-                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
-                const max_gas = gas_after_charge - (gas_after_charge / 64);
-                break :blk @min(gas_limit, max_gas);
-            };
-
-            // Add gas stipend for value transfers (stipend is free, caller doesn't pay for it)
-            const available_gas = if (value_arg > 0)
-                available_gas_without_stipend + GasConstants.CallStipend
-            else
-                available_gas_without_stipend;
-
-            // NOW charge the total cost (extra costs + forwardable gas)
-            // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
-            // where message_call_gas.cost = gas + extra_gas
-            const total_cost = gas_cost +| available_gas_without_stipend;
-            try charge(frame, total_cost);
-            const aligned_size = wordAlignedSize(max_end);
-            if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
-
-            // Read input data from memory
-            var input_data: []const u8 = &.{};
-            var input_data_buf: ?[]u8 = null;
-            const frame_allocator = frame.allocator;
-            defer if (input_data_buf) |buf| frame_allocator.free(buf);
-            if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
-                const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
-                const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
-
-                // Check if in_off + in_len would overflow
-                const end_offset = in_off +% in_len;
-                if (end_offset >= in_off) {
-                    const data = try frame.allocator.alloc(u8, in_len);
-                    input_data_buf = data;
-                    try frame.copyFromMemory(data, in_off);
-                    input_data = data;
-                }
-                // else: overflow occurred, use empty input data
-            }
-
-            // Perform the inner call (CALLCODE)
-            const params = CallParams{ .callcode = .{
-                .caller = frame.address,
-                .to = call_address,
-                .value = value_arg,
-                .input = input_data,
-                .gas = available_gas,
-            } };
-            const result = evm.inner_call(params);
-            const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
-
-            // Write output to memory
-            if (out_length > 0 and result.output.len > 0) {
-                const out_off = std.math.cast(u32, out_offset) orelse return error.OutOfBounds;
-                const out_len_u32 = std.math.cast(u32, out_length) orelse return error.OutOfBounds;
-                const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
-                const copy_len = @min(out_len_u32, result_len_u32);
-
-                try active_frame.writeMemorySlice(out_off, result.output[0..copy_len]);
-            }
-
-            // Store return data
-            active_frame.return_data = result.output;
-
-            // Push success status
-            try active_frame.pushStack(if (result.success) 1 else 0);
-
-            // Refund unused gas (including any unused stipend)
-            // Per Python: evm.gas_left += child_evm.gas_left
-            // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
-            const gas_to_refund = @min(result.gas_left, available_gas);
-            if (active_frame.step_metering) active_frame.step_child_gas_spent = available_gas - gas_to_refund;
-            const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
-            active_frame.gas_remaining = active_frame.gas_remaining +| gas_to_refund_i64;
-
-            active_frame.pc += 1;
+            return callCommon(frame, .callcode);
         }
 
         /// DELEGATECALL opcode (0xf4) - Message call with another account's code, but keep current msg.sender and msg.value
         pub fn delegatecall(frame: *FrameType) FrameType.EvmError!void {
-            const evm = frame.getEvm();
-
-            // EIP-7: DELEGATECALL was introduced in Homestead hardfork
-            if (evm.hardfork.isBefore(.HOMESTEAD)) return error.InvalidOpcode;
-
-            // Pop all 6 arguments (no value)
-            const gas = try frame.popStack();
-            const address_u256 = try frame.popStack();
-            const in_offset = try frame.popStack();
-            const in_length = try frame.popStack();
-            const out_offset = try frame.popStack();
-            const out_length = try frame.popStack();
-
-            // Convert address
-            var addr_bytes: [20]u8 = undefined;
-            var i: usize = 0;
-            while (i < 20) : (i += 1) {
-                addr_bytes[19 - i] = @as(u8, @truncate(address_u256 >> @intCast(i * 8)));
-            }
-            const call_address = Address{ .bytes = addr_bytes };
-
-            // Gas cost calculation based on hardfork
-            var gas_cost: u64 = 0;
-
-            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat base cost
-            // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
-            // Pre-Tangerine Whistle: Use 40 gas base cost
-            if (evm.hardfork.isBefore(.BERLIN)) {
-                gas_cost = preBerlinCallGas(evm.hardfork);
-            }
-
-            // EIP-2929 (Berlin+): access target account (warm/cold)
-            // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
-            const access_cost = try evm.accessAddress(call_address);
-            gas_cost += access_cost;
-
-            // Calculate memory expansion cost for BOTH input and output regions together
-            const in_end = memoryRangeEnd(in_offset, in_length);
-            const out_end = memoryRangeEnd(out_offset, out_length);
-            const max_end = @max(in_end, out_end);
-            if (max_end > 0) {
-                const mem_cost = frame.memoryExpansionCost(max_end);
-                gas_cost +|= mem_cost;
-            }
-
-            // Calculate available gas BEFORE charging (per Python execution-specs)
-            const remaining_gas_before_charge = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-            const gas_after_charge = if (remaining_gas_before_charge >= gas_cost)
-                remaining_gas_before_charge - gas_cost
-            else
-                0;
-
-            // Pre-Tangerine-Whistle: requested gas must be affordable — OOG if not.
-            // From Tangerine Whistle (EIP-150): cap at 63/64 of remaining.
-            // Note: DELEGATECALL requires HOMESTEAD so the pre-TW path covers only
-            // HOMESTEAD itself where the opcode exists but EIP-150 isn't active yet.
-            const available_gas = if (evm.hardfork.isBefore(.TANGERINE_WHISTLE)) blk: {
-                const gas_limit = std.math.cast(u64, gas) orelse return error.OutOfGas;
-                if (gas_limit > gas_after_charge) return error.OutOfGas;
-                break :blk gas_limit;
-            } else blk: {
-                const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
-                const max_gas = gas_after_charge - (gas_after_charge / 64);
-                break :blk @min(gas_limit, max_gas);
-            };
-
-            // NOW charge the total cost (base cost + forwarded gas)
-            // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
-            // where message_call_gas.cost = gas + extra_gas
-            const total_cost = gas_cost +| available_gas;
-            try charge(frame, total_cost);
-            const aligned_size = wordAlignedSize(max_end);
-            if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
-
-            // Read input data from memory
-            var input_data: []const u8 = &.{};
-            var input_data_buf: ?[]u8 = null;
-            const frame_allocator = frame.allocator;
-            defer if (input_data_buf) |buf| frame_allocator.free(buf);
-            if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
-                const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
-                const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
-
-                // Check if in_off + in_len would overflow
-                const end_offset = in_off +% in_len;
-                if (end_offset >= in_off) {
-                    const data = try frame.allocator.alloc(u8, in_len);
-                    input_data_buf = data;
-                    try frame.copyFromMemory(data, in_off);
-                    input_data = data;
-                }
-                // else: overflow occurred, use empty input data
-            }
-
-            // Perform the inner call (DELEGATECALL)
-            const params = CallParams{ .delegatecall = .{
-                .caller = frame.caller,
-                .to = call_address,
-                .input = input_data,
-                .gas = available_gas,
-            } };
-            const result = evm.inner_call(params);
-            const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
-
-            // Write output to memory
-            if (out_length > 0 and result.output.len > 0) {
-                const out_off = std.math.cast(u32, out_offset) orelse return error.OutOfBounds;
-                const out_len_u32 = std.math.cast(u32, out_length) orelse return error.OutOfBounds;
-                const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
-                const copy_len = @min(out_len_u32, result_len_u32);
-
-                try active_frame.writeMemorySlice(out_off, result.output[0..copy_len]);
-            }
-
-            // Store return data
-            active_frame.return_data = result.output;
-
-            // Push success status
-            try active_frame.pushStack(if (result.success) 1 else 0);
-
-            // Refund unused gas
-            // Per Python: evm.gas_left += child_evm.gas_left
-            // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
-            const gas_to_refund = @min(result.gas_left, available_gas);
-            if (active_frame.step_metering) active_frame.step_child_gas_spent = available_gas - gas_to_refund;
-            const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
-            active_frame.gas_remaining = active_frame.gas_remaining +| gas_to_refund_i64;
-
-            active_frame.pc += 1;
+            return callCommon(frame, .delegatecall);
         }
 
         /// STATICCALL opcode (0xfa) - Static message call (no state modifications allowed)
         pub fn staticcall(frame: *FrameType) FrameType.EvmError!void {
-            const evm = frame.getEvm();
-
-            // EIP-214: STATICCALL was introduced in Byzantium hardfork
-            if (evm.hardfork.isBefore(.BYZANTIUM)) return error.InvalidOpcode;
-
-            // Pop all 6 arguments (no value for static call)
-            const gas = try frame.popStack();
-            const address_u256 = try frame.popStack();
-            const in_offset = try frame.popStack();
-            const in_length = try frame.popStack();
-            const out_offset = try frame.popStack();
-            const out_length = try frame.popStack();
-
-            // Convert address
-            var addr_bytes: [20]u8 = undefined;
-            var i: usize = 0;
-            while (i < 20) : (i += 1) {
-                addr_bytes[19 - i] = @as(u8, @truncate(address_u256 >> @intCast(i * 8)));
-            }
-            const call_address = Address{ .bytes = addr_bytes };
-
-            // Gas cost calculation based on hardfork
-            var call_gas_cost: u64 = 0;
-
-            // EIP-2929 (Berlin+): Use warm/cold access costs instead of flat base cost
-            // EIP-150 (Tangerine Whistle): Changed base cost from 40 to 700
-            // Pre-Tangerine Whistle: Use 40 gas base cost
-            if (evm.hardfork.isBefore(.BERLIN)) {
-                call_gas_cost = preBerlinCallGas(evm.hardfork);
-            }
-
-            // EIP-2929 (Berlin+): access target account (warm/cold)
-            // Returns 0 for pre-Berlin, 100 for warm, 2600 for cold in Berlin+
-            const access_cost = try evm.accessAddress(call_address);
-            call_gas_cost += access_cost;
-
-            // Calculate memory expansion cost for BOTH input and output regions together
-            const in_end = memoryRangeEnd(in_offset, in_length);
-            const out_end = memoryRangeEnd(out_offset, out_length);
-            const max_end = @max(in_end, out_end);
-            if (max_end > 0) {
-                const mem_cost = frame.memoryExpansionCost(max_end);
-                call_gas_cost +|= mem_cost;
-            }
-
-            // Calculate available gas BEFORE charging (per Python execution-specs)
-            const remaining_gas_before_charge = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-            const gas_after_charge = if (remaining_gas_before_charge >= call_gas_cost)
-                remaining_gas_before_charge - call_gas_cost
-            else
-                0;
-            // STATICCALL requires Byzantium (always post-TW), so EIP-150 63/64 always applies.
-            const gas_limit = if (gas > std.math.maxInt(u64)) std.math.maxInt(u64) else @as(u64, @intCast(gas));
-            const max_gas = gas_after_charge - (gas_after_charge / 64);
-            const available_gas = @min(gas_limit, max_gas);
-
-            // NOW charge the total cost (base cost + forwarded gas)
-            // Per Python: charge_gas(evm, message_call_gas.cost + extend_memory.cost)
-            // where message_call_gas.cost = gas + extra_gas
-            const total_cost = call_gas_cost +| available_gas;
-            try charge(frame, total_cost);
-            const aligned_size = wordAlignedSize(max_end);
-            if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
-
-            // Read input data from memory
-            var input_data: []const u8 = &.{};
-            var input_data_buf: ?[]u8 = null;
-            const frame_allocator = frame.allocator;
-            defer if (input_data_buf) |buf| frame_allocator.free(buf);
-            if (in_length > 0 and in_length <= std.math.maxInt(u32)) {
-                const in_off = std.math.cast(u32, in_offset) orelse return error.OutOfBounds;
-                const in_len = std.math.cast(u32, in_length) orelse return error.OutOfBounds;
-
-                // Check if in_off + in_len would overflow
-                const end_offset = in_off +% in_len;
-                if (end_offset >= in_off) {
-                    const data = try frame.allocator.alloc(u8, in_len);
-                    input_data_buf = data;
-                    try frame.copyFromMemory(data, in_off);
-                    input_data = data;
-                }
-                // else: overflow occurred, use empty input data
-            }
-
-            // Perform the inner call (STATICCALL)
-            const params = CallParams{ .staticcall = .{
-                .caller = frame.address,
-                .to = call_address,
-                .input = input_data,
-                .gas = available_gas,
-            } };
-            const result = evm.inner_call(params);
-            const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
-
-            // Write output to memory
-            if (out_length > 0 and result.output.len > 0) {
-                const out_off = std.math.cast(u32, out_offset) orelse return error.OutOfBounds;
-                const out_len_u32 = std.math.cast(u32, out_length) orelse return error.OutOfBounds;
-                const result_len_u32 = std.math.cast(u32, result.output.len) orelse return error.OutOfBounds;
-                const copy_len = @min(out_len_u32, result_len_u32);
-
-                try active_frame.writeMemorySlice(out_off, result.output[0..copy_len]);
-            }
-
-            // Store return data
-            active_frame.return_data = result.output;
-
-            // Push success status
-            try active_frame.pushStack(if (result.success) 1 else 0);
-
-            // Refund unused gas
-            // Per Python: evm.gas_left += child_evm.gas_left
-            // Cap refund at available_gas to prevent overflow if child somehow returns more than allocated
-            const gas_to_refund = @min(result.gas_left, available_gas);
-            if (active_frame.step_metering) active_frame.step_child_gas_spent = available_gas - gas_to_refund;
-            const gas_to_refund_i64 = std.math.cast(i64, gas_to_refund) orelse std.math.maxInt(i64);
-            active_frame.gas_remaining = active_frame.gas_remaining +| gas_to_refund_i64;
-
-            active_frame.pc += 1;
+            return callCommon(frame, .staticcall);
         }
 
         /// CREATE2 opcode (0xf5) - Create a new contract with deterministic address
         pub fn create2(frame: *FrameType) FrameType.EvmError!void {
-            const evm = frame.getEvm();
-
-            // EIP-1014: CREATE2 opcode was introduced in Constantinople hardfork
-            if (evm.hardfork.isBefore(.CONSTANTINOPLE)) return error.InvalidOpcode;
-
-            // EIP-214: CREATE2 cannot be executed in static call context
-            if (frame.is_static) return error.StaticCallViolation;
-
-            // Clear return_data at the start (per Python reference implementation)
-            frame.return_data = &[_]u8{};
-
-            const value = try frame.popStack();
-            const offset = try frame.popStack();
-            const length = try frame.popStack();
-            const salt = try frame.popStack();
-
-            const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
-            const gas_cost = frame.create2GasCost(len);
-            try charge(frame, gas_cost);
-
-            // Read init code from memory
-            var init_code: []const u8 = &.{};
-            var init_code_buf: ?[]u8 = null;
-            const allocator = frame.allocator;
-            defer if (init_code_buf) |buf| allocator.free(buf);
-            if (length > 0 and length <= std.math.maxInt(u32)) {
-                const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-
-                // Check memory bounds and charge for expansion
-                const end_bytes = @as(u64, off) + @as(u64, len);
-                const mem_cost = frame.memoryExpansionCost(end_bytes);
-                try charge(frame, mem_cost);
-
-                // Update logical memory size
-                const aligned = wordAlignedSize(end_bytes);
-                if (aligned > frame.memory_size) frame.memory_size = aligned;
-
-                const code = try frame.allocator.alloc(u8, len);
-                init_code_buf = code;
-                try frame.copyFromMemory(code, off);
-                init_code = code;
-            }
-
-            // Calculate available gas
-            const remaining_gas = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
-            // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
-            // Before EIP-150: forward all remaining gas
-            const max_gas = if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
-                remaining_gas - (remaining_gas / 64)
-            else
-                remaining_gas;
-
-            // Perform CREATE2 with salt
-            const result = try evm.inner_create(value, init_code, max_gas, salt);
-            const active_frame = evm.getCurrentFrame() orelse frame;
-
-            // Update gas
-            const gas_used = max_gas -| result.gas_left;
-            if (active_frame.step_metering) active_frame.step_child_gas_spent = gas_used;
-            // Safely cast gas_used - if it exceeds i64::MAX, clamp gas_remaining to 0
-            const gas_used_i64 = std.math.cast(i64, gas_used) orelse {
-                active_frame.gas_remaining = 0;
-                return error.OutOfGas;
-            };
-            active_frame.gas_remaining -= gas_used_i64;
-
-            // Set return_data according to EIP-1014:
-            // - On success: return_data is empty
-            // - On failure: return_data is the child's output
-            if (result.success) {
-                active_frame.return_data = &[_]u8{};
-            } else {
-                active_frame.return_data = result.output;
-            }
-
-            // Push address onto stack (0 if failed)
-            const addr_u256 = if (result.success) blk: {
-                var val: u256 = 0;
-                for (result.address.bytes) |b| {
-                    val = (val << 8) | b;
-                }
-                break :blk val;
-            } else 0;
-            try active_frame.pushStack(addr_u256);
-
-            active_frame.pc += 1;
+            return createCommon(frame, true);
         }
 
         /// SELFDESTRUCT opcode (0xff) - Halt execution and register account for deletion
         pub fn selfdestruct(frame: *FrameType) FrameType.EvmError!void {
             const beneficiary_u256 = try frame.popStack();
-
-            // Convert beneficiary to address
-            var beneficiary_bytes: [20]u8 = undefined;
-            var i: usize = 0;
-            while (i < 20) : (i += 1) {
-                beneficiary_bytes[19 - i] = @truncate(beneficiary_u256 >> @intCast(i * 8));
-            }
-            const beneficiary = Address{ .bytes = beneficiary_bytes };
+            const beneficiary = addressFromWord(beneficiary_u256);
 
             const evm_ptr = frame.getEvm();
 
-            // Calculate gas cost (EIP-6780/Berlin)
-            // Base: 5000 gas
-            // +2600 if beneficiary is cold (EIP-2929/Berlin)
-            // +25000 if beneficiary doesn't exist and we have balance
+            // Base: 0 before Tangerine Whistle, 5000 after (EIP-150).
             var gas_cost = frame.selfdestructGasCost();
 
             // EIP-2929 (Berlin): Check if beneficiary is warm, add cold access cost if needed
             // Per Python reference: if beneficiary not in evm.accessed_addresses, add it and charge cold access
             // IMPORTANT: Unlike CALL which always charges an access cost (warm=100 or cold=2600),
             // SELFDESTRUCT only charges if the beneficiary is cold (not already accessed)
+            // Routed through accessAddress so access-list tracers observe the beneficiary.
+            // accessAddress returns 0 before Berlin, 100 warm, 2600 cold.
             const access_cost = try evm_ptr.accessAddress(beneficiary);
             if (access_cost == GasConstants.ColdAccountAccessCost) gas_cost += access_cost;
 
-            const self_balance = if (evm_ptr.host) |h|
-                h.getBalance(frame.address)
-            else
-                evm_ptr.balances.get(frame.address) orelse 0;
+            // Miss-aware reads: an async transaction fetches both balances before pricing or
+            // moving value, so an unfetched beneficiary balance is never overwritten.
+            const self_balance = evm_ptr.get_balance(frame.address);
+            const beneficiary_balance_before = evm_ptr.get_balance(beneficiary);
+            if (asyncPending(evm_ptr)) return error.NeedAsyncData;
 
-            // New-account gas for SELFDESTRUCT beneficiary:
-            // < Tangerine Whistle: never charged.
-            // Tangerine Whistle to < Spurious Dragon: 25k iff beneficiary
-            //   does NOT exist in the state trie (regardless of self_balance).
-            // >= Spurious Dragon (EIP-161): 25k iff self_balance > 0 AND
-            //   beneficiary is empty.
+            // New-beneficiary surcharge (25000) by fork:
+            // - before Tangerine Whistle: none
+            // - Tangerine Whistle (EIP-150): beneficiary does not exist in the state trie,
+            //   regardless of the balance
+            // - Spurious Dragon+ (EIP-161): beneficiary is dead and the balance is non-zero
             if (frame.hardfork.isAtLeast(.SPURIOUS_DRAGON)) {
-                if (self_balance > 0 and evm_ptr.accountIsEmpty(beneficiary)) {
+                if (self_balance > 0 and !(try accountIsAlive(evm_ptr, beneficiary))) {
                     gas_cost += GasConstants.CallNewAccountGas;
                 }
             } else if (frame.hardfork.isAtLeast(.TANGERINE_WHISTLE)) {
-                if (!evm_ptr.accountExists(beneficiary)) {
-                    gas_cost += GasConstants.CallNewAccountGas;
-                }
+                const exists = evm_ptr.accountExists(beneficiary);
+                if (asyncPending(evm_ptr)) return error.NeedAsyncData;
+                if (!exists) gas_cost += GasConstants.CallNewAccountGas;
             }
 
             try charge(frame, gas_cost);
@@ -838,43 +380,24 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             // This check must happen AFTER gas charging (Python reference line 525)
             if (frame.is_static) return error.StaticCallViolation;
 
+            // EIP-161: SELFDESTRUCT touches the beneficiary, so an existing empty
+            // beneficiary is deleted at transaction end even for a 0-wei transfer.
+            try evm_ptr.touchAccount(beneficiary);
+
             // Transfer balance from originator to beneficiary
             // Pre-Cancun vs Cancun+ have different balance transfer semantics
             if (frame.hardfork.isAtLeast(.CANCUN)) {
-                // EIP-6780 (Cancun+): Use move_ether semantics
-                // This follows the Python reference implementation's move_ether function:
-                // 1. Reduce sender balance by amount
-                // 2. Increase recipient balance by amount
-                // When sender == recipient, the balance stays the same (decreased then increased)
-
-                // Always call move_ether, even if balance is 0 (Python always calls it)
-                // Step 1: Reduce originator balance
+                // EIP-6780 (Cancun+): move_ether semantics. When sender == recipient the
+                // balance is decreased then increased, so it stays the same.
                 try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
 
-                // Step 2: Increase beneficiary balance
-                // IMPORTANT: Must read beneficiary balance AFTER step 1 to handle sender == recipient case
-                const beneficiary_balance = if (evm_ptr.host) |h|
-                    h.getBalance(beneficiary)
-                else
-                    evm_ptr.balances.get(beneficiary) orelse 0;
+                // Read beneficiary balance AFTER zeroing the originator (sender == recipient case)
+                const beneficiary_balance = evm_ptr.get_balance(beneficiary);
                 try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
-                evm_ptr.touched_accounts.put(beneficiary, {}) catch {};
             } else {
-                // Pre-Cancun: Use old balance transfer logic
-                // Per Python reference (Shanghai): Read beneficiary balance BEFORE modifying anything
-                // This ensures correct behavior when beneficiary == originator
-                const beneficiary_balance = if (evm_ptr.host) |h|
-                    h.getBalance(beneficiary)
-                else
-                    evm_ptr.balances.get(beneficiary) orelse 0;
-
-                // First Transfer to beneficiary (Python comment)
-                try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance + self_balance);
-                evm_ptr.touched_accounts.put(beneficiary, {}) catch {};
-
-                // Next, Zero the balance of the address being deleted (must come after
-                // sending to beneficiary in case the contract named itself as the beneficiary).
-                // (Python comment)
+                // Pre-Cancun: read beneficiary balance BEFORE modifying anything so a
+                // self-beneficiary ends with zero balance.
+                try evm_ptr.setBalanceWithSnapshot(beneficiary, beneficiary_balance_before + self_balance);
                 try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
             }
 
@@ -885,29 +408,21 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             // EIP-6780 (Cancun+): Only delete if created in same transaction
             // Pre-Cancun: Always delete the account
             if (frame.hardfork.isAtLeast(.CANCUN)) {
-                // EIP-6780: Mark account for deletion ONLY if created in same transaction
-                const was_created_this_tx = evm_ptr.created_accounts.contains(frame.address);
-
-                if (was_created_this_tx) {
+                if (evm_ptr.created_accounts.contains(frame.address)) {
                     // Mark for deletion - actual deletion at end of transaction
                     try evm_ptr.selfdestructed_accounts.put(frame.address, {});
-
-                    // EIP-6780: Set originator balance to 0 UNCONDITIONALLY when created in same tx
-                    // This matches Python reference: set_account_balance(state, originator, U256(0))
-                    // This is needed for the self-destruct-to-self case where beneficiary == originator
-                    // to burn the ether (overriding move_ether's balance increase)
+                    // EIP-6780: burn the balance unconditionally (self-beneficiary case).
                     try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
                 }
                 // If not created in same tx: balance transferred but code/storage/nonce persist
             } else {
-                // Pre-Cancun behavior: Always mark for deletion
                 try evm_ptr.selfdestructed_accounts.put(frame.address, {});
             }
 
             // Apply refund to EVM's gas_refund counter (at most once per account per tx).
             const refund = frame.selfdestructRefund();
             if (refund > 0 and !already_marked_for_deletion) {
-                evm_ptr.gas_refund += refund;
+                evm_ptr.add_refund(refund);
             }
 
             if (evm_ptr.inspector) |sink| {

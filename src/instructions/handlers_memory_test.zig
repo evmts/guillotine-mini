@@ -235,8 +235,9 @@ test "MLOAD: offset out of bounds error" {
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mload(&frame);
 
-    // Verify error
-    try testing.expectError(error.OutOfBounds, result);
+    // Past the u32 memory model: exceptional halt, all gas burned (execution-specs, Lean spec)
+    try testing.expectError(error.OutOfGas, result);
+    try testing.expectEqual(@as(i64, 0), frame.gas_remaining);
 }
 
 // ============================================================================
@@ -431,8 +432,9 @@ test "MSTORE: offset out of bounds error" {
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mstore(&frame);
 
-    // Verify error
-    try testing.expectError(error.OutOfBounds, result);
+    // Past the u32 memory model: exceptional halt, all gas burned (execution-specs, Lean spec)
+    try testing.expectError(error.OutOfGas, result);
+    try testing.expectEqual(@as(i64, 0), frame.gas_remaining);
 }
 
 // ============================================================================
@@ -617,8 +619,9 @@ test "MSTORE8: offset out of bounds error" {
     const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
     const result = MemHandlers.mstore8(&frame);
 
-    // Verify error
-    try testing.expectError(error.OutOfBounds, result);
+    // Past the u32 memory model: exceptional halt, all gas burned (execution-specs, Lean spec)
+    try testing.expectError(error.OutOfGas, result);
+    try testing.expectEqual(@as(i64, 0), frame.gas_remaining);
 }
 
 // ============================================================================
@@ -1146,4 +1149,294 @@ test "MCOPY: large length triggers out of gas" {
 
     // Verify error (huge copy cost exceeds available gas)
     try testing.expectError(error.OutOfGas, result);
+}
+
+// ============================================================================
+// Frame memory backing (ArrayList), loop_quota, and expansion cost tests
+// ============================================================================
+
+fn createConfiguredEvm(comptime EvmT: type, allocator: std.mem.Allocator) !*EvmT {
+    const evm = try allocator.create(EvmT);
+    errdefer allocator.destroy(evm);
+    const block_context = evm_mod.BlockContext{
+        .chain_id = 1,
+        .block_number = 1,
+        .block_timestamp = 1000,
+        .block_difficulty = 0,
+        .block_prevrandao = 0,
+        .block_coinbase = primitives.ZERO_ADDRESS,
+        .block_gas_limit = 10_000_000,
+        .block_base_fee = 1,
+        .blob_base_fee = 1,
+    };
+    try evm.init(allocator, null, .CANCUN, block_context, primitives.ZERO_ADDRESS, 0, null);
+    try evm.initTransactionState(null);
+    return evm;
+}
+
+fn initConfiguredFrame(comptime FrameT: type, allocator: std.mem.Allocator, evm: anytype, bytecode: []const u8, gas: i64) !FrameT {
+    return try FrameT.init(allocator, bytecode, gas, primitives.ZERO_ADDRESS, primitives.ZERO_ADDRESS, 0, &.{}, @ptrCast(evm), .CANCUN, false);
+}
+
+test "Frame memory: unwritten bytes read as zero and writes grow to word boundary" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .CANCUN);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+    var frame = try createTestFrame(allocator, evm, &.{}, .CANCUN, 1_000_000);
+    defer frame.deinit();
+
+    try testing.expectEqual(@as(usize, 0), frame.memory.items.len);
+    try testing.expectEqual(@as(u8, 0), frame.readMemory(0));
+    try testing.expectEqual(@as(u8, 0), frame.readMemory(std.math.maxInt(u32)));
+
+    try frame.writeMemory(5, 0xAB);
+    try testing.expectEqual(@as(usize, 32), frame.memory.items.len);
+    try testing.expectEqual(@as(u32, 32), frame.memory_size);
+    try testing.expectEqual(@as(u8, 0xAB), frame.readMemory(5));
+    for (0..32) |i| {
+        if (i != 5) try testing.expectEqual(@as(u8, 0), frame.readMemory(@intCast(i)));
+    }
+
+    // Resize across several words: gap is zero-filled, earlier data is preserved.
+    try frame.writeMemory(100, 0xCD);
+    try testing.expectEqual(@as(usize, 128), frame.memory.items.len);
+    try testing.expectEqual(@as(u32, 128), frame.memory_size);
+    try testing.expectEqual(@as(u8, 0xAB), frame.readMemory(5));
+    try testing.expectEqual(@as(u8, 0xCD), frame.readMemory(100));
+    for (32..100) |i| try testing.expectEqual(@as(u8, 0), frame.readMemory(@intCast(i)));
+
+    // Overwrite inside existing memory does not resize.
+    try frame.writeMemory(5, 0x01);
+    try testing.expectEqual(@as(usize, 128), frame.memory.items.len);
+    try testing.expectEqual(@as(u8, 0x01), frame.readMemory(5));
+}
+
+test "Frame memory: MSTORE then MLOAD round-trips through ArrayList backing" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .CANCUN);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+    // PUSH32 value, PUSH1 0x40, MSTORE, PUSH1 0x40, MLOAD
+    const value: u256 = 0x0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20;
+    var code: [33 + 2 + 1 + 2 + 1]u8 = undefined;
+    code[0] = 0x7f;
+    std.mem.writeInt(u256, code[1..33], value, .big);
+    code[33] = 0x60;
+    code[34] = 0x40;
+    code[35] = 0x52;
+    code[36] = 0x60;
+    code[37] = 0x40;
+    code[38] = 0x51;
+    var frame = try createTestFrame(allocator, evm, &code, .CANCUN, 1_000_000);
+    defer frame.deinit();
+
+    try frame.execute();
+    try testing.expectEqual(value, try frame.popStack());
+    try testing.expectEqual(@as(u32, 96), frame.memory_size);
+    try testing.expectEqual(@as(usize, 96), frame.memory.items.len);
+    try testing.expectEqual(@as(u8, 0x01), frame.readMemory(0x40));
+    try testing.expectEqual(@as(u8, 0x20), frame.readMemory(0x5f));
+}
+
+test "Frame memory: getMemorySlice copies data and zero-fills charged-but-unwritten tail" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .CANCUN);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+    var frame = try createTestFrame(allocator, evm, &.{}, .CANCUN, 1_000_000);
+    defer frame.deinit();
+
+    const empty = try frame.getMemorySlice(allocator);
+    try testing.expectEqual(@as(usize, 0), empty.len);
+
+    try frame.writeMemory(0, 0x11);
+    try frame.writeMemory(31, 0x22);
+    // MLOAD-style expansion: memory_size grows without backing bytes.
+    frame.memory_size = 96;
+
+    const slice = try frame.getMemorySlice(allocator);
+    defer allocator.free(slice);
+    try testing.expectEqual(@as(usize, 96), slice.len);
+    try testing.expectEqual(@as(u8, 0x11), slice[0]);
+    try testing.expectEqual(@as(u8, 0x22), slice[31]);
+    for (slice[1..31]) |b| try testing.expectEqual(@as(u8, 0), b);
+    for (slice[32..]) |b| try testing.expectEqual(@as(u8, 0), b);
+}
+
+test "Frame memory: MCOPY overlapping regions through ArrayList backing" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .CANCUN);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+    var frame = try createTestFrame(allocator, evm, &.{0x5e}, .CANCUN, 1_000_000);
+    defer frame.deinit();
+
+    for (0..8) |i| try frame.writeMemory(@intCast(i), @intCast(i + 1));
+    try frame.pushStack(8); // len
+    try frame.pushStack(0); // src
+    try frame.pushStack(4); // dest
+    const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
+    try MemHandlers.mcopy(&frame);
+
+    const expected = [_]u8{ 1, 2, 3, 4, 1, 2, 3, 4, 5, 6, 7, 8 };
+    for (expected, 0..) |b, i| try testing.expectEqual(b, frame.readMemory(@intCast(i)));
+}
+
+test "Frame.execute: loop_quota enforces exact step limit" {
+    const allocator = testing.allocator;
+    const cfg = @import("../evm_config.zig").EvmConfig{ .loop_quota = 10 };
+    const EvmQ = evm_mod.Evm(cfg);
+    const FrameQ = @import("../frame.zig").Frame(cfg);
+    const cfg_tight = @import("../evm_config.zig").EvmConfig{ .loop_quota = 9 };
+    const EvmT = evm_mod.Evm(cfg_tight);
+    const FrameT = @import("../frame.zig").Frame(cfg_tight);
+
+    // Ten JUMPDESTs: exactly ten steps, then pc reaches end of code.
+    const code = [_]u8{0x5b} ** 10;
+
+    var evm_q = try createConfiguredEvm(EvmQ, allocator);
+    defer {
+        evm_q.deinit();
+        allocator.destroy(evm_q);
+    }
+    var frame_q = try initConfiguredFrame(FrameQ, allocator, evm_q, &code, 1_000);
+    defer frame_q.deinit();
+    try frame_q.execute();
+    try testing.expectEqual(@as(u32, 10), frame_q.pc);
+
+    var evm_t = try createConfiguredEvm(EvmT, allocator);
+    defer {
+        evm_t.deinit();
+        allocator.destroy(evm_t);
+    }
+    var frame_t = try initConfiguredFrame(FrameT, allocator, evm_t, &code, 1_000);
+    defer frame_t.deinit();
+    try testing.expectError(error.ExecutionTimeout, frame_t.execute());
+    try testing.expectEqual(@as(u32, 9), frame_t.pc);
+}
+
+test "Frame.execute: loop_quota stops an infinite loop" {
+    const allocator = testing.allocator;
+    const cfg = @import("../evm_config.zig").EvmConfig{ .loop_quota = 1_000 };
+    const EvmQ = evm_mod.Evm(cfg);
+    const FrameQ = @import("../frame.zig").Frame(cfg);
+
+    // JUMPDEST; PUSH1 0; JUMP
+    const code = [_]u8{ 0x5b, 0x60, 0x00, 0x56 };
+    var evm = try createConfiguredEvm(EvmQ, allocator);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+    var frame = try initConfiguredFrame(FrameQ, allocator, evm, &code, 1_000_000_000);
+    defer frame.deinit();
+    try testing.expectError(error.ExecutionTimeout, frame.execute());
+}
+
+test "Frame.execute: null loop_quota runs past the debug default quota" {
+    const allocator = testing.allocator;
+    const cfg = @import("../evm_config.zig").EvmConfig{ .loop_quota = null };
+    const EvmN = evm_mod.Evm(cfg);
+    const FrameN = @import("../frame.zig").Frame(cfg);
+
+    // 1.5M JUMPDESTs exceeds the Debug/ReleaseSafe default quota of 1M steps.
+    const steps = 1_500_000;
+    const code = try allocator.alloc(u8, steps);
+    defer allocator.free(code);
+    @memset(code, 0x5b);
+
+    var evm = try createConfiguredEvm(EvmN, allocator);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+    var frame = try initConfiguredFrame(FrameN, allocator, evm, code, steps);
+    defer frame.deinit();
+    try frame.execute();
+    try testing.expectEqual(@as(u32, steps), frame.pc);
+    try testing.expectEqual(@as(i64, 0), frame.gas_remaining);
+}
+
+test "memoryExpansionCost: no 16 MiB cap, exact quadratic gas at 17 MiB" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .CANCUN);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+    var frame = try createTestFrame(allocator, evm, &.{}, .CANCUN, 1_000_000);
+    defer frame.deinit();
+
+    const mib: u64 = 1024 * 1024;
+    // words = 557056; 3*w + w*w/512 = 1_671_168 + 606_076_928
+    try testing.expectEqual(@as(u64, 607_748_096), frame.memoryExpansionCost(17 * mib));
+    // Just above the old 0x1000000 cap: one extra word.
+    // 16 MiB = 524288 words -> 538_443_776; 524289 words -> 3*524289 + 524289^2/512
+    try testing.expectEqual(@as(u64, 538_443_776), frame.memoryExpansionCost(16 * mib));
+    try testing.expectEqual(@as(u64, 3 * 524_289 + (524_289 * 524_289) / 512), frame.memoryExpansionCost(16 * mib + 1));
+
+    // Incremental cost from 16 MiB to 17 MiB.
+    frame.memory_size = @intCast(16 * mib);
+    try testing.expectEqual(@as(u64, 607_748_096 - 538_443_776), frame.memoryExpansionCost(17 * mib));
+    try testing.expectEqual(@as(u64, 0), frame.memoryExpansionCost(16 * mib));
+}
+
+test "memoryExpansionCost: largest non-overflowing size is exact, overflow saturates" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .CANCUN);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+    var frame = try createTestFrame(allocator, evm, &.{}, .CANCUN, 1_000_000);
+    defer frame.deinit();
+
+    const max_u64 = std.math.maxInt(u64);
+    // words = 2^32 - 1: words^2 fits in u64, so the result is exact.
+    const words: u64 = std.math.maxInt(u32);
+    try testing.expectEqual(@as(u64, 36_028_809_887_088_637), frame.memoryExpansionCost(words * 32));
+    // words = 2^35: words^2 overflows u64.
+    try testing.expectEqual(@as(u64, max_u64), frame.memoryExpansionCost(@as(u64, 1) << 40));
+    // end_bytes + 31 overflows u64.
+    try testing.expectEqual(@as(u64, max_u64), frame.memoryExpansionCost(max_u64));
+    try testing.expectEqual(@as(u64, max_u64), frame.memoryExpansionCost(max_u64 - 30));
+}
+
+test "MSTORE beyond 16 MiB charges true gas and fails OutOfGas only when gas is short" {
+    const allocator = testing.allocator;
+    var evm = try createTestEvm(allocator, .CANCUN);
+    defer {
+        evm.deinit();
+        allocator.destroy(evm);
+    }
+    const mib: u32 = 1024 * 1024;
+    const offset: u32 = 17 * mib - 32;
+    const expected_cost: i64 = 607_748_096 + GasConstants.GasFastestStep;
+
+    // Exactly enough gas: succeeds and leaves zero gas.
+    var frame = try createTestFrame(allocator, evm, &.{0x52}, .CANCUN, expected_cost);
+    defer frame.deinit();
+    try frame.pushStack(0xff); // value
+    try frame.pushStack(offset); // offset
+    const MemHandlers = @import("handlers_memory.zig").Handlers(@TypeOf(frame));
+    try MemHandlers.mstore(&frame);
+    try testing.expectEqual(@as(i64, 0), frame.gas_remaining);
+    try testing.expectEqual(@as(u32, 17 * mib), frame.memory_size);
+    try testing.expectEqual(@as(u8, 0xff), frame.readMemory(17 * mib - 1));
+
+    // One gas short: OutOfGas.
+    var frame2 = try createTestFrame(allocator, evm, &.{0x52}, .CANCUN, expected_cost - 1);
+    defer frame2.deinit();
+    try frame2.pushStack(0xff);
+    try frame2.pushStack(offset);
+    try testing.expectError(error.OutOfGas, MemHandlers.mstore(&frame2));
 }

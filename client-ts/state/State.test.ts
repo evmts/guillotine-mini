@@ -5,6 +5,7 @@ import { Address, Hash, Hex, RuntimeCode } from "voltaire-effect/primitives";
 import {
   EMPTY_ACCOUNT,
   EMPTY_CODE_HASH,
+  EMPTY_STORAGE_ROOT,
   isTotallyEmpty,
   type AccountStateType,
 } from "./Account";
@@ -428,24 +429,95 @@ describe("WorldState", () => {
       Effect.gen(function* () {
         const addr = makeAddress(11);
         const slot = makeSlot(1);
-        const valueA = makeStorageValue(5);
-        const valueB = makeStorageValue(9);
+        const valueA = makeStorageValue(0);
+        const valueB = makeStorageValue(0);
+        valueA[31] = 0x7f;
+        valueB[31] = 0x80;
 
         yield* setAccount(addr, makeAccount({ nonce: 1n }));
         yield* setStorage(addr, slot, valueA);
+        assert.strictEqual(
+          Hex.fromBytes((yield* getAccount(addr)).storageRoot),
+          "0xa7aa585388b50399a353ff087c52c561f40d623817172d5a69df546f6b6d61cb",
+        );
         const created = yield* getStorage(addr, slot);
         assert.strictEqual(storageValueHex(created), storageValueHex(valueA));
 
         yield* setStorage(addr, slot, valueB);
+        assert.strictEqual(
+          Hex.fromBytes((yield* getAccount(addr)).storageRoot),
+          "0x0f477dc79684d041e05c53706eda4342bd004d46619a136a79fbcbc093f41c59",
+        );
         const updated = yield* getStorage(addr, slot);
         assert.strictEqual(storageValueHex(updated), storageValueHex(valueB));
 
         yield* setStorage(addr, slot, ZERO_STORAGE_VALUE);
+        assert.strictEqual(
+          Hex.fromBytes((yield* getAccount(addr)).storageRoot),
+          Hex.fromBytes(EMPTY_STORAGE_ROOT),
+        );
         const cleared = yield* getStorage(addr, slot);
         assert.strictEqual(
           storageValueHex(cleared),
           storageValueHex(ZERO_STORAGE_VALUE),
         );
+      }),
+    ),
+  );
+
+  it.effect("deletes slots and code when setting an account to null, and restores them on rollback", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const address = makeAddress(0x74);
+        const slot = makeSlot(1);
+        const value = makeStorageValue(7);
+        yield* setAccount(address, makeAccount({ nonce: 1n }));
+        yield* setCode(address, SAMPLE_CODE);
+        yield* setStorage(address, slot, value);
+        const before = yield* getAccount(address);
+
+        const snapshot = yield* takeSnapshot();
+        yield* setAccount(address, null);
+        assert.isNull(yield* getAccountOptional(address));
+        yield* setAccount(address, makeAccount());
+        assert.deepEqual(yield* getStorage(address, slot), ZERO_STORAGE_VALUE);
+        assert.deepEqual(yield* getCode(address), EMPTY_CODE);
+        assert.deepEqual((yield* getAccount(address)).storageRoot, EMPTY_STORAGE_ROOT);
+
+        yield* restoreSnapshot(snapshot);
+        assert.deepEqual(yield* getAccount(address), before);
+        assert.deepEqual(yield* getStorage(address, slot), value);
+        assert.deepEqual(yield* getCode(address), SAMPLE_CODE);
+      }),
+    ),
+  );
+
+  it.effect("restores a dirty storage root after it was read inside a snapshot", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const address = makeAddress(0x75);
+        const reference = makeAddress(0x76);
+        const slot = makeSlot(1);
+        const original = makeStorageValue(7);
+        for (const account of [address, reference]) {
+          yield* setAccount(account, makeAccount());
+          yield* setStorage(account, slot, original);
+        }
+        const expected = (yield* getAccount(reference)).storageRoot;
+
+        const outer = yield* takeSnapshot();
+        yield* setStorage(address, slot, makeStorageValue(8));
+        const inner = yield* takeSnapshot();
+        yield* setStorage(address, makeSlot(2), makeStorageValue(9));
+        yield* setCode(address, SAMPLE_CODE);
+        const account = yield* getAccount(address);
+        assert.notDeepEqual(account.storageRoot, expected);
+        yield* commitSnapshot(inner);
+        yield* restoreSnapshot(outer);
+
+        assert.deepEqual((yield* getAccount(address)).storageRoot, expected);
+        assert.deepEqual(yield* getStorage(address, slot), original);
+        assert.deepEqual(yield* getStorage(address, makeSlot(2)), ZERO_STORAGE_VALUE);
       }),
     ),
   );
@@ -460,10 +532,17 @@ describe("WorldState", () => {
 
         yield* setAccount(addr, makeAccount({ nonce: 1n }));
         yield* setStorage(addr, slot, valueA);
+        const originalRoot = Hex.fromBytes(
+          (yield* getAccount(addr)).storageRoot,
+        );
         const snapshot = yield* takeSnapshot();
         yield* setStorage(addr, slot, valueB);
 
         yield* restoreSnapshot(snapshot);
+        assert.strictEqual(
+          Hex.fromBytes((yield* getAccount(addr)).storageRoot),
+          originalRoot,
+        );
         const reverted = yield* getStorage(addr, slot);
         assert.strictEqual(storageValueHex(reverted), storageValueHex(valueA));
       }),
@@ -486,6 +565,38 @@ describe("WorldState", () => {
         yield* commitSnapshot(snapshot);
         const committed = yield* getStorage(addr, slot);
         assert.strictEqual(storageValueHex(committed), storageValueHex(valueB));
+      }),
+    ),
+  );
+
+  it.effect("restores slots and their root after rolling back a committed child", () =>
+    provideWorldState(
+      Effect.gen(function* () {
+        const address = makeAddress(20);
+        const firstSlot = makeSlot(1);
+        const secondSlot = makeSlot(2);
+        yield* setAccount(address, makeAccount({ nonce: 1n }));
+
+        const parent = yield* takeSnapshot();
+        yield* setStorage(address, firstSlot, makeStorageValue(1));
+        const child = yield* takeSnapshot();
+        yield* setStorage(address, secondSlot, makeStorageValue(2));
+        yield* commitSnapshot(child);
+        yield* restoreSnapshot(parent);
+
+        const zero = storageValueHex(ZERO_STORAGE_VALUE);
+        assert.strictEqual(
+          storageValueHex(yield* getStorage(address, firstSlot)),
+          zero,
+        );
+        assert.strictEqual(
+          storageValueHex(yield* getStorage(address, secondSlot)),
+          zero,
+        );
+        assert.strictEqual(
+          Hex.fromBytes((yield* getAccount(address)).storageRoot),
+          Hex.fromBytes(EMPTY_STORAGE_ROOT),
+        );
       }),
     ),
   );

@@ -141,7 +141,8 @@ const makeAccessListBuilder = Effect.gen(function* () {
         for (const entry of parsedTx.accessList) {
           addAddress(entry.address);
           for (const slot of entry.storageKeys) {
-            addStorageKey(entry.address, slot as StorageSlotType);
+            // Access-list keys are already validated 32-byte storage slots.
+            addStorageKey(entry.address, slot as Uint8Array as StorageSlotType);
           }
         }
       }

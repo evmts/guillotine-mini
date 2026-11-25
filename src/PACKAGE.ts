@@ -27,6 +27,7 @@ const frame_srcs = S.Filegroup({
     S.file("opcode.zig"),
     S.file("errors.zig"),
     S.file("evm_config.zig"),
+    S.file("hardfork_hooks.zig"),
     S.file("logger.zig"),
     S.file("trace.zig"),
     S.file("inspector.zig"),

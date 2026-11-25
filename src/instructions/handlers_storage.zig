@@ -19,9 +19,35 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             if (config.charge_gas) try frame.consumeGas(amount);
         }
 
+        /// Withdraw a previously granted refund.
+        ///
+        /// With a signed (i64) refund counter the subtraction is unconditional, matching
+        /// execution-specs, where the counter may go negative mid-transaction. With the
+        /// legacy u64 counter it clamps at zero instead of underflowing.
+        inline fn subRefund(evm: anytype, amount: u64) void {
+            if (comptime @TypeOf(evm.gas_refund) == i64) {
+                evm.sub_refund(amount);
+            } else if (evm.gas_refund >= amount) {
+                evm.gas_refund -= amount;
+            } else {
+                evm.gas_refund = 0;
+            }
+        }
+
+        /// Async storage (Contract C): make sure the slot under the stack top is loaded
+        /// BEFORE any pop, warm-up or gas charge, so a `NeedAsyncData` yield leaves the
+        /// frame untouched and the opcode re-executes cleanly on resume.
+        inline fn ensureTopSlotLoaded(frame: *FrameType, evm: anytype, needed: usize) FrameType.EvmError!void {
+            if (frame.stack.items.len < needed) return error.StackUnderflow;
+            if (comptime @hasDecl(@TypeOf(evm.storage), "ensureSlotLoaded")) {
+                const key = try frame.peekStack(0);
+                try evm.storage.ensureSlotLoaded(frame.address, key);
+            }
+        }
         /// SLOAD opcode (0x54) - Load word from storage
         pub fn sload(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
+            try ensureTopSlotLoaded(frame, evm, 1);
             const key = try frame.popStack();
 
             // EIP-2929: charge warm/cold storage access cost and warm the slot
@@ -42,13 +68,22 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             // EIP-214: SSTORE cannot modify state in static call context
             if (frame.is_static) return error.StaticCallViolation;
 
-            // EIP-2200 (Istanbul+): SSTORE sentry gas check
-            // SSTORE requires at least GAS_CALL_STIPEND (2300) gas remaining
+            if (frame.stack.items.len < 2) return error.StackUnderflow;
+
+            // EIP-2200 (Istanbul+): SSTORE requires more than GAS_CALL_STIPEND (2300) gas.
+            // Checked before any async slot request: the halt needs no storage data.
+            // An exceptional halt burns all remaining gas.
             if (evm.hardfork.isAtLeast(.ISTANBUL)) {
                 if (frame.gas_remaining <= GasConstants.SstoreSentryGas) {
-                    return frame.consumeGas(GasConstants.SstoreSentryGas + 1);
+                    // Charging one gas past the stipend records the attempted cost for
+                    // tracers and zeroes the remaining gas.
+                    if (config.charge_gas) return frame.consumeGas(GasConstants.SstoreSentryGas + 1);
+                    frame.gas_remaining = 0;
+                    return error.OutOfGas;
                 }
             }
+
+            try ensureTopSlotLoaded(frame, evm, 2);
 
             const key = try frame.popStack();
             const value = try frame.popStack();
@@ -103,9 +138,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                     // Case 2: Reversing a previous clear (was cleared earlier, now non-zero)
                     if (original_value != 0 and current_value == 0) {
                         // Subtract the refund that was given earlier
-                        if (evm.gas_refund >= 15000) {
-                            evm.gas_refund -= 15000;
-                        }
+                        subRefund(evm, 15000);
                     }
 
                     // Case 3: Restoring to original value. The refunded amount differs between
@@ -144,9 +177,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                     // This is a separate independent check, not else-if
                     if (original_value != 0 and current_value == 0) {
                         // Subtract the refund that was given earlier
-                        if (evm.gas_refund >= GasConstants.SstoreRefundGas) {
-                            evm.gas_refund -= GasConstants.SstoreRefundGas;
-                        }
+                        subRefund(evm, GasConstants.SstoreRefundGas);
                     }
 
                     // Case 3: Restoring to original value (line 115-124)

@@ -84,7 +84,7 @@ pub fn DispatcherWithConfig(comptime FrameType: type, comptime config: HandlerCo
         ///   - StackOverflow: If stack exceeds 1024 items
         ///   - InvalidJumpDestination: If JUMP/JUMPI targets invalid location
         ///   - StaticCallViolation: If state-modifying op in static context
-        ///   - InvalidOpcode: If opcode is unrecognized or inactive at the current hardfork
+        ///   - InvalidOpcode: If opcode is unrecognized or inactive at the current hardfork (0x0c-0x0f, 0x1f, etc.)
         ///   - Other errors: Depending on specific opcode requirements
         pub fn execute(frame: *FrameType, opcode: u8) EvmError!void {
             comptime frame_interface.checkFrameInterface(FrameType, config);
@@ -120,6 +120,7 @@ pub fn DispatcherWithConfig(comptime FrameType: type, comptime config: HandlerCo
                 0x1c => try BitwiseHandlers.shr(frame),
                 0x1d => try BitwiseHandlers.sar(frame),
                 0x1e => try BitwiseHandlers.clz(frame),
+                // 0x1f: Invalid opcode
 
                 // 0x20: Keccak256
                 0x20 => try KeccakHandlers.sha3(frame),

@@ -5,7 +5,8 @@ const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 
 /// Handlers struct - provides control flow operation handlers for a Frame type
-/// The FrameType must have methods: consumeGas, popStack, pushStack, readMemory
+/// The FrameType must have methods: consumeGas, popStack, pushStack, memoryRange,
+/// memoryExpansionCost, expandMemory, readMemoryAlloc
 /// and fields: pc (program counter), stopped, reverted, bytecode (with isValidJumpDest),
 /// output, memory_size, allocator, evm_ptr
 pub fn Handlers(FrameType: type) type {
@@ -30,7 +31,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
         pub fn jump(frame: *FrameType) FrameType.EvmError!void {
             try charge(frame, GasConstants.GasMidStep);
             const dest = try frame.popStack();
-            const dest_pc = std.math.cast(u32, dest) orelse return error.OutOfBounds;
+            const dest_pc = std.math.cast(u32, dest) orelse return error.InvalidJumpDestination;
 
             // Validate jump destination
             if (!frame.bytecode.isValidJumpDest(dest_pc)) return error.InvalidJump;
@@ -45,7 +46,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const condition = try frame.popStack();
 
             if (condition != 0) {
-                const dest_pc = std.math.cast(u32, dest) orelse return error.OutOfBounds;
+                const dest_pc = std.math.cast(u32, dest) orelse return error.InvalidJumpDestination;
 
                 // Validate jump destination
                 if (!frame.bytecode.isValidJumpDest(dest_pc)) return error.InvalidJump;
@@ -73,31 +74,8 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
         pub fn ret(frame: *FrameType) FrameType.EvmError!void {
             const offset = try frame.popStack();
             const length = try frame.popStack();
-
-            if (length > 0) {
-                const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-                const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
-
-                // Check if off + len would overflow
-                const end_offset = off +% len;
-                if (end_offset < off) {
-                    // Overflow occurred, return out of bounds error
-                    return error.OutOfBounds;
-                }
-
-                // Charge memory expansion for the return slice
-                const end_bytes = @as(u64, off) + @as(u64, len);
-                const mem_cost = frame.memoryExpansionCost(end_bytes);
-                try charge(frame, mem_cost);
-                const aligned_size = wordAlignedSize(end_bytes);
-                if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
-
-                frame.output = try frame.allocator.alloc(u8, len);
-                try frame.copyFromMemory(frame.output, off);
-            }
-
+            try captureOutput(frame, offset, length);
             frame.stopped = true;
-            return;
         }
 
         /// REVERT opcode (0xfd) - Halt execution and revert state changes
@@ -108,37 +86,17 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
 
             const offset = try frame.popStack();
             const length = try frame.popStack();
-
-            if (length > 0) {
-                const off = std.math.cast(u32, offset) orelse return error.OutOfBounds;
-                const len = std.math.cast(u32, length) orelse return error.OutOfBounds;
-
-                // Charge memory expansion for the revert slice
-                const end_bytes: u64 = @as(u64, off) + @as(u64, len);
-                const mem_cost = frame.memoryExpansionCost(end_bytes);
-                try charge(frame, mem_cost);
-                const aligned_size = wordAlignedSize(end_bytes);
-                if (aligned_size > frame.memory_size) frame.memory_size = aligned_size;
-
-                frame.output = try frame.allocator.alloc(u8, len);
-                try frame.copyFromMemory(frame.output, off);
-            }
-
+            try captureOutput(frame, offset, length);
             frame.reverted = true;
-            return;
         }
 
-        // Helper functions (inline for performance)
-
-        /// Word count calculation for memory sizing
-        inline fn wordCount(bytes: u64) u64 {
-            return (bytes + 31) / 32;
-        }
-
-        /// Word-aligned size calculation
-        inline fn wordAlignedSize(bytes: u64) u32 {
-            const words = wordCount(bytes);
-            return @intCast(words * 32);
+        /// Charge expansion for `[offset, offset+length)` and copy it to `frame.output`.
+        /// Zero-length output charges nothing and ignores the offset.
+        fn captureOutput(frame: *FrameType, offset: u256, length: u256) FrameType.EvmError!void {
+            const range = try frame.memoryRange(offset, length) orelse return;
+            try charge(frame, frame.memoryExpansionCost(range.end));
+            try frame.expandMemory(range.end);
+            frame.output = try frame.readMemoryAlloc(frame.allocator, range);
         }
     };
 }

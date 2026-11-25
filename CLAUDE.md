@@ -6,9 +6,11 @@ Minimal, correct, and well-tested Ethereum Virtual Machine (EVM) implementation 
 
 ```bash
 zig build unit         # Fast unit tests (plain `zig build` installs nothing)
-zig build test         # Run unit + spec tests
+zig build test         # Native suite (state fixtures and Nethermind are opt-in)
 zig build specs        # Run execution-specs state tests
 zig build wasm         # Build WebAssembly library
+zig build run-examples # Run all ten Zig examples
+zig build lean-diff    # Compare the Zig EVM against the Lean 4 oracle
 
 # Debug failing tests (recommended)
 bun scripts/isolate-test.ts "test_name"  # Max debug output + analysis
@@ -17,21 +19,23 @@ bun scripts/test-subset.ts "pattern"     # Filter test categories
 
 ## Prerequisites
 
-- Zig 0.15.1+ (core build system; CI uses 0.15.2)
+- Zig 0.15.2
 - Cargo (required for BN254/ARK cryptographic dependencies)
 - A `../voltaire` checkout at the revision pinned in `native-dependencies.json`
 - Python 3 (spec test generation and reference implementation)
 - uv (Python package manager for spec fixture generation; execution-specs needs Python 3.11+): `brew install uv`
 - Bun (TS helpers/agents): `brew install bun`
+- Elan for the `lean-diff` target, which uses the Lean toolchain pinned in `spec/lean/lean-toolchain`
 
 ## Architecture
 
 ```
 src/
 ├── root.zig              # Public module exports
-├── root_c.zig            # 42-symbol C/WASM ABI (native static lib + WASI reactor)
+├── root_c.zig            # C/WASM ABI (native static lib + WASI reactor)
 ├── evm.zig               # Orchestrator: state, storage, gas refunds, nested calls
 ├── evm_config.zig        # Comptime EvmConfig limits & opcode/precompile overrides
+├── hardfork_hooks.zig    # Fork feature gates, gas schedules, and Glamsterdam transition hooks
 ├── frame.zig             # Bytecode interpreter: stack, memory, PC, per-opcode logic
 ├── host.zig              # Abstract state backend interface
 ├── opcode.zig            # Opcode definitions and utilities
@@ -79,6 +83,17 @@ External Dependencies (Voltaire, path dependency on ../voltaire in build.zig.zon
 | Filtered tests | By hardfork/EIP/opcode | `TEST_FILTER="Cancun" zig build specs` |
 | Trace tests | EIP-3155 trace capture/comparison | `zig build test-trace` |
 | Engine tests | Consensus-layer format tests | `INCLUDE_ENGINE_TESTS=1 zig build specs` |
+
+State fixtures and Nethermind are opt-in for `zig build test`. Enable them
+with `-Dspecs=true` and `-Dnethermind-diff=true`. A successful full state fill
+writes `.filled` in the state fixture directory. For a scoped fill, use the
+matching `specs-<fork>-<area>` step with `-Dspecs-use-existing=true`. State
+and blockchain test roots are generated independently in Zig's cache.
+
+The [Lean 4 reference specification](spec/lean/README.md) contains executable
+semantics and machine-checked theorems. `zig build lean-diff` builds the oracle
+and compares it with Zig. `zig build lean-diff-unit` exercises the harness
+without Lean.
 
 ### Engine API Tests (Optional)
 
@@ -402,12 +417,18 @@ See `src/root_c.zig` for full API.
 | Command | Purpose |
 |---------|---------|
 | `zig build unit` | Unit tests only (fast) |
-| `zig build test` | Unit + spec tests |
+| `zig build test` | Native tests |
+| `zig build test-utils` | Test runner utility tests |
+| `zig build check-bench-evm` | Compile and link the EVM benchmark |
+| `zig build run-examples` | Run the ten Zig examples |
 | `zig build specs` | Spec tests only |
 | `zig build native` | C ABI static library |
 | `zig build wasm` | WASI reactor library |
 | `zig build test-wasm` | WASM execution and crypto regression tests (Node 22+) |
 | `zig build test-trace` | Trace capture tests |
+
+Smithers discovers incremental CI and benchmark targets in `PACKAGE.ts`.
+See the [workspace guide](.smithers/README.md) for setup and commands.
 
 ### Adding New Features
 
@@ -662,6 +683,8 @@ Must match exactly between Python and Zig.
 - EIP-3155 (Trace Format): https://eips.ethereum.org/EIPS/eip-3155
 - Yellow Paper: https://ethereum.github.io/yellowpaper/paper.pdf
 - Zig Documentation: https://ziglang.org/documentation/
+- [Glamsterdam hardfork roadmap](docs/HARDFORK_ROADMAP.md)
+- [Three rounds of audit reviews](docs/reviews/)
 
 ## File Summary
 
@@ -671,7 +694,7 @@ Must match exactly between Python and Zig.
 | File | Purpose | Key Exports |
 |------|---------|-------------|
 | `src/root.zig` | Main module | Evm, Frame, HostInterface, Hardfork, Tracer, Inspector, tracers, simulation, live_tracer, trace_store, ExecutionRecorder, DebugSession, debugger, flamegraph, evmc_adapter |
-| `src/root_c.zig` | C & WASM FFI | 42 `evm_*` exports (execution, pre-state, tracing, call/access-list tracers, async injection) |
+| `src/root_c.zig` | C & WASM FFI | `evm_*` exports for execution, pre-state, tracing, call/access-list tracers, and async injection |
 | `src/evm.zig` | EVM orchestrator | Evm struct, call(), callWithBytecodeOverride(), inner_call(), inner_create(), setInspector() |
 | `src/evm_config.zig` | EVM config | EvmConfig (wired limits & overrides), fromBuildOptions() |
 | `src/frame.zig` | Bytecode interpreter | Frame struct, execute(), step() |
@@ -713,39 +736,38 @@ This repo is evolving from an EVM-only library into a full Ethereum execution cl
 **Plan:** See `prd/GUILLOTINE_CLIENT_PLAN.md` for the phased implementation plan.
 **Spec reference:** See `prd/ETHEREUM_SPECS_REFERENCE.md` for the full source map.
 
-### Cloned Submodules (canonical specs and tests)
+### Submodules for specs and tests
 
 | Submodule | Purpose |
 |---|---|
 | `execution-specs/` | EELS - authoritative Python EL spec (state transitions, fork rules) |
 | `EIPs/` | Ethereum Improvement Proposals (normative change log) |
-| `yellowpaper/` | Yellow Paper (background only, outdated past Shanghai) |
-| `devp2p/` | Networking specs: RLPx, eth/68, snap/1, discv4/v5, ENR |
 | `execution-apis/` | JSON-RPC + Engine API (OpenRPC spec) |
 | `ethereum-tests/` | Classic JSON test fixtures (TrieTests, GeneralStateTests, BlockchainTests) |
 | `execution-spec-tests/` | Python-generated EVM + state transition test fixtures |
-| `hive/` | End-to-end integration test harness (RPC, Engine API, devp2p, sync) |
-| `consensus-specs/` | Consensus-layer specs (beacon chain, SSZ - future reference) |
-| `nethermind/` | C# reference implementation (architecture reference only) |
+
+External references include devp2p for networking formats, Hive for integration
+tests, the consensus specs for beacon chain and SSZ, the Yellow Paper for
+historical background, and Nethermind for architecture.
 
 ### Existing Zig Libraries
 
 | Library | Location | Provides |
 |---|---|---|
-| **Voltaire** | `/Users/williamcory/voltaire/packages/voltaire-zig/` | All primitives, RLP, SSZ, Crypto, Precompiles, JSON-RPC types, JournaledState, Blockchain, StateManager |
+| **Voltaire** | `../voltaire/packages/voltaire-zig/` | All primitives, RLP, SSZ, Crypto, Precompiles, JSON-RPC types, JournaledState, Blockchain, StateManager |
 | **Guillotine-Mini** | `src/` (this repo) | EVM engine (frame, opcodes, gas, Voltaire hardforks with Osaka as the default) |
 
 ### Source Priority (when in doubt)
 
 1. `execution-specs/` + `EIPs/` - for EVM + state transition behavior
-2. `devp2p/` - for networking wire formats
+2. devp2p - for networking wire formats
 3. `execution-apis/` - for JSON-RPC and Engine API
 4. `ethereum-tests/` + `execution-spec-tests/` - for correctness validation
-5. `nethermind/` - architecture reference only (not behavioral truth)
+5. Nethermind - external architecture reference
 
 ### Key Rules for Full Client Work
 
-- Never modify files in submodules (`execution-specs`, `EIPs`, `devp2p`, etc.)
+- Never modify files in submodules (`execution-specs`, `EIPs`, etc.)
 - Use Voltaire primitives for all types (Address, Block, Tx, Hash, RLP, Crypto, etc.)
 - Use guillotine-mini EVM for execution (do not build a new EVM)
 - Validate every phase against official test suites (see plan for mapping)
