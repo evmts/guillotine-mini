@@ -230,19 +230,34 @@ fn classifyStaticOp(byte: u8, flags: HardforkFlags) ?StaticOpInfo {
         0x18 => .{ .op = .bit_xor, .gas = GasConstants.GasFastestStep, .inputs = 2, .outputs = 1 },
         0x19 => .{ .op = .bit_not, .gas = GasConstants.GasFastestStep, .inputs = 1, .outputs = 1 },
         0x1a => .{ .op = .byte_op, .gas = GasConstants.GasFastestStep, .inputs = 2, .outputs = 1 },
-        0x1b => if (flags.has_shift) .{ .op = .shl, .gas = GasConstants.GasFastestStep, .inputs = 2, .outputs = 1 } else null,
-        0x1c => if (flags.has_shift) .{ .op = .shr, .gas = GasConstants.GasFastestStep, .inputs = 2, .outputs = 1 } else null,
-        0x1d => if (flags.has_shift) .{ .op = .sar, .gas = GasConstants.GasFastestStep, .inputs = 2, .outputs = 1 } else null,
+        0x1b => if (flags.has_shift)
+            .{ .op = .shl, .gas = GasConstants.GasFastestStep, .inputs = 2, .outputs = 1 }
+        else
+            null,
+        0x1c => if (flags.has_shift)
+            .{ .op = .shr, .gas = GasConstants.GasFastestStep, .inputs = 2, .outputs = 1 }
+        else
+            null,
+        0x1d => if (flags.has_shift)
+            .{ .op = .sar, .gas = GasConstants.GasFastestStep, .inputs = 2, .outputs = 1 }
+        else
+            null,
         0x30 => .{ .op = .address_op, .gas = GasConstants.GasQuickStep, .inputs = 0, .outputs = 1 },
         0x33 => .{ .op = .caller, .gas = GasConstants.GasQuickStep, .inputs = 0, .outputs = 1 },
         0x34 => .{ .op = .callvalue, .gas = GasConstants.GasQuickStep, .inputs = 0, .outputs = 1 },
         0x35 => .{ .op = .calldataload, .gas = GasConstants.GasFastestStep, .inputs = 1, .outputs = 1 },
         0x36 => .{ .op = .calldatasize, .gas = GasConstants.GasQuickStep, .inputs = 0, .outputs = 1 },
-        0x3d => if (flags.has_returndata) .{ .op = .returndatasize, .gas = GasConstants.GasQuickStep, .inputs = 0, .outputs = 1 } else null,
+        0x3d => if (flags.has_returndata)
+            .{ .op = .returndatasize, .gas = GasConstants.GasQuickStep, .inputs = 0, .outputs = 1 }
+        else
+            null,
         0x50 => .{ .op = .pop, .gas = GasConstants.GasQuickStep, .inputs = 1, .outputs = 0 },
         0x58 => .{ .op = .pc_op, .gas = GasConstants.GasQuickStep, .inputs = 0, .outputs = 1 },
         0x59 => .{ .op = .msize, .gas = GasConstants.GasQuickStep, .inputs = 0, .outputs = 1 },
-        0x5f => if (flags.has_push0) .{ .op = .push0, .gas = GasConstants.GasQuickStep, .inputs = 0, .outputs = 1 } else null,
+        0x5f => if (flags.has_push0)
+            .{ .op = .push0, .gas = GasConstants.GasQuickStep, .inputs = 0, .outputs = 1 }
+        else
+            null,
         0x80...0x8f => |op| .{
             .op = @enumFromInt(@intFromEnum(Op.dup1) + (op - 0x80)),
             .gas = GasConstants.GasFastestStep,

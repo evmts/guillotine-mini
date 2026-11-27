@@ -70,6 +70,7 @@ const evm_srcs = S.Filegroup({
 const ffi_srcs = S.Filegroup({
   srcs: [
     S.file("root_c.zig"),
+    S.file("evmc_exports.zig"),
     S.file("bench_ffi.zig"),
     evm_srcs,
   ],

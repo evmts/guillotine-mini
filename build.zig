@@ -355,6 +355,33 @@ pub fn build(b: *std.Build) void {
     unit_test_step.dependOn(&run_spec_runner_unit_tests.step);
     b.step("test-spec-runner", "Run spec runner unit tests (no fixtures needed)").dependOn(&run_spec_runner_unit_tests.step);
 
+    const test_utils_mod = b.createModule(.{
+        .root_source_file = b.path("test/utils.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const eest_runner_exe = b.addExecutable(.{
+        .name = "eest-runner",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/specs/eest_cli.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "runner", .module = spec_runner_mod },
+                .{ .name = "test_utils", .module = test_utils_mod },
+                .{ .name = "evm", .module = mod },
+            },
+        }),
+    });
+    linkRustSupport(eest_runner_exe);
+    const install_eest_runner = b.addInstallArtifact(eest_runner_exe, .{});
+    const run_eest_runner = b.addRunArtifact(eest_runner_exe);
+    run_eest_runner.setCwd(b.path("."));
+    if (b.args) |args| run_eest_runner.addArgs(args);
+    const eest_runner_step = b.step("eest-runner", "Run official EEST JSON fixtures in parallel");
+    eest_runner_step.dependOn(&install_eest_runner.step);
+    eest_runner_step.dependOn(&run_eest_runner.step);
+
     // Create hardfork-specific test suites
     const hardforks = [_]struct { name: []const u8, desc: []const u8 }{
         .{ .name = "frontier", .desc = "Frontier hardfork tests - runs all frontier-* sub-targets" },
@@ -699,6 +726,33 @@ pub fn build(b: *std.Build) void {
     const native_step = b.step("native", "Build native static library for FFI");
     native_step.dependOn(&native_install.step);
 
+    // EVMC ABI 12 shared library (`libguillotine_mini_evmc.{so,dylib}`)
+    const evmc_mod = b.createModule(.{
+        .root_source_file = b.path("src/evmc_exports.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = evm_options_mod },
+            .{ .name = "voltaire", .module = primitives_mod },
+            .{ .name = "crypto", .module = crypto_mod },
+            .{ .name = "precompiles", .module = precompiles_mod },
+        },
+    });
+    const evmc_lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "guillotine_mini_evmc",
+        .root_module = evmc_mod,
+    });
+    linkRustSupport(evmc_lib);
+    b.step("evmc", "Build EVMC ABI 12 shared library").dependOn(&b.addInstallArtifact(evmc_lib, .{}).step);
+
+    const evmc_tests = b.addTest(.{ .root_module = evmc_mod });
+    linkRustSupport(evmc_tests);
+    const run_evmc_tests = b.addRunArtifact(evmc_tests);
+    unit_test_step.dependOn(&run_evmc_tests.step);
+    test_step.dependOn(&run_evmc_tests.step);
+    b.step("test-evmc", "Run EVMC ABI 12 unit tests").dependOn(&run_evmc_tests.step);
+
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
     // The Zig build system is entirely implemented in userland, which means
@@ -796,6 +850,13 @@ fn addWasmEvm(
         "evm_enable_access_list_tracker",
         "evm_get_access_list_json_len",
         "evm_get_access_list_json",
+        "evm_enable_flamegraph",
+        "evm_get_flamegraph_svg_len",
+        "evm_get_flamegraph_svg",
+        "evm_get_flamegraph_folded_len",
+        "evm_get_flamegraph_folded",
+        "evm_decode_revert_json_len",
+        "evm_decode_revert_json",
     };
 
     return wasm_lib;

@@ -51,22 +51,29 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('native-dependencies.json') }}
       - name: Build
         run: zig build
-      - name: Build native static library
-        run: zig build native
+      - name: Build native static library and EVMC ABI 12 shared library
+        run: zig build native evmc
       - name: Compile Zig examples
         run: zig build examples
       - name: Run all Zig examples and compare the EIP-3155 trace
         run: sh test/examples.sh
       - name: Test Lean differential harness
         run: zig build lean-diff-unit
-      - name: Unit tests
+      - name: Unit tests (including EVMC, spec runner, utils, header validator)
         run: zig build unit
       - name: Native trace regressions
         run: zig build test-trace -Doptimize=ReleaseSafe
       - name: Native test suite
         run: zig build test
-      - name: Test utilities and header validator
-        run: zig build test-utils test-header-validator
+      - name: Test utilities, header validator, and EVMC ABI 12
+        run: zig build test-utils test-header-validator test-evmc
+      - name: Verify C99 header compiles cleanly
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          printf '#include "include/guillotine_mini.h"\nint main(void) { return 0; }\n' | \
+            cc -std=c99 -Wall -Wextra -Werror -pedantic -I. -x c - -o /tmp/header_smoke
+          rm -f /tmp/header_smoke
       - name: Compile EVM benchmarks
         run: zig build check-bench-evm
       - name: Verify clean-room zig fetch --save consumer build
@@ -108,6 +115,33 @@ jobs:
           }
           EOF
           zig build run
+
+  eest-conformance:
+    name: Official EEST Conformance (Frontier → Osaka, 66,652 cases)
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - *checkout_project
+      - *install_zig
+      - *install_rust
+      - *cache_cargo
+      - name: Cache official EEST tests@v21.0.3 state fixtures
+        uses: actions/cache@v5
+        with:
+          path: .cache/eest-fixtures
+          key: eest-fixtures-tests-v21.0.3-46bd48fb
+      - name: Fetch pinned official EEST fixtures
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/fetch-eest-fixtures.sh
+      - name: Run all 66,652 official Frontier → Osaka EEST state tests
+        run: |
+          set -euo pipefail
+          fixtures_dir=$(bash scripts/fetch-eest-fixtures.sh --print-dir)
+          zig build eest-runner -Doptimize=ReleaseFast -- \
+            --dir "$fixtures_dir" --exclude-fork amsterdam --json | tee "$RUNNER_TEMP/eest.json"
+          jq -e '.success == true and .totals.failed == 0 and .totals.passed >= 66652' "$RUNNER_TEMP/eest.json"
 
   factory-audit:
     name: Factory, Trust & Lighthouse Audit
@@ -185,6 +219,15 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
+      - name: Install devDependencies for typechecking
+        run: bun install
+      - name: Type-check TypeScript SDK (strict)
+        run: >-
+          bun x tsc --ignoreConfig --noEmit --strict --allowImportingTsExtensions
+          --target ES2022 --lib ES2022,ESNext.Disposable,DOM
+          --module ESNext --moduleResolution Bundler --skipLibCheck
+          ts/index.ts ts/wasi-shim.ts ts/abi.ts ts/precompiles.ts ts/fork.ts ts/evm.ts
+          ts/exex/manager.ts ts/exex/types.ts cloudflare/evm-worker.ts
       - name: Run TypeScript SDK & ExEx tests
         run: bun test ./ts/
 

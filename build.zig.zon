@@ -49,6 +49,7 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "include",
         "spec",
         "test",
         "test_runner.zig",

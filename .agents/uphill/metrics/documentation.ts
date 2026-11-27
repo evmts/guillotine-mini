@@ -11,11 +11,13 @@ if (!out) {
 const lines: string[] = [];
 const q = (s: string) => JSON.stringify(s);
 
-// 1. Broken local links in root *.md and docs/**/*.md
+// 1. Broken local links in root *.md and docs/**/*.md (excluding build output and node_modules)
 const mdFiles = [
   ...new Glob("*.md").scanSync("."),
   ...new Glob("docs/**/*.md").scanSync("."),
-].sort();
+]
+  .filter((f) => !f.includes("node_modules/") && !f.startsWith("docs/dist/"))
+  .sort();
 
 for (const file of mdFiles) {
   const stripped = readFileSync(file, "utf8").replace(/```[\s\S]*?```/g, "");

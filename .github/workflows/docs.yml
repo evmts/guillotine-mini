@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'src/**'
       - '.smithers/wiki/**'
       - '.smithers/audit/**'
       - '.smithers/HOME.ts'
@@ -27,11 +28,14 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  RUSTUP_TOOLCHAIN: "1.99.0"
+
 jobs:
   build:
-    name: Build docs site and Lighthouse audit page
+    name: Build docs site, live WASM playground, and Lighthouse audit page
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -45,6 +49,13 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: docs/package-lock.json
+      - name: Build live WASM reactor for /play browser playground
+        run: |
+          npm install --global --ignore-scripts binaryen@132.0.0
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+          zig build wasm --summary all
+          mkdir -p docs/public/wasm
+          cp zig-out/bin/guillotine_mini.wasm docs/public/wasm/guillotine_mini.wasm
       - name: Refresh Lighthouse Backpressure Audit for docs/public/audit/
         run: |
           curl -fsSL https://raw.githubusercontent.com/wevm/uphill/main/install.sh | sh
@@ -57,9 +68,10 @@ jobs:
       - name: Build docs site
         working-directory: docs
         run: npm run build
-      - name: Verify llms.txt and /audit/ Lighthouse report
+      - name: Verify llms.txt, /wasm/ reactor, and /audit/ Lighthouse report
         run: |
           test -s docs/dist/public/llms.txt
+          test -s docs/dist/public/wasm/guillotine_mini.wasm
           test -s docs/dist/public/audit/index.html
           test -s docs/dist/public/audit/report.json
       - name: Upload build output
@@ -72,7 +84,6 @@ jobs:
   deploy:
     name: Deploy to Vercel (mini.tevm.sh)
     needs: build
-    # Strictly canonical main pushes (including merges from Smithers Cloud) or maintainer dispatch.
     if: >-
       (github.event_name == 'push' &&
        github.ref == 'refs/heads/main' &&
@@ -98,7 +109,6 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      # Skips cleanly (rather than failing) until the Vercel secrets exist.
       - name: Check Vercel credentials
         id: creds
         run: |
@@ -108,14 +118,21 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Vercel secrets not configured; skipping docs deploy."
           fi
-      - name: Refresh Lighthouse Backpressure Audit before deploy
+      - name: Download built docs assets (including live WASM + audit)
+        if: steps.creds.outputs.ready == 'true'
+        uses: actions/download-artifact@v6
+        with:
+          name: docs-dist
+          path: docs/public-staging
+      - name: Stage live WASM and audit assets before deploy
         if: steps.creds.outputs.ready == 'true'
         working-directory: .
         run: |
-          curl -fsSL https://raw.githubusercontent.com/wevm/uphill/main/install.sh | sh
-          export PATH="$HOME/.uphill/bin:$PATH"
-          uphill --compact || true
-          bun .smithers/scripts/generate-audit-report.ts --publish-docs --verify
+          mkdir -p docs/public/wasm docs/public/audit
+          cp docs/public-staging/wasm/guillotine_mini.wasm docs/public/wasm/guillotine_mini.wasm
+          cp docs/public-staging/audit/index.html docs/public/audit/index.html
+          cp docs/public-staging/audit/report.json docs/public/audit/report.json
+          rm -rf docs/public-staging
       - name: Deploy
         if: steps.creds.outputs.ready == 'true'
         run: |

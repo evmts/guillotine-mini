@@ -17,6 +17,7 @@ concurrency:
 permissions:
   actions: read
   contents: write
+  id-token: write
 
 env:
   RUSTUP_TOOLCHAIN: "1.99.0"
@@ -24,8 +25,6 @@ env:
 jobs:
   verify-and-build:
     name: Build verified release artifacts (${{ matrix.os }})
-    # workflow_run's branch filter matches a fork PR named main, so require a
-    # canonical push to this repository.
     if: >-
       (github.event_name == 'workflow_dispatch' &&
        github.ref == 'refs/heads/main' &&
@@ -39,9 +38,11 @@ jobs:
         include:
           - os: ubuntu-24.04
             target_label: linux-x86_64
+            evmc_ext: so
             build_wasm: true
           - os: macos-15
             target_label: macos-arm64
+            evmc_ext: dylib
             build_wasm: false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -66,22 +67,7 @@ jobs:
 
       - uses: actions/checkout@v5
         with:
-          path: guillotine-mini
           ref: ${{ env.RELEASE_SHA }}
-
-      - name: Read native dependency pin
-        id: native
-        run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@v5
-        with:
-          repository: evmts/voltaire
-          ref: ${{ steps.native.outputs.voltaire }}
-          path: voltaire
-
-      - name: Check out Voltaire HTTPS submodules
-        working-directory: voltaire
-        run: git submodule update --init --depth 1 -- packages/voltaire-zig/lib/libwally-core vendor/execution-apis
 
       - name: Install Zig 0.15.2
         uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a # v1
@@ -91,44 +77,47 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
 
-      - name: Build native crypto archive
-        working-directory: voltaire
-        run: cargo build --release --lib
+      - name: Build native static library and EVMC ABI 12 shared library
+        run: zig build native evmc -Doptimize=ReleaseFast
 
-      - name: Build native static library
-        working-directory: guillotine-mini
-        run: zig build native -Doptimize=ReleaseFast
+      - name: Set up Node 24 for WASM size verification
+        if: matrix.build_wasm
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.12.0'
 
       - name: Build WASI WASM and modular precompile artifacts
         if: matrix.build_wasm
-        working-directory: guillotine-mini
         run: |
           rustup target add wasm32-unknown-unknown --toolchain "$RUSTUP_TOOLCHAIN"
           npm install --global --ignore-scripts binaryen@132.0.0
           zig build wasm wasm-modular test-wasm-size
 
       - name: Package platform artifacts and SHA-256 digests
-        working-directory: guillotine-mini
         run: |
           set -euo pipefail
           mkdir -p release-dist
           cp zig-out/lib/libguillotine_mini.a "release-dist/libguillotine_mini-${{ matrix.target_label }}.a"
+          cp "zig-out/lib/libguillotine_mini_evmc.${{ matrix.evmc_ext }}" "release-dist/libguillotine_mini_evmc-${{ matrix.target_label }}.${{ matrix.evmc_ext }}"
           if [ "${{ matrix.build_wasm }}" = "true" ]; then
+            cp include/guillotine_mini.h release-dist/
             cp zig-out/bin/guillotine_mini.wasm release-dist/
             cp zig-out/bin/guillotine_mini_core.wasm release-dist/
             cp zig-out/bin/precompile-*.wasm release-dist/
             cp zig-out/bin/precompiles.mjs release-dist/
+            tar -czf "release-dist/guillotine-mini-wasm-modular-v$(jq -r .version package.json).tar.gz" \
+              -C zig-out/bin guillotine_mini_core.wasm precompiles.mjs $(cd zig-out/bin && echo precompile-*.wasm)
           fi
           (cd release-dist && shasum -a 256 * > "SHA256SUMS-${{ matrix.target_label }}.txt")
 
       - uses: actions/upload-artifact@v6
         with:
           name: release-bundle-${{ matrix.target_label }}
-          path: guillotine-mini/release-dist/*
+          path: release-dist/*
           retention-days: 14
 
   publish:
-    name: Publish GitHub Release
+    name: Publish GitHub Release & npm Package
     needs: verify-and-build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -139,6 +128,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_SHA }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.12.0'
+          registry-url: 'https://registry.npmjs.org'
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
@@ -186,3 +179,25 @@ jobs:
             --generate-notes \
             --notes-file .smithers/audit/latest.md
           echo "Published GitHub Release ${TAG} at ${RELEASE_SHA}."
+
+      - name: Publish @tevm/guillotine-mini to npm with provenance (when NPM_TOKEN is configured)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p zig-out/bin
+          cp release-assets/guillotine_mini.wasm zig-out/bin/
+          cp release-assets/guillotine_mini_core.wasm zig-out/bin/
+          cp release-assets/precompile-*.wasm zig-out/bin/
+          cp release-assets/precompiles.mjs zig-out/bin/
+          npm pack --dry-run
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::notice::NPM_TOKEN secret is not set; verified npm pack dry-run and skipped registry publish."
+            exit 0
+          fi
+          VERSION=$(jq -r .version package.json)
+          if npm view "@tevm/guillotine-mini@${VERSION}" version >/dev/null 2>&1; then
+            echo "@tevm/guillotine-mini@${VERSION} is already published on npm."
+            exit 0
+          fi
+          npm publish --provenance --access public

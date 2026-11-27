@@ -1,10 +1,12 @@
 import { Smithers as S } from "@smthrs/targets"
 import { Package as srcPkg } from "./src/PACKAGE.ts"
 import { Package as tsUtilsPkg } from "./src/utils/PACKAGE.ts"
+import { Package as tsSdkPkg } from "./ts/PACKAGE.ts"
 import { Package as exexPkg } from "./ts/exex/PACKAGE.ts"
 
 const { bench_utils, bytecode_srcs, storage_srcs, frame_srcs, evm_srcs, ffi_srcs } = srcPkg
 const { test: tsUtilsTest } = tsUtilsPkg
+const { test: tsSdkTest } = tsSdkPkg
 const { test: exexTest } = exexPkg
 
 const build_files = S.Filegroup({
@@ -182,6 +184,7 @@ const test_all = S.Suite({
     test_trace,
     test_wasm,
     tsUtilsTest,
+    tsSdkTest,
     exexTest,
   ],
 })

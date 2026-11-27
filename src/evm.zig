@@ -109,6 +109,26 @@ pub fn executePrecompile(
     {
         return executeP256Verify(allocator, input, gas_limit);
     }
+    // Lazily initialize Voltaire's embedded KZG trusted setup before executing
+    // EIP-4844 point evaluation (0x0a) so direct native library callers work out
+    // of the box without embedding the ~850 KiB trusted setup table into WASM.
+    if (comptime !@import("builtin").target.cpu.arch.isWasm() and
+        @hasDecl(precompiles, "point_evaluation") and @hasDecl(crypto, "kzg_setup"))
+    {
+        if (hardfork.isAtLeast(.CANCUN) and address.bytes[19] == 0x0a and
+            std.mem.allEqual(u8, address.bytes[0..19], 0) and !crypto.kzg_setup.isInitialized())
+        {
+            const S = struct {
+                var mutex: std.Thread.Mutex = .{};
+            };
+            const single_threaded = @import("builtin").single_threaded;
+            if (!single_threaded) S.mutex.lock();
+            defer if (!single_threaded) S.mutex.unlock();
+            if (!crypto.kzg_setup.isInitialized()) {
+                crypto.kzg_setup.init() catch return error.TrustedSetupNotLoaded;
+            }
+        }
+    }
     return precompiles.execute(allocator, address, input, gas_limit, hardfork);
 }
 
@@ -932,6 +952,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         inline fn balHook(self: *Self) ?hardfork_hooks.block_access_list.Hook(BalRecorder) {
+            if (comptime !config.enable_bal_recorder) return null;
             const rec = self.bal_recorder orelse return null;
             return .{ .recorder = rec, .index = self.bal_index };
         }
@@ -1014,9 +1035,11 @@ pub fn Evm(comptime config: EvmConfig) type {
             const cost = if (berlin) try self.access_list_manager.access_address(address) else 0;
             const warm_cost = hardfork_hooks.GasSchedule.forFork(self.hardfork).warm_access;
             self.observeAccess(address, null, berlin and cost == warm_cost);
-            if (self.bal_recorder) |rec| {
-                @branchHint(.unlikely);
-                try rec.recordAddressAccess(address.bytes);
+            if (comptime config.enable_bal_recorder) {
+                if (self.bal_recorder) |rec| {
+                    @branchHint(.unlikely);
+                    try rec.recordAddressAccess(address.bytes);
+                }
             }
             return cost;
         }
@@ -1103,7 +1126,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             }
 
             const observer = self.inspector;
-            const track_before = observer != null or self.bal_recorder != null;
+            const track_before = observer != null or (config.enable_bal_recorder and self.bal_recorder != null);
             const before = if (track_before) self.peekBalance(addr) else 0;
             if (self.pending_storage_injector) |injector| {
                 if (!injector.baseline_active) try injector.markBalanceDirty(addr);
@@ -1140,7 +1163,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             }
 
             const observer = self.inspector;
-            const track_before = observer != null or self.bal_recorder != null;
+            const track_before = observer != null or (config.enable_bal_recorder and self.bal_recorder != null);
             const before = if (track_before) self.peekNonce(addr) else 0;
             if (self.pending_storage_injector) |injector| {
                 if (!injector.baseline_active) try injector.markNonceDirty(addr);
@@ -1183,8 +1206,8 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
             }
 
-            const bal_changed = if (self.bal_recorder != null)
-                !std.mem.eql(u8, self.peekRawCode(addr), new_code)
+            const bal_changed = if (comptime config.enable_bal_recorder)
+                (if (self.bal_recorder != null) !std.mem.eql(u8, self.peekRawCode(addr), new_code) else false)
             else
                 false;
             const previous = if (self.inspector) |sink| blk: {
@@ -1204,10 +1227,12 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .prev_code = bytes,
                 .new_code = self.peekRawCode(addr),
             });
-            if (bal_changed) {
-                if (self.bal_recorder) |rec| {
-                    @branchHint(.unlikely);
-                    try rec.recordCodeChange(self.bal_index, addr.bytes, self.peekRawCode(addr));
+            if (comptime config.enable_bal_recorder) {
+                if (bal_changed) {
+                    if (self.bal_recorder) |rec| {
+                        @branchHint(.unlikely);
+                        try rec.recordCodeChange(self.bal_index, addr.bytes, self.peekRawCode(addr));
+                    }
                 }
             }
         }
@@ -1519,10 +1544,12 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Warm the transaction participants: origin, `target` (every real destination,
         /// including the zero address) and, from Shanghai, the coinbase.
         pub fn preWarmParticipants(self: *Self, target: primitives.Address) errors.CallError!void {
-            if (self.bal_recorder) |rec| {
-                @branchHint(.unlikely);
-                try rec.recordAddressAccess(self.origin.bytes);
-                try rec.recordAddressAccess(target.bytes);
+            if (comptime config.enable_bal_recorder) {
+                if (self.bal_recorder) |rec| {
+                    @branchHint(.unlikely);
+                    try rec.recordAddressAccess(self.origin.bytes);
+                    try rec.recordAddressAccess(target.bytes);
+                }
             }
             if (!self.hardfork.isAtLeast(.BERLIN)) return;
 
@@ -2098,7 +2125,8 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// On Amsterdam+ (EIP-8246), clears code, nonce, and storage while preserving
         /// any remaining balance (deleting the account only if its balance is zero).
         fn cleanup_selfdestructed_accounts_end_of_tx(self: *Self) void {
-            const no_burn = hardfork_hooks.selfdestructToSelfPolicy(self.hardfork) == .no_burn;
+            const no_burn = hardfork_hooks.supportsAmsterdam(self.hardfork) and
+                hardfork_hooks.selfdestructToSelfPolicy(self.hardfork) == .no_burn;
             var it = self.selfdestructed_accounts.iterator();
             while (it.next()) |entry| {
                 const addr = entry.key_ptr.*;
@@ -2235,7 +2263,10 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .balances = std.AutoHashMap(primitives.Address, u256).init(alloc),
                 .nonces = std.AutoHashMap(primitives.Address, u64).init(alloc),
                 .code = std.AutoHashMap(primitives.Address, []const u8).init(alloc),
-                .bal_snapshot = if (self.bal_recorder) |rec| rec.snapshot() else null,
+                .bal_snapshot = if (comptime config.enable_bal_recorder)
+                    (if (self.bal_recorder) |rec| rec.snapshot() else null)
+                else
+                    null,
             };
             errdefer {
                 cp.balances.deinit();
@@ -2342,8 +2373,10 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // EIP-7928: roll back BAL state mutations while preserving address accesses and
             // demoting reverted storage writes to reads.
-            if (self.bal_recorder) |rec| {
-                if (cp.bal_snapshot) |snap| try rec.rollback(snap);
+            if (comptime config.enable_bal_recorder) {
+                if (self.bal_recorder) |rec| {
+                    if (cp.bal_snapshot) |snap| try rec.rollback(snap);
+                }
             }
         }
 

@@ -73,6 +73,10 @@ pub const EvmConfig = struct {
     /// differential verification against the step-by-step reference interpreter.
     enable_compiled_interpreter: bool = true,
 
+    /// Enable EIP-7928 Block-Level Access List (BAL) recorder hooks.
+    /// Set to `false` on minimal WASM reactors that do not expose the BAL recorder API.
+    enable_bal_recorder: bool = true,
+
     /// Enable system contract updates (EIP-4788 beacon roots, EIP-2935 historical block hashes)
     /// When true, these contracts are updated at the start of each transaction
     enable_beacon_roots: bool = true,

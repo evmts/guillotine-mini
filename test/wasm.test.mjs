@@ -119,11 +119,14 @@ const C_API = ['evm_alloc', 'evm_free', 'evm_create', 'evm_destroy', 'evm_set_by
   'evm_get_storage_change_count', 'evm_get_storage_change', 'evm_set_js_opcode_callbacks_enabled',
   'evm_enable_tracing', 'evm_disable_tracing', 'evm_get_trace_json_len', 'evm_get_trace_json',
   'evm_enable_call_tracer', 'evm_get_call_trace_json_len', 'evm_get_call_trace_json',
-  'evm_enable_access_list_tracker', 'evm_get_access_list_json_len', 'evm_get_access_list_json']
+  'evm_enable_access_list_tracker', 'evm_get_access_list_json_len', 'evm_get_access_list_json',
+  'evm_enable_flamegraph', 'evm_get_flamegraph_svg_len', 'evm_get_flamegraph_svg',
+  'evm_get_flamegraph_folded_len', 'evm_get_flamegraph_folded',
+  'evm_decode_revert_json_len', 'evm_decode_revert_json']
 
-test('WASI reactor exports exactly the 44 C API functions listed in build.zig', () => {
+test('WASI reactor exports exactly the 51 C API functions listed in build.zig', () => {
   const exported = WebAssembly.Module.exports(module).filter(({ kind }) => kind === 'function').map(({ name }) => name)
-  assert.equal(C_API.length, 44)
+  assert.equal(C_API.length, 51)
   assert.deepEqual(exported.filter((name) => name.startsWith('evm_')).sort(), [...C_API].sort())
 })
 

@@ -65,7 +65,7 @@ let tsProd = 0;
 let tsTests = 0;
 for (const f of allTs) {
   if (f.endsWith(".test.ts") || f.endsWith(".spec.ts")) tsTests++;
-  else if (!f.endsWith(".bench.ts")) tsProd++;
+  else if (!f.endsWith(".bench.ts") && !f.endsWith("/bench.ts")) tsProd++;
 }
 const tsRatio = tsProd > 0 ? Math.min(100, Math.round((tsTests * 1000) / tsProd) / 10) : 0;
 lines.push(`ts-test-ratio ${tsRatio}`);

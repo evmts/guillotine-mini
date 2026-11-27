@@ -85,8 +85,8 @@ pub fn tryCallJsPrecompileHandler(
 }
 
 // Use default config for C API (hardfork specified at runtime in evm_create).
-// Keep the fused compiled interpreter off on wasm32 to preserve tight bundle size budgets.
-const Evm = evm.Evm(.{ .enable_compiled_interpreter = !is_wasm });
+// Keep the fused compiled interpreter and BAL recorder off on wasm32 to preserve tight bundle size budgets.
+const Evm = evm.Evm(.{ .enable_compiled_interpreter = !is_wasm, .enable_bal_recorder = !is_wasm });
 const CallResult = Evm.CallResult;
 const CallParams = Evm.CallParams;
 const AccessListStorageKey = primitives.State.StorageKey;
