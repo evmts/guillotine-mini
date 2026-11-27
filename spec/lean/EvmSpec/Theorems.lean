@@ -1,4 +1,6 @@
 import EvmSpec.Machine
+import EvmSpec.MultiFrame
+import EvmSpec.AmsterdamGas
 
 /-!
 # Machine-checked properties of the specification
@@ -267,5 +269,97 @@ theorem precompile_monotone (f g : Fork) (address : Nat)
     (hfg : g.isAtLeast f = true) (hp : isPrecompile f address = true) :
     isPrecompile g address = true := by
   cases f <;> cases g <;> simp_all [isPrecompile, Fork.isAtLeast, Fork.toNat] <;> omega
+
+/-! ## Cross-module MultiFrame & Glamsterdam integration theorems -/
+
+/-- EIP-150 + EIP-2200 reentrancy guard: a call forwarding zero gas plus only
+the 2300 call stipend can never execute `SSTORE` from Istanbul onward. -/
+theorem eip150_stipend_blocks_sstore (fork : Fork) (hFork : fork.isAtLeast .ISTANBUL = true)
+    (original current new : Word) (cold : Bool) :
+    sstore fork original current new cold (MultiFrame.forwardedGas 0 + Gas.callStipend) = none := by
+  simp [MultiFrame.forwardedGas, sstore, hFork]
+
+/-- EIP-8037 code deposit gas (both regular and state dimensions) is monotone
+in deployed bytecode length. -/
+theorem amsterdam_code_deposit_monotone {a b : Nat} (h : a ≤ b) :
+    (AmsterdamGas.codeDepositGas2D a).1 ≤ (AmsterdamGas.codeDepositGas2D b).1
+    ∧ (AmsterdamGas.codeDepositGas2D a).2 ≤ (AmsterdamGas.codeDepositGas2D b).2 := by
+  unfold AmsterdamGas.codeDepositGas2D ceilWords
+  exact ⟨by omega, Nat.mul_le_mul_left _ h⟩
+
+/-- **EIP-8024 Legacy Scanner Safety**: a valid `DUPN` (`0xe6`) immediate byte
+at offset 1 is NEVER misclassified as a valid `JUMPDEST` by the legacy bytecode
+scanner, for ANY trailing bytecode `rest`. -/
+theorem eip8024_dupn_immediate_never_jumpdest (x : Nat)
+    (hValid : AmsterdamGas.isValidSingleImm x = true) (rest : List UInt8) :
+    1 ∉ Bytecode.scan (0xe6 :: UInt8.ofNat x :: rest) 0 0 := by
+  have ⟨hNot5b, hImm0⟩ := AmsterdamGas.eip8024_jumpdest_and_push_compat x (Or.inl hValid)
+  have hLt : x < 256 := by
+    simp only [AmsterdamGas.isValidSingleImm, decide_eq_true_eq] at hValid
+    omega
+  have hToNat : (UInt8.ofNat x).toNat = x := by
+    simp [Nat.mod_eq_of_lt hLt]
+  intro hMem
+  simp only [Bytecode.scan, Bytecode.immediateSize] at hMem
+  have hStep : 1 ∈ Bytecode.scan (UInt8.ofNat x :: rest) 1 0 := by
+    simpa using hMem
+  simp only [Bytecode.scan, hToNat, hNot5b, ↓reduceIte] at hStep
+  have hGe := scan_ge rest 2 (Bytecode.immediateSize (UInt8.ofNat x)) 1 hStep
+  omega
+
+/-- **EIP-8024 Legacy Scanner Safety (`EXCHANGE`)**: a valid `EXCHANGE` (`0xe8`)
+immediate byte at offset 1 is NEVER misclassified as a valid `JUMPDEST` and
+never masks a `JUMPDEST` at offset 2! -/
+theorem eip8024_exchange_preserves_following_jumpdest (x : Nat)
+    (hValid : AmsterdamGas.isValidExchangeImm x = true) (rest : List UInt8) :
+    1 ∉ Bytecode.scan (0xe8 :: UInt8.ofNat x :: 0x5b :: rest) 0 0
+    ∧ 2 ∈ Bytecode.scan (0xe8 :: UInt8.ofNat x :: 0x5b :: rest) 0 0 := by
+  have ⟨hNot5b, hImm0⟩ := AmsterdamGas.eip8024_jumpdest_and_push_compat x (Or.inr hValid)
+  have hLt : x < 256 := by
+    simp only [AmsterdamGas.isValidExchangeImm, decide_eq_true_eq] at hValid
+    omega
+  have hToNat : (UInt8.ofNat x).toNat = x := by
+    simp [Nat.mod_eq_of_lt hLt]
+  have hImmE8 : Bytecode.immediateSize 0xe8 = 0 := by decide
+  have hScanEq :
+      Bytecode.scan (0xe8 :: UInt8.ofNat x :: 0x5b :: rest) 0 0 =
+        2 :: Bytecode.scan rest 3 0 := by
+    simp [Bytecode.scan, hImmE8, hToNat, hNot5b, hImm0]
+  rw [hScanEq]
+  constructor
+  · intro hMem
+    rcases List.mem_cons.mp hMem with h12 | hRest
+    · omega
+    · have hGe := scan_ge rest 3 0 1 hRest
+      omega
+  · exact List.mem_cons_self
+
+/-- Combined MultiFrame + EIP-8037 nested revert guarantee: a reverting child
+preserves all parent state mutations AND restores the parent's exact
+`stateGasReservoir` and `stateGasSpilled`. -/
+theorem nested_revert_preserves_state_and_reservoir
+    (js0 : MultiFrame.JournaledState) (outerOps innerOps : List MultiFrame.StateOp)
+    (parentGas childEndGas : AmsterdamGas.Gas2D) (req : Nat) (exceptional : Bool) :
+    let jsOuter := MultiFrame.execOps outerOps js0
+    let jsInner := MultiFrame.execOps innerOps jsOuter
+    let pf := (AmsterdamGas.childReservoirForward parentGas req).1
+    let restoredGas := AmsterdamGas.revertRestoreReservoir pf childEndGas exceptional
+    MultiFrame.rollbackTo jsInner (MultiFrame.checkpoint jsOuter) = jsOuter
+    ∧ restoredGas.stateGasReservoir = parentGas.stateGasReservoir
+    ∧ restoredGas.stateGasSpilled = parentGas.stateGasSpilled :=
+  ⟨MultiFrame.nested_revert_preserves_outer_mutations js0 outerOps innerOps, rfl, rfl⟩
+
+/-- Combined MultiFrame + EIP-7708 static-context guarantee: a value-bearing
+`CALL` in a static context is rejected before any transfer or EIP-7708 log. -/
+theorem static_blocks_value_call_and_transfer_log
+    (parent : MultiFrame.FrameContext) (callee : MultiFrame.Addr) (value : Nat)
+    (hDepth : parent.depth < MultiFrame.maxCallDepth)
+    (hStatic : parent.isStatic = true) (hVal : value > 0) :
+    MultiFrame.enterChildContext parent .call callee value = .error .staticViolation
+    ∧ (parent.target ≠ callee →
+        (AmsterdamGas.ethTransferLog parent.target callee value).isSome = true) := by
+  refine ⟨MultiFrame.static_rejects_value_call parent callee value hDepth hStatic hVal, ?_⟩
+  intro hNe
+  exact (AmsterdamGas.ethTransferLog_some_iff parent.target callee value).mpr ⟨by omega, hNe⟩
 
 end EvmSpec.Theorems

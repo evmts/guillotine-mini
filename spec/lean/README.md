@@ -29,7 +29,9 @@ standard library (`Std.HashMap`, `Std.HashSet`); it has no Mathlib dependency.
 | `EvmSpec/Gas.lean` | `Fork` order, word-opcode gas, memory expansion, SLOAD and SSTORE gas and refunds, precompile table, EIP-7825 cap |
 | `EvmSpec/Bytecode.lean` | JUMPDEST analysis and the zero-padded PUSH immediate reader |
 | `EvmSpec/Machine.lean` | Small-step interpreter for one standalone frame |
-| `EvmSpec/Theorems.lean` | 60 kernel-checked theorems |
+| `EvmSpec/MultiFrame.lean` | Multi-frame call-tree state (`WorldState`), undo-journal `checkpoint`/`rollbackTo`, EIP-150 63/64 gas forwarding, `STATICCALL` immutability, depth-1024 limit, ETH conservation (68 theorems) |
+| `EvmSpec/AmsterdamGas.lean` | Glamsterdam formal specs: EIP-8037 two-dimensional gas & LIFO reservoir refill, EIP-7708 ETH transfer logs, EIP-8246 non-burning `SELFDESTRUCT`, EIP-8024 `DUPN`/`SWAPN`/`EXCHANGE` bijections (76 theorems) |
+| `EvmSpec/Theorems.lean` | 66 kernel-checked single-frame and cross-module integration theorems (re-imports `MultiFrame` and `AmsterdamGas`; 210 theorems total) |
 | `EvmSpec/Main.lean` | TSV oracle loop |
 
 ## Oracle protocol
@@ -93,8 +95,12 @@ OK	RETURN	99976	0	00000000000000000000000000000000000000000000000000000000000000
 
 ## Theorems
 
-`EvmSpec/Theorems.lean` has no admitted goals and uses only `propext`,
-`Quot.sound` and `Classical.choice`. A selection:
+Across `EvmSpec/Theorems.lean` (66), `EvmSpec/MultiFrame.lean` (68), and
+`EvmSpec/AmsterdamGas.lean` (76), the specification contains **210 kernel-checked
+theorems** (zero admitted goals, zero custom axioms) relying only on Lean 4's
+standard axioms (`propext`, `Quot.sound`, `Classical.choice`). A selection:
+
+### Single-frame & fork semantics (`EvmSpec/Theorems.lean`)
 
 | Theorem | Statement |
 |---|---|
@@ -109,10 +115,40 @@ OK	RETURN	99976	0	00000000000000000000000000000000000000000000000000000000000000
 | `sstore_sentry` | SSTORE with 2300 gas fails from Istanbul on, for any values |
 | `eip7825_boundary` | Osaka accepts `2^24` gas and rejects `2^24 + 1`; Prague accepts both |
 | `precompile_monotone` | a precompile stays a precompile in every later fork |
+| `eip8024_exchange_preserves_following_jumpdest` | valid `EXCHANGE` immediates never create false `JUMPDEST`s or mask a following `0x5b` |
+
+### Multi-frame rollback, static & EIP-150 invariants (`EvmSpec/MultiFrame.lean`)
+
+| Theorem | Statement |
+|---|---|
+| `rollbackTo_execOps` | undo-journal rollback after ANY sequence of state mutations restores the exact pre-call `WorldState` and journal |
+| `reverted_child_restores_*` | reverted child leaves persistent storage, transient storage, balances, nonces, code, logs, warm addresses/slots, and refunds identical |
+| `nested_revert_preserves_outer_mutations` | reverting an inner child preserves committed outer frame mutations |
+| `outer_revert_discards_committed_inner` | reverting an outer frame discards both outer and committed inner mutations |
+| `pathStatic_after_staticCall`, `static_execTree_preserves_state` | `isStatic` is monotone downward across arbitrary call trees and prevents all state mutations (`SSTORE`, `TSTORE`, `LOG`, `CREATE`, value `CALL`, `SELFDESTRUCT`) |
+| `depth_limit_execTree_clean_fail`, `depth_limit_exact_boundary` | depth 1023 enters depth 1024; `depth ≥ 1024` fails cleanly without mutating state or losing gas |
+| `forwardedGas_monotone`, `gas_conserved_no_stipend`, `child_oog_retains_parent_64th` | EIP-150 63/64 monotonicity, exact gas conservation, and guaranteed `⌊gas / 64⌋` caller retention |
+| `execTree_conserves_totalBalance` | total ETH balance is strictly conserved across arbitrarily nested call trees with commits and reverts |
+
+### Glamsterdam EIP-8037 / 7708 / 8246 / 8024 (`EvmSpec/AmsterdamGas.lean`)
+
+| Theorem | Statement |
+|---|---|
+| `chargeStateGas_total_conserved`, `chargeStateGas_spillover`, `chargeStateGas_additive` | state gas draws reservoir-first, spills into `regularGas` cleanly, conserves `regularGas + stateGasReservoir`, and is additive |
+| `refundStateGasLifo_cancels_chargeStateGas` | under the reservoir-spill invariant (`spilled = 0 ∨ reservoir = 0`), LIFO refill is an exact inverse of `chargeStateGas` |
+| `revertRestoreReservoir_exact`, `revertRestoreReservoir_graceful_pays_zero_state_gas` | child revert restores exact parent `stateGasReservoir` and charges zero net state gas (even with spillover) |
+| `childReturnRefill_no_budget_inflation`, `childReturnRefill_lifo_repays_parent_spill` | committed child return refills parent LIFO without inflating total gas or reservoir budget |
+| `eip7825_vs_eip8037_separation`, `eip7825_vs_eip8037_universal` | Amsterdam enforces `regularGas ≤ 2^24` while admitting `total > 2^24` via `stateGasReservoir` |
+| `ethTransferLog_none_iff`, `ethTransferLog_emitter_system` | EIP-7708 emits `none` iff `value = 0 ∨ from = to`; nonzero distinct transfers always emit from `SYSTEM_ADDRESS` (`0xff..fe`) |
+| `selfdestructAmsterdam_conserves_totalBalance`, `selfdestructLegacy_self_burns_supply` | EIP-8246 self-destruct-to-self preserves total ETH supply (zero burn) |
+| `decodeSingle_encodeSingle`, `encodeSingle_decodeSingle`, `decodePair_encodePair`, `encodePair_decodePair`, `eip8024_jumpdest_and_push_compat` | EIP-8024 `DUPN`/`SWAPN` (219 codes) and `EXCHANGE` (210 codes) are exact bijections onto valid stack indices and never collide with `0x5b..0x7f` |
 
 Check the axioms of any theorem:
 
 ```bash
-echo 'import EvmSpec.Theorems
-#print axioms EvmSpec.Theorems.jumpdest_in_push_invalid' | lake env lean --stdin
+printf 'import EvmSpec.Theorems
+#print axioms EvmSpec.Theorems.jumpdest_in_push_invalid
+#print axioms EvmSpec.MultiFrame.static_execTree_preserves_state
+#print axioms EvmSpec.AmsterdamGas.revertRestoreReservoir_graceful_pays_zero_state_gas
+' | lake env lean --stdin
 ```
