@@ -92,9 +92,6 @@ jobs:
        github.ref == 'refs/heads/main' &&
        github.repository == 'evmts/guillotine-mini')
     runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: docs
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_DOCS }}
@@ -126,7 +123,6 @@ jobs:
           path: docs/public-staging
       - name: Stage live WASM and audit assets before deploy
         if: steps.creds.outputs.ready == 'true'
-        working-directory: .
         run: |
           mkdir -p docs/public/wasm docs/public/audit
           cp docs/public-staging/wasm/guillotine_mini.wasm docs/public/wasm/guillotine_mini.wasm
