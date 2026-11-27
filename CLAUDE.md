@@ -1,5 +1,7 @@
 # Guillotine Mini - EVM Implementation
 
+Follow the [Uphill rules](.agents/uphill/rules.md), which `uphill rules --write` rewrites from each metric's description: @.agents/uphill/rules.md
+
 Minimal, correct, and well-tested Ethereum Virtual Machine (EVM) implementation in Zig, prioritizing specification compliance, clarity, and hardfork support (Frontier through Amsterdam in the Voltaire enum, with Osaka as the default).
 
 ## Quick Start

@@ -44,3 +44,6 @@ test_*.txt
 fmt_*.txt
 rpc_*.txt
 zig_*.txt
+
+# Uphill generated reports
+.uphill/
