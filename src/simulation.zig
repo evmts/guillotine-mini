@@ -1754,7 +1754,7 @@ fn writeDiffBytes(w: *std.Io.Writer, kind: DiffKind, pre: []const u8, post: []co
 fn writeParityStateDiff(allocator: Allocator, w: *std.Io.Writer, t: *const tracers.PrestateTracer) !void {
     const addresses = try allocator.dupe(Address, t.accounts.keys());
     defer allocator.free(addresses);
-    std.mem.sort(Address, addresses, {}, addressLess);
+    std.mem.sortUnstable(Address, addresses, {}, addressLess);
     const empty: []const u8 = &.{};
 
     try w.writeByte('{');
@@ -1774,7 +1774,7 @@ fn writeParityStateDiff(allocator: Allocator, w: *std.Io.Writer, t: *const trace
         while (sit.next()) |e| {
             if (e.value_ptr.* != (acct.pre.storage.get(e.key_ptr.*) orelse 0)) try slots.append(allocator, e.key_ptr.*);
         }
-        std.mem.sort(u256, slots.items, {}, u256Less);
+        std.mem.sortUnstable(u256, slots.items, {}, u256Less);
 
         const pre_empty = pre_balance == 0 and pre_nonce == 0 and pre_code.len == 0;
         const destroyed = acct.selfdestructed and post_balance == 0;

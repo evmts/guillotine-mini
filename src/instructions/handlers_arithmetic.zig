@@ -3,6 +3,7 @@ const std = @import("std");
 const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
+const u256_math = @import("../u256_math.zig");
 
 /// Handlers struct - provides arithmetic operation handlers for a Frame type
 /// The FrameType must implement the core frame interface (see frame_interface.zig):
@@ -52,8 +53,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             try charge(frame, GasConstants.GasFastStep);
             const top = try frame.popStack();
             const second = try frame.peekStack(0);
-            const result = if (second == 0) 0 else top / second;
-            frame.setStackTop(result);
+            frame.setStackTop(u256_math.div(top, second));
             frame.pc += 1;
         }
 
@@ -62,15 +62,19 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             try charge(frame, GasConstants.GasFastStep);
             const top = try frame.popStack();
             const second = try frame.peekStack(0);
-            const top_signed = @as(i256, @bitCast(top));
-            const second_signed = @as(i256, @bitCast(second));
             const MIN_SIGNED = @as(u256, 1) << 255;
             const result = if (second == 0)
                 0
             else if (top == MIN_SIGNED and second == std.math.maxInt(u256))
                 MIN_SIGNED
-            else
-                @as(u256, @bitCast(@divTrunc(top_signed, second_signed)));
+            else blk: {
+                const top_neg = (top >> 255) != 0;
+                const sec_neg = (second >> 255) != 0;
+                const abs_top = if (top_neg) 0 -% top else top;
+                const abs_sec = if (sec_neg) 0 -% second else second;
+                const q = u256_math.div(abs_top, abs_sec);
+                break :blk if (top_neg != sec_neg) 0 -% q else q;
+            };
             frame.setStackTop(result);
             frame.pc += 1;
         }
@@ -80,8 +84,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             try charge(frame, GasConstants.GasFastStep);
             const top = try frame.popStack();
             const second = try frame.peekStack(0);
-            const result = if (second == 0) 0 else top % second;
-            frame.setStackTop(result);
+            frame.setStackTop(u256_math.mod(top, second));
             frame.pc += 1;
         }
 
@@ -90,15 +93,19 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             try charge(frame, GasConstants.GasFastStep);
             const top = try frame.popStack();
             const second = try frame.peekStack(0);
-            const top_signed = @as(i256, @bitCast(top));
-            const second_signed = @as(i256, @bitCast(second));
             const MIN_SIGNED = @as(u256, 1) << 255;
             const result = if (second == 0)
                 0
             else if (top == MIN_SIGNED and second == std.math.maxInt(u256))
                 0
-            else
-                @as(u256, @bitCast(@rem(top_signed, second_signed)));
+            else blk: {
+                const top_neg = (top >> 255) != 0;
+                const sec_neg = (second >> 255) != 0;
+                const abs_top = if (top_neg) 0 -% top else top;
+                const abs_sec = if (sec_neg) 0 -% second else second;
+                const r = u256_math.mod(abs_top, abs_sec);
+                break :blk if (top_neg) 0 -% r else r;
+            };
             frame.setStackTop(result);
             frame.pc += 1;
         }
@@ -109,14 +116,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const a = try frame.popStack();
             const b = try frame.popStack();
             const n = try frame.peekStack(0);
-            const result = if (n == 0) 0 else blk: {
-                // Overflow-free u256 modular addition (avoids slow u512 division)
-                const am = a % n;
-                const bm = b % n;
-                const space = n - am;
-                break :blk if (bm >= space) bm - space else am + bm;
-            };
-            frame.setStackTop(result);
+            frame.setStackTop(u256_math.addmod(a, b, n));
             frame.pc += 1;
         }
 
@@ -126,14 +126,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const a = try frame.popStack();
             const b = try frame.popStack();
             const n = try frame.peekStack(0);
-            const result = if (n == 0) 0 else blk: {
-                // Use u512 to avoid overflow
-                const a_wide = @as(u512, a);
-                const b_wide = @as(u512, b);
-                const n_wide = @as(u512, n);
-                break :blk @as(u256, @truncate((a_wide * b_wide) % n_wide));
-            };
-            frame.setStackTop(result);
+            frame.setStackTop(u256_math.mulmod(a, b, n));
             frame.pc += 1;
         }
 

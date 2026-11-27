@@ -68,6 +68,11 @@ pub const EvmConfig = struct {
     /// after N steps, which is NOT consensus-safe.
     loop_quota: ?u32 = null,
 
+    /// Enable basic-block fused compiled bytecode interpreter on hot native paths.
+    /// Set to `false` for minimal binary size (e.g. `wasm32` reactor builds) or
+    /// differential verification against the step-by-step reference interpreter.
+    enable_compiled_interpreter: bool = true,
+
     /// Enable system contract updates (EIP-4788 beacon roots, EIP-2935 historical block hashes)
     /// When true, these contracts are updated at the start of each transaction
     enable_beacon_roots: bool = true,

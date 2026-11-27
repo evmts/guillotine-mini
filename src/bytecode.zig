@@ -6,7 +6,7 @@ const std = @import("std");
 /// Represents analyzed bytecode with pre-validated jump destinations stored in a packed bitset.
 /// Contracts up to 512 bytes use inline storage with zero heap allocations.
 pub const Bytecode = struct {
-    const INLINE_WORDS = 8; // 8 * 64 = 512 bytes inline
+    const INLINE_WORDS = 2; // 2 * 64 = 128 bytes inline (shrinks Frame by 48 bytes)
 
     /// Raw bytecode bytes
     code: []const u8,
@@ -14,29 +14,44 @@ pub const Bytecode = struct {
     /// Allocator used when `heap_bits != null`
     allocator: std.mem.Allocator,
 
-    /// Inline bitset for contracts <= 512 bytes (zero heap allocations)
+    /// Inline bitset for contracts <= 128 bytes (zero heap allocations)
     inline_bits: [INLINE_WORDS]u64 = .{0} ** INLINE_WORDS,
 
-    /// Heap-allocated bitset for contracts > 256 bytes (1 bit per code byte)
+    /// Heap-allocated bitset for contracts > 128 bytes (1 bit per code byte)
     heap_bits: ?[]u64 = null,
+
+    /// Whether the JUMPDEST bitset has been populated yet.
+    analyzed: bool = false,
+
+    /// Initialize bytecode lazily without scanning JUMPDESTs until needed.
+    /// Used by frames whose compiled code path uses pre-resolved jump targets.
+    pub fn initLazy(allocator: std.mem.Allocator, code: []const u8) Bytecode {
+        return .{
+            .code = code,
+            .allocator = allocator,
+            .analyzed = false,
+        };
+    }
+
+    /// Populate the JUMPDEST bitset on demand if not already analyzed.
+    pub fn ensureAnalyzed(self: *Bytecode) !void {
+        if (self.analyzed) return;
+        const word_count = (self.code.len + 63) >> 6;
+        if (word_count > INLINE_WORDS) {
+            const bits = try self.allocator.alloc(u64, word_count);
+            @memset(bits, 0);
+            self.heap_bits = bits;
+            analyzeJumpDestsBitset(self.code, bits);
+        } else if (word_count > 0) {
+            analyzeJumpDestsBitset(self.code, self.inline_bits[0..word_count]);
+        }
+        self.analyzed = true;
+    }
 
     /// Initialize bytecode with jump destination analysis
     pub fn init(allocator: std.mem.Allocator, code: []const u8) !Bytecode {
-        var self = Bytecode{
-            .code = code,
-            .allocator = allocator,
-        };
-
-        const word_count = (code.len + 63) >> 6;
-        if (word_count > INLINE_WORDS) {
-            const bits = try allocator.alloc(u64, word_count);
-            @memset(bits, 0);
-            self.heap_bits = bits;
-            analyzeJumpDestsBitset(code, bits);
-        } else if (word_count > 0) {
-            analyzeJumpDestsBitset(code, self.inline_bits[0..word_count]);
-        }
-
+        var self = initLazy(allocator, code);
+        try self.ensureAnalyzed();
         return self;
     }
 

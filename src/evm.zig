@@ -174,6 +174,7 @@ pub fn Evm(comptime config: EvmConfig) type {
     // Import new API types with config
     const call_params = @import("call_params.zig");
     const call_result = @import("call_result.zig");
+    const compiled_code = @import("compiled_code.zig");
 
     return struct {
         const Self = @This();
@@ -333,6 +334,8 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         // Accumulated logs for current transaction
         logs: std.ArrayList(call_result.Log),
+        /// Direct-mapped compiled-bytecode cache (owned by `self.allocator`, cleaned up in `deinit`).
+        code_cache: compiled_code.CodeCache = .{},
 
         /// Single source of truth for precompile address membership (delegates to module helper).
         pub fn isPrecompileAddress(address: Address, hardfork: Hardfork) bool {
@@ -479,8 +482,33 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.releaseAsyncCodeView();
             self.freePendingStateChanges();
             self.blob_hashes_owned.deinit(self.allocator);
+            self.code_cache.deinit(self.allocator);
             self.tx_arena.deinit();
             self.arena.deinit();
+        }
+
+        /// Reconfigure a long-lived `Evm` instance for a new transaction without
+        /// re-allocating the frame stack, arenas, or compiled bytecode cache.
+        /// Routes `CallResult` allocations to `tx_arena` so repeated calls never
+        /// leak into the long-lived `arena`.
+        pub fn reconfigureForTx(
+            self: *Self,
+            host_iface: ?host.HostInterface,
+            hardfork: Hardfork,
+            block_context: BlockContext,
+            origin: Address,
+            gas_price: u256,
+            precompile_overrides: []const evm_config.PrecompileOverride,
+        ) void {
+            self.host = host_iface;
+            self.storage.host = host_iface;
+            self.hardfork = hardfork;
+            self.fork_transition = null;
+            self.block_context = block_context;
+            self.origin = origin;
+            self.gas_price = gas_price;
+            self.precompile_overrides = precompile_overrides;
+            self.result_allocator = self.tx_arena.allocator();
         }
 
         /// Attach (or clear) a fork schedule. Every transaction then runs under the fork the
@@ -509,6 +537,10 @@ pub fn Evm(comptime config: EvmConfig) type {
         ///
         /// `blob_versioned_hashes` is copied; `null` means the transaction carries no blobs.
         pub fn initTransactionState(self: *Self, blob_versioned_hashes: ?[]const [32]u8) !void {
+            try self.initTransactionStateInternal(blob_versioned_hashes, true);
+        }
+
+        fn initTransactionStateInternal(self: *Self, blob_versioned_hashes: ?[]const [32]u8, reserve_frames: bool) !void {
             // A new transaction supersedes an async one still suspended or awaiting its commit
             // acknowledgement: its uncommitted writes are rolled back and it can no longer be
             // continued. Must run before the scratch arena (which holds its checkpoint) resets.
@@ -568,10 +600,16 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.access_list_manager = AccessListManager.init(tx_alloc);
             try self.preWarmPrecompiles();
 
-            // Frames never reallocate during a transaction: ancestors hold `*Frame` across nested
-            // calls, so the full depth budget is reserved up front.
-            self.frames = .empty;
-            try self.frames.ensureTotalCapacityPrecise(tx_alloc, max_frames);
+            // Frames live in the long-lived arena so repeated calls on a reused Evm never
+            // reallocate or munmap the 1025-slot frame array. Precompile/EOA calls pass
+            // reserve_frames = false and skip allocating it altogether.
+            self.frames.clearRetainingCapacity();
+            if (self.frames.items.len == 0) {
+                self.code_cache.reclaimEvicted(self.allocator);
+            }
+            if (reserve_frames and self.frames.capacity < max_frames) {
+                try self.frames.ensureTotalCapacityPrecise(self.arena.allocator(), max_frames);
+            }
 
             self.logs = .empty;
             self.created_accounts = AddressSet.init(tx_alloc);
@@ -850,7 +888,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         fn failed(self: *Self, gas_left: u64, err: anyerror) CallResult {
             return CallResult.failure_with_error(self.result_allocator orelse self.arena.allocator(), gas_left, @errorName(err)) catch
-                .{ .success = false, .gas_left = gas_left, .output = &.{} };
+                .{ .success = false, .gas_left = gas_left, .output = &.{}, .error_info = @errorName(err) };
         }
 
         pub fn accessAddress(self: *Self, address: Address) !u64 {
@@ -1200,9 +1238,7 @@ pub fn Evm(comptime config: EvmConfig) type {
 
         /// Pre-warm addresses for transaction initialization
         pub fn pre_warm_addresses(self: *Self, addresses: []const primitives.Address) !void {
-            self.access_list_manager.pre_warm_addresses(addresses) catch {
-                return errors.CallError.StorageError;
-            };
+            try self.access_list_manager.pre_warm_addresses(addresses);
         }
 
         /// Get nonce for an address
@@ -1318,23 +1354,11 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// EIP-2537 BLS12-381 table (whether 0x0b..0x13 or 7-op 0x0b..0x11) and includes
         /// Osaka+ EIP-7951 P256VERIFY at 0x0100.
         fn preWarmPrecompiles(self: *Self) errors.CallError!void {
-            if (!self.hardfork.isAtLeast(.BERLIN)) return;
-
-            var precompile_addrs: [MAX_CONTIGUOUS_PRECOMPILE + 1]primitives.Address = undefined;
-            var count: usize = 0;
-            var addr_int: u16 = 1;
-            while (addr_int <= MAX_CONTIGUOUS_PRECOMPILE) : (addr_int += 1) {
-                const candidate = primitives.Address.fromU256(addr_int);
-                if (Self.isPrecompileAddress(candidate, self.hardfork)) {
-                    precompile_addrs[count] = candidate;
-                    count += 1;
-                }
+            if (!self.hardfork.isAtLeast(.BERLIN)) {
+                self.access_list_manager.precompile_hardfork = null;
+                return;
             }
-            if (Self.isPrecompileAddress(P256VERIFY_ADDRESS, self.hardfork)) {
-                precompile_addrs[count] = P256VERIFY_ADDRESS;
-                count += 1;
-            }
-            try self.pre_warm_addresses(precompile_addrs[0..count]);
+            self.access_list_manager.precompile_hardfork = self.hardfork;
         }
 
         /// Warm the transaction participants: origin, `target` (every real destination,
@@ -1498,6 +1522,12 @@ pub fn Evm(comptime config: EvmConfig) type {
             return failedResult(0);
         }
 
+        /// Roll back to `cp` and report a failed message with preserved error metadata.
+        fn failAndRevertWithError(self: *Self, cp: *const Checkpoint, err: anyerror) CallResult {
+            self.revertBestEffort(cp);
+            return self.failed(0, err);
+        }
+
         fn executeTransaction(
             self: *Self,
             params: CallParams,
@@ -1517,17 +1547,18 @@ pub fn Evm(comptime config: EvmConfig) type {
             const calldata = params.getInput();
             const blob_versioned_hashes: ?[]const [32]u8 = if (self.blob_versioned_hashes.len > 0) self.blob_versioned_hashes else null;
 
-            // Initialize transaction state (warms active precompiles on Berlin+)
-            self.initTransactionState(blob_versioned_hashes) catch return failedResult(0);
+            // Initialize transaction state (warms active precompiles on Berlin+ in O(1)
+            // and defers reserving the 1025-frame array until EVM bytecode actually runs).
+            self.initTransactionStateInternal(blob_versioned_hashes, false) catch |err| return self.failed(0, err);
 
             // Pre-warm access list (EIP-2929/EIP-2930)
             if (access_list) |list| {
-                self.access_list_manager.pre_warm_from_access_list(list) catch return failedResult(0);
+                self.access_list_manager.pre_warm_from_access_list(list) catch |err| return self.failed(0, err);
             }
 
             if (params.isCreate()) {
                 // The new address is warmed by the create itself, from the single derivation.
-                self.preWarmParticipants(caller) catch return failedResult(0);
+                self.preWarmParticipants(caller) catch |err| return self.failed(0, err);
 
                 const create_value: u256 = switch (params) {
                     .create => |p| p.value,
@@ -1541,20 +1572,19 @@ pub fn Evm(comptime config: EvmConfig) type {
                 // The creation commits only once the result is owned by the caller: a failure
                 // while building it must not leave the new contract behind a failed result.
                 var create_cp: Checkpoint = undefined;
-                self.takeCheckpoint(&create_cp) catch return failedResult(0);
+                self.takeCheckpoint(&create_cp) catch |err| return self.failed(0, err);
                 defer self.releaseCheckpoint(&create_cp);
 
                 const created = self.createFrom(caller, create_value, calldata, gas, salt, true) catch |err| {
-                    self.revertBestEffort(&create_cp);
-                    return CallResult.failure_with_error(result_alloc, 0, @errorName(err)) catch failedResult(0);
+                    return self.failAndRevertWithError(&create_cp, err);
                 };
                 if (!created.success) {
                     if (created.err) |err| return self.failed(created.gas_left, err);
-                    return CallResult.revert_with_data(result_alloc, created.gas_left, created.output) catch failedResult(created.gas_left);
+                    return CallResult.revert_with_data(result_alloc, created.gas_left, created.output) catch |err| return self.failed(created.gas_left, err);
                 }
 
-                var result = CallResult.success_with_logs(result_alloc, created.gas_left, &.{}, self.logs.items) catch {
-                    return self.failAndRevert(&create_cp);
+                var result = CallResult.success_with_logs(result_alloc, created.gas_left, &.{}, self.logs.items) catch |err| {
+                    return self.failAndRevertWithError(&create_cp, err);
                 };
                 result.refund_counter = self.get_effective_refund();
                 result.created_address = created.address;
@@ -1580,17 +1610,17 @@ pub fn Evm(comptime config: EvmConfig) type {
                 else => address,
             };
 
-            self.preWarmParticipants(address) catch return failedResult(0);
+            self.preWarmParticipants(address) catch |err| return self.failed(0, err);
 
             var resolved = if (bytecode_override) |bytes| self.resolveCodeBytes(address, bytes) else self.resolveCallCode(address);
             if (bytecode_override == null and !resolved.is_delegated and resolved.code.len == 0 and pending_bytecode.len != 0 and
                 (!Self.isPrecompileAddress(address, self.hardfork) or self.getPrecompileOverride(address) != null))
             {
                 if (self.suppliedCodeIsAccountCode(address, pending_bytecode))
-                    self.installCallCodeView(address, pending_bytecode) catch return failedResult(0);
+                    self.installCallCodeView(address, pending_bytecode) catch |err| return self.failed(0, err);
                 resolved = self.resolveCodeBytes(address, pending_bytecode);
             }
-            if (resolved.is_delegated) self.pre_warm_addresses(&.{resolved.address}) catch return failedResult(0);
+            if (resolved.is_delegated) self.pre_warm_addresses(&.{resolved.address}) catch |err| return self.failed(0, err);
             const observed = self.enterCall(params, caller, resolved, value, is_static);
             const result = self.executeTopMessage(params, resolved, observed, execution_address);
             if (observed) |frame| self.exitFrame(frame, result, resultErrorName(result));
@@ -1610,13 +1640,13 @@ pub fn Evm(comptime config: EvmConfig) type {
             const is_static = params == .staticcall;
             // Everything from here is rolled back on REVERT or an exceptional halt.
             var cp: Checkpoint = undefined;
-            self.takeCheckpoint(&cp) catch return failedResult(0);
+            self.takeCheckpoint(&cp) catch |err| return self.failed(0, err);
             defer self.releaseCheckpoint(&cp);
 
             if (value > 0 and requires_balance) {
                 if (self.get_balance(caller) < value) return self.failed(0, error.InsufficientBalance);
                 if (transfers_value) {
-                    self.transferValue(caller, address, value) catch return self.failAndRevert(&cp);
+                    self.transferValue(caller, address, value) catch |err| return self.failAndRevertWithError(&cp, err);
                 }
             }
 
@@ -1638,7 +1668,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                     .none => {},
                 }
                 if (transfers_value) {
-                    self.touchCallTarget(address) catch return self.failAndRevert(&cp);
+                    self.touchCallTarget(address) catch |err| return self.failAndRevertWithError(&cp, err);
                 }
                 self.commitTransaction();
                 return CallResult{
@@ -1651,7 +1681,8 @@ pub fn Evm(comptime config: EvmConfig) type {
 
             // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
             const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
-            const top_frame = FrameType.init(
+            if (!self.canPushFrame()) return self.failAndRevertWithError(&cp, error.OutOfMemory);
+            const top_frame = FrameType.initLazy(
                 self.tx_arena.allocator(),
                 bytecode,
                 frame_gas,
@@ -1662,28 +1693,27 @@ pub fn Evm(comptime config: EvmConfig) type {
                 @as(*anyopaque, @ptrCast(self)),
                 self.hardfork,
                 is_static,
-            ) catch return self.failAndRevert(&cp);
+            ) catch |err| return self.failAndRevertWithError(&cp, err);
             self.frames.appendAssumeCapacity(top_frame);
             self.attachFrame(observed, resolved.address);
 
             self.frames.items[0].execute() catch |err| {
                 // Exceptional halt: all gas is consumed and every state change is undone.
-                self.revertBestEffort(&cp);
-                return CallResult.failure_with_error(result_alloc, 0, @errorName(err)) catch failedResult(0);
+                return self.failAndRevertWithError(&cp, err);
             };
 
             const frame = &self.frames.items[0];
             const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
 
             if (frame.reverted) {
-                self.revertToCheckpoint(&cp) catch return failedResult(0);
-                return CallResult.revert_with_data(result_alloc, gas_left, frame.output) catch failedResult(gas_left);
+                self.revertToCheckpoint(&cp) catch |err| return self.failed(0, err);
+                return CallResult.revert_with_data(result_alloc, gas_left, frame.output) catch |err| return self.failed(gas_left, err);
             }
 
             // Gas refunds are not applied here: the caller applies them after computing the
             // gas actually consumed, reading `refund_counter` (or `get_effective_refund()`).
-            var result = CallResult.success_with_logs(result_alloc, gas_left, frame.output, self.logs.items) catch {
-                return self.failAndRevert(&cp);
+            var result = CallResult.success_with_logs(result_alloc, gas_left, frame.output, self.logs.items) catch |err| {
+                return self.failAndRevertWithError(&cp, err);
             };
             result.refund_counter = self.get_effective_refund();
             self.commitTransaction();
@@ -1706,6 +1736,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.storage.clear_transient();
             self.logs.clearRetainingCapacity();
             self.frames.clearRetainingCapacity();
+            self.code_cache.reclaimEvicted(self.allocator);
             self.created_accounts.clearRetainingCapacity();
             self.selfdestructed_accounts.clearRetainingCapacity();
             self.touched_accounts.clearRetainingCapacity();
@@ -1917,18 +1948,32 @@ pub fn Evm(comptime config: EvmConfig) type {
             // Current value of every slot written so far in this transaction.
             var storage_values = SlotMap.init(alloc);
             errdefer storage_values.deinit();
-            var written_it = self.storage.original_storage.keyIterator();
-            while (written_it.next()) |key| {
-                try storage_values.put(key.*, self.currentStorageValue(key.*));
+            if (self.storage.original_storage.count() > 0) {
+                var written_it = self.storage.original_storage.keyIterator();
+                while (written_it.next()) |key| {
+                    try storage_values.put(key.*, self.currentStorageValue(key.*));
+                }
             }
 
-            var original_storage = try self.storage.original_storage.cloneWithAllocator(alloc);
+            var original_storage = if (self.storage.original_storage.count() > 0)
+                try self.storage.original_storage.cloneWithAllocator(alloc)
+            else
+                SlotMap.init(alloc);
             errdefer original_storage.deinit();
-            var transient = try self.storage.transient.cloneWithAllocator(alloc);
+            var transient = if (self.storage.transient.count() > 0)
+                try self.storage.transient.cloneWithAllocator(alloc)
+            else
+                SlotMap.init(alloc);
             errdefer transient.deinit();
-            var selfdestructed = try self.selfdestructed_accounts.cloneWithAllocator(alloc);
+            var selfdestructed = if (self.selfdestructed_accounts.count() > 0)
+                try self.selfdestructed_accounts.cloneWithAllocator(alloc)
+            else
+                std.AutoHashMap(primitives.Address, void).init(alloc);
             errdefer selfdestructed.deinit();
-            var created = try self.created_accounts.cloneWithAllocator(alloc);
+            var created = if (self.created_accounts.count() > 0)
+                try self.created_accounts.cloneWithAllocator(alloc)
+            else
+                std.AutoHashMap(primitives.Address, void).init(alloc);
             errdefer created.deinit();
 
             cp.* = .{
@@ -2055,7 +2100,7 @@ pub fn Evm(comptime config: EvmConfig) type {
         pub fn canPushFrame(self: *Self) bool {
             if (self.frames.items.len >= max_frames) return false;
             if (self.frames.items.len == 0 and self.frames.capacity < max_frames) {
-                self.frames.ensureTotalCapacityPrecise(self.tx_arena.allocator(), max_frames) catch return false;
+                self.frames.ensureTotalCapacityPrecise(self.arena.allocator(), max_frames) catch return false;
             }
             return self.frames.items.len < self.frames.capacity;
         }
@@ -2158,7 +2203,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             if (self.async_restart_pending) return self.failAndRevert(&cp);
             // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
             const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
-            const child_frame = FrameType.init(
+            const child_frame = FrameType.initLazy(
                 self.allocator,
                 code,
                 frame_gas,
@@ -2358,7 +2403,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             if (self.async_restart_pending) return error.NeedAsyncData;
             // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
             const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
-            const init_frame = try FrameType.init(
+            const init_frame = try FrameType.initLazy(
                 self.allocator,
                 init_code,
                 frame_gas,

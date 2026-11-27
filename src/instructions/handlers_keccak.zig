@@ -41,16 +41,16 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const size_u32: u32 = if (range) |r| r.len else 0;
             try charge(frame, keccak256GasCost(size_u32) +| frame.memoryRangeCost(range));
 
-            var hash_bytes: [32]u8 = undefined;
             if (range) |r| {
                 try frame.expandMemory(r.end);
                 // Zero-copy slice directly from contiguous EVM memory
                 const data = try frame.readMemorySlice(r.offset, r.len);
-                std.crypto.hash.sha3.Keccak256.hash(data, &hash_bytes, .{});
+                const hash_bytes = primitives.Hash.keccak256(data);
+                try frame.pushStack(std.mem.readInt(u256, &hash_bytes, .big));
             } else {
-                std.crypto.hash.sha3.Keccak256.hash(&[_]u8{}, &hash_bytes, .{});
+                const empty_keccak: u256 = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+                try frame.pushStack(empty_keccak);
             }
-            try frame.pushStack(std.mem.readInt(u256, &hash_bytes, .big));
             frame.pc += 1;
         }
     };

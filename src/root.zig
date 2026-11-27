@@ -128,6 +128,7 @@ pub const handlers = struct {
 
 test {
     std.testing.refAllDecls(@This());
+    _ = @import("compiled_code.zig");
     _ = @import("evm_test.zig");
     _ = @import("inspector.zig");
     _ = @import("trace.zig");

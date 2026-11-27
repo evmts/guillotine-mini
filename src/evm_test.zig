@@ -3946,3 +3946,286 @@ test "R3-015: result_allocator keeps synchronous results out of the long-lived a
         if (i > 8) try testing.expectEqual(after_warmup, vm.arena.queryCapacity());
     }
 }
+
+test "CodeCache slot collision: nested CALL evicting caller slot does not alias dynamic JUMP/JUMPI or leak" {
+    const testing = std.testing;
+    const compiled_code = @import("compiled_code.zig");
+
+    // Contract A:
+    //   1. CALL r2_child (evicts A's CodeCache slot!)
+    //   2. POP
+    //   3. Dynamic JUMP: PUSH1 (dest1 - 1), PUSH1 1, ADD, JUMP (not statically fused!)
+    //   4. INVALID (trap if jump fails)
+    //   5. dest1: JUMPDEST, PUSH1 1 (cond), PUSH1 (dest2 - 1), PUSH1 1, ADD, JUMPI
+    //   6. INVALID (trap)
+    //   7. dest2: JUMPDEST, PUSH1 0x42, PUSH1 0, MSTORE, PUSH1 0x20, PUSH1 0, RETURN
+    const prefix = r2Call(r2_child, 0, 0xffff, 0) ++ [_]u8{0x50};
+    const dest1: u8 = @intCast(prefix.len + 7); // 6 bytes for PUSH1/PUSH1/ADD/JUMP + 1 byte INVALID
+    const mid = [_]u8{ 0x60, dest1 - 1, 0x60, 0x01, 0x01, 0x56, 0xfe, 0x5b };
+    const dest2: u8 = @intCast(prefix.len + mid.len + 9); // PUSH1 1 + PUSH1/PUSH1/ADD/JUMPI + INVALID
+    const tail = [_]u8{
+        0x60, 0x01, 0x60, dest2 - 1, 0x60, 0x01, 0x01, 0x57, 0xfe,
+        0x5b, 0x60, 0x42, 0x60,      0x00, 0x52, 0x60, 0x20, 0x60,
+        0x00, 0xf3,
+    };
+    const code_a = prefix ++ mid ++ tail;
+
+    const flags = compiled_code.HardforkFlags.fromHardfork(.PRAGUE).asU8();
+    const slot_a = std.hash.Wyhash.hash(flags, &code_a) & (compiled_code.CodeCache.SLOTS - 1);
+
+    // Find a distinct child bytecode B (with no matching JUMPDESTs) that hashes to the exact same slot.
+    var code_b = [_]u8{ 0x61, 0x00, 0x00, 0x50, 0x00 }; // PUSH2 imm, POP, STOP
+    var found = false;
+    outer: for (0..256) |hi| {
+        for (0..256) |lo| {
+            code_b[1] = @intCast(hi);
+            code_b[2] = @intCast(lo);
+            if ((std.hash.Wyhash.hash(flags, &code_b) & (compiled_code.CodeCache.SLOTS - 1)) == slot_a) {
+                found = true;
+                break :outer;
+            }
+        }
+    }
+    try testing.expect(found);
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .PRAGUE, null, r1_caller, 0, null);
+    defer vm.deinit();
+    var results = std.heap.ArenaAllocator.init(testing.allocator);
+    defer results.deinit();
+    vm.result_allocator = results.allocator();
+
+    try vm.code.put(r1_contract, &code_a);
+    try vm.code.put(r2_child, &code_b);
+
+    // Run repeatedly on the same Evm: every call evicts slot_a twice (A -> B, next tx B -> A)
+    // and must neither misresolve dynamic jumps nor grow the long-lived arena.
+    var arena_after_warmup: usize = 0;
+    for (0..32) |i| {
+        _ = results.reset(.retain_capacity);
+        const result = vm.call(.{ .call = .{
+            .caller = r1_caller,
+            .to = r1_contract,
+            .value = 0,
+            .input = &.{},
+            .gas = 200_000,
+        } });
+        try testing.expect(result.success);
+        try testing.expectEqual(@as(u256, 0x42), try r1Word(result.output));
+        try testing.expectEqual(@as(usize, 0), vm.code_cache.evicted.items.len);
+        if (i == 4) arena_after_warmup = vm.arena.queryCapacity();
+        if (i > 4) try testing.expectEqual(arena_after_warmup, vm.arena.queryCapacity());
+    }
+}
+
+test "OOM during transaction setup preserves error_info OutOfMemory" {
+    const testing = std.testing;
+    const stop_code = [_]u8{0x00};
+    const access_list = [_]primitives.AccessList.AccessListEntry{
+        .{ .address = r1_other, .storage_keys = &.{[_]u8{0x01} ** 32} },
+    };
+
+    var oom_hits: usize = 0;
+    var fail_index: usize = 0;
+    while (fail_index < 64) : (fail_index += 1) {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = fail_index });
+        var vm: Evm = undefined;
+        vm.init(failing.allocator(), null, .PRAGUE, null, r1_caller, 0, null) catch |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            continue;
+        };
+        defer vm.deinit();
+
+        vm.setBytecode(&stop_code);
+        vm.setAccessList(&access_list);
+        const result = vm.call(.{ .call = .{
+            .caller = r1_caller,
+            .to = r1_contract,
+            .value = 0,
+            .input = &.{},
+            .gas = 100_000,
+        } });
+        if (!failing.has_induced_failure) {
+            try testing.expect(result.success);
+            break;
+        }
+        oom_hits += 1;
+        try testing.expect(!result.success);
+        try testing.expect(result.error_info != null);
+        try testing.expectEqualStrings("OutOfMemory", result.error_info.?);
+    }
+    try testing.expect(oom_hits > 0);
+}
+
+test "top-level REVERT and INVALID after forwarding msg.value restore balances without underflow (hostless and host)" {
+    const testing = std.testing;
+    const one_ether: u256 = 1_000_000_000_000_000_000;
+    const sink = r1_other;
+
+    // Contract holds 0 wei, receives 100 wei, forwards all 100 wei to `sink`, then REVERT or INVALID.
+    const forward_then_revert = r2Call(sink, 100, 0xffff, 0) ++ [_]u8{ 0x50, 0x60, 0x00, 0x60, 0x00, 0xfd };
+    const forward_then_invalid = r2Call(sink, 100, 0xffff, 0) ++ [_]u8{ 0x50, 0xfe };
+    const forks = [_]primitives.Hardfork{ .LONDON, .SHANGHAI, .CANCUN, .PRAGUE, .OSAKA };
+
+    for (forks) |fork| {
+        inline for (.{ forward_then_revert, forward_then_invalid }, 0..) |code, kind| {
+            const is_revert = kind == 0;
+
+            // 1. Hostless EVM
+            {
+                var vm: Evm = undefined;
+                try vm.init(testing.allocator, null, fork, null, r1_caller, 1, null);
+                defer vm.deinit();
+                try vm.balances.put(r1_caller, one_ether);
+                try vm.code.put(r1_contract, &code);
+
+                const result = vm.call(.{ .call = .{
+                    .caller = r1_caller,
+                    .to = r1_contract,
+                    .value = 100,
+                    .input = &.{},
+                    .gas = 200_000,
+                } });
+                try testing.expect(!result.success);
+                if (is_revert) {
+                    try testing.expect(result.gas_left > 0);
+                } else {
+                    try testing.expectEqual(@as(u64, 0), result.gas_left);
+                }
+                try testing.expectEqual(@as(u256, 0), vm.get_balance(r1_contract));
+                try testing.expectEqual(@as(u256, 0), vm.get_balance(sink));
+                try testing.expectEqual(one_ether, vm.get_balance(r1_caller));
+            }
+
+            // 2. Host-backed EVM (HostInterface)
+            {
+                var host: R1Host = undefined;
+                host.init(testing.allocator);
+                defer host.deinit();
+                const iface = host.interface();
+                iface.setBalance(r1_caller, one_ether);
+                iface.setCode(r1_contract, &code);
+
+                var vm: Evm = undefined;
+                try vm.init(testing.allocator, iface, fork, null, r1_caller, 1, null);
+                defer vm.deinit();
+
+                const result = vm.call(.{ .call = .{
+                    .caller = r1_caller,
+                    .to = r1_contract,
+                    .value = 100,
+                    .input = &.{},
+                    .gas = 200_000,
+                } });
+                try testing.expect(!result.success);
+                if (is_revert) {
+                    try testing.expect(result.gas_left > 0);
+                } else {
+                    try testing.expectEqual(@as(u64, 0), result.gas_left);
+                }
+                try testing.expectEqual(@as(u256, 0), iface.getBalance(r1_contract));
+                try testing.expectEqual(@as(u256, 0), iface.getBalance(sink));
+                try testing.expectEqual(one_ether, iface.getBalance(r1_caller));
+            }
+        }
+    }
+}
+
+test "differential: compiled interpreter matches uncompiled step interpreter across workloads" {
+    const testing = std.testing;
+    const Hardfork = primitives.Hardfork;
+    const CompiledEvm = evm.Evm(.{ .enable_compiled_interpreter = true });
+    const ReferenceEvm = evm.Evm(.{ .enable_compiled_interpreter = false });
+
+    const caller = primitives.Address.fromU256(0x1111);
+    const contract = primitives.Address.fromU256(0x2222);
+
+    // 1. Tight arithmetic loop + JUMPI + MULMOD + DIV + Osaka CLZ + MSTORE + RETURN
+    const loop_and_math = [_]u8{
+        0x60, 0x0a, // PUSH1 10 (counter)
+        0x60, 0x01, // PUSH1 1 (acc)
+        0x5b, // JUMPDEST (pc=4)
+        0x81, // DUP2 (counter)
+        0x15, // ISZERO
+        0x60, 0x22, // PUSH1 34 (exit)
+        0x57, // JUMPI
+        0x81, // DUP2
+        0x01, // ADD (acc += counter)
+        0x60, 0x03, // PUSH1 3
+        0x02, // MUL
+        0x60, 0x11, // PUSH1 17
+        0x80, // DUP1
+        0x91, // SWAP2
+        0x09, // MULMOD
+        0x60, 0x07, // PUSH1 7
+        0x01, // ADD
+        0x1e, // CLZ (Osaka)
+        0x60, 0x01, // PUSH1 1
+        0x01, // ADD
+        0x90, // SWAP1
+        0x60, 0x01, // PUSH1 1
+        0x90, // SWAP1
+        0x03, // SUB (counter -= 1)
+        0x90, // SWAP1
+        0x60, 0x04, // PUSH1 4
+        0x56, // JUMP
+        0x5b, // JUMPDEST (pc=34)
+        0x60, 0x00, // PUSH1 0
+        0x52, // MSTORE
+        0x60, 0x20, // PUSH1 32
+        0x60, 0x00, // PUSH1 0
+        0xf3, // RETURN
+    };
+
+    // 2. OOG inside a fused basic block must fall back to exact uncompiled semantics
+    const oog_block = [_]u8{
+        0x60, 0x01,
+        0x60, 0x02,
+        0x01, 0x60,
+        0x03, 0x02,
+        0x60, 0x00,
+        0x52, 0x60,
+        0x20, 0x60,
+        0x00, 0xf3,
+    };
+
+    // 3. Invalid jump inside fused push_jump
+    const bad_jump = [_]u8{ 0x60, 0x05, 0x56, 0x00, 0x00, 0x01 };
+
+    const cases = [_]struct { code: []const u8, gas: u64, fork: Hardfork }{
+        .{ .code = &loop_and_math, .gas = 500_000, .fork = .OSAKA },
+        .{ .code = &oog_block, .gas = 10, .fork = .OSAKA },
+        .{ .code = &oog_block, .gas = 100_000, .fork = .CANCUN },
+        .{ .code = &bad_jump, .gas = 50_000, .fork = .OSAKA },
+    };
+
+    for (cases) |tc| {
+        var compiled_vm: CompiledEvm = undefined;
+        try compiled_vm.init(testing.allocator, null, tc.fork, null, caller, 1, null);
+        defer compiled_vm.deinit();
+        try compiled_vm.code.put(contract, tc.code);
+        const r_comp = compiled_vm.call(.{ .call = .{
+            .caller = caller,
+            .to = contract,
+            .value = 0,
+            .input = &.{},
+            .gas = tc.gas,
+        } });
+
+        var ref_vm: ReferenceEvm = undefined;
+        try ref_vm.init(testing.allocator, null, tc.fork, null, caller, 1, null);
+        defer ref_vm.deinit();
+        try ref_vm.code.put(contract, tc.code);
+        const r_ref = ref_vm.call(.{ .call = .{
+            .caller = caller,
+            .to = contract,
+            .value = 0,
+            .input = &.{},
+            .gas = tc.gas,
+        } });
+
+        try testing.expectEqual(r_ref.success, r_comp.success);
+        try testing.expectEqual(r_ref.gas_left, r_comp.gas_left);
+        try testing.expectEqualSlices(u8, r_ref.output, r_comp.output);
+    }
+}

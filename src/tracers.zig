@@ -588,7 +588,7 @@ pub const FourByteTracer = struct {
         var it = self.counts.keyIterator();
         var i: usize = 0;
         while (it.next()) |key| : (i += 1) keys[i] = key.*;
-        std.mem.sort(Key, keys, {}, keyLessThan);
+        std.mem.sortUnstable(Key, keys, {}, keyLessThan);
         var json: Stringify = .{ .writer = writer };
         try json.beginObject();
         for (keys) |key| {
@@ -871,7 +871,7 @@ pub const PrestateTracer = struct {
         if (self.err) |e| return e;
         const addresses = try self.allocator.dupe(Address, self.accounts.keys());
         defer self.allocator.free(addresses);
-        std.mem.sort(Address, addresses, {}, addressLessThan);
+        std.mem.sortUnstable(Address, addresses, {}, addressLessThan);
         var json: Stringify = .{ .writer = writer };
         if (!self.options.diff_mode) return self.writeSection(&json, addresses, .prestate);
         try json.beginObject();
@@ -965,7 +965,7 @@ pub const PrestateTracer = struct {
         if (fields.storage) {
             const slots = try self.allocator.dupe(u256, state.storage.keys());
             defer self.allocator.free(slots);
-            std.mem.sort(u256, slots, {}, u256LessThan);
+            std.mem.sortUnstable(u256, slots, {}, u256LessThan);
             try json.objectField("storage");
             try json.beginObject();
             for (slots) |slot| {
@@ -1095,7 +1095,7 @@ pub const AccessListInspector = struct {
         if (self.err) |e| return e;
         const slots = try allocator.dupe(SlotKey, self.slots.keys());
         defer allocator.free(slots);
-        std.mem.sort(SlotKey, slots, {}, slotLessThan);
+        std.mem.sortUnstable(SlotKey, slots, {}, slotLessThan);
 
         var addresses: std.AutoArrayHashMapUnmanaged(Address, void) = .{};
         defer addresses.deinit(allocator);
@@ -1105,7 +1105,7 @@ pub const AccessListInspector = struct {
         for (slots) |slot| try addresses.put(allocator, .{ .bytes = slot.address }, {});
         const sorted = try allocator.dupe(Address, addresses.keys());
         defer allocator.free(sorted);
-        std.mem.sort(Address, sorted, {}, addressLessThan);
+        std.mem.sortUnstable(Address, sorted, {}, addressLessThan);
 
         var entries: std.ArrayList(AccessListEntry) = .{};
         errdefer {
@@ -1258,7 +1258,7 @@ pub const GasProfiler = struct {
             const op: u8 = @intCast(i);
             try ranks.append(allocator, .{ .op = op, .name = opcode_mod.getOpName(op), .stats = stats });
         }
-        std.mem.sort(OpcodeRank, ranks.items, {}, rankLessThan);
+        std.mem.sortUnstable(OpcodeRank, ranks.items, {}, rankLessThan);
         ranks.shrinkRetainingCapacity(@min(limit, ranks.items.len));
         return ranks.toOwnedSlice(allocator);
     }
@@ -1463,7 +1463,7 @@ pub const CoverageInspector = struct {
         if (self.err) |e| return e;
         const hashes = try self.allocator.dupe([32]u8, self.code_hashes.keys());
         defer self.allocator.free(hashes);
-        std.mem.sort([32]u8, hashes, {}, hashLessThan);
+        std.mem.sortUnstable([32]u8, hashes, {}, hashLessThan);
 
         var pcs: std.ArrayList(u64) = .{};
         defer pcs.deinit(self.allocator);
@@ -1484,9 +1484,9 @@ pub const CoverageInspector = struct {
             while (jumpi_it.next()) |key| if (std.mem.eql(u8, &key.code_hash, &hash)) try jumpi_pcs.append(self.allocator, key.pc);
             var edge_it = self.edges.keyIterator();
             while (edge_it.next()) |key| if (std.mem.eql(u8, &key.code_hash, &hash)) try edges.append(self.allocator, key.*);
-            std.mem.sort(u64, pcs.items, {}, u64LessThan);
-            std.mem.sort(u64, jumpi_pcs.items, {}, u64LessThan);
-            std.mem.sort(EdgeKey, edges.items, {}, edgeLessThan);
+            std.mem.sortUnstable(u64, pcs.items, {}, u64LessThan);
+            std.mem.sortUnstable(u64, jumpi_pcs.items, {}, u64LessThan);
+            std.mem.sortUnstable(EdgeKey, edges.items, {}, edgeLessThan);
 
             var hash_key: [66]u8 = undefined;
             try json.objectField(std.fmt.bufPrint(&hash_key, "0x{x}", .{@as([]const u8, &hash)}) catch unreachable);

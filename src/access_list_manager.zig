@@ -9,6 +9,7 @@ const StorageKey = primitives.State.StorageKey;
 const AccessList = primitives.AccessList.AccessList;
 const gas_constants = primitives.GasConstants;
 const Allocator = std.mem.Allocator;
+const evm_mod = @import("evm.zig");
 
 /// Context for hashing StorageKey in hash maps
 const StorageKeyContext = struct {
@@ -29,6 +30,9 @@ pub const AccessListManager = struct {
     allocator: Allocator,
     warm_addresses: std.AutoArrayHashMap(Address, void),
     warm_storage_slots: std.ArrayHashMap(StorageKey, void, StorageKeyContext, false),
+    /// When set (Berlin+), active precompiles for this hardfork are implicitly warm in O(1)
+    /// without inserting ~20 addresses into `warm_addresses` on every transaction.
+    precompile_hardfork: ?primitives.Hardfork = null,
 
     /// Initialize empty access list manager
     pub fn init(allocator: Allocator) AccessListManager {
@@ -36,6 +40,7 @@ pub const AccessListManager = struct {
             .allocator = allocator,
             .warm_addresses = std.AutoArrayHashMap(Address, void).init(allocator),
             .warm_storage_slots = std.ArrayHashMap(StorageKey, void, StorageKeyContext, false).init(allocator),
+            .precompile_hardfork = null,
         };
     }
 
@@ -45,9 +50,21 @@ pub const AccessListManager = struct {
         self.warm_storage_slots.deinit();
     }
 
+    /// O(1) check whether `addr` is an implicitly-warm active precompile.
+    /// Rejects non-precompile addresses in 2 loads (first 18 bytes != 0).
+    pub inline fn isPrecompileWarm(self: *const AccessListManager, addr: Address) bool {
+        const hf = self.precompile_hardfork orelse return false;
+        const head0 = std.mem.readInt(u64, addr.bytes[0..8], .little);
+        const head1 = std.mem.readInt(u64, addr.bytes[8..16], .little);
+        const head2 = std.mem.readInt(u16, addr.bytes[16..18], .little);
+        if ((head0 | head1 | head2) != 0) return false;
+        return evm_mod.isPrecompileAddress(addr, hf);
+    }
+
     /// Access an address and return gas cost (warm=100, cold=2600)
     /// EIP-2929: First access is cold, subsequent accesses are warm
     pub fn access_address(self: *AccessListManager, addr: Address) !u64 {
+        if (self.isPrecompileWarm(addr)) return gas_constants.WarmStorageReadCost;
         const entry = try self.warm_addresses.getOrPut(addr);
         return if (entry.found_existing)
             gas_constants.WarmStorageReadCost
@@ -69,6 +86,7 @@ pub const AccessListManager = struct {
     /// Pre-warm multiple addresses (marks them as already accessed)
     pub fn pre_warm_addresses(self: *AccessListManager, addresses: []const Address) !void {
         for (addresses) |addr| {
+            if (self.isPrecompileWarm(addr)) continue;
             _ = try self.warm_addresses.getOrPut(addr);
         }
     }
@@ -84,7 +102,9 @@ pub const AccessListManager = struct {
     pub fn pre_warm_from_access_list(self: *AccessListManager, access_list: AccessList) !void {
         for (access_list) |entry| {
             // Pre-warm address
-            _ = try self.warm_addresses.getOrPut(entry.address);
+            if (!self.isPrecompileWarm(entry.address)) {
+                _ = try self.warm_addresses.getOrPut(entry.address);
+            }
 
             // Pre-warm storage keys (convert Hash to u256)
             for (entry.storage_keys) |key_hash| {
@@ -102,6 +122,7 @@ pub const AccessListManager = struct {
     }
     /// Check if address is warm
     pub fn is_address_warm(self: *const AccessListManager, addr: Address) bool {
+        if (self.isPrecompileWarm(addr)) return true;
         return self.warm_addresses.contains(addr);
     }
 
@@ -116,6 +137,7 @@ pub const AccessListManager = struct {
     pub fn clear(self: *AccessListManager) void {
         self.warm_addresses.clearRetainingCapacity();
         self.warm_storage_slots.clearRetainingCapacity();
+        self.precompile_hardfork = null;
     }
 
     /// Create O(1) zero-allocation snapshot for nested call revert handling.

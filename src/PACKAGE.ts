@@ -24,6 +24,8 @@ const storage_srcs = S.Filegroup({
 const frame_srcs = S.Filegroup({
   srcs: [
     S.file("frame.zig"),
+    S.file("compiled_code.zig"),
+    S.file("u256_math.zig"),
     S.file("opcode.zig"),
     S.file("errors.zig"),
     S.file("evm_config.zig"),

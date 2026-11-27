@@ -34,6 +34,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const dest_pc = std.math.cast(u32, dest) orelse return error.InvalidJumpDestination;
 
             // Validate jump destination
+            try frame.bytecode.ensureAnalyzed();
             if (!frame.bytecode.isValidJumpDest(dest_pc)) return error.InvalidJump;
 
             frame.pc = dest_pc;
@@ -49,6 +50,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                 const dest_pc = std.math.cast(u32, dest) orelse return error.InvalidJumpDestination;
 
                 // Validate jump destination
+                try frame.bytecode.ensureAnalyzed();
                 if (!frame.bytecode.isValidJumpDest(dest_pc)) return error.InvalidJump;
 
                 frame.pc = dest_pc;
