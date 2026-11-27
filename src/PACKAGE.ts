@@ -73,12 +73,17 @@ const ffi_srcs = S.Filegroup({
   ],
 })
 
+const bench_utils = S.Filegroup({
+  srcs: [S.file("bench_utils.zig")],
+})
+
 const docs_srcs = S.Filegroup({
   srcs: [...S.glob(["*.md"])],
 })
 
 export const Package = S.Package({
   targets: {
+    bench_utils,
     bytecode_srcs,
     storage_srcs,
     frame_srcs,

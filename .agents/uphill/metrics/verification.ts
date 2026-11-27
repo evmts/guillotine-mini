@@ -44,10 +44,7 @@ for (const file of leanFiles) {
 lines.push(`lean-theorems ${totalTheorems}`);
 
 // 2. Zig inline test coverage
-const zigFiles = [
-  ...new Glob("src/**/*.zig").scanSync("."),
-  ...new Glob("client/**/*.zig").scanSync("."),
-]
+const zigFiles = [...new Glob("src/**/*.zig").scanSync(".")]
   .sort()
   .filter(isProdZig);
 
@@ -60,10 +57,9 @@ const zigPct = zigFiles.length > 0 ? Math.round((zigWithTests * 1000) / zigFiles
 lines.push(`zig-inline-test-coverage ${zigPct}`);
 
 // 3. TypeScript test-to-source file ratio
-const allTs = [
-  ...new Glob("ts/**/*.ts").scanSync("."),
-  ...new Glob("client-ts/**/*.ts").scanSync("."),
-].filter((f) => !f.includes("node_modules/") && !f.endsWith(".d.ts"));
+const allTs = [...new Glob("ts/**/*.ts").scanSync(".")].filter(
+  (f) => !f.includes("node_modules/") && !f.endsWith(".d.ts"),
+);
 
 let tsProd = 0;
 let tsTests = 0;

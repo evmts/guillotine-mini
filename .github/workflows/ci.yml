@@ -22,32 +22,15 @@ jobs:
         os: [macos-15, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: guillotine-mini
     steps:
       - &checkout_project
         uses: actions/checkout@v5
-        with:
-          path: guillotine-mini
-      - &checkout_fixtures
-        name: Check out native test fixtures
-        run: git submodule update --init --depth 1 -- execution-specs ethereum-tests
-      - &read_native_pin
-        name: Read native dependency pin
-        id: native
-        working-directory: .
-        run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
-      - &checkout_voltaire
-        uses: actions/checkout@v5
-        with:
-          repository: evmts/voltaire
-          ref: ${{ steps.native.outputs.voltaire }}
-          path: voltaire
-      - &checkout_voltaire_submodules
-        name: Check out Voltaire HTTPS submodules
-        working-directory: voltaire
-        run: git submodule update --init --depth 1 -- packages/voltaire-zig/lib/libwally-core vendor/execution-apis
+      - &check_voltaire_pin
+        name: Verify Voltaire pin parity (build.zig.zon vs native-dependencies.json)
+        run: |
+          set -euo pipefail
+          pin=$(jq -r .voltaire.revision native-dependencies.json)
+          grep -Fq "evmts/voltaire/archive/${pin}.tar.gz" build.zig.zon
       - &install_zig
         name: Install Zig 0.15.2
         uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a # v1
@@ -65,11 +48,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('voltaire/Cargo.lock') }}
-      - &build_native_crypto
-        name: Build native crypto archive
-        working-directory: voltaire
-        run: cargo build --release --lib
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native-dependencies.json') }}
       - name: Build
         run: zig build
       - name: Build native static library
@@ -86,36 +65,54 @@ jobs:
         run: zig build test-trace -Doptimize=ReleaseSafe
       - name: Native test suite
         run: zig build test
-      - name: Test utilities, blockchain, and EVM adapter
-        run: zig build test-utils test-blockchain test-evm-adapter
-      - name: Install uv for spec fixtures
-        if: runner.os == 'Linux'
-        uses: astral-sh/setup-uv@v7
-      - name: Fill PUSH0 state fixtures
-        if: runner.os == 'Linux'
-        working-directory: guillotine-mini/execution-specs
-        run: |
-          rm -f tests/eest/static/state_tests/.filled
-          uv run --python 3.12 --extra fill --extra test fill tests/eest/shanghai/eip3855_push0 \
-            -m state_test --output tests/eest/static/state_tests --clean
-      - name: Run execution-specs smoke tests
-        if: runner.os == 'Linux'
-        shell: bash
-        env:
-          TEST_FORMAT: json
-        run: |
-          zig build specs-shanghai-push0 -Dspecs-use-existing=true | tee "$RUNNER_TEMP/spec-smoke.log"
-          sed -n '/^{/p' "$RUNNER_TEMP/spec-smoke.log" | jq -es 'any(.[]; .success and .passed > 0)'
+      - name: Test utilities and header validator
+        run: zig build test-utils test-header-validator
       - name: Compile EVM benchmarks
         run: zig build check-bench-evm
+      - name: Verify clean-room zig fetch --save consumer build
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/pkg/guillotine-mini"
+          tar --exclude=.git --exclude=.jj --exclude=.zig-cache --exclude=zig-out --exclude=node_modules --exclude=docs/node_modules --exclude=execution-specs --exclude=ethereum-tests --exclude=execution-spec-tests -cf - . | tar -xf - -C "$tmp/pkg/guillotine-mini"
+          tar -czf "$tmp/guillotine-mini.tar.gz" -C "$tmp/pkg" guillotine-mini
+          mkdir -p "$tmp/consumer"
+          cd "$tmp/consumer"
+          zig init
+          zig fetch --save "$tmp/guillotine-mini.tar.gz"
+          cat > src/main.zig << 'EOF'
+          const evm = @import("guillotine_mini");
+          pub fn main() void {
+              _ = evm.Hardfork.OSAKA;
+          }
+          EOF
+          cat > build.zig << 'EOF'
+          const std = @import("std");
+          pub fn build(b: *std.Build) void {
+              const target = b.standardTargetOptions(.{});
+              const optimize = b.standardOptimizeOption(.{});
+              const dep = b.dependency("guillotine_mini", .{ .target = target, .optimize = optimize });
+              const exe = b.addExecutable(.{
+                  .name = "consumer-smoke",
+                  .root_module = b.createModule(.{
+                      .root_source_file = b.path("src/main.zig"),
+                      .target = target,
+                      .optimize = optimize,
+                      .imports = &.{.{ .name = "guillotine_mini", .module = dep.module("guillotine_mini") }},
+                  }),
+              });
+              if (target.result.os.tag == .linux) exe.root_module.linkSystemLibrary("gcc_s", .{});
+              b.step("run", "Run consumer smoke").dependOn(&b.addRunArtifact(exe).step);
+          }
+          EOF
+          zig build run
 
   factory-audit:
     name: Factory, Trust & Lighthouse Audit
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: guillotine-mini
     steps:
       - *checkout_project
       - uses: oven-sh/setup-bun@v2
@@ -141,33 +138,22 @@ jobs:
         with:
           name: lighthouse-backpressure-audit
           path: |
-            guillotine-mini/.smithers/audit/index.html
-            guillotine-mini/.smithers/audit/report.json
-            guillotine-mini/.smithers/audit/latest.md
+            .smithers/audit/index.html
+            .smithers/audit/report.json
+            .smithers/audit/latest.md
           retention-days: 14
 
   smithers:
     runs-on: macos-15
     timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: guillotine-mini
     env:
-      # Trust boundary: PRs and forks ONLY receive read-only cache access so untrusted
-      # code can never poison the shared Smithers Cloud object store (build.smithers.sh).
-      # Only canonical pushes to evmts/guillotine-mini main receive the write token.
       SMITHERS_CACHE_READ_TOKEN: ${{ secrets.SMITHERS_CACHE_READ_TOKEN }}
       SMITHERS_CACHE_WRITE_TOKEN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'evmts/guillotine-mini' && secrets.SMITHERS_CACHE_WRITE_TOKEN || '' }}
     steps:
       - *checkout_project
-      - *checkout_fixtures
-      - *read_native_pin
-      - *checkout_voltaire
-      - *checkout_voltaire_submodules
       - *install_zig
       - *install_rust
       - *cache_cargo
-      - *build_native_crypto
       - uses: actions/setup-node@v5
         with:
           node-version: '26'
@@ -176,72 +162,44 @@ jobs:
           bun-version: '1.4.2'
       - name: Install WASM optimizer
         run: npm install --global --ignore-scripts binaryen@132.0.0
-      - name: Install Rust WASM target and build WASM crypto archive
-        working-directory: voltaire
+      - name: Install Rust WASM target
         run: |
           rustup default "$RUSTUP_TOOLCHAIN"
           rustup target add wasm32-unknown-unknown --toolchain "$RUSTUP_TOOLCHAIN"
-          cargo build --release --target wasm32-unknown-unknown --no-default-features --features portable
-      # The published CLI rejects a separate Effect install while loading
-      # declarations. The client-ts job installs those dependencies and tests the client.
       - name: Plan the Smithers CI graph (trust-enforced)
         run: bun .smithers/scripts/run-trusted-ci.ts --attestation-out .smithers/reports/ci-attestation.json ci '//...' --plan
       - name: Run the native Smithers CI targets (trust-enforced)
         run: |
-          bun .smithers/scripts/run-trusted-ci.ts ci '//.smithers/...' '//client/...' '//src/...' \
-            '//:test_unit' '//:test_spec_runner' '//:test_runner' '//:test_trace' '//:test_wasm' --verbose
+          bun .smithers/scripts/run-trusted-ci.ts ci '//.smithers/...' '//src/...' '//ts/...' \
+            '//:test_unit' '//:test_spec_runner' '//:test_trace' '//:test_wasm' --verbose
 
-  client-ts:
+  ts-sdk:
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: guillotine-mini
+    timeout-minutes: 15
     steps:
       - *checkout_project
-      - *checkout_fixtures
       - uses: actions/setup-node@v5
         with:
           node-version: '24.12.0'
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.2'
-      - name: Run TypeScript client tests
-        working-directory: guillotine-mini/client-ts
-        run: |
-          bun install --frozen-lockfile
-          bun run test
-      - name: Type-check client code
-        working-directory: guillotine-mini/client-ts
-        run: |
-          # Smithers evaluates PACKAGE.ts declarations in its own CI job.
-          config=$(mktemp ./tsconfig.ci.XXXXXX)
-          trap 'rm -f "$config"' EXIT
-          printf '%s\n' '{"extends":"./tsconfig.json","exclude":["node_modules","**/PACKAGE.ts"]}' > "$config"
-          bun run tsc --project "$config"
-      - name: Run ExEx manager tests
-        run: bun test ./ts/exex/manager.test.ts
+      - name: Run TypeScript SDK & ExEx tests
+        run: bun test ./ts/
 
   lean-diff:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: guillotine-mini
     steps:
       - *checkout_project
-      - *read_native_pin
-      - *checkout_voltaire
-      - *checkout_voltaire_submodules
       - *install_zig
       - *install_rust
       - *cache_cargo
-      - *build_native_crypto
       - name: Install the pinned Lean 4 toolchain
         uses: leanprover/lean-action@v1
         with:
-          lake-package-directory: guillotine-mini/spec/lean
+          lake-package-directory: spec/lean
           auto-config: 'false'
           use-mathlib-cache: 'false'
           use-github-cache: 'false'

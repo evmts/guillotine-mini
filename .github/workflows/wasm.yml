@@ -15,25 +15,8 @@ jobs:
   wasm:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: guillotine-mini
     steps:
       - uses: actions/checkout@v5
-        with:
-          path: guillotine-mini
-      - name: Read Voltaire revision
-        id: native
-        working-directory: .
-        run: echo "voltaire=$(jq -r .voltaire.revision guillotine-mini/native-dependencies.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v5
-        with:
-          repository: evmts/voltaire
-          ref: ${{ steps.native.outputs.voltaire }}
-          path: voltaire
-      - name: Check out Voltaire HTTPS submodules
-        working-directory: voltaire
-        run: git submodule update --init --depth 1 -- packages/voltaire-zig/lib/libwally-core vendor/execution-apis
       - uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a
         with:
           version: 0.15.2
@@ -87,13 +70,13 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: guillotine-mini-wasm
-          path: guillotine-mini/zig-out/bin/guillotine_mini.wasm
+          path: zig-out/bin/guillotine_mini.wasm
           if-no-files-found: error
       - uses: actions/upload-artifact@v6
         with:
           name: guillotine-mini-wasm-modular
           path: |
-            guillotine-mini/zig-out/bin/guillotine_mini_core.wasm
-            guillotine-mini/zig-out/bin/precompile-*.wasm
-            guillotine-mini/zig-out/bin/precompiles.mjs
+            zig-out/bin/guillotine_mini_core.wasm
+            zig-out/bin/precompile-*.wasm
+            zig-out/bin/precompiles.mjs
           if-no-files-found: error

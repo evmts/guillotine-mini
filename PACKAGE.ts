@@ -1,53 +1,11 @@
 import { Smithers as S } from "@smthrs/targets"
 import { Package as srcPkg } from "./src/PACKAGE.ts"
-import { Package as clientPkg } from "./client/PACKAGE.ts"
-import { Package as clientDbPkg } from "./client/db/PACKAGE.ts"
-import { Package as clientTriePkg } from "./client/trie/PACKAGE.ts"
-import { Package as clientStatePkg } from "./client/state/PACKAGE.ts"
-import { Package as clientEvmPkg } from "./client/evm/PACKAGE.ts"
-import { Package as clientBlockchainPkg } from "./client/blockchain/PACKAGE.ts"
-import { Package as clientTxpoolPkg } from "./client/txpool/PACKAGE.ts"
-import { Package as clientNetworkPkg } from "./client/network/PACKAGE.ts"
-import { Package as clientRpcPkg } from "./client/rpc/PACKAGE.ts"
-import { Package as clientEnginePkg } from "./client/engine/PACKAGE.ts"
-import { Package as clientSyncPkg } from "./client/sync/PACKAGE.ts"
 import { Package as tsUtilsPkg } from "./src/utils/PACKAGE.ts"
-import { Package as clientTsDbPkg } from "./client-ts/db/PACKAGE.ts"
-import { Package as clientTsStatePkg } from "./client-ts/state/PACKAGE.ts"
-import { Package as clientTsTriePkg } from "./client-ts/trie/PACKAGE.ts"
-import { Package as clientTsEvmPkg } from "./client-ts/evm/PACKAGE.ts"
-import { Package as clientTsBlockchainPkg } from "./client-ts/blockchain/PACKAGE.ts"
-import { Package as clientTsEnginePkg } from "./client-ts/engine/PACKAGE.ts"
-import { Package as clientTsNetworkPkg } from "./client-ts/network/PACKAGE.ts"
-import { Package as clientTsRpcPkg } from "./client-ts/rpc/PACKAGE.ts"
-import { Package as clientTsRunnerPkg } from "./client-ts/runner/PACKAGE.ts"
-import { Package as clientTsSyncPkg } from "./client-ts/sync/PACKAGE.ts"
-import { Package as clientTsTxpoolPkg } from "./client-ts/txpool/PACKAGE.ts"
+import { Package as exexPkg } from "./ts/exex/PACKAGE.ts"
 
-const { bytecode_srcs, storage_srcs, frame_srcs, evm_srcs, ffi_srcs } = srcPkg
-const { bench_utils, cli_srcs } = clientPkg
-const { test: clientDbTest } = clientDbPkg
-const { test: clientTrieTest } = clientTriePkg
-const { test: clientStateTest } = clientStatePkg
-const { test: clientEvmTest } = clientEvmPkg
-const { test: clientBlockchainTest, srcs: clientBlockchainSrcs } = clientBlockchainPkg
-const { test: clientTxpoolTest } = clientTxpoolPkg
-const { test: clientNetworkTest } = clientNetworkPkg
-const { test: clientRpcTest } = clientRpcPkg
-const { test: clientEngineTest } = clientEnginePkg
-const { test: clientSyncTest } = clientSyncPkg
+const { bench_utils, bytecode_srcs, storage_srcs, frame_srcs, evm_srcs, ffi_srcs } = srcPkg
 const { test: tsUtilsTest } = tsUtilsPkg
-const { test: clientTsDbTest } = clientTsDbPkg
-const { test: clientTsStateTest } = clientTsStatePkg
-const { test: clientTsTrieTest } = clientTsTriePkg
-const { test: clientTsEvmTest } = clientTsEvmPkg
-const { test: clientTsBlockchainTest } = clientTsBlockchainPkg
-const { test: clientTsEngineTest } = clientTsEnginePkg
-const { test: clientTsNetworkTest } = clientTsNetworkPkg
-const { test: clientTsRpcTest } = clientTsRpcPkg
-const { test: clientTsRunnerTest } = clientTsRunnerPkg
-const { test: clientTsSyncTest } = clientTsSyncPkg
-const { test: clientTsTxpoolTest } = clientTsTxpoolPkg
+const { test: exexTest } = exexPkg
 
 const build_files = S.Filegroup({
   srcs: [S.file("build.zig"), S.file("build.zig.zon")],
@@ -70,6 +28,7 @@ const misc_files = S.Filegroup({
       "cloudflare/**",
       "prd/**",
       "test/**",
+      "include/**",
       ".github/**",
       ".githooks/**",
       ".claude/**",
@@ -155,30 +114,25 @@ const bench_wasm = S.Shell.Test({
   sandbox: "none",
 })
 
-const bench_cli = S.Shell.Test({
-  bin: S.Host.bin("sh"),
-  tools: [S.Host.bin("zig")],
-  args: [".smithers/run-zig.sh", "build", "bench-cli", "-Doptimize=ReleaseFast"],
-  env: { BENCH_JSON_OUT: ".bench-results/client-cli.json" },
-  data: [S.file("//.smithers/run-zig.sh"), build_files, bench_utils, cli_srcs],
-  exclusive: true,
-  sandbox: "none",
-})
-
 // ---------------------------------------------------------------------------
 // Core EVM & WASM unit/integration tests
 // ---------------------------------------------------------------------------
 
 /** Spec runner sources compiled by `zig build unit` and `test-spec-runner` without fixtures. */
 const spec_runner_srcs = S.Filegroup({
-  srcs: [S.file("test/specs/runner.zig"), S.file("test/specs/test_host.zig"), S.file("test/specs/assembler.zig")],
+  srcs: [
+    S.file("test/specs/runner.zig"),
+    S.file("test/specs/test_host.zig"),
+    S.file("test/specs/assembler.zig"),
+    S.file("test/specs/header_validator.zig"),
+  ],
 })
 
 const test_unit = S.Shell.Test({
   bin: S.Host.bin("sh"),
   tools: [S.Host.bin("zig")],
   args: [".smithers/run-zig.sh", "build", "unit"],
-  data: [S.file("//.smithers/run-zig.sh"), build_files, evm_srcs, cli_srcs, spec_runner_srcs, clientBlockchainSrcs],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, evm_srcs, spec_runner_srcs],
   sandbox: "none",
 })
 
@@ -186,7 +140,7 @@ const test_spec_runner = S.Shell.Test({
   bin: S.Host.bin("sh"),
   tools: [S.Host.bin("zig")],
   args: [".smithers/run-zig.sh", "build", "test-spec-runner"],
-  data: [S.file("//.smithers/run-zig.sh"), build_files, evm_srcs, spec_runner_srcs, clientBlockchainSrcs],
+  data: [S.file("//.smithers/run-zig.sh"), build_files, evm_srcs, spec_runner_srcs],
   sandbox: "none",
 })
 
@@ -198,31 +152,21 @@ const test_trace = S.Shell.Test({
   sandbox: "none",
 })
 
-const test_runner = S.Shell.Test({
-  bin: S.Host.bin("sh"),
-  tools: [S.Host.bin("zig")],
-  args: [".smithers/run-zig.sh", "build", "test-runner"],
-  data: [S.file("//.smithers/run-zig.sh"), build_files, evm_srcs, cli_srcs],
-  sandbox: "none",
-})
-
 const test_wasm = S.Shell.Test({
   bin: S.Host.bin("sh"),
   tools: [S.Host.bin("zig"), S.Host.bin("node"), S.Host.bin("wasm-opt")],
   args: [".smithers/run-zig.sh", "build", "test-wasm", "test-wasm-size"],
   data: [
-    S.file("//.smithers/run-zig.sh"), build_files, ffi_srcs, S.file("native-dependencies.json"),
-    S.file("test/wasm.test.mjs"), S.file("test/wasm-size.mjs"), S.file("wasm/precompiles.mjs"),
+    S.file("//.smithers/run-zig.sh"),
+    build_files,
+    ffi_srcs,
+    S.file("native-dependencies.json"),
+    S.file("test/wasm.test.mjs"),
+    S.file("test/wasm-size.mjs"),
+    S.file("wasm/precompiles.mjs"),
   ],
   sandbox: "none",
 })
-
-// ---------------------------------------------------------------------------
-// Benchmark summary tool
-// Benchmarks are exclusive tests: select them explicitly or with
-// `smthrs test --include-exclusive //...`. A Suite over them would make every
-// wildcard `smthrs ci //...` refuse, so none is declared.
-// ---------------------------------------------------------------------------
 
 const bench_summary = S.Shell.Run({
   bin: S.Host.bin("bun"),
@@ -236,30 +180,9 @@ const test_all = S.Suite({
     test_unit,
     test_spec_runner,
     test_trace,
-    test_runner,
     test_wasm,
-    clientDbTest,
-    clientTrieTest,
-    clientStateTest,
-    clientEvmTest,
-    clientBlockchainTest,
-    clientTxpoolTest,
-    clientNetworkTest,
-    clientRpcTest,
-    clientEngineTest,
-    clientSyncTest,
     tsUtilsTest,
-    clientTsDbTest,
-    clientTsStateTest,
-    clientTsTrieTest,
-    clientTsEvmTest,
-    clientTsBlockchainTest,
-    clientTsEngineTest,
-    clientTsNetworkTest,
-    clientTsRpcTest,
-    clientTsRunnerTest,
-    clientTsSyncTest,
-    clientTsTxpoolTest,
+    exexTest,
   ],
 })
 
@@ -276,12 +199,10 @@ export const Package = S.Package({
     bench_evm_core,
     bench_ffi,
     bench_wasm,
-    bench_cli,
     spec_runner_srcs,
     test_unit,
     test_spec_runner,
     test_trace,
-    test_runner,
     test_wasm,
     bench_summary,
     test_all,

@@ -29,10 +29,7 @@ function isProdTs(path: string): boolean {
 }
 
 // 1. Zig production file line counts
-const zigFiles = [
-  ...new Glob("src/**/*.zig").scanSync("."),
-  ...new Glob("client/**/*.zig").scanSync("."),
-]
+const zigFiles = [...new Glob("src/**/*.zig").scanSync(".")]
   .sort()
   .filter(isProdZig);
 
@@ -52,10 +49,7 @@ for (const file of wasmSurface) {
 }
 
 // 3. TypeScript production file line counts
-const tsFiles = [
-  ...new Glob("ts/**/*.ts").scanSync("."),
-  ...new Glob("client-ts/**/*.ts").scanSync("."),
-]
+const tsFiles = [...new Glob("ts/**/*.ts").scanSync(".")]
   .sort()
   .filter(isProdTs);
 

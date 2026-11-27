@@ -33,10 +33,7 @@ function stripLine(line: string): string {
   return line.replace(/\/\/.*$/, "").replace(/"(?:\\.|[^"\\])*"/g, '""');
 }
 
-const zigFiles = [
-  ...new Glob("src/**/*.zig").scanSync("."),
-  ...new Glob("client/**/*.zig").scanSync("."),
-]
+const zigFiles = [...new Glob("src/**/*.zig").scanSync(".")]
   .sort()
   .filter(isProdZig);
 
@@ -100,10 +97,7 @@ for (const file of zigFiles) {
 const density = totalProdLines > 0 ? (totalAsserts * 1000) / totalProdLines : 0;
 lines.push(`zig-assertion-density ${density.toFixed(2)}`);
 
-const tsFiles = [
-  ...new Glob("ts/**/*.ts").scanSync("."),
-  ...new Glob("client-ts/**/*.ts").scanSync("."),
-]
+const tsFiles = [...new Glob("ts/**/*.ts").scanSync(".")]
   .sort()
   .filter(isProdTs);
 

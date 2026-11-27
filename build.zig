@@ -31,7 +31,6 @@ pub fn build(b: *std.Build) void {
     const primitives_mod = primitives_dep.module("primitives");
     const crypto_mod = primitives_dep.module("crypto");
     const precompiles_mod = primitives_dep.module("precompiles");
-    const blockchain_mod = primitives_dep.module("blockchain");
     const evm_options = b.addOptions();
     evm_options.addOption(?[]const u8, "hardfork", b.option([]const u8, "hardfork", "Default EVM hardfork"));
     evm_options.addOption(?u16, "max_call_depth", b.option(u16, "max-call-depth", "EVM message call depth limit"));
@@ -42,15 +41,6 @@ pub fn build(b: *std.Build) void {
     evm_options.addOption(?usize, "memory_initial_capacity", b.option(usize, "memory-initial-capacity", "EVM initial memory capacity"));
     evm_options.addOption(?u64, "memory_limit", b.option(u64, "memory-limit", "EVM memory size limit"));
     const evm_options_mod = evm_options.createModule();
-    const jsonrpc_mod = b.addModule("jsonrpc", .{
-        .root_source_file = primitives_dep.path("packages/voltaire-zig/src/jsonrpc/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-        },
-    });
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -172,483 +162,28 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_osaka_properties.step);
     b.step("test-osaka-properties", "Run Osaka execution and precompile properties").dependOn(&run_osaka_properties.step);
 
-    // Client DB module (database abstraction layer)
-    const client_db_mod = b.addModule("client_db", .{
-        .root_source_file = b.path("client/db/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-        },
+    const header_validator_tests = b.addTest(.{
+        .name = "header-validator",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/specs/header_validator.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "voltaire", .module = primitives_mod },
+            },
+        }),
     });
-
-    const client_db_tests = b.addTest(.{
-        .root_module = client_db_mod,
-    });
-    linkRustSupport(client_db_tests);
-
-    const run_client_db_tests = b.addRunArtifact(client_db_tests);
-    test_step.dependOn(&run_client_db_tests.step);
-    unit_test_step.dependOn(&run_client_db_tests.step);
-
-    const client_db_test_step = b.step("test-db", "Run database abstraction layer tests");
-    client_db_test_step.dependOn(&run_client_db_tests.step);
-
-    // Client Trie module (Merkle Patricia Trie)
-    const client_trie_mod = b.addModule("client_trie", .{
-        .root_source_file = b.path("client/trie/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-        },
-    });
-
-    const client_trie_tests = b.addTest(.{
-        .root_module = client_trie_mod,
-    });
-    linkRustSupport(client_trie_tests);
-
-    const run_client_trie_tests = b.addRunArtifact(client_trie_tests);
-
-    // client/trie/fixtures.zig reads ethereum-tests/TrieTests at run time. A
-    // standard clone has no submodules, so `test` and `unit` run the
-    // fixture-free trie tests unless the fixtures are checked out.
-    // `zig build test-trie` always runs the full suite.
-    const has_trie_fixtures = pathExists(b, "ethereum-tests/TrieTests/trietest.json");
-    if (has_trie_fixtures) {
-        test_step.dependOn(&run_client_trie_tests.step);
-        unit_test_step.dependOn(&run_client_trie_tests.step);
-    } else {
-        const client_trie_unit_tests = b.addTest(.{
-            .root_module = client_trie_mod,
-            .filters = &.{ "hash.test.", "root.test.", "node.test." },
-        });
-        linkRustSupport(client_trie_unit_tests);
-        const run_client_trie_unit_tests = b.addRunArtifact(client_trie_unit_tests);
-        test_step.dependOn(&run_client_trie_unit_tests.step);
-        unit_test_step.dependOn(&run_client_trie_unit_tests.step);
-    }
-
-    const client_trie_test_step = b.step("test-trie", "Run Merkle Patricia Trie tests");
-    client_trie_test_step.dependOn(&run_client_trie_tests.step);
-
-    const nethermind_trie_diff_mod = b.addModule("nethermind_trie_diff", .{
-        .root_source_file = b.path("scripts/nethermind-diff-trie.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "client_trie", .module = client_trie_mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-        },
-    });
-
-    const nethermind_trie_diff_exe = b.addExecutable(.{
-        .name = "nethermind_trie_diff",
-        .root_module = nethermind_trie_diff_mod,
-    });
-    linkRustSupport(nethermind_trie_diff_exe);
-
-    const run_nethermind_trie_diff = b.addRunArtifact(nethermind_trie_diff_exe);
-    const nethermind_diff_step = b.step("nethermind-diff", "Run Nethermind trie differential test");
-    nethermind_diff_step.dependOn(&run_nethermind_trie_diff.step);
-    const include_nethermind_diff = b.option(bool, "nethermind-diff", "Run Nethermind diff during zig build test (requires .NET and a Nethermind checkout at nethermind/)") orelse false;
-    if (include_nethermind_diff) {
-        test_step.dependOn(&run_nethermind_trie_diff.step);
-    }
-
-    // Client State module (world state journal + snapshot/restore)
-    const client_state_mod = b.addModule("client_state", .{
-        .root_source_file = b.path("client/state/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-        },
-    });
-
-    const client_state_tests = b.addTest(.{
-        .root_module = client_state_mod,
-    });
-    linkRustSupport(client_state_tests);
-
-    const run_client_state_tests = b.addRunArtifact(client_state_tests);
-    test_step.dependOn(&run_client_state_tests.step);
-    unit_test_step.dependOn(&run_client_state_tests.step);
-
-    const client_state_test_step = b.step("test-state", "Run world state journal tests");
-    client_state_test_step.dependOn(&run_client_state_tests.step);
-
-    // Client Network module (devp2p networking)
-    const client_network_mod = b.addModule("client_network", .{
-        .root_source_file = b.path("client/network/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-        },
-    });
-
-    const client_network_tests = b.addTest(.{
-        .root_module = client_network_mod,
-    });
-    linkRustSupport(client_network_tests);
-
-    const run_client_network_tests = b.addRunArtifact(client_network_tests);
-    test_step.dependOn(&run_client_network_tests.step);
-    unit_test_step.dependOn(&run_client_network_tests.step);
-
-    const client_network_test_step = b.step("test-network", "Run devp2p networking tests");
-    client_network_test_step.dependOn(&run_client_network_tests.step);
-
-    // Client Sync module (full + snap synchronization)
-    const client_sync_mod = b.addModule("client_sync", .{
-        .root_source_file = b.path("client/sync/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-        },
-    });
-
-    const client_sync_tests = b.addTest(.{
-        .root_module = client_sync_mod,
-    });
-    linkRustSupport(client_sync_tests);
-
-    const run_client_sync_tests = b.addRunArtifact(client_sync_tests);
-    test_step.dependOn(&run_client_sync_tests.step);
-    unit_test_step.dependOn(&run_client_sync_tests.step);
-
-    const client_sync_test_step = b.step("test-sync", "Run synchronization tests");
-    client_sync_test_step.dependOn(&run_client_sync_tests.step);
-
-    // Client Blockchain module (chain management)
-    const client_blockchain_mod = b.addModule("client_blockchain", .{
-        .root_source_file = b.path("client/blockchain/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "blockchain", .module = blockchain_mod },
-        },
-    });
-
-    const client_blockchain_tests = b.addTest(.{
-        .root_module = client_blockchain_mod,
-    });
-    linkRustSupport(client_blockchain_tests);
-
-    const run_client_blockchain_tests = b.addRunArtifact(client_blockchain_tests);
-    test_step.dependOn(&run_client_blockchain_tests.step);
-    unit_test_step.dependOn(&run_client_blockchain_tests.step);
-
-    const client_blockchain_test_step = b.step("test-blockchain", "Run chain management tests");
-    client_blockchain_test_step.dependOn(&run_client_blockchain_tests.step);
-
-    // Client TxPool module (transaction pool)
-    const client_txpool_mod = b.addModule("client_txpool", .{
-        .root_source_file = b.path("client/txpool/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-            // Allow txpool code to access HostInterface via the core evm module
-            .{ .name = "guillotine", .module = mod },
-        },
-    });
-
-    const client_txpool_tests = b.addTest(.{
-        .root_module = client_txpool_mod,
-    });
-    linkRustSupport(client_txpool_tests);
-
-    const run_client_txpool_tests = b.addRunArtifact(client_txpool_tests);
-    test_step.dependOn(&run_client_txpool_tests.step);
-    unit_test_step.dependOn(&run_client_txpool_tests.step);
-
-    const client_txpool_test_step = b.step("test-txpool", "Run txpool tests");
-    client_txpool_test_step.dependOn(&run_client_txpool_tests.step);
-
-    // Client TxPool benchmark executable (added later after bench_utils_mod is defined)
-
-    // Client JSON-RPC module (HTTP/WebSocket server + namespaces)
-    const client_rpc_mod = b.addModule("client_rpc", .{
-        .root_source_file = b.path("client/rpc/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-            .{ .name = "jsonrpc", .module = jsonrpc_mod },
-            .{ .name = "evm", .module = mod },
-        },
-    });
-
-    const client_rpc_tests = b.addTest(.{
-        .root_module = client_rpc_mod,
-    });
-    linkRustSupport(client_rpc_tests);
-
-    const run_client_rpc_tests = b.addRunArtifact(client_rpc_tests);
-    test_step.dependOn(&run_client_rpc_tests.step);
-    unit_test_step.dependOn(&run_client_rpc_tests.step);
-
-    const client_rpc_test_step = b.step("test-rpc", "Run JSON-RPC server tests");
-    client_rpc_test_step.dependOn(&run_client_rpc_tests.step);
-
-    // Client Engine API module (Consensus Layer interface)
-    const client_engine_mod = b.addModule("client_engine", .{
-        .root_source_file = b.path("client/engine/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-            .{ .name = "jsonrpc", .module = jsonrpc_mod },
-        },
-    });
-
-    const client_engine_tests = b.addTest(.{
-        .root_module = client_engine_mod,
-    });
-    linkRustSupport(client_engine_tests);
-
-    const run_client_engine_tests = b.addRunArtifact(client_engine_tests);
-    test_step.dependOn(&run_client_engine_tests.step);
-    unit_test_step.dependOn(&run_client_engine_tests.step);
-
-    const client_engine_test_step = b.step("test-engine", "Run Engine API tests");
-    client_engine_test_step.dependOn(&run_client_engine_tests.step);
-
-    // Runner CLI (entry point)
-    const client_runner_mod = b.addModule("client_runner", .{
-        .root_source_file = b.path("client/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = mod },
-        },
-    });
-
-    const client_runner_tests = b.addTest(.{
-        .root_module = client_runner_mod,
-    });
-    linkRustSupport(client_runner_tests);
-
-    const run_client_runner_tests = b.addRunArtifact(client_runner_tests);
-
-    // "runner parses CLI flags and emits config" loads the Sepolia genesis from
-    // the execution-specs submodule. Without it, `test` and `unit` run the
-    // other runner tests; `zig build test-runner` always runs all of them.
-    const has_genesis_assets = pathExists(b, "execution-specs/src/ethereum/assets/sepolia.json");
-    if (has_genesis_assets) {
-        test_step.dependOn(&run_client_runner_tests.step);
-        unit_test_step.dependOn(&run_client_runner_tests.step);
-    } else {
-        const client_runner_unit_tests = b.addTest(.{
-            .root_module = client_runner_mod,
-            .filters = &.{ "cli.test.", "config.test.", "main.test.runner main accepts default args" },
-        });
-        linkRustSupport(client_runner_unit_tests);
-        const run_client_runner_unit_tests = b.addRunArtifact(client_runner_unit_tests);
-        test_step.dependOn(&run_client_runner_unit_tests.step);
-        unit_test_step.dependOn(&run_client_runner_unit_tests.step);
-    }
-
-    const client_runner_test_step = b.step("test-runner", "Run runner CLI tests");
-    client_runner_test_step.dependOn(&run_client_runner_tests.step);
-
-    // Client EVM module (EVM ↔ WorldState integration)
-    const state_manager_mod = primitives_dep.module("state-manager");
-
-    const client_evm_mod = b.addModule("client_evm", .{
-        .root_source_file = b.path("client/evm/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = mod },
-            .{ .name = "state-manager", .module = state_manager_mod },
-        },
-    });
-
-    const client_evm_tests = b.addTest(.{
-        .root_module = client_evm_mod,
-    });
-    linkRustSupport(client_evm_tests);
-
-    const run_client_evm_tests = b.addRunArtifact(client_evm_tests);
-    test_step.dependOn(&run_client_evm_tests.step);
-    unit_test_step.dependOn(&run_client_evm_tests.step);
-
-    const client_evm_test_step = b.step("test-evm-adapter", "Run EVM ↔ WorldState integration tests");
-    client_evm_test_step.dependOn(&run_client_evm_tests.step);
+    linkRustSupport(header_validator_tests);
+    const run_header_validator_tests = b.addRunArtifact(header_validator_tests);
+    unit_test_step.dependOn(&run_header_validator_tests.step);
+    test_step.dependOn(&run_header_validator_tests.step);
+    b.step("test-header-validator", "Run PoS/fork block header validation tests").dependOn(&run_header_validator_tests.step);
 
     const bench_utils_mod = b.addModule("bench_utils", .{
-        .root_source_file = b.path("client/bench_utils.zig"),
+        .root_source_file = b.path("src/bench_utils.zig"),
         .target = target,
         .optimize = optimize,
     });
-
-    // Client Network benchmark (RLPx frame helpers)
-    const client_network_bench_mod = b.addModule("client_network_bench", .{
-        .root_source_file = b.path("client/network/rlpx/bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "bench_utils", .module = bench_utils_mod },
-            .{ .name = "client_network", .module = client_network_mod },
-        },
-    });
-
-    const client_network_bench = b.addExecutable(.{
-        .name = "bench_network_rlpx",
-        .root_module = client_network_bench_mod,
-    });
-    linkRustSupport(client_network_bench);
-
-    const run_client_network_bench = b.addRunArtifact(client_network_bench);
-    const bench_network_step = b.step("bench-network", "Run devp2p RLPx micro-benchmarks");
-    bench_network_step.dependOn(&run_client_network_bench.step);
-
-    // Client EVM benchmark executable
-    const client_evm_bench_mod = b.addModule("client_evm_bench", .{
-        .root_source_file = b.path("client/evm/bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "bench_utils", .module = bench_utils_mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "evm", .module = mod },
-            .{ .name = "state-manager", .module = state_manager_mod },
-        },
-    });
-
-    const client_evm_bench = b.addExecutable(.{
-        .name = "bench_evm",
-        .root_module = client_evm_bench_mod,
-    });
-    linkRustSupport(client_evm_bench);
-
-    const check_bench_evm_step = b.step("check-bench-evm", "Compile and link EVM benchmarks");
-    check_bench_evm_step.dependOn(&client_evm_bench.step);
-
-    const run_client_evm_bench = b.addRunArtifact(client_evm_bench);
-    const bench_evm_step = b.step("bench-evm", "Run EVM ↔ WorldState integration benchmarks");
-    bench_evm_step.dependOn(&run_client_evm_bench.step);
-
-    // Client State benchmark executable
-    const client_state_bench_mod = b.addModule("client_state_bench", .{
-        .root_source_file = b.path("client/state/bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "bench_utils", .module = bench_utils_mod },
-        },
-    });
-
-    const client_state_bench = b.addExecutable(.{
-        .name = "bench_state",
-        .root_module = client_state_bench_mod,
-    });
-    linkRustSupport(client_state_bench);
-
-    const run_client_state_bench = b.addRunArtifact(client_state_bench);
-    const bench_state_step = b.step("bench-state", "Run world state journal benchmarks");
-    bench_state_step.dependOn(&run_client_state_bench.step);
-
-    // Client Blockchain benchmark executable
-    const client_blockchain_bench_mod = b.addModule("client_blockchain_bench", .{
-        .root_source_file = b.path("client/blockchain/bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "blockchain", .module = blockchain_mod },
-            .{ .name = "bench_utils", .module = bench_utils_mod },
-        },
-    });
-
-    const client_blockchain_bench = b.addExecutable(.{
-        .name = "bench_blockchain",
-        .root_module = client_blockchain_bench_mod,
-    });
-    linkRustSupport(client_blockchain_bench);
-
-    const run_client_blockchain_bench = b.addRunArtifact(client_blockchain_bench);
-    const bench_blockchain_step = b.step("bench-blockchain", "Run chain management benchmarks");
-    bench_blockchain_step.dependOn(&run_client_blockchain_bench.step);
-
-    // Client DB benchmark executable
-    const client_db_bench_mod = b.addModule("client_db_bench", .{
-        .root_source_file = b.path("client/db/bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "bench_utils", .module = bench_utils_mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-        },
-    });
-
-    const client_db_bench = b.addExecutable(.{
-        .name = "bench_db",
-        .root_module = client_db_bench_mod,
-    });
-    linkRustSupport(client_db_bench);
-
-    const run_client_db_bench = b.addRunArtifact(client_db_bench);
-    const bench_db_step = b.step("bench-db", "Run database abstraction layer benchmarks");
-    bench_db_step.dependOn(&run_client_db_bench.step);
-
-    // Client Trie benchmark executable
-    const client_trie_bench_mod = b.addModule("client_trie_bench", .{
-        .root_source_file = b.path("client/trie/bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "bench_utils", .module = bench_utils_mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-        },
-    });
-
-    const client_trie_bench = b.addExecutable(.{
-        .name = "bench_trie",
-        .root_module = client_trie_bench_mod,
-    });
-    linkRustSupport(client_trie_bench);
-
-    const run_client_trie_bench = b.addRunArtifact(client_trie_bench);
-    const bench_trie_step = b.step("bench-trie", "Run Merkle Patricia Trie benchmarks");
-    bench_trie_step.dependOn(&run_client_trie_bench.step);
-
-    // Client TxPool benchmark executable (depends on bench_utils)
-    const client_txpool_bench_mod = b.addModule("client_txpool_bench", .{
-        .root_source_file = b.path("client/txpool/bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "bench_utils", .module = bench_utils_mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-        },
-    });
-
-    const client_txpool_bench = b.addExecutable(.{
-        .name = "bench_txpool",
-        .root_module = client_txpool_bench_mod,
-    });
-    linkRustSupport(client_txpool_bench);
-
-    const run_client_txpool_bench = b.addRunArtifact(client_txpool_bench);
-    const bench_txpool_step = b.step("bench-txpool", "Run transaction pool benchmarks");
-    bench_txpool_step.dependOn(&run_client_txpool_bench.step);
-    const install_client_txpool_bench = b.addInstallArtifact(client_txpool_bench, .{});
-    bench_txpool_step.dependOn(&install_client_txpool_bench.step);
 
     // Core EVM benchmarks (bytecode, frame, opcodes, storage, execution, c-ffi)
     const bench_bytecode_mod = b.addModule("bench_bytecode", .{
@@ -675,6 +210,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     const bench_frame_exe = b.addExecutable(.{ .name = "bench_frame", .root_module = bench_frame_mod });
+    linkRustSupport(bench_frame_exe);
     const run_bench_frame = b.addRunArtifact(bench_frame_exe);
     const bench_frame_step = b.step("bench-frame", "Run EVM frame, stack, memory & gas benchmarks");
     bench_frame_step.dependOn(&run_bench_frame.step);
@@ -690,6 +226,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     const bench_opcodes_exe = b.addExecutable(.{ .name = "bench_opcodes", .root_module = bench_opcodes_mod });
+    linkRustSupport(bench_opcodes_exe);
     const run_bench_opcodes = b.addRunArtifact(bench_opcodes_exe);
     const bench_opcodes_step = b.step("bench-opcodes", "Run EVM opcode micro-benchmarks");
     bench_opcodes_step.dependOn(&run_bench_opcodes.step);
@@ -706,6 +243,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     const bench_storage_exe = b.addExecutable(.{ .name = "bench_storage", .root_module = bench_storage_mod });
+    linkRustSupport(bench_storage_exe);
     const run_bench_storage = b.addRunArtifact(bench_storage_exe);
     const bench_storage_step = b.step("bench-storage", "Run EVM storage & EIP-2929 access list benchmarks");
     bench_storage_step.dependOn(&run_bench_storage.step);
@@ -721,6 +259,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     const bench_evm_core_exe = b.addExecutable(.{ .name = "bench_evm_core", .root_module = bench_evm_core_mod });
+    linkRustSupport(bench_evm_core_exe);
     const run_bench_evm_core = b.addRunArtifact(bench_evm_core_exe);
     const bench_evm_core_step = b.step("bench-evm-core", "Run end-to-end EVM contract, precompile & tracer benchmarks");
     bench_evm_core_step.dependOn(&run_bench_evm_core.step);
@@ -737,90 +276,22 @@ pub fn build(b: *std.Build) void {
         },
     });
     const bench_ffi_exe = b.addExecutable(.{ .name = "bench_ffi", .root_module = bench_ffi_mod });
+    linkRustSupport(bench_ffi_exe);
     const run_bench_ffi = b.addRunArtifact(bench_ffi_exe);
     const bench_ffi_step = b.step("bench-ffi", "Run C-FFI / WASM bridge benchmarks");
     bench_ffi_step.dependOn(&run_bench_ffi.step);
 
-    // Client RPC, Engine, Sync & CLI benchmarks
-    const client_rpc_bench_mod = b.addModule("client_rpc_bench", .{
-        .root_source_file = b.path("client/rpc/bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "bench_utils", .module = bench_utils_mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-            .{ .name = "jsonrpc", .module = jsonrpc_mod },
-        },
-    });
-    const client_rpc_bench = b.addExecutable(.{ .name = "bench_rpc", .root_module = client_rpc_bench_mod });
-    const run_client_rpc_bench = b.addRunArtifact(client_rpc_bench);
-    const bench_rpc_step = b.step("bench-rpc", "Run JSON-RPC parser, dispatcher & formatter benchmarks");
-    bench_rpc_step.dependOn(&run_client_rpc_bench.step);
-
-    const client_engine_bench_mod = b.addModule("client_engine_bench", .{
-        .root_source_file = b.path("client/engine/bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "bench_utils", .module = bench_utils_mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "crypto", .module = crypto_mod },
-            .{ .name = "jsonrpc", .module = jsonrpc_mod },
-        },
-    });
-    const client_engine_bench = b.addExecutable(.{ .name = "bench_engine", .root_module = client_engine_bench_mod });
-    const run_client_engine_bench = b.addRunArtifact(client_engine_bench);
-    const bench_engine_step = b.step("bench-engine", "Run Engine API method validation & dispatch benchmarks");
-    bench_engine_step.dependOn(&run_client_engine_bench.step);
-
-    const client_sync_bench_mod = b.addModule("client_sync_bench", .{
-        .root_source_file = b.path("client/sync/bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "bench_utils", .module = bench_utils_mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-        },
-    });
-    const client_sync_bench = b.addExecutable(.{ .name = "bench_sync", .root_module = client_sync_bench_mod });
-    const run_client_sync_bench = b.addRunArtifact(client_sync_bench);
-    const bench_sync_step = b.step("bench-sync", "Run sync mode, status & headers request benchmarks");
-    bench_sync_step.dependOn(&run_client_sync_bench.step);
-
-    const client_cli_bench_mod = b.addModule("client_cli_bench", .{
-        .root_source_file = b.path("client/cli_bench.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "bench_utils", .module = bench_utils_mod },
-            .{ .name = "voltaire", .module = primitives_mod },
-        },
-    });
-    const client_cli_bench = b.addExecutable(.{ .name = "bench_cli", .root_module = client_cli_bench_mod });
-    const run_client_cli_bench = b.addRunArtifact(client_cli_bench);
-    const bench_cli_step = b.step("bench-cli", "Run CLI argument parsing benchmarks");
-    bench_cli_step.dependOn(&run_client_cli_bench.step);
+    const check_bench_evm_step = b.step("check-bench-evm", "Compile and link EVM benchmarks");
+    check_bench_evm_step.dependOn(&bench_evm_core_exe.step);
 
     // Aggregate Zig benchmark step
-    const bench_all_step = b.step("bench", "Run all Zig benchmarks (core EVM + client)");
+    const bench_all_step = b.step("bench", "Run all core EVM Zig benchmarks");
     bench_all_step.dependOn(&run_bench_bytecode.step);
     bench_all_step.dependOn(&run_bench_frame.step);
     bench_all_step.dependOn(&run_bench_opcodes.step);
     bench_all_step.dependOn(&run_bench_storage.step);
     bench_all_step.dependOn(&run_bench_evm_core.step);
     bench_all_step.dependOn(&run_bench_ffi.step);
-    bench_all_step.dependOn(&run_client_db_bench.step);
-    bench_all_step.dependOn(&run_client_trie_bench.step);
-    bench_all_step.dependOn(&run_client_state_bench.step);
-    bench_all_step.dependOn(&run_client_evm_bench.step);
-    bench_all_step.dependOn(&run_client_blockchain_bench.step);
-    bench_all_step.dependOn(&run_client_txpool_bench.step);
-    bench_all_step.dependOn(&run_client_network_bench.step);
-    bench_all_step.dependOn(&run_client_rpc_bench.step);
-    bench_all_step.dependOn(&run_client_engine_bench.step);
-    bench_all_step.dependOn(&run_client_sync_bench.step);
-    bench_all_step.dependOn(&run_client_cli_bench.step);
 
     const state_fixture_stamp = "execution-specs/tests/eest/static/state_tests/.filled";
     const force_refresh = b.option(bool, "refresh-specs", "Force refresh of execution-specs state fixtures") orelse false;
@@ -848,7 +319,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "evm", .module = mod },
             .{ .name = "voltaire", .module = primitives_mod },
-            .{ .name = "client_blockchain", .module = client_blockchain_mod },
         },
     };
     const spec_runner_mod = b.createModule(spec_runner_options);
@@ -1415,9 +885,4 @@ fn linkRustSupport(compile: *std.Build.Step.Compile) void {
         .windows => if (t.abi.isGnu()) compile.root_module.linkSystemLibrary("gcc_eh", .{}),
         else => {},
     }
-}
-
-fn pathExists(b: *std.Build, sub_path: []const u8) bool {
-    b.build_root.handle.access(sub_path, .{}) catch return false;
-    return true;
 }

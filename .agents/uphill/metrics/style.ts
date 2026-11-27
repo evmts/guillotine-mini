@@ -33,13 +33,10 @@ function stripLine(line: string): string {
   return line.replace(/\/\/.*$/, "").replace(/"(?:\\.|[^"\\])*"/g, '""');
 }
 
-// 1. Canonical Zig formatting via `zig fmt --check src client`
-const allZig = [
-  ...new Glob("src/**/*.zig").scanSync("."),
-  ...new Glob("client/**/*.zig").scanSync("."),
-].sort();
+// 1. Canonical Zig formatting via `zig fmt --check src`
+const allZig = [...new Glob("src/**/*.zig").scanSync(".")].sort();
 
-const fmtProc = Bun.spawnSync(["zig", "fmt", "--check", "src", "client"], {
+const fmtProc = Bun.spawnSync(["zig", "fmt", "--check", "src"], {
   stdout: "pipe",
   stderr: "pipe",
 });
@@ -142,10 +139,7 @@ for (const file of prodZig) {
   );
 }
 
-const prodTs = [
-  ...new Glob("ts/**/*.ts").scanSync("."),
-  ...new Glob("client-ts/**/*.ts").scanSync("."),
-]
+const prodTs = [...new Glob("ts/**/*.ts").scanSync(".")]
   .sort()
   .filter(isProdTs);
 

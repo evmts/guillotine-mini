@@ -1,16 +1,5 @@
 import { Smithers as S } from "@smthrs/targets"
 import { Package as srcPkg } from "../src/PACKAGE.ts"
-import { Package as clientPkg } from "../client/PACKAGE.ts"
-import { Package as clientBlockchainPkg } from "../client/blockchain/PACKAGE.ts"
-import { Package as clientDbPkg } from "../client/db/PACKAGE.ts"
-import { Package as clientEnginePkg } from "../client/engine/PACKAGE.ts"
-import { Package as clientEvmPkg } from "../client/evm/PACKAGE.ts"
-import { Package as clientNetworkPkg } from "../client/network/PACKAGE.ts"
-import { Package as clientRpcPkg } from "../client/rpc/PACKAGE.ts"
-import { Package as clientStatePkg } from "../client/state/PACKAGE.ts"
-import { Package as clientSyncPkg } from "../client/sync/PACKAGE.ts"
-import { Package as clientTriePkg } from "../client/trie/PACKAGE.ts"
-import { Package as clientTxpoolPkg } from "../client/txpool/PACKAGE.ts"
 
 // Factory projection plus repository-wide gates that no single source package owns.
 // Source closures reference each owning package's exported Filegroups rather than
@@ -22,19 +11,8 @@ const zigSources = S.Filegroup({
     S.file("//build.zig.zon"),
     S.file("//test_runner.zig"),
     S.file("//test_trace.zig"),
+    srcPkg.bench_utils,
     srcPkg.ffi_srcs,
-    clientPkg.cli_srcs,
-    clientPkg.bench_utils,
-    clientBlockchainPkg.srcs,
-    clientDbPkg.srcs,
-    clientEnginePkg.srcs,
-    clientEvmPkg.srcs,
-    clientNetworkPkg.srcs,
-    clientRpcPkg.srcs,
-    clientStatePkg.srcs,
-    clientSyncPkg.srcs,
-    clientTriePkg.srcs,
-    clientTxpoolPkg.srcs,
   ],
 })
 
@@ -49,15 +27,14 @@ const factoryScripts = S.Filegroup({
 // zig fmt is the repository's canonical formatter/linter for Zig sources.
 const fmtCheck = S.Shell.Test({
   bin: S.Host.bin("zig"),
-  args: ["fmt", "--check", "build.zig", "test_runner.zig", "test_trace.zig", "src", "client"],
+  args: ["fmt", "--check", "build.zig", "test_runner.zig", "test_trace.zig", "src"],
   sandbox: "none",
   timeout: "5m",
   data: [zigSources],
 })
 
-// Native static library and WASI reactor (the C/WASM bindings). Links the
-// Rust crypto archive from the adjacent ../voltaire checkout pinned in
-// native-dependencies.json. run-zig.sh serializes Zig across targets.
+// Native static library and WASI reactor (the C/WASM bindings). Links Voltaire
+// crypto resolved cleanly from build.zig.zon. run-zig.sh serializes Zig across targets.
 const build = S.Shell.Build({
   bin: S.Host.bin("sh"),
   tools: [S.Host.bin("zig"), S.Host.bin("wasm-opt")],

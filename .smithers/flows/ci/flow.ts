@@ -11,11 +11,9 @@ const factoryAndTrust = CiJob.make("factory-and-trust", {
   ],
 })
 
-const clientTs = CiJob.make("client-ts", {
+const tsSdk = CiJob.make("ts-sdk", {
   steps: [
-    { name: "install-client-ts", run: "cd client-ts && bun install --frozen-lockfile" },
-    { name: "test-client-ts", run: "cd client-ts && bun run test" },
-    { name: "test-exex", run: "bun test ./ts/exex/manager.test.ts" },
+    { name: "test-ts", run: "bun test ./ts/" },
   ],
 })
 
@@ -27,7 +25,7 @@ const audit = CiJob.make("audit", {
 })
 
 export default Flow.make("ci", {
-  description: "Run Smithers Cloud CI gates: factory trust tests, wiki integrity, TypeScript client suites, and Lighthouse audit.",
+  description: "Run Smithers Cloud CI gates: factory trust tests, wiki integrity, TypeScript SDK suites, and Lighthouse audit.",
   payload: {
     run: Schema.String,
     repo: Schema.String,
@@ -37,13 +35,13 @@ export default Flow.make("ci", {
   },
   success: Schema.Struct({
     factoryAndTrust: CiJob.Result,
-    clientTs: CiJob.Result,
+    tsSdk: CiJob.Result,
     audit: CiJob.Result,
   }),
   body: (run) =>
     Node.all({
       factoryAndTrust: factoryAndTrust.call(run),
-      clientTs: clientTs.call(run),
+      tsSdk: tsSdk.call(run),
       audit: audit.call(run),
     }),
 })

@@ -7,11 +7,11 @@ safety:
   run: bun .agents/uphill/metrics/safety.ts
   # Production Zig files must return errors rather than crashing with @panic or unreachable (TigerStyle).
   zig-no-panic:
-    description: Never use @panic or unreachable in production src/ or client/ Zig code; validate and return typed errors.
+    description: Never use @panic or unreachable in production src/ Zig code; validate and return typed errors.
     weight: 2
   # Production Zig modules must use logger.zig instead of raw std.debug.print.
   zig-no-debug-print:
-    description: Replace std.debug.print in production src/ and client/ Zig modules with logger.zig.
+    description: Replace std.debug.print in production src/ Zig modules with logger.zig.
   # Production Zig code must not swallow errors with empty catch {} or stub error.NotImplemented.
   zig-no-swallowed-errors:
     description: Never swallow errors with empty catch {} or leave error.NotImplemented stubs in production Zig code.
@@ -21,9 +21,9 @@ safety:
     description: Add invariant assertions to production Zig functions to raise assertion density toward TigerStyle targets.
     better: higher
     poor: 0.25
-  # Production TypeScript files in ts/ and client-ts/ must avoid explicit `any`.
+  # Production TypeScript files in ts/ must avoid explicit `any`.
   ts-no-explicit-any:
-    description: Replace explicit `any` annotations and `as any` casts in ts/ and client-ts/ with narrow types.
+    description: Replace explicit `any` annotations and `as any` casts in ts/ with narrow types.
     weight: 1.5
   # Production TypeScript files must not suppress compiler errors with @ts-ignore/@ts-expect-error/@ts-nocheck.
   ts-no-suppress:
@@ -33,9 +33,9 @@ style:
   title: Style & Limits
   description: TigerStyle structural bounds (70-line functions, 120-char lines) and canonical Zig formatting.
   run: bun .agents/uphill/metrics/style.ts
-  # Canonical formatting verified by `zig fmt --check src client`.
+  # Canonical formatting verified by `zig fmt --check src`.
   zig-fmt:
-    description: Keep all Zig files in src/ and client/ formatted with `zig fmt`.
+    description: Keep all Zig files in src/ formatted with `zig fmt`.
     weight: 2
   # Maximum runtime function length in lines per production Zig file (TigerStyle limit: 70 lines).
   function-length:
@@ -63,9 +63,9 @@ footprint:
     description: Keep core EVM modules under src/ and wasm/ compact to protect the <=2.5 MiB WASM binary budget.
     poor: 50kB
     weight: 1.5
-  # Line count per production TypeScript file under ts/ and client-ts/.
+  # Line count per production TypeScript file under ts/.
   ts-file-lines:
-    description: Keep TypeScript modules under ts/ and client-ts/ concise (<=300 lines per file).
+    description: Keep TypeScript modules under ts/ concise (<=300 lines per file).
     poor: 600
 
 verification:
@@ -83,13 +83,13 @@ verification:
     poor: 50
   # Share (%) of production Zig modules with inline `test` blocks.
   zig-inline-test-coverage:
-    description: Include inline `test` blocks inside production src/ and client/ Zig modules.
+    description: Include inline `test` blocks inside production src/ Zig modules.
     better: higher
     poor: 65
     weight: 1.5
-  # Ratio (%) of TypeScript test files to production TypeScript modules across ts/ and client-ts/.
+  # Ratio (%) of TypeScript test files to production TypeScript modules across ts/.
   ts-test-ratio:
-    description: Pair every production TypeScript module in ts/ and client-ts/ with dedicated unit tests.
+    description: Pair every production TypeScript module in ts/ with dedicated unit tests.
     better: higher
     poor: 80
 
