@@ -53,6 +53,7 @@ export const homeDocument = {
           type: "links",
           title: "Maintainer operations",
           links: [
+            { label: "Live WASM Playground", url: "https://mini.tevm.sh/play" },
             { label: "Lighthouse Audit Report", url: "https://mini.tevm.sh/audit/" },
             { label: "Project Wiki", url: "https://smithers.sh/evmts/guillotine-mini/blob/main/.smithers/wiki/Overview.md" },
             { label: "Mythical History", url: "https://smithers.sh/evmts/guillotine-mini/blob/main/.smithers/wiki/Mythical-History.md" },
@@ -72,8 +73,8 @@ export const homeDocument = {
           title: "Set up and run untrusted checks locally",
           language: "sh",
           code: [
-            "git submodule update --init execution-specs ethereum-tests",
-            "zig build unit && zig build test-trace",
+            "zig build unit && zig build test-trace && zig build test-evmc",
+            "bun test ./ts/",
             "bun .smithers/scripts/run-trusted-ci.ts --untrusted ci '//...'",
             "uphill --compact",
           ].join("\n"),
@@ -94,7 +95,7 @@ export const homeDocument = {
           cards: [
             {
               title: "Run untrusted locally",
-              text: "Contributors are encouraged to run tests, flows, and Lighthouse audits locally with read-only cache access.",
+              text: "Contributors are encouraged to run tests, EEST conformance, flows, and Lighthouse audits locally with read-only cache access.",
             },
             {
               title: "Trusted merge gates",
@@ -129,7 +130,7 @@ export const homeDocument = {
         {
           type: "prompt",
           title: "Work on Guillotine Mini",
-          placeholder: "Describe a failing spec test, opcode, gas, or ABI change...",
+          placeholder: "Describe a failing spec test, opcode, gas, Glamsterdam, or ABI change...",
         },
       ],
     },
@@ -139,48 +140,45 @@ export const homeDocument = {
         {
           type: "hero",
           title: "Guillotine Mini",
-          tagline: "A minimal, spec-first Ethereum Virtual Machine in Zig, built publicly on Smithers Cloud.",
-          text: "Frontier through Osaka with Glamsterdam hooks, a 42-symbol C ABI, a WASI Preview 1 WebAssembly reactor with linked Rust crypto, and an executable Lean 4 differential oracle.",
-          install: "zig fetch --save git+https://github.com/evmts/guillotine-mini#main",
+          tagline: "Minimal, formally verified, universal EVM in Zig, C, EVMC, and WebAssembly.",
+          text: "100% Frontier through Osaka EEST conformance (66,652 tests), Glamsterdam EIPs, 210 Lean 4 theorems with zero sorrys, 51 C and WASM exports, EVMC ABI 12 shared library, and a 92.8 KiB gzipped modular WASM core.",
+          install: "npm install @tevm/guillotine-mini",
           announcement: {
-            label: "v0.1.0 live with Lean 4 oracle and Lighthouse audit",
-            url: "https://mini.tevm.sh/audit/",
+            label: "v0.2.0 live with 66,652 EEST pass, 210 Lean 4 proofs, Glamsterdam EIPs, and browser debugger",
+            url: "https://mini.tevm.sh/play",
           },
           actions: [
+            { label: "Live WASM Playground", url: "https://mini.tevm.sh/play" },
             { label: "Read the docs", url: "https://mini.tevm.sh" },
-            { label: "Opcode Explorer", url: "https://mini.tevm.sh/opcode-explorer" },
             { label: "Lighthouse Audit", url: "https://mini.tevm.sh/audit/" },
           ],
         },
         {
           type: "code",
-          file: "execute.zig",
-          language: "zig",
+          file: "execute.ts",
+          language: "ts",
           code: [
-            'const std = @import("std");',
-            'const evm = @import("guillotine_mini");',
+            'import { createEvm } from "@tevm/guillotine-mini"',
             "",
-            "pub fn run(allocator: std.mem.Allocator, bytecode: []const u8) !evm.CallResult {",
-            "    var vm = try evm.Evm(.{}).init(allocator, null, .OSAKA, .{}, null);",
-            "    defer vm.deinit();",
+            "using evm = await createEvm({",
+            '  wasm: await fetch("/wasm/guillotine_mini.wasm"),',
+            '  hardfork: "osaka",',
+            "})",
             "",
-            "    return vm.call(.{ .call = .{",
-            "        .caller = evm.Address.ZERO,",
-            "        .to = evm.Address.fromU256(0x1000),",
-            "        .value = 0,",
-            "        .input = bytecode,",
-            "        .gas = 1_000_000,",
-            "    } });",
-            "}",
+            "const result = evm.execute({",
+            '  bytecode: "0x602a5f5260205ff3",',
+            "  gas: 100_000n,",
+            "})",
+            "console.log(result.outputHex, result.gasUsed)",
           ].join("\n"),
         },
         {
           type: "stats",
           stats: [
-            { value: "Frontier to Osaka", label: "Hardforks + Glamsterdam hooks" },
-            { value: "Zig 0.15.2 + C + WASM", label: "Native static lib and WASI reactor" },
-            { value: "14,784 vectors", label: "Lean 4 formal oracle diff suite" },
-            { value: "MIT", label: "Open source on Smithers Cloud" },
+            { value: "66,652 / 66,652", label: "Official Frontier to Osaka EEST pass" },
+            { value: "210 theorems", label: "Lean 4 formal proofs with zero sorrys" },
+            { value: "92.8 KiB gzip", label: "Modular WASM core with 51 C exports" },
+            { value: "8 Glamsterdam EIPs", label: "EIP-7708, 7843, 7928, 7954, 8024, 8037, 8038, 8246" },
           ],
         },
         {
@@ -188,28 +186,28 @@ export const homeDocument = {
           title: "Why Guillotine Mini",
           cards: [
             {
-              title: "Spec-first parity",
-              text: "Gas ordering, hardfork guards, and error mapping follow Python execution-specs line by line.",
+              title: "100% EEST conformance",
+              text: "Every single Frontier through Osaka state test in official execution-spec-tests v21.0.3 passes in 18.5 seconds in CI.",
             },
             {
-              title: "Zero-overhead inspection",
-              text: "15-hook Inspector vtable, 256-bit OpcodeMask filtering, 6 native tracers, and EIP-3155 JSONL traces.",
+              title: "210 Lean 4 theorems",
+              text: "Executable Lean 4 EVM specification with multi-frame rollback and Glamsterdam EIP-8037 proofs, zero sorrys, and 14,784 diff vectors.",
             },
             {
-              title: "Lean 4 formal oracle",
-              text: "Executable Lean 4 EVM reference specification with machine-checked theorems and zero sorrys.",
+              title: "Run anywhere in 92.8 KiB",
+              text: "Zero-dependency TypeScript SDK with a 1 KB WASI shim runs identically in browsers, Cloudflare Workers, Deno, Bun, and Node.",
             },
             {
-              title: "Portable C and WASM ABI",
-              text: "42 exported evm_* symbols, async state injection, and modular precompile WASM bundles under budget.",
+              title: "51 C ABI and EVMC 12 exports",
+              text: "Single-header C99 API, EVMC ABI 12 shared library, async state injection, SVG gas flamegraphs, and ABI revert decoding.",
             },
             {
-              title: "Simulation and devtools",
-              text: "StateOverlayHost for eth_call and eth_simulateV1, time-travel debugger, and gas flamegraphs.",
+              title: "Glamsterdam ready",
+              text: "Implements SLOTNUM, DUPN/SWAPN/EXCHANGE, 64 KiB code limits, 2D state gas reservoirs, ETH transfer logs, and BAL recording.",
             },
             {
               title: "Public coding factory",
-              text: "Incremental Smithers CI over a shared object store, public MCP server, and Lighthouse audit reports.",
+              text: "Incremental Smithers CI over a shared object store, public MCP server, live browser playground, and Lighthouse audit reports.",
             },
           ],
         },
@@ -223,21 +221,27 @@ export const homeDocument = {
           title: "Knowledge Base and Tevm Stack",
           cards: [
             {
+              label: "Playground",
+              title: "Live Browser WASM Debugger",
+              text: "Execute real bytecode in WebAssembly with EIP-3155 time-travel scrubbing, SVG gas flamegraphs, and RPC tx replay.",
+              url: "https://mini.tevm.sh/play",
+            },
+            {
               label: "Wiki",
               title: "Architecture and Decisions",
-              text: "Obsidian-compatible engineering wiki covering Evm, Frame, storage, and security boundaries.",
+              text: "Obsidian-compatible engineering wiki covering Evm, Frame, Glamsterdam, and security boundaries.",
               url: "https://smithers.sh/evmts/guillotine-mini/blob/main/.smithers/wiki/Overview.md",
             },
             {
               label: "Saga",
               title: "Mythical History",
-              text: "The commit-by-commit chronicle from zig init to Lean 4 proofs, Osaka, and Smithers Cloud.",
+              text: "The commit-by-commit chronicle from zig init to 66,652 EEST pass, 210 Lean 4 proofs, and v0.2.0.",
               url: "https://smithers.sh/evmts/guillotine-mini/blob/main/.smithers/wiki/Mythical-History.md",
             },
             {
               label: "Primitives",
               title: "Voltaire",
-              text: "Pinned Ethereum primitives, audited Rust crypto, and precompiles consumed by Guillotine Mini.",
+              text: "URL-pinned Ethereum primitives, audited Rust crypto, and precompiles consumed by Guillotine Mini.",
               url: "https://smithers.sh/evmts/voltaire",
             },
             {
@@ -252,18 +256,18 @@ export const homeDocument = {
               text: "High-performance sibling EVM engine in the Tevm family.",
               url: "https://guillotine.tevm.sh",
             },
-            {
-              label: "Interactive",
-              title: "Opcode and Gas Explorer",
-              text: "Step through EVM bytecode instruction by instruction in the browser.",
-              url: "https://mini.tevm.sh/opcode-explorer",
-            },
           ],
         },
         {
           type: "releases",
           title: "Releases",
           releases: [
+            {
+              name: "v0.2.0",
+              url: "https://github.com/evmts/guillotine-mini/releases/tag/v0.2.0",
+              date: "2026-11-27",
+              summary: "Standalone zig fetch, 66,652/66,652 EEST pass, 210 Lean 4 theorems, universal TS/WASM SDK, EVMC 12 lib, 8 Glamsterdam EIPs, and live WASM debugger.",
+            },
             {
               name: "v0.1.0",
               url: "https://github.com/evmts/guillotine-mini/releases/tag/v0.1.0",
@@ -280,6 +284,7 @@ export const homeDocument = {
           type: "links",
           title: "Public MCP and Resources",
           links: [
+            { label: "Live WASM Playground", url: "https://mini.tevm.sh/play" },
             { label: "Docs (mini.tevm.sh)", url: "https://mini.tevm.sh" },
             { label: "Public MCP Endpoint", url: "https://smithers.sh/evmts/guillotine-mini/mcp" },
             { label: "GitHub Mirror", url: "https://github.com/evmts/guillotine-mini" },
@@ -289,7 +294,7 @@ export const homeDocument = {
         {
           type: "prompt",
           title: "Questions about Guillotine Mini?",
-          placeholder: "Ask about opcodes, hardforks, gas rules, WASM, or the factory...",
+          placeholder: "Ask about opcodes, hardforks, Glamsterdam, gas rules, WASM, or the factory...",
         },
       ],
     },
