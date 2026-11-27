@@ -1,24 +1,38 @@
-# guillotine-mini factory
+# guillotine-mini Coding Factory
 
-Smithers workspace, incremental CI and agent flows for `evmts/guillotine-mini`.
+Public Smithers Cloud workspace, incremental CI, personalized Maintainer / Contributor / Viewer UI, Lighthouse Backpressure Audit, Obsidian Wiki & Mythical History, and agent flows for `evmts/guillotine-mini` (`https://smithers.sh/evmts/guillotine-mini`).
 
-- `WORKSPACE.ts`: workspace, host bins, local cache in `.smithers/cache`, remote cache at `https://build.smithers.sh` (used when `SMITHERS_CACHE_READ_TOKEN` and `SMITHERS_CACHE_WRITE_TOKEN` are set).
-- `PACKAGE.ts`: `fmt-check`, `build` (native static library and WASI reactor), `factory-write`, `factory-check`. Source packages own their tests in `//PACKAGE.ts`, `//client/*`, `//client-ts/*` and `//src/utils`.
-- `FACTORY.ts`: featured flows, GitHub policy and app home. Projected into `factory.json` and `home.json`.
-- `flows/`: `checks/review`, `spec-fix`, `issue/repro`, `issue/poc`, `pr-triage`.
-- `run-zig.sh`: serializes `zig` across targets. Voltaire's blst step runs `./build.sh` in its shared source tree on every build, so parallel builds corrupt each other.
+## Files
 
-## Prerequisites
+- `WORKSPACE.ts` — Workspace declaration, host tool binaries, local cache (`.smithers/cache`), and shared Smithers Cloud object store (`https://build.smithers.sh`) with split read/write secrets.
+- `FACTORY.ts` -> `factory.json` — Featured flows, Dispatcher `on` triggers, GitHub switchover policy (`mirror: "push"`, `issues: "two-way"`, `changes: "land"`), protected trust roots, person-only approval/merge policy, saved issue views, and transitions.
+- `HOME.ts` -> `home.json` — Personalized Smithers Cloud UI with `docs: "https://mini.tevm.sh/llms.txt"` and `contributors: "role"` sections for **Maintainers** (`Today`), **Contributors** (`Contribute`), and **Viewers** (`everyone`).
+- `PACKAGE.ts` — Repository-wide Smithers targets (`factory-check`, `home-check`, `home-write`, `wiki-check`, `audit-check`, `factory-scripts-test`, `fmt-check`, `build`).
+- `flows/` — Durable Smithers Cloud flows (`ci`, `uphill`, `audit-report`, `wiki-refresh`, `docs-publish`, `release`, `checks/review`, `spec-fix`, `issue/repro`, `issue/poc`, `pr-triage`).
+- `wiki/` — Obsidian-compatible knowledge base (`Overview.md`, `Architecture.md`, `Mythical-History.md`, `Hardforks-and-Specs.md`, `Decisions.md`, `Trust-and-Security.md`, `Factory-and-Operations.md`, `Backpressure-and-Quality.md`).
+- `audit/` — Generated Lighthouse-style Backpressure Audit (`index.html`, `report.json`, `latest.md`, `pr-comment.md`), also published to `https://mini.tevm.sh/audit/`.
+- `scripts/` — Trust & cache-isolation guard (`trust-policy.ts`, `run-trusted-ci.ts`), Lighthouse audit engine (`generate-audit-report.ts`), Home projection validator (`project-home.ts`), Wiki & feed publisher (`sync-wiki-feed.ts`), and one-time sandbox auth helper (`mint-sandbox-auth.ts`).
+- `run-zig.sh` — Serializes `zig` invocations across targets while Voltaire builds `blst` in-tree.
 
-- `../voltaire` checked out at the revision in `native-dependencies.json`, with `cargo build --release --lib` run.
-- Git submodules initialized (`ethereum-tests`, `execution-specs`); Zig tests read fixtures from them.
-- `bun install --frozen-lockfile` in `client-ts/`.
-
-## Commands
+## Common Commands
 
 ```sh
-smthrs ci '//...'                                   # everything except exclusive benchmarks
-smthrs affected test '//...' --include-exclusive    # only what your diff touches, benchmarks included
-smthrs test //:bench_opcodes                        # one benchmark, run alone
-smthrs target //.smithers:factory-write --write     # regenerate factory.json and home.json
+# Incremental Smithers CI (untrusted read-only cache mode for contributors)
+bun .smithers/scripts/run-trusted-ci.ts --untrusted ci '//...'
+
+# Run factory, trust, auth, home, wiki, and audit tests
+bun test ./.smithers/scripts/
+
+# Generate the Lighthouse-style Backpressure Audit Report (and stage for docs)
+bun .smithers/scripts/generate-audit-report.ts --publish-docs
+
+# Validate Obsidian wiki & Mythical History wikilinks
+bun .smithers/scripts/sync-wiki-feed.ts --check
+
+# Re-project home.json after editing HOME.ts
+bun .smithers/scripts/project-home.ts --write
+
+# Print one-time sandbox auth or BYOA MCP bootstrap prompt
+bun .smithers/scripts/mint-sandbox-auth.ts prompt
+bun .smithers/scripts/mint-sandbox-auth.ts attach --branch main
 ```

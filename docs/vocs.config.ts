@@ -43,8 +43,10 @@ export default defineConfig({
 		{ text: 'Guides', link: '/guides/calls-and-creates', match: '/guides' },
 		{ text: 'Reference', link: '/reference/evm', match: '/reference' },
 		{ text: 'Explorer', link: '/opcode-explorer', match: '/opcode-explorer' },
+		{ text: 'Factory', link: '/factory', match: '/factory' },
+		{ text: 'Audit', link: 'https://mini.tevm.sh/audit/' },
 		{ text: 'Ecosystem', items: tevmSites.map((s) => ({ ...s })) },
-		{ text: 'GitHub', link: 'https://github.com/evmts/guillotine-mini' },
+		{ text: 'Smithers', link: 'https://smithers.sh/evmts/guillotine-mini' },
 	],
 	socials: [
 		{ icon: 'github', link: 'https://github.com/evmts/guillotine-mini' },
@@ -101,7 +103,10 @@ export default defineConfig({
 		{
 			text: 'Ecosystem',
 			collapsed: false,
-			items: [{ text: 'The Tevm Stack', link: '/stack' }],
+			items: [
+				{ text: 'The Tevm Stack', link: '/stack' },
+				{ text: 'Smithers Cloud Factory', link: '/factory' },
+			],
 		},
 	],
 	banner: {

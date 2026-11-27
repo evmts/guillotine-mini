@@ -1,37 +1,326 @@
 {
-  "blocks": [
+  "docs": "https://mini.tevm.sh/llms.txt",
+  "contributors": "role",
+  "sections": [
     {
-      "type": "text",
-      "title": "guillotine-mini factory",
-      "text": "Python execution-specs are authoritative: gas order, hardfork guards and error mapping must match them exactly. Zig, WASM and client-ts checks run incrementally through Smithers with a local-first cache synced to build.smithers.sh; benchmarks are exclusive and always explicit."
-    },
-    {
-      "type": "prompt",
-      "title": "Ask about guillotine-mini",
-      "placeholder": "Describe a failing spec test, opcode, gas or ABI issue…"
-    },
-    {
-      "type": "flows",
-      "title": "Review, fix specs and reproduce"
-    },
-    {
-      "type": "links",
-      "links": [
+      "title": "Today",
+      "audience": "maintainer",
+      "blocks": [
         {
-          "label": "Repository",
-          "url": "https://github.com/evmts/guillotine-mini"
+          "type": "action",
+          "flow": "branch.new",
+          "title": "New branch",
+          "key": "b"
         },
         {
-          "label": "CI",
-          "url": "https://github.com/evmts/guillotine-mini/actions/workflows/ci.yml"
+          "type": "issues",
+          "title": "Issues and pull requests"
         },
         {
-          "label": "Docs",
-          "url": "https://mini.tevm.sh"
+          "type": "stack",
+          "title": "TODO stack"
         },
         {
-          "label": "execution-specs",
-          "url": "https://github.com/ethereum/execution-specs"
+          "type": "runs",
+          "title": "Recent runs"
+        },
+        {
+          "type": "app",
+          "flow": "issue.implement",
+          "title": "Implement an issue",
+          "picture": "issue"
+        },
+        {
+          "type": "app",
+          "flow": "prs.triage",
+          "title": "Triage a PR",
+          "picture": "review"
+        },
+        {
+          "type": "links",
+          "title": "Maintainer operations",
+          "links": [
+            {
+              "label": "Lighthouse Audit Report",
+              "url": "https://mini.tevm.sh/audit/"
+            },
+            {
+              "label": "Project Wiki",
+              "url": "https://smithers.sh/evmts/guillotine-mini/blob/main/.smithers/wiki/Overview.md"
+            },
+            {
+              "label": "Mythical History",
+              "url": "https://smithers.sh/evmts/guillotine-mini/blob/main/.smithers/wiki/Mythical-History.md"
+            },
+            {
+              "label": "GitHub Actions",
+              "url": "https://github.com/evmts/guillotine-mini/actions"
+            },
+            {
+              "label": "Release Pipeline",
+              "url": "https://github.com/evmts/guillotine-mini/actions/workflows/release.yml"
+            },
+            {
+              "label": "Smithers Cloud MCP",
+              "url": "https://smithers.sh/evmts/guillotine-mini/mcp"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Contribute",
+      "audience": "contributor",
+      "blocks": [
+        {
+          "type": "code",
+          "title": "Set up and run untrusted checks locally",
+          "language": "sh",
+          "code": "git submodule update --init execution-specs ethereum-tests\nzig build unit && zig build test-trace\nbun .smithers/scripts/run-trusted-ci.ts --untrusted ci '//...'\nuphill --compact"
+        },
+        {
+          "type": "code",
+          "title": "Connect your agent via Smithers Cloud MCP",
+          "language": "sh",
+          "code": "claude mcp add guillotine-mini --transport http https://smithers.sh/evmts/guillotine-mini/mcp\ncodex mcp add guillotine-mini --url https://smithers.sh/evmts/guillotine-mini/mcp\nagy mcp add guillotine-mini --transport http https://smithers.sh/evmts/guillotine-mini/mcp"
+        },
+        {
+          "type": "cards",
+          "title": "How a change lands",
+          "cards": [
+            {
+              "title": "Run untrusted locally",
+              "text": "Contributors are encouraged to run tests, flows, and Lighthouse audits locally with read-only cache access."
+            },
+            {
+              "title": "Trusted merge gates",
+              "text": "Only Smithers-controlled sandboxes and maintainers write the shared cache or satisfy merge gates."
+            },
+            {
+              "title": "Spec-first evidence",
+              "text": "Cite the Python execution-specs line and include a minimal failing regression before writing a fix."
+            },
+            {
+              "title": "Person-only merge",
+              "text": "Agents reproduce, review, and report backpressure. Only a human maintainer approves and lands to main."
+            }
+          ]
+        },
+        {
+          "type": "flows",
+          "title": "Factory flows"
+        },
+        {
+          "type": "links",
+          "title": "Contributor links",
+          "links": [
+            {
+              "label": "Issues",
+              "url": "https://smithers.sh/evmts/guillotine-mini/issues"
+            },
+            {
+              "label": "Pull requests",
+              "url": "https://smithers.sh/evmts/guillotine-mini/pulls"
+            },
+            {
+              "label": "Backpressure Audit",
+              "url": "https://mini.tevm.sh/audit/"
+            },
+            {
+              "label": "Project Wiki",
+              "url": "https://smithers.sh/evmts/guillotine-mini/blob/main/.smithers/wiki/Overview.md"
+            },
+            {
+              "label": "Mythical History",
+              "url": "https://smithers.sh/evmts/guillotine-mini/blob/main/.smithers/wiki/Mythical-History.md"
+            },
+            {
+              "label": "Contributing Guide",
+              "url": "https://smithers.sh/evmts/guillotine-mini/blob/main/CONTRIBUTING.md"
+            }
+          ]
+        },
+        {
+          "type": "prompt",
+          "title": "Work on Guillotine Mini",
+          "placeholder": "Describe a failing spec test, opcode, gas, or ABI change..."
+        }
+      ]
+    },
+    {
+      "audience": "everyone",
+      "blocks": [
+        {
+          "type": "hero",
+          "title": "Guillotine Mini",
+          "tagline": "A minimal, spec-first Ethereum Virtual Machine in Zig, built publicly on Smithers Cloud.",
+          "text": "Frontier through Osaka with Glamsterdam hooks, a 42-symbol C ABI, a WASI Preview 1 WebAssembly reactor with linked Rust crypto, and an executable Lean 4 differential oracle.",
+          "install": "zig fetch --save git+https://github.com/evmts/guillotine-mini#main",
+          "announcement": {
+            "label": "v0.1.0 live with Lean 4 oracle and Lighthouse audit",
+            "url": "https://mini.tevm.sh/audit/"
+          },
+          "actions": [
+            {
+              "label": "Read the docs",
+              "url": "https://mini.tevm.sh"
+            },
+            {
+              "label": "Opcode Explorer",
+              "url": "https://mini.tevm.sh/opcode-explorer"
+            },
+            {
+              "label": "Lighthouse Audit",
+              "url": "https://mini.tevm.sh/audit/"
+            }
+          ]
+        },
+        {
+          "type": "code",
+          "file": "execute.zig",
+          "language": "zig",
+          "code": "const std = @import(\"std\");\nconst evm = @import(\"guillotine_mini\");\n\npub fn run(allocator: std.mem.Allocator, bytecode: []const u8) !evm.CallResult {\n    var vm = try evm.Evm(.{}).init(allocator, null, .OSAKA, .{}, null);\n    defer vm.deinit();\n\n    return vm.call(.{ .call = .{\n        .caller = evm.Address.ZERO,\n        .to = evm.Address.fromU256(0x1000),\n        .value = 0,\n        .input = bytecode,\n        .gas = 1_000_000,\n    } });\n}"
+        },
+        {
+          "type": "stats",
+          "stats": [
+            {
+              "value": "Frontier to Osaka",
+              "label": "Hardforks + Glamsterdam hooks"
+            },
+            {
+              "value": "Zig 0.15.2 + C + WASM",
+              "label": "Native static lib and WASI reactor"
+            },
+            {
+              "value": "14,784 vectors",
+              "label": "Lean 4 formal oracle diff suite"
+            },
+            {
+              "value": "MIT",
+              "label": "Open source on Smithers Cloud"
+            }
+          ]
+        },
+        {
+          "type": "cards",
+          "title": "Why Guillotine Mini",
+          "cards": [
+            {
+              "title": "Spec-first parity",
+              "text": "Gas ordering, hardfork guards, and error mapping follow Python execution-specs line by line."
+            },
+            {
+              "title": "Zero-overhead inspection",
+              "text": "15-hook Inspector vtable, 256-bit OpcodeMask filtering, 6 native tracers, and EIP-3155 JSONL traces."
+            },
+            {
+              "title": "Lean 4 formal oracle",
+              "text": "Executable Lean 4 EVM reference specification with machine-checked theorems and zero sorrys."
+            },
+            {
+              "title": "Portable C and WASM ABI",
+              "text": "42 exported evm_* symbols, async state injection, and modular precompile WASM bundles under budget."
+            },
+            {
+              "title": "Simulation and devtools",
+              "text": "StateOverlayHost for eth_call and eth_simulateV1, time-travel debugger, and gas flamegraphs."
+            },
+            {
+              "title": "Public coding factory",
+              "text": "Incremental Smithers CI over a shared object store, public MCP server, and Lighthouse audit reports."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "title": "Live Backpressure Audit",
+          "path": ".smithers/audit/latest.md"
+        },
+        {
+          "type": "cards",
+          "title": "Knowledge Base and Tevm Stack",
+          "cards": [
+            {
+              "label": "Wiki",
+              "title": "Architecture and Decisions",
+              "text": "Obsidian-compatible engineering wiki covering Evm, Frame, storage, and security boundaries.",
+              "url": "https://smithers.sh/evmts/guillotine-mini/blob/main/.smithers/wiki/Overview.md"
+            },
+            {
+              "label": "Saga",
+              "title": "Mythical History",
+              "text": "The commit-by-commit chronicle from zig init to Lean 4 proofs, Osaka, and Smithers Cloud.",
+              "url": "https://smithers.sh/evmts/guillotine-mini/blob/main/.smithers/wiki/Mythical-History.md"
+            },
+            {
+              "label": "Primitives",
+              "title": "Voltaire",
+              "text": "Pinned Ethereum primitives, audited Rust crypto, and precompiles consumed by Guillotine Mini.",
+              "url": "https://smithers.sh/evmts/voltaire"
+            },
+            {
+              "label": "Client",
+              "title": "ZEVM",
+              "text": "Native Zig Ethereum execution client dogfooding Guillotine Mini directly via Smithers.",
+              "url": "https://zevm.tevm.sh"
+            },
+            {
+              "label": "High-speed EVM",
+              "title": "Guillotine",
+              "text": "High-performance sibling EVM engine in the Tevm family.",
+              "url": "https://guillotine.tevm.sh"
+            },
+            {
+              "label": "Interactive",
+              "title": "Opcode and Gas Explorer",
+              "text": "Step through EVM bytecode instruction by instruction in the browser.",
+              "url": "https://mini.tevm.sh/opcode-explorer"
+            }
+          ]
+        },
+        {
+          "type": "releases",
+          "title": "Releases",
+          "releases": [
+            {
+              "name": "v0.1.0",
+              "url": "https://github.com/evmts/guillotine-mini/releases/tag/v0.1.0",
+              "date": "2026-11-25",
+              "summary": "First tagged release with Frontier through Osaka support, WASI WASM reactor, C FFI, and Lean 4 oracle."
+            }
+          ],
+          "more": {
+            "label": "All releases",
+            "url": "https://github.com/evmts/guillotine-mini/releases"
+          }
+        },
+        {
+          "type": "links",
+          "title": "Public MCP and Resources",
+          "links": [
+            {
+              "label": "Docs (mini.tevm.sh)",
+              "url": "https://mini.tevm.sh"
+            },
+            {
+              "label": "Public MCP Endpoint",
+              "url": "https://smithers.sh/evmts/guillotine-mini/mcp"
+            },
+            {
+              "label": "GitHub Mirror",
+              "url": "https://github.com/evmts/guillotine-mini"
+            },
+            {
+              "label": "execution-specs",
+              "url": "https://github.com/ethereum/execution-specs"
+            }
+          ]
+        },
+        {
+          "type": "prompt",
+          "title": "Questions about Guillotine Mini?",
+          "placeholder": "Ask about opcodes, hardforks, gas rules, WASM, or the factory..."
         }
       ]
     }

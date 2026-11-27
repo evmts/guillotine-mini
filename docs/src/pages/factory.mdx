@@ -1,0 +1,57 @@
+---
+title: Smithers Cloud Factory
+description: Public coding factory, authenticated MCP server, personalized Maintainer / Contributor / Viewer UI, Obsidian Wiki, Mythical History, and Lighthouse-style backpressure for Guillotine Mini.
+---
+
+# Smithers Cloud Coding Factory
+
+Guillotine Mini is developed publicly on Smithers Cloud at **[smithers.sh/evmts/guillotine-mini](https://smithers.sh/evmts/guillotine-mini)**, mirroring to GitHub (`evmts/guillotine-mini`) and triggering automated releases, documentation deploys, and backpressure audits on every merge.
+
+```
+Smithers Cloud (smithers.sh/evmts/guillotine-mini)
+  ├── Personalized Home UI (Maintainer / Contributor / Viewer)
+  ├── Authenticated Streamable HTTP MCP (/evmts/guillotine-mini/mcp)
+  ├── Shared Object Store Cache (build.smithers.sh, read/write split)
+  ├── Obsidian Wiki & Mythical History (.smithers/wiki/)
+  └── Lighthouse Backpressure Audit (/audit/) ──▶ GitHub Main ──▶ Release & Docs Deploy
+```
+
+## Connect Your Own Agent via MCP
+
+Connect Claude Code, Codex, Antigravity, or Cursor directly over Streamable HTTP MCP with OAuth 2.1 and PKCE S256:
+
+```sh
+claude mcp add guillotine-mini --transport http https://smithers.sh/evmts/guillotine-mini/mcp
+codex mcp add guillotine-mini --url https://smithers.sh/evmts/guillotine-mini/mcp
+agy mcp add guillotine-mini --transport http https://smithers.sh/evmts/guillotine-mini/mcp
+```
+
+All agent writes are attributed as `<login> (agent)`. Approvals, merges, triage overrides, and secret writes remain strictly person-only.
+
+## One-Time Sandbox Authentication
+
+Print short-lived, single-use sandbox bootstrap envelopes or PKCE attach handshakes without sharing static secrets:
+
+```sh
+bun .smithers/scripts/mint-sandbox-auth.ts prompt
+bun .smithers/scripts/mint-sandbox-auth.ts attach --branch main
+bun .smithers/scripts/mint-sandbox-auth.ts envelope --agent worker-1 --ttl 300 --untrusted
+```
+
+## Trusted vs Untrusted Execution
+
+Contributors and external visitors are actively encouraged to run tests, flows, and Lighthouse audits locally:
+
+```sh
+bun .smithers/scripts/run-trusted-ci.ts --untrusted ci '//...'
+bun .smithers/scripts/generate-audit-report.ts --untrusted
+```
+
+To prevent cache poisoning and gate bypass:
+- **Trusted execution** (Smithers-controlled sandboxes, canonical `main` pushes, verified maintainers) may write to the shared `build.smithers.sh` cache and produce authoritative merge gate results.
+- **Untrusted execution** (fork PRs, external contributors, local unverified runs) receives read-only or local-only cache access with zero privileged tokens and informational-only status.
+
+## Lighthouse Backpressure Audit & Knowledge Base
+
+- **Interactive Lighthouse Audit Report**: Open [mini.tevm.sh/audit](https://mini.tevm.sh/audit/) for live 6-category radial gauges (Safety & TigerStyle, Style & Limits, Footprint & Minimalism, Verification & Tests, Documentation, Factory & Trust), prioritized score opportunities, and trust provenance.
+- **Obsidian Wiki & Mythical History**: Maintained in [`.smithers/wiki/`](https://github.com/evmts/guillotine-mini/tree/main/.smithers/wiki), including [Mythical History](https://github.com/evmts/guillotine-mini/blob/main/.smithers/wiki/Mythical-History.md) tracing `evmts/guillotine-mini` from `zig init` to Lean 4 proofs and Smithers Cloud.

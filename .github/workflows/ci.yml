@@ -109,6 +109,43 @@ jobs:
       - name: Compile EVM benchmarks
         run: zig build check-bench-evm
 
+  factory-audit:
+    name: Factory, Trust & Lighthouse Audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: guillotine-mini
+    steps:
+      - *checkout_project
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - *install_zig
+      - name: Run factory trust, auth, home, wiki, and audit tests
+        run: bun test ./.smithers/scripts/
+      - name: Verify personalized Home UI projection and Obsidian Wiki links
+        run: |
+          bun .smithers/scripts/project-home.ts --check
+          bun .smithers/scripts/sync-wiki-feed.ts --check
+      - name: Run Uphill and generate Lighthouse Backpressure Audit Report
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/wevm/uphill/main/install.sh | sh
+          export PATH="$HOME/.uphill/bin:$PATH"
+          uphill check
+          uphill --compact
+          bun .smithers/scripts/generate-audit-report.ts --verify
+          cat .smithers/audit/latest.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Lighthouse Backpressure Audit Report
+        uses: actions/upload-artifact@v6
+        with:
+          name: lighthouse-backpressure-audit
+          path: |
+            guillotine-mini/.smithers/audit/index.html
+            guillotine-mini/.smithers/audit/report.json
+            guillotine-mini/.smithers/audit/latest.md
+          retention-days: 14
+
   smithers:
     runs-on: macos-15
     timeout-minutes: 30
@@ -116,8 +153,11 @@ jobs:
       run:
         working-directory: guillotine-mini
     env:
+      # Trust boundary: PRs and forks ONLY receive read-only cache access so untrusted
+      # code can never poison the shared Smithers Cloud object store (build.smithers.sh).
+      # Only canonical pushes to evmts/guillotine-mini main receive the write token.
       SMITHERS_CACHE_READ_TOKEN: ${{ secrets.SMITHERS_CACHE_READ_TOKEN }}
-      SMITHERS_CACHE_WRITE_TOKEN: ${{ secrets.SMITHERS_CACHE_WRITE_TOKEN }}
+      SMITHERS_CACHE_WRITE_TOKEN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'evmts/guillotine-mini' && secrets.SMITHERS_CACHE_WRITE_TOKEN || '' }}
     steps:
       - *checkout_project
       - *checkout_fixtures
@@ -144,11 +184,11 @@ jobs:
           cargo build --release --target wasm32-unknown-unknown --no-default-features --features portable
       # The published CLI rejects a separate Effect install while loading
       # declarations. The client-ts job installs those dependencies and tests the client.
-      - name: Plan the Smithers CI graph
-        run: npx --yes smthrs@1.0.0-rc.16 ci '//...' --plan
-      - name: Run the native Smithers CI targets
+      - name: Plan the Smithers CI graph (trust-enforced)
+        run: bun .smithers/scripts/run-trusted-ci.ts --attestation-out .smithers/reports/ci-attestation.json ci '//...' --plan
+      - name: Run the native Smithers CI targets (trust-enforced)
         run: |
-          npx --yes smthrs@1.0.0-rc.16 ci '//.smithers/...' '//client/...' '//src/...' \
+          bun .smithers/scripts/run-trusted-ci.ts ci '//.smithers/...' '//client/...' '//src/...' \
             '//:test_unit' '//:test_spec_runner' '//:test_runner' '//:test_trace' '//:test_wasm' --verbose
 
   client-ts:

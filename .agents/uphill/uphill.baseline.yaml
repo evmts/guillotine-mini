@@ -414,3 +414,13 @@ documentation:
   broken-links:
     "*": { baseline: pass }
   companion-doc-coverage: { baseline: 65.4, target: 90 }
+
+factory:
+  factory-projection-sync:
+    "*": { baseline: pass }
+  trust-boundary-guard:
+    "*": { baseline: pass }
+  wiki-link-integrity:
+    "*": { baseline: pass }
+  mcp-and-agent-readiness:
+    "*": { baseline: pass }

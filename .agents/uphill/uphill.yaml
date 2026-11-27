@@ -106,3 +106,24 @@ documentation:
     description: Maintain companion `*.zig.md` design documentation alongside top-level production `src/*.zig` modules.
     better: higher
     poor: 60
+
+factory:
+  title: Factory & Trust
+  description: Smithers Cloud projections, cache-poisoning trust boundaries, Obsidian wiki links, and MCP agent readiness.
+  run: bun .agents/uphill/metrics/factory.ts
+  # .smithers/factory.json and .smithers/home.json must stay synced with FACTORY.ts and HOME.ts.
+  factory-projection-sync:
+    description: Keep .smithers/factory.json and .smithers/home.json valid and projected from FACTORY.ts and HOME.ts.
+    weight: 2
+  # Untrusted PRs must never hold SMITHERS_CACHE_WRITE_TOKEN; approvals and merges stay person-only.
+  trust-boundary-guard:
+    description: Enforce cache-write isolation, canonical main release gating, protected trust roots, and person-only merge policy.
+    weight: 2
+  # Required Obsidian wiki pages and Mythical History must exist with zero broken [[wikilinks]].
+  wiki-link-integrity:
+    description: Maintain all core .smithers/wiki pages and Mythical History with zero broken Obsidian wikilinks.
+    weight: 1.5
+  # Agents must connect via the authenticated Smithers Cloud MCP server and one-time sandbox auth.
+  mcp-and-agent-readiness:
+    description: Keep .mcp.json, AGENTS.md, and one-time sandbox auth tooling wired to smithers.sh/evmts/guillotine-mini/mcp.
+    weight: 1

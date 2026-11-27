@@ -17,7 +17,11 @@ export const Workspace = S.Workspace("guillotine-mini", {
       "client-ts/node_modules",
       "docs/node_modules",
     ],
-    // Local-first; syncs through Cloudflare when the tokens are set locally or in CI.
+    // Local-first build and test result cache backed by the shared Smithers Cloud
+    // object store. Contributors and PRs get read-only access via
+    // SMITHERS_CACHE_READ_TOKEN; only trusted main pushes and controlled Smithers
+    // sandboxes receive SMITHERS_CACHE_WRITE_TOKEN so untrusted runs can never
+    // poison the shared cache.
     remote: S.RemoteCache.make({
       endpoint: "https://build.smithers.sh",
       read: S.Secret("SMITHERS_CACHE_READ_TOKEN"),
@@ -35,11 +39,13 @@ export const Workspace = S.Workspace("guillotine-mini", {
       ".zig-cache-local",
       "zig-out",
       ".flows",
+      ".uphill",
       ".smithers/cache",
       ".smithers/reports",
       ".bench-results",
       "client-ts/node_modules",
       "docs/node_modules",
+      "docs/dist",
       "ethereum-tests",
       "execution-specs",
       "lib",

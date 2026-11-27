@@ -8,7 +8,14 @@
     "test:isolate": "bun scripts/isolate-test.ts",
     "test:subset": "bun scripts/test-subset.ts",
     "fix:specs": "bun scripts/fix-specs.ts",
-    "test": "bun --cwd client-ts run test"
+    "test": "bun --cwd client-ts run test",
+    "smithers:ci": "bun .smithers/scripts/run-trusted-ci.ts ci '//...'",
+    "smithers:ci:untrusted": "bun .smithers/scripts/run-trusted-ci.ts --untrusted ci '//...'",
+    "smithers:audit": "bun .smithers/scripts/generate-audit-report.ts",
+    "smithers:audit:docs": "bun .smithers/scripts/generate-audit-report.ts --publish-docs",
+    "smithers:wiki:check": "bun .smithers/scripts/sync-wiki-feed.ts --check",
+    "smithers:home:write": "bun .smithers/scripts/project-home.ts --write",
+    "smithers:auth": "bun .smithers/scripts/mint-sandbox-auth.ts"
   },
   "keywords": [
     "ethereum",

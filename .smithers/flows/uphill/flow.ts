@@ -5,11 +5,14 @@ import { Schema } from "effect"
 
 const uphill = CiJob.make("uphill", {
   steps: [
-    { name: "uphill", run: "uphill --compact" },
+    { name: "uphill-check", run: "uphill check" },
+    { name: "uphill-compact", run: "uphill --compact" },
+    { name: "lighthouse-audit", run: "bun .smithers/scripts/generate-audit-report.ts" },
   ],
 })
 
 export default Flow.make("uphill", {
+  description: "Run Uphill continuous metrics and generate the Lighthouse-style backpressure audit report.",
   payload: {
     run: Schema.String,
     repo: Schema.String,

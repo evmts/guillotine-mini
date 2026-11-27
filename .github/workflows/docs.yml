@@ -5,10 +5,18 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - '.smithers/wiki/**'
+      - '.smithers/audit/**'
+      - '.smithers/HOME.ts'
+      - '.smithers/home.json'
+      - '.agents/uphill/**'
+      - 'README.md'
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
       - 'docs/**'
+      - '.smithers/wiki/**'
+      - '.smithers/audit/**'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -16,26 +24,46 @@ concurrency:
   group: docs-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    name: Build docs site
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: docs
+    name: Build docs site and Lighthouse audit page
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a # v1
+        with:
+          version: 0.15.2
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: docs/package-lock.json
-      - name: Install
+      - name: Refresh Lighthouse Backpressure Audit for docs/public/audit/
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/wevm/uphill/main/install.sh | sh
+          export PATH="$HOME/.uphill/bin:$PATH"
+          uphill --compact || true
+          bun .smithers/scripts/generate-audit-report.ts --publish-docs --verify
+      - name: Install docs dependencies
+        working-directory: docs
         run: npm ci
-      - name: Build
+      - name: Build docs site
+        working-directory: docs
         run: npm run build
+      - name: Verify llms.txt and /audit/ Lighthouse report
+        run: |
+          test -s docs/dist/public/llms.txt
+          test -s docs/dist/public/audit/index.html
+          test -s docs/dist/public/audit/report.json
       - name: Upload build output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: docs-dist
           path: docs/dist/public
@@ -44,8 +72,15 @@ jobs:
   deploy:
     name: Deploy to Vercel (mini.tevm.sh)
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    # Strictly canonical main pushes (including merges from Smithers Cloud) or maintainer dispatch.
+    if: >-
+      (github.event_name == 'push' &&
+       github.ref == 'refs/heads/main' &&
+       github.repository == 'evmts/guillotine-mini') ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == 'refs/heads/main' &&
+       github.repository == 'evmts/guillotine-mini')
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: docs
@@ -53,8 +88,14 @@ jobs:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_DOCS }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a # v1
+        with:
+          version: 0.15.2
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
       # Skips cleanly (rather than failing) until the Vercel secrets exist.
@@ -67,6 +108,14 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Vercel secrets not configured; skipping docs deploy."
           fi
+      - name: Refresh Lighthouse Backpressure Audit before deploy
+        if: steps.creds.outputs.ready == 'true'
+        working-directory: .
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/wevm/uphill/main/install.sh | sh
+          export PATH="$HOME/.uphill/bin:$PATH"
+          uphill --compact || true
+          bun .smithers/scripts/generate-audit-report.ts --publish-docs --verify
       - name: Deploy
         if: steps.creds.outputs.ready == 'true'
         run: |

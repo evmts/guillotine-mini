@@ -1,7 +1,10 @@
 name: Uphill
 
 on:
+  push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -9,11 +12,15 @@ permissions:
 
 jobs:
   uphill:
+    name: Uphill & Lighthouse Backpressure Audit
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
 
       - uses: xyzzylabs/setup-zig@c0fdcf100ed8a4e5619d2bf55fae0bf0dab9ba0a # v1
         with:
@@ -21,3 +28,18 @@ jobs:
 
       - name: Run Uphill
         uses: wevm/uphill@main
+
+      - name: Generate Lighthouse Backpressure Audit Report
+        run: |
+          bun .smithers/scripts/generate-audit-report.ts --skip-uphill --verify
+          cat .smithers/audit/latest.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Lighthouse Audit Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: uphill-lighthouse-report
+          path: |
+            .smithers/audit/index.html
+            .smithers/audit/report.json
+            .smithers/audit/latest.md
+          retention-days: 14

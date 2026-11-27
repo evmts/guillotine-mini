@@ -45,3 +45,12 @@ Companion *.zig.md design docs and local markdown link integrity.
 
 - Fix broken relative and root-relative links in root Markdown files and docs/**/*.md.
 - Maintain companion `*.zig.md` design documentation alongside top-level production `src/*.zig` modules. At least 90.
+
+## Factory & Trust
+
+Smithers Cloud projections, cache-poisoning trust boundaries, Obsidian wiki links, and MCP agent readiness.
+
+- Keep .smithers/factory.json and .smithers/home.json valid and projected from FACTORY.ts and HOME.ts.
+- Enforce cache-write isolation, canonical main release gating, protected trust roots, and person-only merge policy.
+- Maintain all core .smithers/wiki pages and Mythical History with zero broken Obsidian wikilinks.
+- Keep .mcp.json, AGENTS.md, and one-time sandbox auth tooling wired to smithers.sh/evmts/guillotine-mini/mcp.

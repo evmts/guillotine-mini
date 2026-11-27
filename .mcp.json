@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "guillotine-mini": {
+      "type": "http",
+      "url": "https://smithers.sh/evmts/guillotine-mini/mcp"
+    }
+  }
+}

@@ -2,6 +2,8 @@
 
 Follow the [Uphill rules](.agents/uphill/rules.md), which `uphill rules --write` rewrites from each metric's description: @.agents/uphill/rules.md
 
+> **Smithers Cloud Coding Factory**: This repository runs publicly on Smithers Cloud at [smithers.sh/evmts/guillotine-mini](https://smithers.sh/evmts/guillotine-mini) with an authenticated MCP server at `https://smithers.sh/evmts/guillotine-mini/mcp` (configured in `.mcp.json`). See [AGENTS.md](AGENTS.md) for the Smithers-first dogfooding contract, one-time sandbox auth (`.smithers/scripts/mint-sandbox-auth.ts`), Obsidian Wiki and Mythical History (`.smithers/wiki/`), and the Lighthouse Backpressure Audit (`bun .smithers/scripts/generate-audit-report.ts`).
+
 Minimal, correct, and well-tested Ethereum Virtual Machine (EVM) implementation in Zig, prioritizing specification compliance, clarity, and hardfork support (Frontier through Amsterdam in the Voltaire enum, with Osaka as the default).
 
 ## Quick Start
