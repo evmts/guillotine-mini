@@ -4,6 +4,7 @@ const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 const Address = primitives.Address;
+const hardfork_hooks = @import("../hardfork_hooks.zig");
 
 /// Handlers struct - provides execution context operation handlers for a Frame type
 /// The FrameType must have methods: consumeGas, popStack, pushStack, getEvm, memoryRange,
@@ -162,13 +163,13 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const ext_addr = primitives.Address.fromU256(addr_int);
 
             // Gas cost: hardfork-aware
-            // Berlin+: cold/warm access (2600/100)
-            // Istanbul-Berlin: 700 gas (EIP-1884)
-            // Tangerine Whistle-Istanbul: 700 gas (EIP-150)
+            // Amsterdam (EIP-8038): cold=3100, warm=200 (account access + 100 code load)
+            // Berlin-Osaka: cold/warm access (2600/100)
+            // Tangerine Whistle-Berlin: 700 gas (EIP-150/EIP-1884)
             // Pre-Tangerine Whistle: 20 gas
             const warm_cold_cost = try evm.accessAddress(ext_addr);
             const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
-                warm_cold_cost
+                warm_cold_cost + hardfork_hooks.GasSchedule.forFork(evm.hardfork).extcode_extra
             else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
                 @as(u64, 700)
             else
@@ -193,12 +194,13 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const ext_addr = primitives.Address.fromU256(addr_int);
 
             // Gas cost: hardfork-aware
-            // Berlin+: cold/warm access (2600/100)
+            // Amsterdam (EIP-8038): cold=3100, warm=200 (account access + 100 code load)
+            // Berlin-Osaka: cold/warm access (2600/100)
             // Tangerine Whistle-Berlin: 700 gas (EIP-150)
             // Pre-Tangerine Whistle: 20 gas
             const warm_cold_cost = try evm.accessAddress(ext_addr);
             const access_cost: u64 = if (evm.hardfork.isAtLeast(.BERLIN))
-                warm_cold_cost
+                warm_cold_cost + hardfork_hooks.GasSchedule.forFork(evm.hardfork).extcode_extra
             else if (evm.hardfork.isAtLeast(.TANGERINE_WHISTLE))
                 @as(u64, 700)
             else

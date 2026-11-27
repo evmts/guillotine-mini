@@ -3,6 +3,7 @@ const std = @import("std");
 const primitives = @import("voltaire");
 const errors = @import("errors.zig");
 const evm = @import("evm.zig");
+const hardfork_hooks = @import("hardfork_hooks.zig");
 const storage = @import("storage.zig");
 const Evm = evm.Evm(.{}); // Default config
 const StorageInjector = @import("storage_injector.zig").StorageInjector;
@@ -4228,4 +4229,639 @@ test "differential: compiled interpreter matches uncompiled step interpreter acr
         try testing.expectEqual(r_ref.gas_left, r_comp.gas_left);
         try testing.expectEqualSlices(u8, r_ref.output, r_comp.output);
     }
+}
+
+// ============================================================================
+// Glamsterdam (Amsterdam) Hardfork Tests
+// EIP-7843, EIP-8024, EIP-7954, EIP-8038, EIP-8037, EIP-7708, EIP-8246, EIP-7928
+// ============================================================================
+
+fn readReturnWord(bytes: []const u8) u256 {
+    if (bytes.len < 32) return 0;
+    return std.mem.readInt(u256, bytes[0..32], .big);
+}
+
+test "Amsterdam EIP-7843: SLOTNUM returns block slot_num at 2 gas and is InvalidOpcode on Osaka" {
+    const testing = std.testing;
+    const caller = primitives.Address.fromU256(0x1001);
+    const target = primitives.Address.fromU256(0x2002);
+    // GAS; SLOTNUM; GAS; SWAP1; PUSH1 0; MSTORE; SWAP1; SUB; PUSH1 32; MSTORE; PUSH1 64; PUSH1 0; RETURN
+    const code = [_]u8{
+        0x5a, // GAS (2)
+        0x4b, // SLOTNUM (2)
+        0x5a, // GAS (2)
+        0x90, // SWAP1
+        0x60, 0x00, 0x52, // MSTORE(0, slot_num)
+        0x90, // SWAP1
+        0x03, // SUB (gas_before - gas_after = 2 + 2 = 4)
+        0x60, 0x20, 0x52, // MSTORE(32, delta)
+        0x60, 0x40, 0x60, 0x00, 0xf3, // RETURN(0, 64)
+    };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .AMSTERDAM, null, caller, 0, null);
+    defer vm.deinit();
+    vm.block_context.slot_num = 0xdead_beef_cafe_babe;
+    try vm.code.put(target, &code);
+
+    const res = vm.call(.{ .call = .{
+        .caller = caller,
+        .to = target,
+        .value = 0,
+        .input = &.{},
+        .gas = 100_000,
+    } });
+    try testing.expect(res.success);
+    try testing.expectEqual(@as(usize, 64), res.output.len);
+    try testing.expectEqual(@as(u256, 0xdead_beef_cafe_babe), readReturnWord(res.output[0..32]));
+    // GAS(after) saw gas_before - 2(GAS) - 2(SLOTNUM) = delta 4
+    try testing.expectEqual(@as(u256, 4), readReturnWord(res.output[32..64]));
+
+    // Osaka must reject 0x4b as InvalidOpcode
+    var osaka_vm: Evm = undefined;
+    try osaka_vm.init(testing.allocator, null, .OSAKA, null, caller, 0, null);
+    defer osaka_vm.deinit();
+    osaka_vm.block_context.slot_num = 7;
+    try osaka_vm.code.put(target, &code);
+    const osaka_res = osaka_vm.call(.{ .call = .{
+        .caller = caller,
+        .to = target,
+        .value = 0,
+        .input = &.{},
+        .gas = 100_000,
+    } });
+    try testing.expect(!osaka_res.success);
+    try testing.expectEqualStrings("InvalidOpcode", osaka_res.error_info.?);
+}
+
+test "Amsterdam EIP-8024: DUPN, SWAPN, EXCHANGE semantics, invalid immediates, JUMPDEST, and fork gate" {
+    const testing = std.testing;
+    const caller = primitives.Address.fromU256(0x1010);
+    const target = primitives.Address.fromU256(0x2020);
+
+    // 1. DUPN 0x80 (n = 17): push 1..17 (1 at bottom, 17 on top), DUPN 0x80 copies bottom (1), return it.
+    var dupn_code: std.ArrayList(u8) = .empty;
+    defer dupn_code.deinit(testing.allocator);
+    for (1..18) |i| {
+        try dupn_code.append(testing.allocator, 0x60);
+        try dupn_code.append(testing.allocator, @intCast(i));
+    }
+    try dupn_code.appendSlice(testing.allocator, &.{ 0xe6, 0x80, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 });
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .AMSTERDAM, null, caller, 0, null);
+    defer vm.deinit();
+    try vm.code.put(target, dupn_code.items);
+    const dupn_res = vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(dupn_res.success);
+    try testing.expectEqual(@as(u256, 1), readReturnWord(dupn_res.output));
+
+    // 2. SWAPN 0x80 (n = 17): push 1..18 (1 at depth 17, 18 on top), SWAPN 0x80 swaps top(18) with depth 17(1).
+    var swapn_code: std.ArrayList(u8) = .empty;
+    defer swapn_code.deinit(testing.allocator);
+    for (1..19) |i| {
+        try swapn_code.append(testing.allocator, 0x60);
+        try swapn_code.append(testing.allocator, @intCast(i));
+    }
+    try swapn_code.appendSlice(testing.allocator, &.{ 0xe7, 0x80, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 });
+    try vm.code.put(target, swapn_code.items);
+    const swapn_res = vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(swapn_res.success);
+    try testing.expectEqual(@as(u256, 1), readReturnWord(swapn_res.output));
+
+    // 3. EXCHANGE 0x8e -> k = 0x8e ^ 0x8f = 0x01 -> pair (1, 2): swaps depth 1 and depth 2 (top untouched).
+    // Stack bottom->top: [10, 20, 30] -> depth 0 = 30, depth 1 = 20, depth 2 = 10 -> after: [20, 10, 30].
+    const exchange_code = [_]u8{
+        0x60, 10, 0x60, 20, 0x60, 30, // push 10, 20, 30
+        0xe8, 0x8e, // EXCHANGE (1, 2) -> stack becomes [20, 10, 30]
+        0x60, 0x00, 0x52, // MSTORE(0, 30)
+        0x60, 0x20, 0x52, // MSTORE(32, 10)
+        0x60, 0x40, 0x52, // MSTORE(64, 20)
+        0x60, 0x60, 0x60, 0x00, 0xf3, // RETURN(0, 96)
+    };
+    try vm.code.put(target, &exchange_code);
+    const ex_res = vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(ex_res.success);
+    try testing.expectEqual(@as(u256, 30), readReturnWord(ex_res.output[0..32]));
+    try testing.expectEqual(@as(u256, 10), readReturnWord(ex_res.output[32..64]));
+    try testing.expectEqual(@as(u256, 20), readReturnWord(ex_res.output[64..96]));
+
+    // 4. Invalid immediates halt with InvalidOpcode
+    const bad_imms = [_][2]u8{
+        .{ 0xe6, 0x5b }, .{ 0xe6, 0x7f },
+        .{ 0xe7, 0x60 }, .{ 0xe7, 0x7f },
+        .{ 0xe8, 0x52 }, .{ 0xe8, 0x7f },
+    };
+    for (bad_imms) |pair| {
+        try vm.code.put(target, &pair);
+        const r = vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+        try testing.expect(!r.success);
+        try testing.expectEqualStrings("InvalidOpcode", r.error_info.?);
+    }
+
+    // 5. End-of-code immediate padding: trailing 0xe6 decodes as 0x00 (n = 145).
+    var eoc_code: std.ArrayList(u8) = .empty;
+    defer eoc_code.deinit(testing.allocator);
+    for (0..145) |_| try eoc_code.append(testing.allocator, 0x5f); // PUSH0 x 145
+    try eoc_code.append(testing.allocator, 0xe6); // DUPN with missing byte -> 0x00 -> n = 145
+    try vm.code.put(target, eoc_code.items);
+    try testing.expect(vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } }).success);
+
+    // 6. JUMPDEST at byte right after 0xe6 is valid (DUPN does NOT mask 0x5b), while 0xe6 0x60 0x5b masks 0x5b.
+    const jump_to_imm = [_]u8{ 0x60, 0x04, 0x56, 0xe6, 0x5b, 0x60, 0x42, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3 };
+    try vm.code.put(target, &jump_to_imm);
+    const jump_ok = vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(jump_ok.success);
+    try testing.expectEqual(@as(u256, 0x42), readReturnWord(jump_ok.output));
+
+    const jump_masked = [_]u8{ 0x60, 0x05, 0x56, 0xe6, 0x60, 0x5b, 0x00 };
+    try vm.code.put(target, &jump_masked);
+    const jump_fail = vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(!jump_fail.success);
+
+    // 7. Osaka rejects DUPN/SWAPN/EXCHANGE
+    var osaka_vm: Evm = undefined;
+    try osaka_vm.init(testing.allocator, null, .OSAKA, null, caller, 0, null);
+    defer osaka_vm.deinit();
+    try osaka_vm.code.put(target, &exchange_code);
+    const osaka_ex = osaka_vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(!osaka_ex.success);
+    try testing.expectEqualStrings("InvalidOpcode", osaka_ex.error_info.?);
+}
+
+test "Amsterdam EIP-7954: 64 KiB max deployed code and 128 KiB max initcode" {
+    const testing = std.testing;
+    const caller = primitives.Address.fromU256(0x1030);
+
+    // Helper initcode: PUSH3 len; PUSH1 0; RETURN (returns `len` zero bytes)
+    const makeInitReturning = struct {
+        fn build(len: u24) [7]u8 {
+            return .{
+                0x62,
+                @intCast((len >> 16) & 0xff),
+                @intCast((len >> 8) & 0xff),
+                @intCast(len & 0xff),
+                0x60,
+                0x00,
+                0xf3,
+            };
+        }
+    }.build;
+
+    var am_vm: Evm = undefined;
+    try am_vm.init(testing.allocator, null, .AMSTERDAM, null, caller, 0, null);
+    defer am_vm.deinit();
+
+    // 65,536 bytes (exact EIP-7954 limit) succeeds on Amsterdam with reservoir covering state gas.
+    const init_64k = makeInitReturning(65_536);
+    try am_vm.nonces.put(caller, 1);
+    am_vm.setStateGasReservoir(120_000_000);
+    const res_64k = am_vm.call(.{ .create = .{ .caller = caller, .value = 0, .init_code = &init_64k, .gas = 16_000_000 } });
+    try testing.expect(res_64k.success);
+    try testing.expectEqual(@as(usize, 65_536), am_vm.getRawCode(res_64k.created_address.?).len);
+
+    // 65,537 bytes fails with CreateContractSizeLimit on Amsterdam.
+    const init_64k_plus_1 = makeInitReturning(65_537);
+    try am_vm.nonces.put(caller, 2);
+    am_vm.setStateGasReservoir(120_000_000);
+    const res_over = am_vm.call(.{ .create = .{ .caller = caller, .value = 0, .init_code = &init_64k_plus_1, .gas = 16_000_000 } });
+    try testing.expect(!res_over.success);
+    try testing.expectEqualStrings("CreateContractSizeLimit", res_over.error_info.?);
+
+    // 32,768 bytes fails on Osaka (24,576 limit).
+    var osaka_vm: Evm = undefined;
+    try osaka_vm.init(testing.allocator, null, .OSAKA, null, caller, 0, null);
+    defer osaka_vm.deinit();
+    const init_32k = makeInitReturning(32_768);
+    const osaka_32k = osaka_vm.call(.{ .create = .{ .caller = caller, .value = 0, .init_code = &init_32k, .gas = 16_000_000 } });
+    try testing.expect(!osaka_32k.success);
+    try testing.expectEqualStrings("CreateContractSizeLimit", osaka_32k.error_info.?);
+
+    // Initcode 131,072 bytes succeeds on Amsterdam; 131,073 bytes rejected; 50,000 bytes rejected on Osaka.
+    const init_128k = try testing.allocator.alloc(u8, 131_072);
+    defer testing.allocator.free(init_128k);
+    @memset(init_128k, 0x00); // STOP
+    try am_vm.nonces.put(caller, 3);
+    am_vm.setStateGasReservoir(1_000_000);
+    const res_init_128k = am_vm.call(.{ .create = .{ .caller = caller, .value = 0, .init_code = init_128k, .gas = 1_000_000 } });
+    try testing.expect(res_init_128k.success);
+
+    const init_128k_plus_1 = try testing.allocator.alloc(u8, 131_073);
+    defer testing.allocator.free(init_128k_plus_1);
+    @memset(init_128k_plus_1, 0x00);
+    try am_vm.nonces.put(caller, 4);
+    const res_init_over = am_vm.call(.{ .create = .{ .caller = caller, .value = 0, .init_code = init_128k_plus_1, .gas = 1_000_000 } });
+    try testing.expect(!res_init_over.success);
+    try testing.expectEqualStrings("InvalidInitCodeSize", res_init_over.error_info.?);
+
+    const osaka_init_50k = osaka_vm.call(.{ .create = .{ .caller = caller, .value = 0, .init_code = init_128k[0..50_000], .gas = 1_000_000 } });
+    try testing.expect(!osaka_init_50k.success);
+    try testing.expectEqualStrings("InvalidInitCodeSize", osaka_init_50k.error_info.?);
+}
+
+test "Amsterdam EIP-8038: repriced BALANCE, EXTCODESIZE (+100), CALL value, CREATE base, and SSTORE" {
+    const testing = std.testing;
+    const caller = primitives.Address.fromU256(0x1040);
+    const target = primitives.Address.fromU256(0x2040);
+    const probe = primitives.Address.fromU256(0x9999);
+
+    var am_vm: Evm = undefined;
+    try am_vm.init(testing.allocator, null, .AMSTERDAM, null, caller, 0, null);
+    defer am_vm.deinit();
+
+    // 1. Cold & warm BALANCE(probe): 3000 cold, 100 warm
+    // PUSH2 0x9999; GAS; SWAP1; BALANCE; GAS; SWAP2; POP; SUB -> wait: simpler:
+    // PUSH2 0x9999; BALANCE; POP; PUSH2 0x9999; BALANCE; POP; STOP
+    // Total gas: 3 + 3000 + 2 + 3 + 100 + 2 = 3110 on Amsterdam (vs 2710 on Osaka).
+    const bal_code = [_]u8{ 0x61, 0x99, 0x99, 0x31, 0x50, 0x61, 0x99, 0x99, 0x31, 0x50, 0x00 };
+    try am_vm.code.put(target, &bal_code);
+    const bal_res = am_vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(bal_res.success);
+    try testing.expectEqual(@as(u64, 3110), 100_000 - bal_res.gas_left);
+
+    // 2. Cold & warm EXTCODESIZE(probe): 3100 cold, 200 warm (+100 extcode_extra each!)
+    // Total gas: 3 + 3100 + 2 + 3 + 200 + 2 = 3310.
+    const ext_code = [_]u8{ 0x61, 0x99, 0x99, 0x3b, 0x50, 0x61, 0x99, 0x99, 0x3b, 0x50, 0x00 };
+    try am_vm.code.put(target, &ext_code);
+    const ext_res = am_vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(ext_res.success);
+    try testing.expectEqual(@as(u64, 3310), 100_000 - ext_res.gas_left);
+
+    // 3. Value CALL to warm existing account (caller is pre-warmed, value=1):
+    // PUSH0 x4; PUSH1 1; PUSH2 0x1040; GAS; CALL; POP; STOP
+    // Gas: PUSH0(2)*4 + PUSH1(3) + PUSH2(3) + GAS(2) + CALL(100 warm + 11300 value - 2300 returned stipend) + POP(2) = 9118.
+    try am_vm.balances.put(target, 10);
+    try am_vm.balances.put(caller, 10);
+    const call_val_code = [_]u8{ 0x5f, 0x5f, 0x5f, 0x5f, 0x60, 0x01, 0x61, 0x10, 0x40, 0x5a, 0xf1, 0x50, 0x00 };
+    try am_vm.code.put(target, &call_val_code);
+    const call_val_res = am_vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(call_val_res.success);
+    try testing.expectEqual(@as(u64, 9118), 100_000 - call_val_res.gas_left);
+
+    // 4. SSTORE clean write (nonzero -> nonzero: 2100 + 10000 = 12100) and clear (nonzero -> 0: 11616 refund).
+    try am_vm.storage.set(target, 0, 5);
+    const sstore_clear = [_]u8{ 0x5f, 0x5f, 0x55, 0x00 }; // PUSH0(2), PUSH0(2), SSTORE(12100), STOP
+    try am_vm.code.put(target, &sstore_clear);
+    const clear_res = am_vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(clear_res.success);
+    try testing.expectEqual(@as(u64, 12104), 100_000 - clear_res.gas_left);
+    try testing.expectEqual(@as(u64, 11_616), clear_res.refund_counter);
+
+    // 5. CREATE regular base gas is 12,000 (not 32,000) when state gas comes from reservoir.
+    const create_empty = [_]u8{ 0x5f, 0x5f, 0x5f, 0xf0, 0x50, 0x00 }; // PUSH0*3 (6) + CREATE (12000) + POP (2) = 12008
+    try am_vm.code.put(target, &create_empty);
+    am_vm.setStateGasReservoir(200_000);
+    const create_res = am_vm.call(.{ .call = .{ .caller = caller, .to = target, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(create_res.success);
+    try testing.expectEqual(@as(u64, 12_008), 100_000 - create_res.gas_left);
+    try testing.expectEqual(@as(u64, 200_000 - 183_600), am_vm.getStateGasReservoir());
+    try testing.expectEqual(@as(u64, 183_600), am_vm.getStateGasUsed());
+    _ = probe;
+}
+
+test "Amsterdam EIP-8037: reservoir draw, spill, stipend sentry, LIFO revert, halt, and cross-frame advance" {
+    const testing = std.testing;
+    const caller = primitives.Address.fromU256(0x1050);
+    const parent = primitives.Address.fromU256(0x2050);
+    const child = primitives.Address.fromU256(0x3050);
+    const probe = primitives.Address.fromU256(0x4050);
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .AMSTERDAM, null, caller, 0, null);
+    defer vm.deinit();
+
+    // 1. SSTORE 0->1 draws 97,920 from reservoir without touching regular gas beyond 12,100.
+    const sstore_set = [_]u8{ 0x60, 0x01, 0x5f, 0x55, 0x00 }; // PUSH1 1 (3), PUSH0 (2), SSTORE (12100 reg + 97920 state)
+    try vm.code.put(parent, &sstore_set);
+    vm.setStateGasReservoir(100_000);
+    const r1 = vm.call(.{ .call = .{ .caller = caller, .to = parent, .value = 0, .input = &.{}, .gas = 20_000 } });
+    try testing.expect(r1.success);
+    try testing.expectEqual(@as(u64, 20_000 - 12_105), r1.gas_left);
+    try testing.expectEqual(@as(u64, 100_000 - 97_920), vm.getStateGasReservoir());
+    try testing.expectEqual(@as(u64, 97_920), vm.getStateGasUsed());
+
+    // 2. SSTORE 2300 stipend sentry ignores state_gas_reservoir: gas=2305 (2300 at SSTORE) must OOG despite huge reservoir!
+    try vm.storage.set(parent, 0, 0);
+    vm.setStateGasReservoir(500_000);
+    const r_stipend = vm.call(.{ .call = .{ .caller = caller, .to = parent, .value = 0, .input = &.{}, .gas = 2305 } });
+    try testing.expect(!r_stipend.success);
+    try testing.expectEqual(@as(u64, 500_000), vm.getStateGasReservoir());
+
+    // 3. Same-frame SSTORE 0->1->0 refills spilled gas LIFO back to gas_left (not reservoir) + 10,000 refund.
+    const set_and_reset = [_]u8{
+        0x60, 0x01, 0x5f, 0x55, // SSTORE(0, 1): 12100 reg + 97920 state (spilled)
+        0x5f, 0x5f, 0x55, // SSTORE(0, 0): 100 reg, refills 97920 to gas_left, +10000 regular refund
+        0x00,
+    };
+    try vm.code.put(parent, &set_and_reset);
+    vm.setStateGasReservoir(0);
+    const r_lifo = vm.call(.{ .call = .{ .caller = caller, .to = parent, .value = 0, .input = &.{}, .gas = 200_000 } });
+    try testing.expect(r_lifo.success);
+    // Regular gas spent: 3+2+12100 + 2+2+100 = 12209; 97,920 spilled was refilled back to gas_left!
+    try testing.expectEqual(@as(u64, 200_000 - 12_209), r_lifo.gas_left);
+    try testing.expectEqual(@as(u64, 0), vm.getStateGasReservoir());
+    try testing.expectEqual(@as(u64, 10_000), r_lifo.refund_counter);
+
+    // 4. Child spills + reverts vs child spills + halts:
+    // Child does 2 SSTOREs (slot 0 & slot 1) with reservoir=97,920 (1st from reservoir, 2nd spilled), then REVERTs.
+    // Parent then calls probe with tight gas (15,000 < 97,920), which succeeds ONLY because reservoir was restored!
+    const child_revert = [_]u8{
+        0x60, 0x01, 0x5f, 0x55, // SSTORE(0, 1) -> drains reservoir 97,920
+        0x60, 0x01, 0x60, 0x01, 0x55, // SSTORE(1, 1) -> spills 97,920 from child gas_left
+        0x5f, 0x5f, 0xfd, // REVERT(0, 0)
+    };
+    const child_halt = [_]u8{
+        0x60, 0x01, 0x5f, 0x55, // SSTORE(0, 1) -> drains reservoir 97,920
+        0x60, 0x01, 0x60, 0x01, 0x55, // SSTORE(1, 1) -> spills 97,920 from child gas_left
+        0xfe, // INVALID (exceptional halt)
+    };
+    const probe_code = [_]u8{ 0x60, 0x01, 0x5f, 0x55, 0x00 }; // SSTORE(0, 1)
+    const parent_driver = [_]u8{
+        // CALL(200_000, child, 0, 0, 0, 0, 0); POP
+        0x5f, 0x5f, 0x5f, 0x5f, 0x5f, 0x61, 0x30, 0x50, 0x62, 0x03, 0x0d, 0x40, 0xf1, 0x50,
+        // CALL(15_000, probe, 0, 0, 0, 0, 0); PUSH0; MSTORE; RETURN 32
+        0x5f, 0x5f, 0x5f, 0x5f, 0x5f, 0x61, 0x40, 0x50, 0x61, 0x3a, 0x98, 0xf1, 0x5f, 0x52,
+        0x60, 0x20, 0x5f, 0xf3,
+    };
+    try vm.code.put(parent, &parent_driver);
+    try vm.code.put(probe, &probe_code);
+
+    // 4a. Reverted child restores reservoir AND returns spilled gas to parent gas_left
+    try vm.code.put(child, &child_revert);
+    vm.setStateGasReservoir(97_920);
+    const r_rev = vm.call(.{ .call = .{ .caller = caller, .to = parent, .value = 0, .input = &.{}, .gas = 500_000 } });
+    try testing.expect(r_rev.success);
+    try testing.expectEqual(@as(u256, 1), readReturnWord(r_rev.output));
+    try testing.expectEqual(@as(u64, 0), vm.getStateGasReservoir()); // probe consumed the restored 97,920!
+    // Spilled 97,920 came back to parent gas_left, so parent spent far less than 200,000 regular gas!
+    try testing.expect(500_000 - r_rev.gas_left < 60_000);
+
+    // 4b. Halted child restores reservoir (probe succeeds!), while burning child's 200,000 forwarded gas!
+    try vm.storage.set(probe, 0, 0);
+    try vm.code.put(child, &child_halt);
+    vm.setStateGasReservoir(97_920);
+    const r_halt = vm.call(.{ .call = .{ .caller = caller, .to = parent, .value = 0, .input = &.{}, .gas = 500_000 } });
+    try testing.expect(r_halt.success);
+    try testing.expectEqual(@as(u256, 1), readReturnWord(r_halt.output));
+    try testing.expectEqual(@as(u64, 0), vm.getStateGasReservoir());
+    // Halted child burned its full 200,000 forwarded budget!
+    try testing.expect(500_000 - r_halt.gas_left > 200_000);
+
+    // 5. Cross-frame SSTORE restoration advance: parent sets slot 0 (spilled, R=0), DELEGATECALLs child to clear slot 0.
+    // On child success, parent's spilled 97,920 discharges back into parent gas_remaining!
+    const clearer = [_]u8{ 0x5f, 0x5f, 0x55, 0x00 }; // SSTORE(0, 0)
+    const caller_delegate = [_]u8{
+        0x60, 0x01, 0x5f, 0x55, // SSTORE(0, 1) -> spills 97,920 from parent gas_remaining
+        0x5f, 0x5f, 0x5f, 0x5f, 0x61, 0x30, 0x50, 0x5a, 0xf4, 0x50, // DELEGATECALL(GAS, child)
+        0x00,
+    };
+    try vm.storage.set(parent, 0, 0);
+    try vm.code.put(parent, &caller_delegate);
+    try vm.code.put(child, &clearer);
+    vm.setStateGasReservoir(0);
+    const r_adv = vm.call(.{ .call = .{ .caller = caller, .to = parent, .value = 0, .input = &.{}, .gas = 300_000 } });
+    try testing.expect(r_adv.success);
+    // Because the 97,920 advance discharged back into parent gas_remaining, total regular gas used < 20,000!
+    try testing.expect(300_000 - r_adv.gas_left < 20_000);
+    try testing.expectEqual(@as(u64, 0), vm.getStateGasReservoir());
+    try testing.expectEqual(@as(u64, 0), vm.getStateGasUsed());
+}
+
+test "Amsterdam EIP-7708: ETH transfer logs on EOA, CALL, CREATE, SELFDESTRUCT, revert drop, and Osaka gate" {
+    const testing = std.testing;
+    const alice = primitives.Address.fromU256(0x1070);
+    const bob = primitives.Address.fromU256(0x2070);
+    const carol = primitives.Address.fromU256(0x3070);
+    const sys_addr = primitives.Address{ .bytes = hardfork_hooks.SYSTEM_ADDRESS };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .AMSTERDAM, null, alice, 0, null);
+    defer vm.deinit();
+    try vm.balances.put(alice, 1_000);
+
+    // 1. Plain EOA transfer (empty bytecode!) emits 1 Transfer LOG3 from 0xff..fe
+    const eoa_res = vm.call(.{ .call = .{ .caller = alice, .to = bob, .value = 250, .input = &.{}, .gas = 50_000 } });
+    try testing.expect(eoa_res.success);
+    try testing.expectEqual(@as(usize, 1), eoa_res.logs.len);
+    try testing.expect(eoa_res.logs[0].address.equals(sys_addr));
+    try testing.expectEqual(@as(usize, 3), eoa_res.logs[0].topics.len);
+    try testing.expectEqual(hardfork_hooks.eth_transfer_log.TRANSFER_TOPIC0, eoa_res.logs[0].topics[0]);
+    try testing.expectEqual(alice.toU256(), eoa_res.logs[0].topics[1]);
+    try testing.expectEqual(bob.toU256(), eoa_res.logs[0].topics[2]);
+    try testing.expectEqual(@as(u256, 250), readReturnWord(eoa_res.logs[0].data));
+
+    // 2. Zero-value transfer and self-transfer emit 0 logs
+    const zero_res = vm.call(.{ .call = .{ .caller = alice, .to = bob, .value = 0, .input = &.{}, .gas = 50_000 } });
+    try testing.expect(zero_res.success);
+    try testing.expectEqual(@as(usize, 0), zero_res.logs.len);
+
+    const self_res = vm.call(.{ .call = .{ .caller = alice, .to = alice, .value = 100, .input = &.{}, .gas = 50_000 } });
+    try testing.expect(self_res.success);
+    try testing.expectEqual(@as(usize, 0), self_res.logs.len);
+
+    // 3. Nested CALL with value emits log; reverted nested CALL drops its log!
+    // bob: CALL(carol, value=100) [carol reverts!]; CALL(carol, value=50) -> wait: use carol=REVERT and bob2=STOP!
+    const rev_target = primitives.Address.fromU256(0x4070);
+    try vm.code.put(rev_target, &.{ 0x5f, 0x5f, 0xfd }); // REVERT
+    // bob calls rev_target with 100 (reverts -> log dropped!), then calls carol with 77 (succeeds -> log kept!)
+    const bob_code = [_]u8{
+        0x5f, 0x5f, 0x5f, 0x5f, 0x60, 100, 0x61, 0x40, 0x70, 0x61, 0xc3, 0x50, 0xf1, 0x50,
+        0x5f, 0x5f, 0x5f, 0x5f, 0x60, 77,  0x61, 0x30, 0x70, 0x61, 0xc3, 0x50, 0xf1, 0x50,
+        0x00,
+    };
+    try vm.code.put(bob, &bob_code);
+    vm.setStateGasReservoir(500_000);
+    const nested_res = vm.call(.{ .call = .{ .caller = alice, .to = bob, .value = 10, .input = &.{}, .gas = 500_000 } });
+    try testing.expect(nested_res.success);
+    // Exactly 2 logs: alice->bob (10) and bob->carol (77); bob->rev_target (100) was rolled back!
+    try testing.expectEqual(@as(usize, 2), nested_res.logs.len);
+    try testing.expectEqual(@as(u256, 10), readReturnWord(nested_res.logs[0].data));
+    try testing.expectEqual(bob.toU256(), nested_res.logs[1].topics[1]);
+    try testing.expectEqual(carol.toU256(), nested_res.logs[1].topics[2]);
+    try testing.expectEqual(@as(u256, 77), readReturnWord(nested_res.logs[1].data));
+
+    // 4. Osaka emits 0 transfer logs for the same EOA transfer
+    var osaka_vm: Evm = undefined;
+    try osaka_vm.init(testing.allocator, null, .OSAKA, null, alice, 0, null);
+    defer osaka_vm.deinit();
+    try osaka_vm.balances.put(alice, 1_000);
+    const osaka_res = osaka_vm.call(.{ .call = .{ .caller = alice, .to = bob, .value = 250, .input = &.{}, .gas = 50_000 } });
+    try testing.expect(osaka_res.success);
+    try testing.expectEqual(@as(usize, 0), osaka_res.logs.len);
+}
+
+test "Amsterdam EIP-8246: same-tx SELFDESTRUCT to self preserves balance while clearing code, nonce, storage" {
+    const testing = std.testing;
+    const caller = primitives.Address.fromU256(0x1080);
+
+    // Initcode: SSTORE(0, 0xaa); SELFDESTRUCT(ADDRESS) -> self-destructs to itself in creation tx
+    const init_selfdestruct = [_]u8{
+        0x60, 0xaa, 0x5f, 0x55, // SSTORE(0, 0xaa)
+        0x30, 0xff, // ADDRESS; SELFDESTRUCT
+    };
+
+    // Amsterdam: balance preserved, code/nonce/storage cleared, Transfer log NOT emitted (self-transfer)
+    var am_vm: Evm = undefined;
+    try am_vm.init(testing.allocator, null, .AMSTERDAM, null, caller, 0, null);
+    defer am_vm.deinit();
+    try am_vm.balances.put(caller, 1_000);
+    am_vm.setStateGasReservoir(500_000);
+    const am_res = am_vm.call(.{ .create = .{
+        .caller = caller,
+        .value = 333,
+        .init_code = &init_selfdestruct,
+        .gas = 500_000,
+    } });
+    try testing.expect(am_res.success);
+    const created = am_res.created_address.?;
+    try testing.expectEqual(@as(u256, 333), am_vm.get_balance(created));
+    try testing.expectEqual(@as(u64, 0), am_vm.getNonce(created));
+    try testing.expectEqual(@as(usize, 0), am_vm.getRawCode(created).len);
+    try testing.expectEqual(@as(u256, 0), try am_vm.storage.get(created, 0));
+    // Only the CREATE endowment transfer log (caller -> created, 333), no selfdestruct self log
+    try testing.expectEqual(@as(usize, 1), am_res.logs.len);
+
+    // Osaka: same-tx SELFDESTRUCT to self burns the balance to 0!
+    var osaka_vm: Evm = undefined;
+    try osaka_vm.init(testing.allocator, null, .OSAKA, null, caller, 0, null);
+    defer osaka_vm.deinit();
+    try osaka_vm.balances.put(caller, 1_000);
+    const osaka_res = osaka_vm.call(.{ .create = .{
+        .caller = caller,
+        .value = 333,
+        .init_code = &init_selfdestruct,
+        .gas = 500_000,
+    } });
+    try testing.expect(osaka_res.success);
+    const osaka_created = osaka_res.created_address.?;
+    try testing.expectEqual(@as(u256, 0), osaka_vm.get_balance(osaka_created));
+    try testing.expectEqual(@as(u64, 0), osaka_vm.getNonce(osaka_created));
+}
+
+test "Amsterdam EIP-7928: revert-aware BalRecorder tracks accesses, writes, demotes reverted writes to reads" {
+    const testing = std.testing;
+    const caller = primitives.Address.fromU256(0x1090);
+    const parent = primitives.Address.fromU256(0x2090);
+    const child = primitives.Address.fromU256(0x3090);
+
+    var bal = evm.BalRecorder.init(testing.allocator);
+    defer bal.deinit();
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .AMSTERDAM, null, caller, 0, null);
+    defer vm.deinit();
+    try vm.balances.put(caller, 1_000);
+    vm.setBlockAccessListRecorder(&bal, 1);
+
+    // Child writes slot 7 = 99 and then REVERTs
+    const child_code = [_]u8{ 0x60, 99, 0x60, 7, 0x55, 0x5f, 0x5f, 0xfd };
+    // Parent writes slot 1 = 42, reads slot 2, no-op writes slot 1 = 42, calls child with 50 wei (reverts), STOP
+    const parent_code = [_]u8{
+        0x60, 42, 0x60, 1, 0x55, // SSTORE(1, 42) -> storage_write
+        0x60, 2, 0x54, 0x50, // SLOAD(2) -> storage_read
+        0x60, 42,   0x60, 1,    0x55, // SSTORE(1, 42) no-op -> demoted to storage_read
+        0x5f, 0x5f, 0x5f, 0x5f, 0x60,
+        50,   0x61, 0x30, 0x90, 0x62,
+        0x03, 0x0d, 0x40, 0xf1, 0x50,
+        0x00,
+    };
+    try vm.code.put(parent, &parent_code);
+    try vm.code.put(child, &child_code);
+    vm.setStateGasReservoir(500_000);
+
+    const res = vm.call(.{ .call = .{ .caller = caller, .to = parent, .value = 100, .input = &.{}, .gas = 500_000 } });
+    try testing.expect(res.success);
+
+    // Only parent's slot 1 write survives; child's reverted slot 7 write was demoted to a storage_read!
+    try testing.expectEqual(@as(usize, 1), bal.storage_writes.items.len);
+    try testing.expectEqual(@as(u16, 1), bal.storage_writes.items[0].index);
+    try testing.expectEqualSlices(u8, &parent.bytes, &bal.storage_writes.items[0].address);
+    try testing.expectEqual(@as(u256, 1), bal.storage_writes.items[0].slot);
+    try testing.expectEqual(@as(u256, 42), bal.storage_writes.items[0].post_value);
+
+    // Storage reads include slot 2 (SLOAD), slot 1 (no-op SSTORE), and child's reverted slot 7!
+    var saw_slot2 = false;
+    var saw_slot1_noop = false;
+    var saw_child_slot7 = false;
+    for (bal.storage_reads.items) |rd| {
+        if (std.mem.eql(u8, &rd.address, &parent.bytes) and rd.slot == 2) saw_slot2 = true;
+        if (std.mem.eql(u8, &rd.address, &parent.bytes) and rd.slot == 1) saw_slot1_noop = true;
+        if (std.mem.eql(u8, &rd.address, &child.bytes) and rd.slot == 7) saw_child_slot7 = true;
+    }
+    try testing.expect(saw_slot2);
+    try testing.expect(saw_slot1_noop);
+    try testing.expect(saw_child_slot7);
+
+    // Child address access survived revert, while child balance change was rolled back!
+    var saw_child_access = false;
+    for (bal.accessed_addresses.items) |addr| {
+        if (std.mem.eql(u8, &addr, &child.bytes)) saw_child_access = true;
+    }
+    try testing.expect(saw_child_access);
+    for (bal.balance_changes.items) |bc| {
+        try testing.expect(!std.mem.eql(u8, &bc.address, &child.bytes));
+    }
+}
+
+test "Amsterdam EIP-8037/8038/7708: code deposit split, CREATE onto alive, and SELFDESTRUCT dead beneficiary" {
+    const testing = std.testing;
+    const caller = primitives.Address.fromU256(0x10a0);
+    const contract = primitives.Address.fromU256(0x20a0);
+    const beneficiary = primitives.Address.fromU256(0x30a0);
+    const sys_addr = primitives.Address{ .bytes = hardfork_hooks.SYSTEM_ADDRESS };
+
+    var vm: Evm = undefined;
+    try vm.init(testing.allocator, null, .AMSTERDAM, null, caller, 0, null);
+    defer vm.deinit();
+
+    // 1. Code deposit split: deploy 32 zero bytes (1 word):
+    //    regular deposit = 6 * 1 = 6 gas (from gas_left ONLY, NOT reservoir!)
+    //    state deposit = 1530 * 32 = 48,960 (from reservoir) + 183,600 (new account) = 232,560 state gas.
+    //    Initcode: PUSH1 32 (3) + PUSH0 (2) + RETURN (0 + 3 mem = 3) = 8 gas.
+    //    With gas = 13 (8 init + 5 < 6 regular deposit) and huge reservoir, deposit MUST fail (CodeStoreOutOfGas)!
+    const init_32 = [_]u8{ 0x60, 0x20, 0x5f, 0xf3 };
+    try vm.nonces.put(caller, 1);
+    vm.setStateGasReservoir(1_000_000);
+    const dep_short = vm.call(.{ .create = .{ .caller = caller, .value = 0, .init_code = &init_32, .gas = 13 } });
+    try testing.expect(!dep_short.success);
+    try testing.expectEqualStrings("CodeStoreOutOfGas", dep_short.error_info.?);
+    try testing.expectEqual(@as(u64, 1_000_000), vm.getStateGasReservoir());
+
+    //    With exact gas = 14 (8 init + 6 regular deposit) and huge reservoir, deposit SUCCEEDS!
+    try vm.nonces.put(caller, 2);
+    vm.setStateGasReservoir(1_000_000);
+    const dep_exact = vm.call(.{ .create = .{ .caller = caller, .value = 0, .init_code = &init_32, .gas = 14 } });
+    try testing.expect(dep_exact.success);
+    try testing.expectEqual(@as(u64, 0), dep_exact.gas_left);
+    try testing.expectEqual(@as(u64, 1_000_000 - (183_600 + 32 * 1530)), vm.getStateGasReservoir());
+    try testing.expectEqual(@as(u64, 183_600 + 32 * 1530), vm.getStateGasUsed());
+
+    // 2. Top-level CREATE onto an already-alive (pre-funded) address skips the 183,600 NEW_ACCOUNT state charge!
+    try vm.nonces.put(caller, 3);
+    const predicted = try vm.computeCreateAddress(caller, 2);
+    try vm.balances.put(predicted, 1);
+    vm.setStateGasReservoir(0);
+    const create_alive = vm.call(.{ .create = .{ .caller = caller, .value = 0, .init_code = &.{0x00}, .gas = 100 } });
+    try testing.expect(create_alive.success);
+    try testing.expectEqual(@as(u64, 0), vm.getStateGasUsed());
+
+    // 3. SELFDESTRUCT with balance > 0 to a cold dead beneficiary:
+    //    Regular gas: PUSH2(3) + SELFDESTRUCT(5000 base + 3000 cold + 9000 account_write) = 17,003.
+    //    State gas: 183,600 (drawn from reservoir).
+    //    EIP-7708: emits 1 Transfer LOG3 (contract -> beneficiary, 500 wei) from 0xff..fe.
+    try vm.balances.put(contract, 500);
+    const sd_code = [_]u8{ 0x61, 0x30, 0xa0, 0xff }; // PUSH2 0x30a0; SELFDESTRUCT
+    try vm.code.put(contract, &sd_code);
+    vm.setStateGasReservoir(200_000);
+    const sd_res = vm.call(.{ .call = .{ .caller = caller, .to = contract, .value = 0, .input = &.{}, .gas = 100_000 } });
+    try testing.expect(sd_res.success);
+    try testing.expectEqual(@as(u64, 17_003), 100_000 - sd_res.gas_left);
+    try testing.expectEqual(@as(u64, 200_000 - 183_600), vm.getStateGasReservoir());
+    try testing.expectEqual(@as(u64, 183_600), vm.getStateGasUsed());
+    try testing.expectEqual(@as(u256, 500), vm.get_balance(beneficiary));
+    try testing.expectEqual(@as(usize, 1), sd_res.logs.len);
+    try testing.expect(sd_res.logs[0].address.equals(sys_addr));
+    try testing.expectEqual(contract.toU256(), sd_res.logs[0].topics[1]);
+    try testing.expectEqual(beneficiary.toU256(), sd_res.logs[0].topics[2]);
+    try testing.expectEqual(@as(u256, 500), readReturnWord(sd_res.logs[0].data));
 }

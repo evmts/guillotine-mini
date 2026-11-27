@@ -1,5 +1,14 @@
 const std = @import("std");
 
+/// EIP-7843 (Amsterdam+) SLOTNUM opcode byte.
+pub const SLOTNUM: u8 = 0x4b;
+/// EIP-8024 (Amsterdam+) DUPN opcode byte.
+pub const DUPN: u8 = 0xe6;
+/// EIP-8024 (Amsterdam+) SWAPN opcode byte.
+pub const SWAPN: u8 = 0xe7;
+/// EIP-8024 (Amsterdam+) EXCHANGE opcode byte.
+pub const EXCHANGE: u8 = 0xe8;
+
 /// Get the name of an opcode
 pub fn getOpName(opcode: u8) []const u8 {
     return switch (opcode) {
@@ -58,6 +67,7 @@ pub fn getOpName(opcode: u8) []const u8 {
         0x48 => "BASEFEE",
         0x49 => "BLOBHASH",
         0x4a => "BLOBBASEFEE",
+        0x4b => "SLOTNUM",
         0x50 => "POP",
         0x51 => "MLOAD",
         0x52 => "MSTORE",
@@ -143,6 +153,9 @@ pub fn getOpName(opcode: u8) []const u8 {
         0xa2 => "LOG2",
         0xa3 => "LOG3",
         0xa4 => "LOG4",
+        0xe6 => "DUPN",
+        0xe7 => "SWAPN",
+        0xe8 => "EXCHANGE",
         0xf0 => "CREATE",
         0xf1 => "CALL",
         0xf2 => "CALLCODE",
@@ -235,6 +248,7 @@ test "getOpName: block opcodes" {
     try testing.expectEqualStrings("BASEFEE", getOpName(0x48));
     try testing.expectEqualStrings("BLOBHASH", getOpName(0x49));
     try testing.expectEqualStrings("BLOBBASEFEE", getOpName(0x4a));
+    try testing.expectEqualStrings("SLOTNUM", getOpName(0x4b));
 }
 
 test "getOpName: stack and memory opcodes" {
@@ -279,6 +293,9 @@ test "getOpName: SWAP opcodes" {
     try testing.expectEqualStrings("SWAP2", getOpName(0x91));
     try testing.expectEqualStrings("SWAP8", getOpName(0x97));
     try testing.expectEqualStrings("SWAP16", getOpName(0x9f));
+    try testing.expectEqualStrings("DUPN", getOpName(0xe6));
+    try testing.expectEqualStrings("SWAPN", getOpName(0xe7));
+    try testing.expectEqualStrings("EXCHANGE", getOpName(0xe8));
 }
 
 test "getOpName: LOG opcodes" {

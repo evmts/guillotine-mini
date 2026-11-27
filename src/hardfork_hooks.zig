@@ -160,6 +160,76 @@ pub inline fn isTxGasLimitAllowed(fork: anytype, gas_limit: u64) bool {
     return gas_limit <= cap;
 }
 
+/// EIP-7843 opcode byte for SLOTNUM.
+pub const SLOTNUM_OPCODE: u8 = 0x4b;
+/// EIP-7843 gas cost for SLOTNUM (GasQuickStep).
+pub const SLOTNUM_GAS: u64 = 2;
+
+/// EIP-7954 maximum deployed contract bytecode size (64 KiB) from Amsterdam.
+pub const AMSTERDAM_MAX_CODE_SIZE: u32 = 65_536;
+/// EIP-7954 maximum initcode size (128 KiB = 2 * MAX_CODE_SIZE) from Amsterdam.
+pub const AMSTERDAM_MAX_INITCODE_SIZE: u32 = 131_072;
+const LEGACY_MAX_CODE_SIZE: u32 = 24_576;
+const LEGACY_MAX_INITCODE_SIZE: u32 = 49_152;
+
+/// Effective maximum deployed bytecode size for `fork`, preserving custom
+/// non-default ceilings while raising the legacy 24 KiB limit to 64 KiB on Amsterdam+.
+pub inline fn maxCodeSize(fork: anytype, configured_max: u32) u32 {
+    if (supportsAmsterdam(fork) and configured_max == LEGACY_MAX_CODE_SIZE) {
+        return AMSTERDAM_MAX_CODE_SIZE;
+    }
+    return configured_max;
+}
+
+/// Effective maximum initcode size for `fork`, preserving custom non-default
+/// ceilings while raising the legacy 48 KiB limit to 128 KiB on Amsterdam+.
+pub inline fn maxInitcodeSize(fork: anytype, configured_max: u32) u32 {
+    if (supportsAmsterdam(fork) and configured_max == LEGACY_MAX_INITCODE_SIZE) {
+        return AMSTERDAM_MAX_INITCODE_SIZE;
+    }
+    return configured_max;
+}
+
+/// EIP-8024 stack manipulation opcodes and immediate decoders (Amsterdam+).
+pub const eip8024 = struct {
+    pub const DUPN_OPCODE: u8 = 0xe6;
+    pub const SWAPN_OPCODE: u8 = 0xe7;
+    pub const EXCHANGE_OPCODE: u8 = 0xe8;
+    pub const GAS_COST: u64 = 3;
+
+    /// Zero-based stack depths `(n, m)` from top of stack for EXCHANGE (`1 <= n < m <= 29`).
+    pub const StackPair = struct {
+        n: usize,
+        m: usize,
+    };
+
+    /// Decodes a single-byte immediate for DUPN/SWAPN into 1-based depth `17..235`.
+    /// Returns `null` for the forbidden `0x5b..0x7f` range (JUMPDEST and PUSH1..PUSH32).
+    pub inline fn decodeSingle(imm: u8) ?usize {
+        if (imm >= 0x5b and imm <= 0x7f) return null;
+        return @as(usize, imm +% 145);
+    }
+
+    /// Decodes a single-byte immediate for EXCHANGE into zero-based stack indices `(n, m)`.
+    /// Returns `null` for the forbidden `0x52..0x7f` range.
+    pub inline fn decodePair(imm: u8) ?StackPair {
+        if (imm >= 0x52 and imm <= 0x7f) return null;
+        const k: u8 = imm ^ 0x8f;
+        const q: usize = k >> 4;
+        const r: usize = k & 0x0f;
+        if (q < r) {
+            return .{ .n = q + 1, .m = r + 1 };
+        }
+        return .{ .n = r + 1, .m = 29 - q };
+    }
+};
+
+/// EIP-8246: returns `.no_burn` from Amsterdam onward.
+pub inline fn selfdestructToSelfPolicy(fork: anytype) eth_transfer_log.SelfdestructToSelfPolicy {
+    _ = fork;
+    return .no_burn;
+}
+
 // ============================================================================
 // EIP-7708: ETH transfers emit a log
 // ============================================================================
@@ -312,10 +382,12 @@ pub const eth_transfer_log = struct {
 ///
 /// ```zig
 /// pub const Error = error{...};  // error{} when the recorder cannot fail
-/// pub fn recordAddressAccess(self: *R, address: Address) Error!void
-/// pub fn recordStorageRead(self: *R, address: Address, slot: u256) Error!void
-/// pub fn recordStorageWrite(self: *R, index: BlockAccessIndex, address: Address, slot: u256, post_value: u256) Error!void
-/// pub fn recordBalanceChange(self: *R, index: BlockAccessIndex, address: Address, post_balance: u256) Error!void
+/// pub fn recordAddressAccess(self: *R, addr: Address) Error!void
+/// pub fn recordStorageRead(self: *R, addr: Address, slot: u256) Error!void
+/// pub fn recordStorageWrite(self: *R, idx: BlockAccessIndex, addr: Address, slot: u256, val: u256) Error!void
+/// pub fn recordBalanceChange(self: *R, idx: BlockAccessIndex, addr: Address, bal: u256) Error!void
+/// pub fn recordNonceChange(self: *R, idx: BlockAccessIndex, addr: Address, nonce: u64) Error!void
+/// pub fn recordCodeChange(self: *R, idx: BlockAccessIndex, addr: Address, code: []const u8) Error!void
 /// ```
 ///
 /// Call sites that the EVM must cover (EIP-7928 "must include"):
@@ -378,7 +450,14 @@ pub const block_access_list = struct {
             if (!@hasDecl(R, "Error")) {
                 @compileError(@typeName(R) ++ " must declare `pub const Error`");
             }
-            for (.{ "recordAddressAccess", "recordStorageRead", "recordStorageWrite", "recordBalanceChange" }) |name| {
+            for (.{
+                "recordAddressAccess",
+                "recordStorageRead",
+                "recordStorageWrite",
+                "recordBalanceChange",
+                "recordNonceChange",
+                "recordCodeChange",
+            }) |name| {
                 if (!@hasDecl(R, name)) {
                     @compileError(@typeName(R) ++ " is missing BAL recorder method `" ++ name ++ "`");
                 }
@@ -406,17 +485,23 @@ pub const block_access_list = struct {
                 self.index = index;
             }
 
-            pub inline fn addressAccess(self: *Self, address: Address) Error!void {
+            pub inline fn addressAccess(self: *const Self, address: Address) Error!void {
                 return self.recorder.recordAddressAccess(address);
             }
 
-            pub inline fn storageRead(self: *Self, address: Address, slot: u256) Error!void {
+            pub inline fn storageRead(self: *const Self, address: Address, slot: u256) Error!void {
                 return self.recorder.recordStorageRead(address, slot);
             }
 
             /// Records an SSTORE. A write whose post value equals the pre
             /// value is recorded as a read, as the EIP requires.
-            pub inline fn storageWrite(self: *Self, address: Address, slot: u256, pre_value: u256, post_value: u256) Error!void {
+            pub inline fn storageWrite(
+                self: *const Self,
+                address: Address,
+                slot: u256,
+                pre_value: u256,
+                post_value: u256,
+            ) Error!void {
                 if (pre_value == post_value) {
                     return self.recorder.recordStorageRead(address, slot);
                 }
@@ -424,9 +509,36 @@ pub const block_access_list = struct {
             }
 
             /// Records a balance. An unchanged balance records nothing.
-            pub inline fn balanceChange(self: *Self, address: Address, pre_balance: u256, post_balance: u256) Error!void {
+            pub inline fn balanceChange(
+                self: *const Self,
+                address: Address,
+                pre_balance: u256,
+                post_balance: u256,
+            ) Error!void {
                 if (pre_balance == post_balance) return;
                 return self.recorder.recordBalanceChange(self.index, address, post_balance);
+            }
+
+            /// Records a nonce change. An unchanged nonce records nothing.
+            pub inline fn nonceChange(
+                self: *const Self,
+                address: Address,
+                pre_nonce: u64,
+                post_nonce: u64,
+            ) Error!void {
+                if (pre_nonce == post_nonce) return;
+                return self.recorder.recordNonceChange(self.index, address, post_nonce);
+            }
+
+            /// Records a code change. Identical code records nothing.
+            pub inline fn codeChange(
+                self: *const Self,
+                address: Address,
+                pre_code: []const u8,
+                post_code: []const u8,
+            ) Error!void {
+                if (std.mem.eql(u8, pre_code, post_code)) return;
+                return self.recorder.recordCodeChange(self.index, address, post_code);
             }
         };
     }
@@ -438,8 +550,16 @@ pub const block_access_list = struct {
 
         pub inline fn recordAddressAccess(_: *NoopRecorder, _: Address) Error!void {}
         pub inline fn recordStorageRead(_: *NoopRecorder, _: Address, _: u256) Error!void {}
-        pub inline fn recordStorageWrite(_: *NoopRecorder, _: BlockAccessIndex, _: Address, _: u256, _: u256) Error!void {}
+        pub inline fn recordStorageWrite(
+            _: *NoopRecorder,
+            _: BlockAccessIndex,
+            _: Address,
+            _: u256,
+            _: u256,
+        ) Error!void {}
         pub inline fn recordBalanceChange(_: *NoopRecorder, _: BlockAccessIndex, _: Address, _: u256) Error!void {}
+        pub inline fn recordNonceChange(_: *NoopRecorder, _: BlockAccessIndex, _: Address, _: u64) Error!void {}
+        pub inline fn recordCodeChange(_: *NoopRecorder, _: BlockAccessIndex, _: Address, _: []const u8) Error!void {}
     };
 
     /// One recorded access, in call order.
@@ -448,13 +568,14 @@ pub const block_access_list = struct {
         storage_read: struct { address: Address, slot: u256 },
         storage_write: struct { index: BlockAccessIndex, address: Address, slot: u256, post_value: u256 },
         balance_change: struct { index: BlockAccessIndex, address: Address, post_balance: u256 },
+        nonce_change: struct { index: BlockAccessIndex, address: Address, post_nonce: u64 },
+        code_change: struct { index: BlockAccessIndex, address: Address, post_code: []const u8 },
     };
 
     /// Reference recorder that appends every event to a list in call order.
     ///
     /// It does no sorting, deduplication, or revert handling. Use it in
-    /// tests and tracing. A consensus BAL builder replaces it with a
-    /// recorder that maintains the sorted per-account structure.
+    /// tests and tracing. For revert-aware recording inside `Evm`, use `BalRecorder`.
     pub const ListRecorder = struct {
         allocator: std.mem.Allocator,
         events: std.ArrayList(Event) = .empty,
@@ -466,6 +587,11 @@ pub const block_access_list = struct {
         }
 
         pub fn deinit(self: *ListRecorder) void {
+            for (self.events.items) |event| {
+                if (event == .code_change and event.code_change.post_code.len > 0) {
+                    self.allocator.free(event.code_change.post_code);
+                }
+            }
             self.events.deinit(self.allocator);
             self.* = undefined;
         }
@@ -478,7 +604,13 @@ pub const block_access_list = struct {
             try self.events.append(self.allocator, .{ .storage_read = .{ .address = address, .slot = slot } });
         }
 
-        pub fn recordStorageWrite(self: *ListRecorder, index: BlockAccessIndex, address: Address, slot: u256, post_value: u256) Error!void {
+        pub fn recordStorageWrite(
+            self: *ListRecorder,
+            index: BlockAccessIndex,
+            address: Address,
+            slot: u256,
+            post_value: u256,
+        ) Error!void {
             try self.events.append(self.allocator, .{ .storage_write = .{
                 .index = index,
                 .address = address,
@@ -487,12 +619,206 @@ pub const block_access_list = struct {
             } });
         }
 
-        pub fn recordBalanceChange(self: *ListRecorder, index: BlockAccessIndex, address: Address, post_balance: u256) Error!void {
+        pub fn recordBalanceChange(
+            self: *ListRecorder,
+            index: BlockAccessIndex,
+            address: Address,
+            post_balance: u256,
+        ) Error!void {
             try self.events.append(self.allocator, .{ .balance_change = .{
                 .index = index,
                 .address = address,
                 .post_balance = post_balance,
             } });
+        }
+
+        pub fn recordNonceChange(
+            self: *ListRecorder,
+            index: BlockAccessIndex,
+            address: Address,
+            post_nonce: u64,
+        ) Error!void {
+            try self.events.append(self.allocator, .{ .nonce_change = .{
+                .index = index,
+                .address = address,
+                .post_nonce = post_nonce,
+            } });
+        }
+
+        pub fn recordCodeChange(
+            self: *ListRecorder,
+            index: BlockAccessIndex,
+            address: Address,
+            post_code: []const u8,
+        ) Error!void {
+            const owned: []const u8 = if (post_code.len > 0) try self.allocator.dupe(u8, post_code) else &.{};
+            errdefer if (owned.len > 0) self.allocator.free(owned);
+            try self.events.append(self.allocator, .{ .code_change = .{
+                .index = index,
+                .address = address,
+                .post_code = owned,
+            } });
+        }
+    };
+
+    pub const StorageRead = struct { address: Address, slot: u256 };
+    pub const StorageWrite = struct { index: BlockAccessIndex, address: Address, slot: u256, post_value: u256 };
+    pub const BalanceChange = struct { index: BlockAccessIndex, address: Address, post_balance: u256 };
+    pub const NonceChange = struct { index: BlockAccessIndex, address: Address, post_nonce: u64 };
+    pub const CodeChange = struct { index: BlockAccessIndex, address: Address, post_code: []const u8 };
+
+    /// Revert-aware EIP-7928 BAL recorder wired into `Evm` checkpoints.
+    ///
+    /// On frame rollback:
+    /// - Address accesses and storage reads survive.
+    /// - Reverted storage writes are dropped and demoted to storage reads.
+    /// - Reverted balance, nonce, and code changes are dropped while their
+    ///   address accesses remain recorded.
+    pub const BalRecorder = struct {
+        allocator: std.mem.Allocator,
+        accessed_addresses: std.ArrayList(Address) = .empty,
+        storage_reads: std.ArrayList(StorageRead) = .empty,
+        storage_writes: std.ArrayList(StorageWrite) = .empty,
+        balance_changes: std.ArrayList(BalanceChange) = .empty,
+        nonce_changes: std.ArrayList(NonceChange) = .empty,
+        code_changes: std.ArrayList(CodeChange) = .empty,
+
+        pub const Error = std.mem.Allocator.Error;
+
+        pub const Snapshot = struct {
+            storage_writes_len: usize,
+            balance_changes_len: usize,
+            nonce_changes_len: usize,
+            code_changes_len: usize,
+        };
+
+        pub fn init(allocator: std.mem.Allocator) BalRecorder {
+            return .{ .allocator = allocator };
+        }
+
+        pub fn clear(self: *BalRecorder) void {
+            for (self.code_changes.items) |entry| {
+                if (entry.post_code.len > 0) self.allocator.free(entry.post_code);
+            }
+            self.accessed_addresses.clearRetainingCapacity();
+            self.storage_reads.clearRetainingCapacity();
+            self.storage_writes.clearRetainingCapacity();
+            self.balance_changes.clearRetainingCapacity();
+            self.nonce_changes.clearRetainingCapacity();
+            self.code_changes.clearRetainingCapacity();
+        }
+
+        pub fn deinit(self: *BalRecorder) void {
+            for (self.code_changes.items) |entry| {
+                if (entry.post_code.len > 0) self.allocator.free(entry.post_code);
+            }
+            self.accessed_addresses.deinit(self.allocator);
+            self.storage_reads.deinit(self.allocator);
+            self.storage_writes.deinit(self.allocator);
+            self.balance_changes.deinit(self.allocator);
+            self.nonce_changes.deinit(self.allocator);
+            self.code_changes.deinit(self.allocator);
+            self.* = undefined;
+        }
+
+        pub fn snapshot(self: *const BalRecorder) Snapshot {
+            return .{
+                .storage_writes_len = self.storage_writes.items.len,
+                .balance_changes_len = self.balance_changes.items.len,
+                .nonce_changes_len = self.nonce_changes.items.len,
+                .code_changes_len = self.code_changes.items.len,
+            };
+        }
+
+        pub fn rollback(self: *BalRecorder, snap: Snapshot) Error!void {
+            if (self.storage_writes.items.len > snap.storage_writes_len) {
+                const dropped = self.storage_writes.items[snap.storage_writes_len..];
+                try self.storage_reads.ensureUnusedCapacity(self.allocator, dropped.len);
+                for (dropped) |write| {
+                    self.storage_reads.appendAssumeCapacity(.{
+                        .address = write.address,
+                        .slot = write.slot,
+                    });
+                }
+                self.storage_writes.shrinkRetainingCapacity(snap.storage_writes_len);
+            }
+            self.balance_changes.shrinkRetainingCapacity(snap.balance_changes_len);
+            self.nonce_changes.shrinkRetainingCapacity(snap.nonce_changes_len);
+            if (self.code_changes.items.len > snap.code_changes_len) {
+                for (self.code_changes.items[snap.code_changes_len..]) |entry| {
+                    if (entry.post_code.len > 0) self.allocator.free(entry.post_code);
+                }
+                self.code_changes.shrinkRetainingCapacity(snap.code_changes_len);
+            }
+        }
+
+        pub fn recordAddressAccess(self: *BalRecorder, address: Address) Error!void {
+            try self.accessed_addresses.append(self.allocator, address);
+        }
+
+        pub fn recordStorageRead(self: *BalRecorder, address: Address, slot: u256) Error!void {
+            try self.accessed_addresses.append(self.allocator, address);
+            try self.storage_reads.append(self.allocator, .{ .address = address, .slot = slot });
+        }
+
+        pub fn recordStorageWrite(
+            self: *BalRecorder,
+            index: BlockAccessIndex,
+            address: Address,
+            slot: u256,
+            post_value: u256,
+        ) Error!void {
+            try self.accessed_addresses.append(self.allocator, address);
+            try self.storage_writes.append(self.allocator, .{
+                .index = index,
+                .address = address,
+                .slot = slot,
+                .post_value = post_value,
+            });
+        }
+
+        pub fn recordBalanceChange(
+            self: *BalRecorder,
+            index: BlockAccessIndex,
+            address: Address,
+            post_balance: u256,
+        ) Error!void {
+            try self.accessed_addresses.append(self.allocator, address);
+            try self.balance_changes.append(self.allocator, .{
+                .index = index,
+                .address = address,
+                .post_balance = post_balance,
+            });
+        }
+
+        pub fn recordNonceChange(
+            self: *BalRecorder,
+            index: BlockAccessIndex,
+            address: Address,
+            post_nonce: u64,
+        ) Error!void {
+            try self.accessed_addresses.append(self.allocator, address);
+            try self.nonce_changes.append(self.allocator, .{
+                .index = index,
+                .address = address,
+                .post_nonce = post_nonce,
+            });
+        }
+
+        pub fn recordCodeChange(
+            self: *BalRecorder,
+            index: BlockAccessIndex,
+            address: Address,
+            post_code: []const u8,
+        ) Error!void {
+            try self.accessed_addresses.append(self.allocator, address);
+            const owned: []const u8 = if (post_code.len > 0) try self.allocator.dupe(u8, post_code) else &.{};
+            errdefer if (owned.len > 0) self.allocator.free(owned);
+            try self.code_changes.append(self.allocator, .{
+                .index = index,
+                .address = address,
+                .post_code = owned,
+            });
         }
     };
 };
@@ -544,6 +870,8 @@ pub const GasSchedule = struct {
     access_list_address: u64,
     /// Stipend added to a call that transfers value.
     call_stipend: u64 = 2300,
+    /// EIP-8038 extra code-load cost for EXTCODESIZE and EXTCODECOPY (0 pre-Amsterdam, 100 Amsterdam+).
+    extcode_extra: u64 = 0,
 
     // ---- EIP-8037: state creation ----
     /// Cost per state byte (`CPSB`). 0 before Amsterdam.
@@ -618,6 +946,7 @@ pub const GasSchedule = struct {
             .storage_clear_refund = 11_616,
             .access_list_storage_key = 2000,
             .access_list_address = 2900,
+            .extcode_extra = warm_access,
             .cost_per_state_byte = cpsb,
             .create = .{ .regular = create_access, .state = 120 * cpsb },
             .new_account = .{ .regular = 0, .state = 120 * cpsb },
@@ -714,9 +1043,11 @@ fn testAddress(last_byte: u8) Address {
 }
 
 fn hex32(comptime hex: *const [64]u8) [32]u8 {
-    var out: [32]u8 = undefined;
-    _ = std.fmt.hexToBytes(&out, hex) catch unreachable;
-    return out;
+    return comptime blk: {
+        var out: [32]u8 = undefined;
+        _ = std.fmt.hexToBytes(&out, hex) catch @compileError("invalid 32-byte hex literal");
+        break :blk out;
+    };
 }
 
 test "hasFork detects enum tags at comptime" {
@@ -1173,4 +1504,130 @@ test "StateGasReservoir.chargeState draws from the reservoir first" {
     try testing.expectEqual(StateGasReservoir{ .gas_left = 60, .reservoir = 0 }, r);
     try r.chargeState(60);
     try testing.expectEqual(StateGasReservoir{ .gas_left = 0, .reservoir = 0 }, r);
+}
+
+test "EIP-7954 raises max code and initcode sizes on Amsterdam" {
+    try testing.expectEqual(@as(u32, 24_576), maxCodeSize(ForkWithAmsterdam.OSAKA, 24_576));
+    try testing.expectEqual(@as(u32, 65_536), maxCodeSize(ForkWithAmsterdam.AMSTERDAM, 24_576));
+    try testing.expectEqual(@as(u32, 49_152), maxInitcodeSize(ForkWithAmsterdam.OSAKA, 49_152));
+    try testing.expectEqual(@as(u32, 131_072), maxInitcodeSize(ForkWithAmsterdam.AMSTERDAM, 49_152));
+    // Custom non-default ceilings remain untouched.
+    try testing.expectEqual(@as(u32, 1024), maxCodeSize(ForkWithAmsterdam.AMSTERDAM, 1024));
+    try testing.expectEqual(@as(u32, 2048), maxInitcodeSize(ForkWithAmsterdam.AMSTERDAM, 2048));
+}
+
+test "EIP-8024 decodeSingle covers 17..235 bijectively and rejects 0x5b..0x7f" {
+    var seen = [_]bool{false} ** 256;
+    var valid_count: usize = 0;
+    for (0..256) |i| {
+        const imm: u8 = @intCast(i);
+        const decoded = eip8024.decodeSingle(imm);
+        if (imm >= 0x5b and imm <= 0x7f) {
+            try testing.expect(decoded == null);
+        } else {
+            const n = decoded.?;
+            try testing.expect(n >= 17 and n <= 235);
+            try testing.expect(!seen[n]);
+            seen[n] = true;
+            valid_count += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 219), valid_count);
+    try testing.expectEqual(@as(?usize, 17), eip8024.decodeSingle(0x80));
+    try testing.expectEqual(@as(?usize, 144), eip8024.decodeSingle(0xff));
+    try testing.expectEqual(@as(?usize, 145), eip8024.decodeSingle(0x00));
+    try testing.expectEqual(@as(?usize, 235), eip8024.decodeSingle(0x5a));
+}
+
+test "EIP-8024 decodePair covers all 210 valid pairs and rejects 0x52..0x7f" {
+    var seen = [_][30]bool{[_]bool{false} ** 30} ** 30;
+    var valid_count: usize = 0;
+    for (0..256) |i| {
+        const imm: u8 = @intCast(i);
+        const decoded = eip8024.decodePair(imm);
+        if (imm >= 0x52 and imm <= 0x7f) {
+            try testing.expect(decoded == null);
+        } else {
+            const pair = decoded.?;
+            try testing.expect(pair.n >= 1 and pair.n < pair.m and pair.m <= 29);
+            try testing.expect(pair.n + pair.m <= 30);
+            try testing.expect(!seen[pair.n][pair.m]);
+            seen[pair.n][pair.m] = true;
+            valid_count += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 210), valid_count);
+    try testing.expectEqual(@as(?eip8024.StackPair, .{ .n = 9, .m = 16 }), eip8024.decodePair(0x00));
+    try testing.expectEqual(@as(?eip8024.StackPair, .{ .n = 1, .m = 16 }), eip8024.decodePair(0x80));
+    try testing.expectEqual(@as(?eip8024.StackPair, .{ .n = 1, .m = 2 }), eip8024.decodePair(0x8e));
+    try testing.expectEqual(@as(?eip8024.StackPair, .{ .n = 2, .m = 3 }), eip8024.decodePair(0x9d));
+    try testing.expectEqual(@as(?eip8024.StackPair, .{ .n = 1, .m = 19 }), eip8024.decodePair(0x2f));
+    try testing.expectEqual(@as(?eip8024.StackPair, .{ .n = 14, .m = 16 }), eip8024.decodePair(0x50));
+    try testing.expectEqual(@as(?eip8024.StackPair, .{ .n = 14, .m = 15 }), eip8024.decodePair(0x51));
+    try testing.expectEqual(@as(?eip8024.StackPair, .{ .n = 1, .m = 22 }), eip8024.decodePair(0xff));
+}
+
+test "GasSchedule extcode_extra matches EIP-8038" {
+    try testing.expectEqual(@as(u64, 0), GasSchedule.prague.extcode_extra);
+    try testing.expectEqual(@as(u64, 100), GasSchedule.amsterdam.extcode_extra);
+}
+
+test "BalRecorder snapshot and rollback demotes reverted writes to reads" {
+    const bal = block_access_list;
+    comptime bal.assertRecorder(bal.BalRecorder);
+
+    var recorder = bal.BalRecorder.init(testing.allocator);
+    defer recorder.deinit();
+    var hook = bal.Hook(bal.BalRecorder).init(&recorder);
+    hook.setIndex(bal.transactionIndex(0));
+
+    const a = testAddress(0xaa);
+    const b = testAddress(0xbb);
+    try hook.addressAccess(a);
+    try hook.storageWrite(a, 1, 0, 42);
+    try hook.balanceChange(a, 0, 100);
+    try hook.nonceChange(a, 0, 1);
+    try hook.codeChange(a, &.{}, &.{ 0x60, 0x00 });
+
+    const snap = recorder.snapshot();
+    try hook.addressAccess(b);
+    try hook.storageWrite(b, 9, 0, 99);
+    try hook.balanceChange(b, 0, 50);
+    try hook.nonceChange(b, 0, 2);
+    try hook.codeChange(b, &.{}, &.{ 0x60, 0x01 });
+
+    try recorder.rollback(snap);
+
+    // Committed entries survive; reverted writes/balances/nonces/code are dropped.
+    try testing.expectEqual(@as(usize, 1), recorder.storage_writes.items.len);
+    try testing.expectEqual(@as(usize, 1), recorder.balance_changes.items.len);
+    try testing.expectEqual(@as(usize, 1), recorder.nonce_changes.items.len);
+    try testing.expectEqual(@as(usize, 1), recorder.code_changes.items.len);
+    // Reverted write to (b, 9) was demoted to a storage read, and address access to b remains.
+    try testing.expectEqual(@as(usize, 1), recorder.storage_reads.items.len);
+    try testing.expectEqualSlices(u8, &b, &recorder.storage_reads.items[0].address);
+    try testing.expectEqual(@as(u256, 9), recorder.storage_reads.items[0].slot);
+    try testing.expect(recorder.accessed_addresses.items.len >= 2);
+}
+
+test "BalRecorder and ListRecorder handle codeChange allocation failures without leaking" {
+    const bal = block_access_list;
+    try testing.checkAllAllocationFailures(testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var list = bal.ListRecorder.init(allocator);
+            defer list.deinit();
+            var lhook = bal.Hook(bal.ListRecorder).init(&list);
+            try lhook.nonceChange(testAddress(1), 0, 1);
+            try lhook.codeChange(testAddress(1), &.{}, &.{ 0x60, 0x00, 0x00 });
+
+            var rec = bal.BalRecorder.init(allocator);
+            defer rec.deinit();
+            var bhook = bal.Hook(bal.BalRecorder).init(&rec);
+            try bhook.storageWrite(testAddress(2), 1, 0, 2);
+            const snap = rec.snapshot();
+            try bhook.storageWrite(testAddress(3), 5, 0, 6);
+            try bhook.codeChange(testAddress(3), &.{}, &.{ 0x5b, 0x00 });
+            try rec.rollback(snap);
+        }
+    }.run, .{});
 }

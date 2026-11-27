@@ -18,6 +18,7 @@ const std = @import("std");
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 const Hardfork = primitives.Hardfork;
+const hardfork_hooks = @import("hardfork_hooks.zig");
 
 pub const INVALID_TARGET: u32 = std.math.maxInt(u32);
 
@@ -26,7 +27,8 @@ pub const HardforkFlags = packed struct(u8) {
     has_shift: bool = false,
     has_mcopy: bool = false,
     has_returndata: bool = false,
-    _pad: u4 = 0,
+    is_amsterdam: bool = false,
+    _pad: u3 = 0,
 
     pub fn fromHardfork(hf: Hardfork) HardforkFlags {
         return .{
@@ -34,6 +36,7 @@ pub const HardforkFlags = packed struct(u8) {
             .has_shift = hf.isAtLeast(.CONSTANTINOPLE),
             .has_mcopy = hf.isAtLeast(.CANCUN),
             .has_returndata = hf.isAtLeast(.BYZANTIUM),
+            .is_amsterdam = hardfork_hooks.supportsAmsterdam(hf),
         };
     }
 

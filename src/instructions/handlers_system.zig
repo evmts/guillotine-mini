@@ -5,6 +5,7 @@ const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
 const Address = primitives.Address.Address;
 const precompiles = @import("precompiles");
+const hardfork_hooks = @import("../hardfork_hooks.zig");
 
 /// Handlers struct - provides system operation handlers for a Frame type
 /// The FrameType must have methods: getEvm, consumeGas, popStack, pushStack,
@@ -88,9 +89,10 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const length = try frame.popStack();
             const salt: u256 = if (is_create2) try frame.popStack() else 0;
 
-            // EIP-3860 (Shanghai+): reject oversize initcode before expanding or copying
-            // memory. Exceptional halt: all gas is consumed.
-            if (evm.hardfork.isAtLeast(.SHANGHAI) and length > GasConstants.MaxInitcodeSize) {
+            // EIP-3860 (Shanghai+) / EIP-7954 (Amsterdam+): reject oversize initcode before
+            // expanding or copying memory. Exceptional halt: all gas is consumed.
+            const max_initcode = hardfork_hooks.maxInitcodeSize(evm.hardfork, GasConstants.MaxInitcodeSize);
+            if (evm.hardfork.isAtLeast(.SHANGHAI) and length > max_initcode) {
                 frame.gas_remaining = 0;
                 return error.OutOfGas;
             }
@@ -112,6 +114,29 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                 init_code = code;
             }
 
+            // EIP-8037 (Amsterdam+): charge account-creation state gas (183,600) after
+            // pre-flight balance/nonce/depth checks and before 63/64 forwarding, only when
+            // the target address is not already alive. Refunded to reservoir on failure.
+            var create_state_gas: u64 = 0;
+            if (hardfork_hooks.supportsAmsterdam(evm.hardfork)) {
+                const sender_nonce = evm.getNonce(frame.address);
+                const has_balance = value == 0 or evm.get_balance(frame.address) >= value;
+                if (asyncPending(evm)) return error.NeedAsyncData;
+                const preflight_ok = has_balance and
+                    sender_nonce < std.math.maxInt(u64) and
+                    evm.canPushFrame();
+                if (preflight_ok) {
+                    const dest_addr = if (is_create2)
+                        try evm.computeCreate2Address(frame.address, salt, init_code)
+                    else
+                        try evm.computeCreateAddress(frame.address, sender_nonce);
+                    if (!(try accountIsAlive(evm, dest_addr))) {
+                        create_state_gas = hardfork_hooks.GasSchedule.forFork(evm.hardfork).create.state;
+                        if (config.charge_gas) try frame.chargeStateGas(create_state_gas);
+                    }
+                }
+            }
+
             // Calculate available gas
             const remaining_gas = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
             // EIP-150: all but 1/64th (introduced in Tangerine Whistle)
@@ -124,6 +149,9 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const result = try evm.inner_create(value, init_code, max_gas, if (is_create2) salt else null);
             // Nested execution may move frames; re-fetch the active frame.
             const active_frame = evm.getCurrentFrame() orelse frame;
+            if (config.charge_gas and create_state_gas > 0 and !result.success) {
+                active_frame.refundStateGas(create_state_gas);
+            }
 
             // Update gas
             const gas_used = max_gas -| result.gas_left;
@@ -183,12 +211,15 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const mem_cost: u64 = if (max_end > 0) frame.memoryExpansionCost(max_end) else 0;
 
             // Extra gas: base cost (pre-Berlin), value transfer, new account, access costs.
+            const schedule = hardfork_hooks.GasSchedule.forFork(evm.hardfork);
+            const is_amsterdam = hardfork_hooks.supportsAmsterdam(evm.hardfork);
             var gas_cost: u64 = mem_cost;
+            var new_account_state_gas: u64 = 0;
             if (evm.hardfork.isBefore(.BERLIN)) {
                 gas_cost +|= preBerlinCallGas(evm.hardfork);
             }
             if (has_value_arg and value_arg > 0) {
-                gas_cost +|= GasConstants.CallValueTransferGas;
+                gas_cost +|= schedule.callValue();
             }
             if (kind == .call) {
                 // Before EIP-161 (Spurious Dragon) any call to a non-existent account pays
@@ -200,11 +231,17 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                     value_arg > 0 and !(try accountIsAlive(evm, call_address));
                 // `accountExists` reads balance and code through the miss-aware getters too.
                 if (asyncPending(evm)) return error.NeedAsyncData;
-                if (charge_new_account) gas_cost +|= GasConstants.CallNewAccountGas;
+                if (charge_new_account) {
+                    if (is_amsterdam) {
+                        new_account_state_gas = schedule.new_account.state;
+                    } else {
+                        gas_cost +|= GasConstants.CallNewAccountGas;
+                    }
+                }
             }
 
-            // EIP-2929 (Berlin+): access target account (warm/cold).
-            // Returns 0 pre-Berlin, 100 warm, 2600 cold.
+            // EIP-2929 (Berlin+) / EIP-8038 (Amsterdam+): access target account (warm/cold).
+            // Returns 0 pre-Berlin, 100 warm, 2600 cold (3000 cold on Amsterdam).
             gas_cost +|= try evm.accessAddress(call_address);
 
             // EIP-7702 (Prague+): a delegated target also charges for accessing its delegate.
@@ -221,6 +258,18 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                 // than remains is an out-of-gas halt, not a clamp.
                 try charge(frame, gas_cost +| gas_limit);
                 break :blk gas_limit;
+            } else if (is_amsterdam) blk: {
+                // EIP-8037: pre-charged regular and state gas reduce available gas before
+                // computing the EIP-150 63/64 forwarding cap.
+                try charge(frame, gas_cost);
+                if (config.charge_gas and new_account_state_gas > 0) {
+                    try frame.chargeStateGas(new_account_state_gas);
+                }
+                const remaining: u64 = @intCast(@max(frame.gas_remaining, 0));
+                const max_gas = remaining - (remaining / 64);
+                const forwarded = @min(gas_limit, max_gas);
+                try charge(frame, forwarded);
+                break :blk forwarded;
             } else blk: {
                 // EIP-150: forward at most all but 1/64th of the gas left after extra costs.
                 const remaining: u64 = @intCast(@max(frame.gas_remaining, 0));
@@ -284,6 +333,9 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const result = evm.inner_call(params);
             // Nested execution may move frames; re-fetch the active frame.
             const active_frame = evm.getCurrentFrame() orelse return error.MemoryError;
+            if (config.charge_gas and new_account_state_gas > 0 and !result.success) {
+                active_frame.refundStateGas(new_account_state_gas);
+            }
 
             // Write output to memory (expansion was charged upfront). Only the bytes the
             // child returned are written; the rest of the output region is untouched.
@@ -340,18 +392,16 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const beneficiary = addressFromWord(beneficiary_u256);
 
             const evm_ptr = frame.getEvm();
+            const schedule = hardfork_hooks.GasSchedule.forFork(frame.hardfork);
+            const is_amsterdam = hardfork_hooks.supportsAmsterdam(frame.hardfork);
 
             // Base: 0 before Tangerine Whistle, 5000 after (EIP-150).
             var gas_cost = frame.selfdestructGasCost();
 
-            // EIP-2929 (Berlin): Check if beneficiary is warm, add cold access cost if needed
-            // Per Python reference: if beneficiary not in evm.accessed_addresses, add it and charge cold access
-            // IMPORTANT: Unlike CALL which always charges an access cost (warm=100 or cold=2600),
-            // SELFDESTRUCT only charges if the beneficiary is cold (not already accessed)
-            // Routed through accessAddress so access-list tracers observe the beneficiary.
-            // accessAddress returns 0 before Berlin, 100 warm, 2600 cold.
+            // EIP-2929 (Berlin+) / EIP-8038 (Amsterdam+): Check if beneficiary is cold.
+            // SELFDESTRUCT only adds the access cost when the beneficiary is cold.
             const access_cost = try evm_ptr.accessAddress(beneficiary);
-            if (access_cost == GasConstants.ColdAccountAccessCost) gas_cost += access_cost;
+            if (access_cost == schedule.cold_account_access) gas_cost += access_cost;
 
             // Miss-aware reads: an async transaction fetches both balances before pricing or
             // moving value, so an unfetched beneficiary balance is never overwritten.
@@ -359,14 +409,20 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             const beneficiary_balance_before = evm_ptr.get_balance(beneficiary);
             if (asyncPending(evm_ptr)) return error.NeedAsyncData;
 
-            // New-beneficiary surcharge (25000) by fork:
+            // New-beneficiary surcharge by fork:
             // - before Tangerine Whistle: none
-            // - Tangerine Whistle (EIP-150): beneficiary does not exist in the state trie,
-            //   regardless of the balance
-            // - Spurious Dragon+ (EIP-161): beneficiary is dead and the balance is non-zero
+            // - Tangerine Whistle (EIP-150): beneficiary does not exist in the state trie
+            // - Spurious Dragon..Osaka (EIP-161): dead beneficiary + self_balance > 0 => 25,000 regular
+            // - Amsterdam+ (EIP-8038/EIP-8037): dead beneficiary + self_balance > 0 => 9,000 regular + 183,600 state
+            var new_beneficiary_state_gas: u64 = 0;
             if (frame.hardfork.isAtLeast(.SPURIOUS_DRAGON)) {
                 if (self_balance > 0 and !(try accountIsAlive(evm_ptr, beneficiary))) {
-                    gas_cost += GasConstants.CallNewAccountGas;
+                    if (is_amsterdam) {
+                        gas_cost += schedule.account_write;
+                        new_beneficiary_state_gas = schedule.new_account.state;
+                    } else {
+                        gas_cost += GasConstants.CallNewAccountGas;
+                    }
                 }
             } else if (frame.hardfork.isAtLeast(.TANGERINE_WHISTLE)) {
                 const exists = evm_ptr.accountExists(beneficiary);
@@ -375,6 +431,9 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             }
 
             try charge(frame, gas_cost);
+            if (config.charge_gas and new_beneficiary_state_gas > 0) {
+                try frame.chargeStateGas(new_beneficiary_state_gas);
+            }
 
             // EIP-214: SELFDESTRUCT cannot be executed in static call context
             // This check must happen AFTER gas charging (Python reference line 525)
@@ -401,18 +460,26 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
                 try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
             }
 
+            // EIP-7708 (Amsterdam+): emit system Transfer log on nonzero non-self transfer.
+            if (hardfork_hooks.supportsEthTransferLogs(frame.hardfork)) {
+                try evm_ptr.emitEthTransferLog(frame.address, beneficiary, self_balance);
+            }
+
             // The pre-London selfdestruct refund (24000) is granted at most once per account
             // per transaction: only when it is not already marked for deletion.
             const already_marked_for_deletion = evm_ptr.selfdestructed_accounts.contains(frame.address);
 
             // EIP-6780 (Cancun+): Only delete if created in same transaction
+            // EIP-8246 (Amsterdam+): Do not burn self-beneficiary balance.
             // Pre-Cancun: Always delete the account
             if (frame.hardfork.isAtLeast(.CANCUN)) {
                 if (evm_ptr.created_accounts.contains(frame.address)) {
                     // Mark for deletion - actual deletion at end of transaction
                     try evm_ptr.selfdestructed_accounts.put(frame.address, {});
-                    // EIP-6780: burn the balance unconditionally (self-beneficiary case).
-                    try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
+                    // EIP-6780 (Cancun..Osaka): burn balance unconditionally (self-beneficiary case).
+                    if (!is_amsterdam) {
+                        try evm_ptr.setBalanceWithSnapshot(frame.address, 0);
+                    }
                 }
                 // If not created in same tx: balance transferred but code/storage/nonce persist
             } else {

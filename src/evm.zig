@@ -23,6 +23,10 @@ const async_executor_mod = @import("async_executor.zig");
 const access_list_manager_mod = @import("access_list_manager.zig");
 const AccessListManager = access_list_manager_mod.AccessListManager;
 const AccessListSnapshot = access_list_manager_mod.AccessListSnapshot;
+const hardfork_hooks = @import("hardfork_hooks.zig");
+
+pub const BalRecorder = hardfork_hooks.block_access_list.BalRecorder;
+pub const BlockAccessIndex = hardfork_hooks.block_access_list.BlockAccessIndex;
 
 // Re-export StorageKey from Voltaire primitives (canonical path)
 pub const StorageKey = primitives.State.StorageKey;
@@ -50,6 +54,8 @@ pub const BlockContext = struct {
     /// Python access pattern: block_hashes[-(current_block - target_block)]
     /// Empty slice if no block hashes available
     block_hashes: []const [32]u8 = &[_][32]u8{},
+    /// EIP-7843 (Amsterdam+): current beacon slot number returned by SLOTNUM (0x4b).
+    slot_num: u64 = 0,
 };
 
 /// EIP-7702 delegation designation prefix.
@@ -227,6 +233,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             balances: std.AutoHashMap(primitives.Address, u256),
             nonces: std.AutoHashMap(primitives.Address, u64),
             code: std.AutoHashMap(primitives.Address, []const u8),
+            bal_snapshot: ?BalRecorder.Snapshot = null,
         };
 
         /// Account field an async transaction can ask the host for.
@@ -336,6 +343,16 @@ pub fn Evm(comptime config: EvmConfig) type {
         logs: std.ArrayList(call_result.Log),
         /// Direct-mapped compiled-bytecode cache (owned by `self.allocator`, cleaned up in `deinit`).
         code_cache: compiled_code.CodeCache = .{},
+        /// EIP-8037 (Amsterdam+): initial state gas reservoir configured for the next `call()`.
+        pending_state_gas_reservoir: u64 = 0,
+        /// EIP-8037 (Amsterdam+): remaining state gas reservoir after the last `call()`.
+        state_gas_reservoir: u64 = 0,
+        /// EIP-8037 (Amsterdam+): committed state gas consumed by the last `call()`.
+        state_gas_used: u64 = 0,
+        /// EIP-7928 (Amsterdam+): optional revert-aware Block-Level Access List recorder.
+        bal_recorder: ?*BalRecorder = null,
+        /// EIP-7928 (Amsterdam+): block access index stamped onto BAL state changes.
+        bal_index: BlockAccessIndex = hardfork_hooks.block_access_list.transactionIndex(0),
 
         /// Single source of truth for precompile address membership (delegates to module helper).
         pub fn isPrecompileAddress(address: Address, hardfork: Hardfork) bool {
@@ -597,6 +614,8 @@ pub fn Evm(comptime config: EvmConfig) type {
             if (injector) |active| active.clearDirty();
 
             self.gas_refund = 0;
+            self.state_gas_reservoir = 0;
+            self.state_gas_used = 0;
             self.access_list_manager = AccessListManager.init(tx_alloc);
             try self.preWarmPrecompiles();
 
@@ -891,10 +910,114 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .{ .success = false, .gas_left = gas_left, .output = &.{}, .error_info = @errorName(err) };
         }
 
+        /// EIP-8037 (Amsterdam+): set initial state gas reservoir for the next `call()`.
+        pub fn setStateGasReservoir(self: *Self, reservoir: u64) void {
+            self.pending_state_gas_reservoir = reservoir;
+        }
+
+        /// EIP-8037 (Amsterdam+): remaining state gas reservoir after execution.
+        pub fn getStateGasReservoir(self: *const Self) u64 {
+            return self.state_gas_reservoir;
+        }
+
+        /// EIP-8037 (Amsterdam+): committed state gas consumed by execution.
+        pub fn getStateGasUsed(self: *const Self) u64 {
+            return self.state_gas_used;
+        }
+
+        /// EIP-7928 (Amsterdam+): attach or clear a revert-aware BAL recorder.
+        pub fn setBlockAccessListRecorder(self: *Self, recorder: ?*BalRecorder, index: BlockAccessIndex) void {
+            self.bal_recorder = recorder;
+            self.bal_index = index;
+        }
+
+        inline fn balHook(self: *Self) ?hardfork_hooks.block_access_list.Hook(BalRecorder) {
+            const rec = self.bal_recorder orelse return null;
+            return .{ .recorder = rec, .index = self.bal_index };
+        }
+
+        /// EIP-8037 (Amsterdam+): apply child/top frame state gas outcome to parent or EVM.
+        fn applyChildStateGas(
+            self: *Self,
+            parent_idx: ?usize,
+            initial_reservoir: u64,
+            child_reservoir: u64,
+            child_spilled: u64,
+            child_used: i64,
+            reverted_or_halted: bool,
+        ) void {
+            if (parent_idx) |idx| {
+                const parent = &self.frames.items[idx];
+                if (reverted_or_halted) {
+                    parent.state_gas_reservoir = initial_reservoir;
+                } else {
+                    parent.mergeChildStateGas(child_reservoir, child_spilled, child_used);
+                }
+                return;
+            }
+            if (reverted_or_halted) {
+                self.state_gas_reservoir = initial_reservoir;
+                self.state_gas_used = 0;
+            } else {
+                self.state_gas_reservoir = child_reservoir;
+                self.state_gas_used = if (child_used > 0) @intCast(child_used) else 0;
+            }
+        }
+
+        fn validateCallParamsForHardfork(params: CallParams, hardfork: Hardfork) CallParams.ValidationError!void {
+            if (hardfork_hooks.supportsAmsterdam(hardfork)) {
+                try params.validate();
+                const max_init = hardfork_hooks.maxInitcodeSize(hardfork, config.max_initcode_size);
+                if (params.isCreate() and params.getInput().len > max_init) {
+                    return error.InvalidInitCodeSize;
+                }
+                return;
+            }
+            try params.validateForHardfork(hardfork);
+        }
+
+        /// EIP-7708 (Amsterdam+): append a system Transfer log to the revert-safe tx log list.
+        /// Emits nothing for zero value or self-transfers (`from == to`).
+        pub fn emitEthTransferLog(
+            self: *Self,
+            from: primitives.Address,
+            to: primitives.Address,
+            value: u256,
+        ) errors.CallError!void {
+            const sys_log = hardfork_hooks.eth_transfer_log.transferLog(from.bytes, to.bytes, value) orelse return;
+            const alloc = self.tx_arena.allocator();
+            const topics_slice = try alloc.dupe(u256, sys_log.topics());
+            const data_slice = try alloc.dupe(u8, &sys_log.data);
+            const log_addr = primitives.Address{ .bytes = sys_log.address };
+            try self.logs.append(alloc, call_result.Log{
+                .address = log_addr,
+                .topics = topics_slice,
+                .data = data_slice,
+            });
+            if (self.inspector) |sink| {
+                @branchHint(.unlikely);
+                var raw_topics: [3][32]u8 = undefined;
+                for (topics_slice, 0..) |topic, idx| {
+                    std.mem.writeInt(u256, &raw_topics[idx], topic, .big);
+                }
+                sink.onLog(.{
+                    .frame_id = self.activeFrameId(),
+                    .address = log_addr,
+                    .topics = raw_topics[0..topics_slice.len],
+                    .data = data_slice,
+                });
+            }
+        }
+
         pub fn accessAddress(self: *Self, address: Address) !u64 {
             const berlin = self.hardfork.isAtLeast(.BERLIN);
             const cost = if (berlin) try self.access_list_manager.access_address(address) else 0;
-            self.observeAccess(address, null, berlin and cost == GasConstants.WarmStorageReadCost);
+            const warm_cost = hardfork_hooks.GasSchedule.forFork(self.hardfork).warm_access;
+            self.observeAccess(address, null, berlin and cost == warm_cost);
+            if (self.bal_recorder) |rec| {
+                @branchHint(.unlikely);
+                try rec.recordAddressAccess(address.bytes);
+            }
             return cost;
         }
 
@@ -909,7 +1032,8 @@ pub fn Evm(comptime config: EvmConfig) type {
                 200
             else
                 50;
-            self.observeAccess(address, slot, berlin and cost == GasConstants.WarmStorageReadCost);
+            const warm_cost = hardfork_hooks.GasSchedule.forFork(self.hardfork).warm_access;
+            self.observeAccess(address, slot, berlin and cost == warm_cost);
             return cost;
         }
 
@@ -935,6 +1059,14 @@ pub fn Evm(comptime config: EvmConfig) type {
             if (self.tracer) |tracer| {
                 if (tracer.willCapture() and tracer.config.tracksStorage()) {
                     try self.storage.trace_slots.put(.{ .address = frame.address.bytes, .slot = slot }, {});
+                }
+            }
+            if (self.balHook()) |*hook| {
+                @branchHint(.unlikely);
+                if (is_read) {
+                    try hook.storageRead(frame.address.bytes, slot);
+                } else {
+                    try hook.storageWrite(frame.address.bytes, slot, previous, value);
                 }
             }
         }
@@ -971,7 +1103,8 @@ pub fn Evm(comptime config: EvmConfig) type {
             }
 
             const observer = self.inspector;
-            const before = if (observer != null) self.peekBalance(addr) else 0;
+            const track_before = observer != null or self.bal_recorder != null;
+            const before = if (track_before) self.peekBalance(addr) else 0;
             if (self.pending_storage_injector) |injector| {
                 if (!injector.baseline_active) try injector.markBalanceDirty(addr);
             }
@@ -989,6 +1122,10 @@ pub fn Evm(comptime config: EvmConfig) type {
                     .new_balance = new_balance,
                 });
             }
+            if (self.balHook()) |*hook| {
+                @branchHint(.unlikely);
+                try hook.balanceChange(addr.bytes, before, new_balance);
+            }
         }
 
         pub fn setNonceWithSnapshot(self: *Self, addr: primitives.Address, new_nonce: u64) !void {
@@ -1003,7 +1140,8 @@ pub fn Evm(comptime config: EvmConfig) type {
             }
 
             const observer = self.inspector;
-            const before = if (observer != null) self.peekNonce(addr) else 0;
+            const track_before = observer != null or self.bal_recorder != null;
+            const before = if (track_before) self.peekNonce(addr) else 0;
             if (self.pending_storage_injector) |injector| {
                 if (!injector.baseline_active) try injector.markNonceDirty(addr);
             }
@@ -1023,6 +1161,10 @@ pub fn Evm(comptime config: EvmConfig) type {
                     .new_nonce = new_nonce,
                 });
             }
+            if (self.balHook()) |*hook| {
+                @branchHint(.unlikely);
+                try hook.nonceChange(addr.bytes, before, new_nonce);
+            }
         }
 
         pub fn setCodeWithSnapshot(self: *Self, addr: primitives.Address, new_code: []const u8) !void {
@@ -1041,6 +1183,10 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
             }
 
+            const bal_changed = if (self.bal_recorder != null)
+                !std.mem.eql(u8, self.peekRawCode(addr), new_code)
+            else
+                false;
             const previous = if (self.inspector) |sink| blk: {
                 if (sink.vtable.onCodeChange == null) break :blk null;
                 const old_code = self.peekRawCode(addr);
@@ -1058,6 +1204,12 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .prev_code = bytes,
                 .new_code = self.peekRawCode(addr),
             });
+            if (bal_changed) {
+                if (self.bal_recorder) |rec| {
+                    @branchHint(.unlikely);
+                    try rec.recordCodeChange(self.bal_index, addr.bytes, self.peekRawCode(addr));
+                }
+            }
         }
 
         /// Write account code without journaling. `copy` duplicates the bytes into the
@@ -1107,6 +1259,9 @@ pub fn Evm(comptime config: EvmConfig) type {
             // A credit that overflows u256 cannot occur with a real supply; fail the message.
             const credited = std.math.add(u256, to_balance, value) catch return error.StorageError;
             try self.setBalanceWithSnapshot(to, credited);
+            if (hardfork_hooks.supportsEthTransferLogs(self.hardfork)) {
+                try self.emitEthTransferLog(from, to, value);
+            }
         }
 
         /// Record `addr` as touched (EIP-161). Journaled so a reverted message un-touches it.
@@ -1364,6 +1519,11 @@ pub fn Evm(comptime config: EvmConfig) type {
         /// Warm the transaction participants: origin, `target` (every real destination,
         /// including the zero address) and, from Shanghai, the coinbase.
         pub fn preWarmParticipants(self: *Self, target: primitives.Address) errors.CallError!void {
+            if (self.bal_recorder) |rec| {
+                @branchHint(.unlikely);
+                try rec.recordAddressAccess(self.origin.bytes);
+                try rec.recordAddressAccess(target.bytes);
+            }
             if (!self.hardfork.isAtLeast(.BERLIN)) return;
 
             var warm: [3]primitives.Address = undefined;
@@ -1538,9 +1698,11 @@ pub fn Evm(comptime config: EvmConfig) type {
             const result_alloc = self.result_allocator orelse self.arena.allocator();
 
             const target = params.get_to();
+            const initial_reservoir = self.pending_state_gas_reservoir;
+            self.pending_state_gas_reservoir = 0;
 
             // Validate parameters
-            params.validateForHardfork(self.getActiveFork()) catch |err| return self.failed(0, err);
+            validateCallParamsForHardfork(params, self.getActiveFork()) catch |err| return self.failed(0, err);
 
             const caller = params.getCaller();
             const gas = params.getGas();
@@ -1550,6 +1712,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             // Initialize transaction state (warms active precompiles on Berlin+ in O(1)
             // and defers reserving the 1025-frame array until EVM bytecode actually runs).
             self.initTransactionStateInternal(blob_versioned_hashes, false) catch |err| return self.failed(0, err);
+            self.state_gas_reservoir = if (hardfork_hooks.supportsStateGas(self.hardfork)) initial_reservoir else 0;
 
             // Pre-warm access list (EIP-2929/EIP-2930)
             if (access_list) |list| {
@@ -1670,6 +1833,17 @@ pub fn Evm(comptime config: EvmConfig) type {
                 if (transfers_value) {
                     self.touchCallTarget(address) catch |err| return self.failAndRevertWithError(&cp, err);
                 }
+                if (self.logs.items.len > 0) {
+                    var result = CallResult.success_with_logs(
+                        result_alloc,
+                        gas_left,
+                        output,
+                        self.logs.items,
+                    ) catch |err| return self.failAndRevertWithError(&cp, err);
+                    result.refund_counter = self.get_effective_refund();
+                    self.commitTransaction();
+                    return result;
+                }
                 self.commitTransaction();
                 return CallResult{
                     .success = true,
@@ -1682,7 +1856,8 @@ pub fn Evm(comptime config: EvmConfig) type {
             // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
             const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
             if (!self.canPushFrame()) return self.failAndRevertWithError(&cp, error.OutOfMemory);
-            const top_frame = FrameType.initLazy(
+            const initial_reservoir = self.state_gas_reservoir;
+            var top_frame = FrameType.initLazy(
                 self.tx_arena.allocator(),
                 bytecode,
                 frame_gas,
@@ -1694,25 +1869,42 @@ pub fn Evm(comptime config: EvmConfig) type {
                 self.hardfork,
                 is_static,
             ) catch |err| return self.failAndRevertWithError(&cp, err);
+            top_frame.state_gas_reservoir = initial_reservoir;
             self.frames.appendAssumeCapacity(top_frame);
             self.attachFrame(observed, resolved.address);
 
             self.frames.items[0].execute() catch |err| {
                 // Exceptional halt: all gas is consumed and every state change is undone.
+                self.applyChildStateGas(null, initial_reservoir, 0, 0, 0, true);
                 return self.failAndRevertWithError(&cp, err);
             };
 
             const frame = &self.frames.items[0];
-            const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
+            const raw_gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
 
             if (frame.reverted) {
+                const gas_left = raw_gas_left +| frame.state_gas_spilled;
+                self.applyChildStateGas(null, initial_reservoir, 0, 0, 0, true);
                 self.revertToCheckpoint(&cp) catch |err| return self.failed(0, err);
                 return CallResult.revert_with_data(result_alloc, gas_left, frame.output) catch |err| return self.failed(gas_left, err);
             }
 
+            self.applyChildStateGas(
+                null,
+                initial_reservoir,
+                frame.state_gas_reservoir,
+                frame.state_gas_spilled,
+                frame.state_gas_used,
+                false,
+            );
             // Gas refunds are not applied here: the caller applies them after computing the
             // gas actually consumed, reading `refund_counter` (or `get_effective_refund()`).
-            var result = CallResult.success_with_logs(result_alloc, gas_left, frame.output, self.logs.items) catch |err| {
+            var result = CallResult.success_with_logs(
+                result_alloc,
+                raw_gas_left,
+                frame.output,
+                self.logs.items,
+            ) catch |err| {
                 return self.failAndRevertWithError(&cp, err);
             };
             result.refund_counter = self.get_effective_refund();
@@ -1743,6 +1935,7 @@ pub fn Evm(comptime config: EvmConfig) type {
             self.touched_journal.clearRetainingCapacity();
             self.pending_access_list = null;
             self.pending_bytecode = &[_]u8{};
+            self.pending_state_gas_reservoir = 0;
             self.blob_hashes_owned.clearRetainingCapacity();
             self.blob_versioned_hashes = &[_][32]u8{};
         }
@@ -1902,15 +2095,68 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         /// Delete accounts marked via SELFDESTRUCT at end of transaction (EIP-6780).
-        /// Handles both host-backed and in-memory modes. Must be called only after
-        /// transient storage is cleared and logs are finalized.
+        /// On Amsterdam+ (EIP-8246), clears code, nonce, and storage while preserving
+        /// any remaining balance (deleting the account only if its balance is zero).
         fn cleanup_selfdestructed_accounts_end_of_tx(self: *Self) void {
+            const no_burn = hardfork_hooks.selfdestructToSelfPolicy(self.hardfork) == .no_burn;
             var it = self.selfdestructed_accounts.iterator();
             while (it.next()) |entry| {
                 const addr = entry.key_ptr.*;
-                self.deleteAccountState(addr);
+                if (no_burn) {
+                    self.clearSelfdestructedPreserveBalance(addr);
+                } else {
+                    self.deleteAccountState(addr);
+                }
             }
             // The set is kept until `finishTransaction`: the async commit dump still reports it.
+        }
+
+        /// EIP-8246 (Amsterdam+): clear code, nonce, and storage of a same-tx self-destructed
+        /// account while keeping any positive balance intact.
+        fn clearSelfdestructedPreserveBalance(self: *Self, addr: Address) void {
+            const preserved_balance = self.peekBalance(addr);
+            if (preserved_balance == 0) {
+                self.deleteAccountState(addr);
+                return;
+            }
+            if (self.inspector) |sink| {
+                const id = self.activeFrameId();
+                const nonce = self.peekNonce(addr);
+                const code = self.peekRawCode(addr);
+                if (nonce != 0) sink.onNonceChange(.{
+                    .frame_id = id,
+                    .address = addr,
+                    .prev_nonce = nonce,
+                    .new_nonce = 0,
+                });
+                if (code.len != 0) sink.onCodeChange(.{
+                    .frame_id = id,
+                    .address = addr,
+                    .prev_code = code,
+                    .new_code = &.{},
+                });
+            }
+            if (self.host) |h| {
+                h.deleteAccount(addr);
+                h.setBalance(addr, preserved_balance);
+                return;
+            }
+            var storage_it = self.storage.storage.iterator();
+            while (storage_it.next()) |storage_entry| {
+                const key = storage_entry.key_ptr.*;
+                if (std.mem.eql(u8, &key.address, &addr.bytes)) {
+                    _ = self.storage.storage.fetchRemove(key);
+                }
+            }
+            var original_storage_it = self.storage.original_storage.iterator();
+            while (original_storage_it.next()) |storage_entry| {
+                const key = storage_entry.key_ptr.*;
+                if (std.mem.eql(u8, &key.address, &addr.bytes)) {
+                    _ = self.storage.original_storage.fetchRemove(key);
+                }
+            }
+            _ = self.code.fetchRemove(addr);
+            _ = self.nonces.fetchRemove(addr);
         }
 
         fn currentStorageValue(self: *Self, key: StorageKey) u256 {
@@ -1989,6 +2235,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .balances = std.AutoHashMap(primitives.Address, u256).init(alloc),
                 .nonces = std.AutoHashMap(primitives.Address, u64).init(alloc),
                 .code = std.AutoHashMap(primitives.Address, []const u8).init(alloc),
+                .bal_snapshot = if (self.bal_recorder) |rec| rec.snapshot() else null,
             };
             errdefer {
                 cp.balances.deinit();
@@ -2092,6 +2339,12 @@ pub fn Evm(comptime config: EvmConfig) type {
             while (code_it.next()) |entry| {
                 try self.writeCodeRaw(entry.key_ptr.*, entry.value_ptr.*, false);
             }
+
+            // EIP-7928: roll back BAL state mutations while preserving address accesses and
+            // demoting reverted storage writes to reads.
+            if (self.bal_recorder) |rec| {
+                if (cp.bal_snapshot) |snap| try rec.rollback(snap);
+            }
         }
 
         /// Whether another frame may be pushed. Guarantees `frames` never reallocates while
@@ -2143,18 +2396,19 @@ pub fn Evm(comptime config: EvmConfig) type {
             //   CALL / STATICCALL: caller = current frame, runs at the target address.
             //   CALLCODE:          caller = current frame, runs target code at the current address.
             //   DELEGATECALL:      caller and value inherited, runs target code at the current address.
+            const parent_frame_idx: ?usize = if (self.frames.items.len > 0) self.frames.items.len - 1 else null;
             const current_frame = self.getCurrentFrame();
             const frame_caller = if (current_frame) |frame| frame.address else self.origin;
             const frame_caller_caller = if (current_frame) |frame| frame.caller else self.origin;
             const execution_caller: primitives.Address = switch (call_type) {
                 .call, .staticcall, .callcode => frame_caller,
                 .delegatecall => frame_caller_caller,
-                else => unreachable,
+                else => return self.failed(gas, error.InvalidOpcode),
             };
             const execution_address: primitives.Address = switch (call_type) {
                 .call, .staticcall => address,
                 .delegatecall, .callcode => frame_caller,
-                else => unreachable,
+                else => return self.failed(gas, error.InvalidOpcode),
             };
 
             // Only CALL and CALLCODE require the caller to hold `value`.
@@ -2203,7 +2457,11 @@ pub fn Evm(comptime config: EvmConfig) type {
             if (self.async_restart_pending) return self.failAndRevert(&cp);
             // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
             const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
-            const child_frame = FrameType.initLazy(
+            const initial_reservoir = if (parent_frame_idx) |idx|
+                self.frames.items[idx].state_gas_reservoir
+            else
+                self.state_gas_reservoir;
+            var child_frame = FrameType.initLazy(
                 self.allocator,
                 code,
                 frame_gas,
@@ -2215,6 +2473,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 self.hardfork,
                 is_static,
             ) catch return self.failAndRevert(&cp);
+            child_frame.state_gas_reservoir = initial_reservoir;
             // `canPushFrame` reserved the slot: this never reallocates `frames`.
             self.frames.appendAssumeCapacity(child_frame);
             self.attachFrame(observed, resolved.address);
@@ -2230,32 +2489,53 @@ pub fn Evm(comptime config: EvmConfig) type {
                 // and the executor replays the transaction once the host has answered. In a
                 // synchronous `call()` nothing can answer, so the callee fails as before.
                 if (err == error.NeedAsyncData) self.requestAsyncRestart(self.storage.async_data_request);
-                // Exceptional halt: all forwarded gas is consumed.
+                // Exceptional halt: all forwarded gas is consumed; restore parent reservoir.
+                self.applyChildStateGas(parent_frame_idx, initial_reservoir, 0, 0, 0, true);
                 self.revertBestEffort(&cp);
                 return self.failed(0, err);
             };
             if (self.async_restart_pending) {
                 // The callee (or a descendant) was stopped for missing data; its result is void.
+                self.applyChildStateGas(parent_frame_idx, initial_reservoir, 0, 0, 0, true);
                 return self.failAndRevert(&cp);
             }
 
             const frame = &self.frames.items[frame_index];
             const reverted = frame.reverted;
-            const gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
+            const raw_gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0)));
+            const child_reservoir = frame.state_gas_reservoir;
+            const child_spilled = frame.state_gas_spilled;
+            const child_used = frame.state_gas_used;
             const output: []const u8 = if (frame.output.len > 0)
-                (tx_alloc.dupe(u8, frame.output) catch return self.failAndRevert(&cp))
+                (tx_alloc.dupe(u8, frame.output) catch {
+                    self.applyChildStateGas(parent_frame_idx, initial_reservoir, 0, 0, 0, true);
+                    return self.failAndRevert(&cp);
+                })
             else
                 &[_]u8{};
 
             if (reverted) {
+                const gas_left = raw_gas_left +| child_spilled;
+                self.applyChildStateGas(parent_frame_idx, initial_reservoir, 0, 0, 0, true);
                 self.revertToCheckpoint(&cp) catch return failedResult(0);
                 return CallResult{ .success = false, .gas_left = gas_left, .output = output };
             }
 
             if (call_type == .call) {
-                self.touchCallTarget(address) catch return self.failAndRevert(&cp);
+                self.touchCallTarget(address) catch {
+                    self.applyChildStateGas(parent_frame_idx, initial_reservoir, 0, 0, 0, true);
+                    return self.failAndRevert(&cp);
+                };
             }
-            return CallResult{ .success = true, .gas_left = gas_left, .output = output };
+            self.applyChildStateGas(
+                parent_frame_idx,
+                initial_reservoir,
+                child_reservoir,
+                child_spilled,
+                child_used,
+                false,
+            );
+            return CallResult{ .success = true, .gas_left = raw_gas_left, .output = output };
         }
 
         /// Handle CREATE / CREATE2 (contract creation).
@@ -2317,7 +2597,15 @@ pub fn Evm(comptime config: EvmConfig) type {
                 .code = init_code,
             }) else null;
             const outcome: errors.CallError!CreateResult = if (early) |maybe_result|
-                maybe_result orelse self.executeCreate(caller, new_address, value, init_code, gas, observed)
+                maybe_result orelse self.executeCreate(
+                    caller,
+                    new_address,
+                    value,
+                    init_code,
+                    gas,
+                    is_top_level_create,
+                    observed,
+                )
             else |err|
                 err;
             if (observed) |observation| {
@@ -2335,9 +2623,10 @@ pub fn Evm(comptime config: EvmConfig) type {
         }
 
         fn beginCreate(self: *Self, caller: Address, new_address: Address, value: u256, init_code: []const u8, gas: u64, salt: ?u256, is_top_level_create: bool, sender_nonce: u64) errors.CallError!?CreateResult {
-            // 1. EIP-3860 (Shanghai+): oversize init code is an out-of-gas halt of the calling
-            //    frame. It is checked before balance, nonce and depth, which only push 0.
-            if (self.hardfork.isAtLeast(.SHANGHAI) and init_code.len > config.max_initcode_size) {
+            // 1. EIP-3860 (Shanghai+) / EIP-7954 (Amsterdam+): oversize init code is an
+            //    out-of-gas halt of the calling frame. Checked before balance, nonce and depth.
+            const max_initcode = hardfork_hooks.maxInitcodeSize(self.hardfork, config.max_initcode_size);
+            if (self.hardfork.isAtLeast(.SHANGHAI) and init_code.len > max_initcode) {
                 return error.OutOfGas;
             }
 
@@ -2377,14 +2666,127 @@ pub fn Evm(comptime config: EvmConfig) type {
             return null;
         }
 
-        fn executeCreate(self: *Self, caller: Address, new_address: Address, value: u256, init_code: []const u8, gas: u64, observed: ?ObservedFrame) errors.CallError!CreateResult {
+        const CodeDepositResult = union(enum) {
+            ok: struct {
+                deployed_code: []const u8,
+                gas_left: u64,
+                reservoir: u64,
+                spilled: u64,
+                state_used: i64,
+            },
+            err: errors.CallError,
+        };
+
+        /// Evaluate code deposit rules (EIP-170, EIP-3541, EIP-7954, EIP-8037).
+        fn evaluateCodeDeposit(
+            self: *const Self,
+            frame_output: []const u8,
+            gas_left: u64,
+            reservoir: u64,
+            spilled: u64,
+            state_used: i64,
+        ) CodeDepositResult {
+            const max_code = hardfork_hooks.maxCodeSize(self.hardfork, config.max_bytecode_size);
+            const ef_prefix = self.hardfork.isAtLeast(.LONDON) and frame_output.len > 0 and frame_output[0] == 0xEF;
+            const exceeds_size = self.hardfork.isAtLeast(.SPURIOUS_DRAGON) and frame_output.len > max_code;
+
+            if (hardfork_hooks.supportsAmsterdam(self.hardfork)) {
+                if (ef_prefix) return .{ .err = error.InvalidBytecode };
+                if (exceeds_size) return .{ .err = error.CreateContractSizeLimit };
+                const split = hardfork_hooks.GasSchedule.forFork(self.hardfork).codeDeposit(frame_output.len);
+                if (gas_left < split.regular) return .{ .err = error.CodeStoreOutOfGas };
+                const after_regular = gas_left - split.regular;
+                const from_res = @min(reservoir, split.state);
+                const from_gas = split.state - from_res;
+                if (from_gas > after_regular) return .{ .err = error.CodeStoreOutOfGas };
+                return .{ .ok = .{
+                    .deployed_code = frame_output,
+                    .gas_left = after_regular - from_gas,
+                    .reservoir = reservoir - from_res,
+                    .spilled = spilled +| from_gas,
+                    .state_used = state_used +| @as(i64, @intCast(@min(split.state, std.math.maxInt(i64)))),
+                } };
+            }
+
+            const code_len: u64 = @intCast(frame_output.len);
+            const deposit_cost = std.math.mul(u64, code_len, GasConstants.CreateDataGas) catch std.math.maxInt(u64);
+            const deposit_out_of_gas = gas_left < deposit_cost;
+            if (deposit_out_of_gas and self.hardfork.isBefore(.HOMESTEAD)) {
+                return .{ .ok = .{
+                    .deployed_code = &[_]u8{},
+                    .gas_left = gas_left,
+                    .reservoir = reservoir,
+                    .spilled = spilled,
+                    .state_used = state_used,
+                } };
+            }
+            if (ef_prefix or deposit_out_of_gas or exceeds_size) {
+                return .{ .err = if (ef_prefix)
+                    error.InvalidBytecode
+                else if (exceeds_size)
+                    error.CreateContractSizeLimit
+                else
+                    error.CodeStoreOutOfGas };
+            }
+            return .{ .ok = .{
+                .deployed_code = frame_output,
+                .gas_left = gas_left - deposit_cost,
+                .reservoir = reservoir,
+                .spilled = spilled,
+                .state_used = state_used,
+            } };
+        }
+
+        fn executeCreate(
+            self: *Self,
+            caller: Address,
+            new_address: Address,
+            value: u256,
+            init_code: []const u8,
+            gas: u64,
+            is_top_level_create: bool,
+            observed: ?ObservedFrame,
+        ) errors.CallError!CreateResult {
             // 7. Everything below is one unit: any failure restores storage, original and
             //    transient storage, logs, balances, nonces, code, created/self-destructed/touched
             //    sets, warm sets and the refund counter to this point.
+            const parent_frame_idx: ?usize = if (self.frames.items.len > 0) self.frames.items.len - 1 else null;
+            const initial_reservoir = if (parent_frame_idx) |idx|
+                self.frames.items[idx].state_gas_reservoir
+            else
+                self.state_gas_reservoir;
+
             var cp: Checkpoint = undefined;
             try self.takeCheckpoint(&cp);
             defer self.releaseCheckpoint(&cp);
-            errdefer self.revertBestEffort(&cp);
+            errdefer {
+                self.applyChildStateGas(parent_frame_idx, initial_reservoir, 0, 0, 0, true);
+                self.revertBestEffort(&cp);
+            }
+
+            // EIP-8037 (Amsterdam+): top-level creation charges NEW_ACCOUNT state gas in the
+            // creation frame when the destination account is not already alive.
+            var start_gas = gas;
+            var start_reservoir = initial_reservoir;
+            var start_spilled: u64 = 0;
+            var start_used: i64 = 0;
+            if (is_top_level_create and hardfork_hooks.supportsAmsterdam(self.hardfork)) {
+                const dest_alive = !self.accountIsEmpty(new_address);
+                if (!dest_alive) {
+                    const create_state = hardfork_hooks.GasSchedule.forFork(self.hardfork).create.state;
+                    const from_res = @min(start_reservoir, create_state);
+                    const from_gas = create_state - from_res;
+                    if (from_gas > start_gas) {
+                        self.applyChildStateGas(parent_frame_idx, initial_reservoir, 0, 0, 0, true);
+                        try self.revertToCheckpoint(&cp);
+                        return .{ .err = error.OutOfGas };
+                    }
+                    start_reservoir -= from_res;
+                    start_gas -= from_gas;
+                    start_spilled = from_gas;
+                    start_used = @intCast(create_state);
+                }
+            }
 
             // EIP-6780: mark as created in this transaction before running init code.
             try self.created_accounts.put(new_address, {});
@@ -2402,8 +2804,8 @@ pub fn Evm(comptime config: EvmConfig) type {
             // (the `errdefer` rolls back) and let the executor fetch it and replay.
             if (self.async_restart_pending) return error.NeedAsyncData;
             // Gas above i64::MAX cannot be spent; cap instead of trapping on the cast.
-            const frame_gas = std.math.cast(i64, gas) orelse std.math.maxInt(i64);
-            const init_frame = try FrameType.initLazy(
+            const frame_gas = std.math.cast(i64, start_gas) orelse std.math.maxInt(i64);
+            var init_frame = try FrameType.initLazy(
                 self.allocator,
                 init_code,
                 frame_gas,
@@ -2415,6 +2817,9 @@ pub fn Evm(comptime config: EvmConfig) type {
                 self.hardfork,
                 false, // creation is never static
             );
+            init_frame.state_gas_reservoir = start_reservoir;
+            init_frame.state_gas_spilled = start_spilled;
+            init_frame.state_gas_used = start_used;
             // `canPushFrame` reserved the slot: this never reallocates `frames`.
             self.frames.appendAssumeCapacity(init_frame);
             self.attachFrame(observed, new_address);
@@ -2426,6 +2831,7 @@ pub fn Evm(comptime config: EvmConfig) type {
                 }
 
                 self.frames.items[frame_index].execute() catch |err| {
+                    self.applyChildStateGas(parent_frame_idx, initial_reservoir, 0, 0, 0, true);
                     try self.revertToCheckpoint(&cp);
                     if (err == error.NeedAsyncData and self.async_active) {
                         // Init code needs data the host has not supplied: propagate instead of
@@ -2448,52 +2854,57 @@ pub fn Evm(comptime config: EvmConfig) type {
                 break :blk .{
                     .reverted = frame.reverted,
                     .gas_left = @as(u64, @intCast(@max(frame.gas_remaining, 0))),
+                    .reservoir = frame.state_gas_reservoir,
+                    .spilled = frame.state_gas_spilled,
+                    .state_used = frame.state_gas_used,
                     .output = out,
                 };
             };
 
-            const reverted = frame_outcome.reverted;
-            var gas_left = frame_outcome.gas_left;
-            const frame_output = frame_outcome.output;
-
-            if (reverted) {
-                // REVERT is the only failure that returns data and unused gas.
+            if (frame_outcome.reverted) {
+                // REVERT is the only failure that returns data and unused (plus LIFO spilled) gas.
+                const gas_left = frame_outcome.gas_left +| frame_outcome.spilled;
+                self.applyChildStateGas(parent_frame_idx, initial_reservoir, 0, 0, 0, true);
                 try self.revertToCheckpoint(&cp);
                 return .{
                     .address = primitives.ZERO_ADDRESS,
                     .success = false,
                     .gas_left = gas_left,
-                    .output = frame_output,
+                    .output = frame_outcome.output,
                 };
             }
 
-            // 8. Code deposit. EIP-3541 (London): code may not start with 0xEF. Deposit costs
-            //    200 gas per byte. EIP-170 (Spurious Dragon): code may not exceed 24576 bytes.
-            //    Any violation is an exceptional halt of the creation: full rollback, all gas
-            //    consumed, empty return data.
-            var deployed_code = frame_output;
-            const deposit_cost = std.math.mul(u64, @as(u64, @intCast(frame_output.len)), GasConstants.CreateDataGas) catch std.math.maxInt(u64);
-            const deposit_out_of_gas = gas_left < deposit_cost;
-            const ef_prefix = self.hardfork.isAtLeast(.LONDON) and frame_output.len > 0 and frame_output[0] == 0xEF;
-            const exceeds_size = self.hardfork.isAtLeast(.SPURIOUS_DRAGON) and frame_output.len > config.max_bytecode_size;
+            // 8. Code deposit (EIP-170, EIP-3541, EIP-7954, EIP-8037).
+            const deposit = self.evaluateCodeDeposit(
+                frame_outcome.output,
+                frame_outcome.gas_left,
+                frame_outcome.reservoir,
+                frame_outcome.spilled,
+                frame_outcome.state_used,
+            );
+            const committed = switch (deposit) {
+                .ok => |ok| ok,
+                .err => |err| {
+                    self.applyChildStateGas(parent_frame_idx, initial_reservoir, 0, 0, 0, true);
+                    try self.revertToCheckpoint(&cp);
+                    return .{ .err = err };
+                },
+            };
 
-            if (deposit_out_of_gas and self.hardfork.isBefore(.HOMESTEAD)) {
-                // Frontier: an unaffordable deposit still creates the account, with empty code
-                // and without charging the deposit (EIP-2 changed this in Homestead).
-                deployed_code = &[_]u8{};
-            } else if (ef_prefix or deposit_out_of_gas or exceeds_size) {
-                try self.revertToCheckpoint(&cp);
-                return .{ .err = if (ef_prefix) error.InvalidBytecode else if (exceeds_size) error.CreateContractSizeLimit else error.CodeStoreOutOfGas };
-            } else {
-                gas_left -= deposit_cost;
-            }
-
-            try self.setCodeWithSnapshot(new_address, deployed_code);
+            try self.setCodeWithSnapshot(new_address, committed.deployed_code);
+            self.applyChildStateGas(
+                parent_frame_idx,
+                initial_reservoir,
+                committed.reservoir,
+                committed.spilled,
+                committed.state_used,
+                false,
+            );
 
             return .{
                 .address = new_address,
                 .success = true,
-                .gas_left = gas_left,
+                .gas_left = committed.gas_left,
                 .output = &[_]u8{},
             };
         }

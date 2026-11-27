@@ -156,7 +156,8 @@ pub fn DispatcherWithConfig(comptime FrameType: type, comptime config: HandlerCo
                 0x48 => try BlockHandlers.basefee(frame),
                 0x49 => try BlockHandlers.blobhash(frame),
                 0x4a => try BlockHandlers.blobbasefee(frame),
-                // 0x4b-0x4f: Invalid opcodes
+                0x4b => try BlockHandlers.slotnum(frame),
+                // 0x4c-0x4f: Invalid opcodes
 
                 // 0x50-0x5f: Stack, memory, storage operations
                 0x50 => try StackHandlers.pop(frame),
@@ -186,7 +187,13 @@ pub fn DispatcherWithConfig(comptime FrameType: type, comptime config: HandlerCo
 
                 // 0xa0-0xa4: LOG operations
                 0xa0...0xa4 => try LogHandlers.log(frame, opcode),
-                // 0xa5-0xef: Invalid opcodes
+                // 0xa5-0xe5: Invalid opcodes
+
+                // 0xe6-0xe8: EIP-8024 stack manipulation operations (Amsterdam+)
+                0xe6 => try StackHandlers.dupn(frame),
+                0xe7 => try StackHandlers.swapn(frame),
+                0xe8 => try StackHandlers.exchange(frame),
+                // 0xe9-0xef: Invalid opcodes
 
                 // 0xf0-0xff: System operations
                 0xf0 => try SystemHandlers.create(frame),
@@ -218,8 +225,8 @@ pub fn DispatcherWithConfig(comptime FrameType: type, comptime config: HandlerCo
                 0x16...0x1e => "bitwise",
                 0x20 => "keccak",
                 0x30...0x3f => "context",
-                0x40...0x4a => "block",
-                0x50, 0x5f...0x9f => "stack", // POP, PUSH, DUP, SWAP
+                0x40...0x4b => "block",
+                0x50, 0x5f...0x9f, 0xe6...0xe8 => "stack", // POP, PUSH, DUP, SWAP, DUPN, SWAPN, EXCHANGE
                 0x51...0x53, 0x59, 0x5e => "memory",
                 0x54...0x55, 0x5c...0x5d => "storage",
                 0x00, 0x56...0x58, 0x5b, 0xf3, 0xfd => "control_flow",
@@ -311,12 +318,16 @@ test "Dispatcher - handler module names" {
     // Test block opcodes
     try testing.expectEqualStrings("block", dispatcher.getHandlerModuleName(0x40).?);
     try testing.expectEqualStrings("block", dispatcher.getHandlerModuleName(0x4a).?);
+    try testing.expectEqualStrings("block", dispatcher.getHandlerModuleName(0x4b).?);
 
     // Test stack opcodes
     try testing.expectEqualStrings("stack", dispatcher.getHandlerModuleName(0x50).?);
     try testing.expectEqualStrings("stack", dispatcher.getHandlerModuleName(0x5f).?);
     try testing.expectEqualStrings("stack", dispatcher.getHandlerModuleName(0x60).?);
     try testing.expectEqualStrings("stack", dispatcher.getHandlerModuleName(0x80).?);
+    try testing.expectEqualStrings("stack", dispatcher.getHandlerModuleName(0xe6).?);
+    try testing.expectEqualStrings("stack", dispatcher.getHandlerModuleName(0xe7).?);
+    try testing.expectEqualStrings("stack", dispatcher.getHandlerModuleName(0xe8).?);
 
     // Test memory opcodes
     try testing.expectEqualStrings("memory", dispatcher.getHandlerModuleName(0x51).?);

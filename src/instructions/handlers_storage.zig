@@ -3,6 +3,7 @@ const std = @import("std");
 const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
+const hardfork_hooks = @import("../hardfork_hooks.zig");
 
 /// Handlers struct - provides storage operation handlers for a Frame type
 /// The FrameType must have methods: consumeGas, popStack, pushStack, getEvm
@@ -61,6 +62,52 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             frame.pc += 1;
         }
 
+        /// EIP-8038 / EIP-8037 Amsterdam SSTORE metering and refund logic.
+        fn sstoreAmsterdam(
+            frame: *FrameType,
+            evm: anytype,
+            key: u256,
+            value: u256,
+            current_value: u256,
+        ) FrameType.EvmError!void {
+            const schedule = hardfork_hooks.GasSchedule.forFork(evm.hardfork);
+            const original_value = evm.storage.get_original(frame.address, key);
+            const access_cost = try evm.accessStorageSlot(frame.address, key);
+            const is_cold = access_cost == schedule.cold_storage_access;
+
+            const base_access = if (is_cold) schedule.cold_storage_access else schedule.warm_access;
+            const is_clean_write = original_value == current_value and current_value != value;
+            const exec_gas = base_access + if (is_clean_write) schedule.storage_write else 0;
+            const state_gas: u64 = if (original_value == 0 and current_value == 0 and value != 0)
+                schedule.storage_set.state
+            else
+                0;
+
+            try charge(frame, exec_gas);
+            if (config.charge_gas and state_gas > 0) {
+                try frame.chargeStateGas(state_gas);
+            }
+
+            if (current_value != value) {
+                if (original_value != 0 and current_value != 0 and value == 0) {
+                    evm.add_refund(schedule.storage_clear_refund);
+                }
+                if (original_value != 0 and current_value == 0) {
+                    subRefund(evm, schedule.storage_clear_refund);
+                }
+                if (original_value == value) {
+                    evm.add_refund(schedule.storage_write);
+                    if (original_value == 0 and config.charge_gas) {
+                        frame.refundStateGas(schedule.storage_set.state);
+                    }
+                }
+            }
+
+            try evm.storage.set(frame.address, key, value);
+            try evm.observeStorage(frame, key, current_value, value, false);
+            frame.pc += 1;
+        }
+
         /// SSTORE opcode (0x55) - Save word to storage
         pub fn sstore(frame: *FrameType) FrameType.EvmError!void {
             const evm = frame.getEvm();
@@ -73,6 +120,7 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             // EIP-2200 (Istanbul+): SSTORE requires more than GAS_CALL_STIPEND (2300) gas.
             // Checked before any async slot request: the halt needs no storage data.
             // An exceptional halt burns all remaining gas.
+            // EIP-8037: checks regular gas_remaining only (excludes state_gas_reservoir).
             if (evm.hardfork.isAtLeast(.ISTANBUL)) {
                 if (frame.gas_remaining <= GasConstants.SstoreSentryGas) {
                     // Charging one gas past the stipend records the attempted cost for
@@ -90,6 +138,10 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
 
             // Get current value for gas calculation
             const current_value = try evm.storage.get(frame.address, key);
+
+            if (hardfork_hooks.supportsAmsterdam(evm.hardfork)) {
+                return sstoreAmsterdam(frame, evm, key, value, current_value);
+            }
 
             // Calculate gas cost based on hardfork
             const gas_cost = if (evm.hardfork.isAtLeast(.ISTANBUL)) blk: {

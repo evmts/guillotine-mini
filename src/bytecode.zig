@@ -131,6 +131,11 @@ pub const Bytecode = struct {
 };
 
 /// Analyze bytecode into a packed bitset of valid JUMPDEST positions.
+///
+/// EIP-8024 (`DUPN` 0xe6, `SWAPN` 0xe7, `EXCHANGE` 0xe8) deliberately forbids
+/// `0x5b..0x7f` as valid immediates so JUMPDEST scanning stays unchanged:
+/// a `0x5b` byte after `0xe6`/`0xe7`/`0xe8` remains a valid JUMPDEST, and a
+/// `0x60..0x7f` byte after them still masks the following PUSH data bytes.
 fn analyzeJumpDestsBitset(code: []const u8, bits: []u64) void {
     var pc: usize = 0;
     const code_len = code.len;
@@ -230,4 +235,19 @@ test "Bytecode: readImmediate" {
     try std.testing.expectEqual(@as(?u256, 0x3400), bytecode.readImmediate(3, 2));
     try std.testing.expectEqual(@as(?u256, 0), bytecode.readImmediate(4, 32));
     try std.testing.expect(bytecode.readImmediate(5, 2) == null);
+}
+
+test "analyzeJumpDests: EIP-8024 does not mask JUMPDEST or PUSH immediates" {
+    // 0xe6 0x5b: 0x5b is an invalid DUPN immediate and remains a valid JUMPDEST.
+    const dupn_jd = [_]u8{ 0xe6, 0x5b, 0x00 };
+    var bc1 = try Bytecode.init(std.testing.allocator, &dupn_jd);
+    defer bc1.deinit();
+    try std.testing.expect(bc1.isValidJumpDest(1));
+
+    // 0xe6 0x60 0x5b: 0x60 (PUSH1) after DUPN masks the trailing 0x5b.
+    const dupn_push_jd = [_]u8{ 0xe6, 0x60, 0x5b, 0x5b };
+    var bc2 = try Bytecode.init(std.testing.allocator, &dupn_push_jd);
+    defer bc2.deinit();
+    try std.testing.expect(!bc2.isValidJumpDest(2));
+    try std.testing.expect(bc2.isValidJumpDest(3));
 }

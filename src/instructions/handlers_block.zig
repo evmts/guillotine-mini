@@ -3,6 +3,7 @@ const std = @import("std");
 const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
+const hardfork_hooks = @import("../hardfork_hooks.zig");
 
 /// Handlers struct - provides block context operation handlers for a Frame type
 /// The FrameType must have methods: consumeGas, popStack, pushStack
@@ -197,6 +198,20 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             try charge(frame, GasConstants.GasQuickStep);
             // blob_base_fee is pre-calculated from excess_blob_gas in BlockContext
             try frame.pushStack(evm.block_context.blob_base_fee);
+            frame.pc += 1;
+        }
+
+        /// SLOTNUM opcode (0x4b) - Get current beacon slot number (EIP-7843, Amsterdam+)
+        pub fn slotnum(frame: *FrameType) FrameType.EvmError!void {
+            const evm = frame.getEvm();
+            if (!hardfork_hooks.supportsAmsterdam(evm.hardfork)) return error.InvalidOpcode;
+
+            try charge(frame, hardfork_hooks.SLOTNUM_GAS);
+            const slot: u64 = if (comptime @hasField(@TypeOf(evm.block_context), "slot_num"))
+                evm.block_context.slot_num
+            else
+                0;
+            try frame.pushStack(@as(u256, slot));
             frame.pc += 1;
         }
     };

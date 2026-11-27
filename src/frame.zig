@@ -17,6 +17,7 @@ const Bytecode = @import("bytecode.zig").Bytecode;
 const dispatcher_mod = @import("instructions/dispatcher.zig");
 const u256_math = @import("u256_math.zig");
 const compiled_code = @import("compiled_code.zig");
+const hardfork_hooks = @import("hardfork_hooks.zig");
 
 /// Creates a configured Frame type that matches the given Evm config.
 pub fn Frame(comptime config: EvmConfig) type {
@@ -59,6 +60,12 @@ pub fn Frame(comptime config: EvmConfig) type {
         step_child_gas_spent: u64 = 0,
         step_attempted_gas: u64 = 0,
         step_memory_expansion_gas: u64 = 0,
+        /// EIP-8037 (Amsterdam+): gas reserved for state creation (drawn before `gas_remaining`).
+        state_gas_reservoir: u64 = 0,
+        /// EIP-8037 (Amsterdam+): state gas spilled from `gas_remaining` in this frame/children.
+        state_gas_spilled: u64 = 0,
+        /// EIP-8037 (Amsterdam+): net state gas charged in this frame and committed children.
+        state_gas_used: i64 = 0,
 
         /// Initialize a new frame for bytecode execution
         ///
@@ -448,6 +455,54 @@ pub fn Frame(comptime config: EvmConfig) type {
             self.gas_remaining -= @intCast(amount);
         }
 
+        /// Charge EIP-8037 state gas (Amsterdam+): draws from `state_gas_reservoir` first,
+        /// spilling any remainder into `gas_remaining`. Fails with `OutOfGas` if regular
+        /// gas cannot cover the spill.
+        pub fn chargeStateGas(self: *Self, amount: u64) EvmError!void {
+            if (amount == 0) return;
+            const from_reservoir = @min(self.state_gas_reservoir, amount);
+            const from_gas_left = amount - from_reservoir;
+            if (self.step_metering and from_gas_left > 0) {
+                @branchHint(.unlikely);
+                self.step_attempted_gas +|= from_gas_left;
+            }
+            if (from_gas_left > std.math.maxInt(i64) or self.gas_remaining < @as(i64, @intCast(from_gas_left))) {
+                self.gas_remaining = 0;
+                return error.OutOfGas;
+            }
+            self.state_gas_reservoir -= from_reservoir;
+            self.gas_remaining -= @intCast(from_gas_left);
+            self.state_gas_spilled +|= from_gas_left;
+            self.state_gas_used +|= @as(i64, @intCast(@min(amount, std.math.maxInt(i64))));
+        }
+
+        /// Refund EIP-8037 state gas in LIFO source order: refill `state_gas_spilled` back
+        /// into `gas_remaining` first, then credit any remainder to `state_gas_reservoir`.
+        pub fn refundStateGas(self: *Self, amount: u64) void {
+            if (amount == 0) return;
+            const to_gas_left = @min(self.state_gas_spilled, amount);
+            const to_reservoir = amount - to_gas_left;
+            self.state_gas_spilled -= to_gas_left;
+            self.gas_remaining +|= @as(i64, @intCast(@min(to_gas_left, std.math.maxInt(i64))));
+            self.state_gas_reservoir +|= to_reservoir;
+            self.state_gas_used -|= @as(i64, @intCast(@min(amount, std.math.maxInt(i64))));
+        }
+
+        /// Commit a succeeded child frame's EIP-8037 state gas accounting into this parent frame,
+        /// discharging any child restoration advance against this frame's spilled state gas.
+        pub fn mergeChildStateGas(self: *Self, child_reservoir: u64, child_spilled: u64, child_used: i64) void {
+            self.state_gas_reservoir = child_reservoir;
+            self.state_gas_spilled +|= child_spilled;
+            self.state_gas_used +|= child_used;
+            if (child_used < 0) {
+                const advance: u64 = @abs(child_used);
+                const discharge = @min(@min(self.state_gas_spilled, advance), self.state_gas_reservoir);
+                self.state_gas_reservoir -= discharge;
+                self.state_gas_spilled -= discharge;
+                self.gas_remaining +|= @as(i64, @intCast(@min(discharge, std.math.maxInt(i64))));
+            }
+        }
+
         /// Calculate memory expansion cost
         /// The total memory cost for n words is: 3n + n²/512, where a word is 32 bytes.
         pub fn memoryExpansionCost(self: *Self, end_bytes: u64) u64 {
@@ -525,9 +580,9 @@ pub fn Frame(comptime config: EvmConfig) type {
             return GasConstants.SelfdestructRefundGas; // Pre-London: 24,000 refund
         }
 
-        /// Calculate CREATE gas cost (EIP-3860 aware)
+        /// Calculate CREATE gas cost (EIP-3860 / EIP-8038 aware)
         pub fn createGasCost(self: *const Self, init_code_size: u32) u64 {
-            var gas_cost: u64 = GasConstants.CreateGas; // Base 32,000 gas
+            var gas_cost: u64 = hardfork_hooks.GasSchedule.forFork(self.hardfork).create.regular;
 
             if (self.hardfork.isAtLeast(.SHANGHAI)) {
                 @branchHint(.likely);
@@ -538,9 +593,9 @@ pub fn Frame(comptime config: EvmConfig) type {
             return gas_cost;
         }
 
-        /// Calculate CREATE2 gas cost (EIP-3860 aware)
+        /// Calculate CREATE2 gas cost (EIP-3860 / EIP-8038 aware)
         pub fn create2GasCost(self: *const Self, init_code_size: u32) u64 {
-            var gas_cost: u64 = GasConstants.CreateGas; // Base 32,000 gas
+            var gas_cost: u64 = hardfork_hooks.GasSchedule.forFork(self.hardfork).create.regular;
 
             // Keccak256 hash cost for hashing init_code (per-word only, no base cost)
             // According to the reference implementation, CREATE2 only charges per-word cost
@@ -2280,7 +2335,9 @@ pub fn Frame(comptime config: EvmConfig) type {
                 return;
             }
             if (comptime config.enable_compiled_interpreter) {
-                if (self.pc == 0 and !self.stopped and !self.reverted and !evm.async_active and self.bytecode.code.len > 0) {
+                if (self.pc == 0 and !self.stopped and !self.reverted and !evm.async_active and
+                    !hardfork_hooks.supportsAmsterdam(self.hardfork) and self.bytecode.code.len > 0)
+                {
                     const compiled = try evm.code_cache.getOrCompile(evm.allocator, self.bytecode.code, self.hardfork);
                     return self.executeCompiled(compiled);
                 }

@@ -3,6 +3,7 @@ const std = @import("std");
 const HandlerConfig = @import("frame_interface.zig").HandlerConfig;
 const primitives = @import("voltaire");
 const GasConstants = primitives.GasConstants;
+const hardfork_hooks = @import("../hardfork_hooks.zig");
 
 /// Handlers struct - provides stack operation handlers for a Frame type
 /// The FrameType must have methods: consumeGas, popStack, pushStack
@@ -77,6 +78,63 @@ pub fn HandlersWithConfig(FrameType: type, comptime config: HandlerConfig) type 
             frame.stack.items[top_idx] = frame.stack.items[swap_idx];
             frame.stack.items[swap_idx] = temp;
             frame.pc += 1;
+        }
+
+        inline fn readEip8024Immediate(frame: *const FrameType) u8 {
+            const next_pc = @as(usize, frame.pc) + 1;
+            return if (next_pc < frame.bytecode.code.len) frame.bytecode.code[next_pc] else 0;
+        }
+
+        /// DUPN opcode (0xe6) - Duplicate stack item at depth 17..235 (EIP-8024, Amsterdam+)
+        pub fn dupn(frame: *FrameType) FrameType.EvmError!void {
+            const evm = frame.getEvm();
+            if (!hardfork_hooks.supportsAmsterdam(evm.hardfork)) return error.InvalidOpcode;
+
+            const imm = readEip8024Immediate(frame);
+            const n = hardfork_hooks.eip8024.decodeSingle(imm) orelse return error.InvalidOpcode;
+
+            try charge(frame, GasConstants.GasFastestStep);
+            if (frame.stack.items.len < n) return error.StackUnderflow;
+            const value = frame.stack.items[frame.stack.items.len - n];
+            try frame.pushStack(value);
+            frame.pc += 2;
+        }
+
+        /// SWAPN opcode (0xe7) - Swap top item with item at depth 17..235 (EIP-8024, Amsterdam+)
+        pub fn swapn(frame: *FrameType) FrameType.EvmError!void {
+            const evm = frame.getEvm();
+            if (!hardfork_hooks.supportsAmsterdam(evm.hardfork)) return error.InvalidOpcode;
+
+            const imm = readEip8024Immediate(frame);
+            const n = hardfork_hooks.eip8024.decodeSingle(imm) orelse return error.InvalidOpcode;
+
+            try charge(frame, GasConstants.GasFastestStep);
+            if (frame.stack.items.len <= n) return error.StackUnderflow;
+            const top_idx = frame.stack.items.len - 1;
+            const swap_idx = top_idx - n;
+            const temp = frame.stack.items[top_idx];
+            frame.stack.items[top_idx] = frame.stack.items[swap_idx];
+            frame.stack.items[swap_idx] = temp;
+            frame.pc += 2;
+        }
+
+        /// EXCHANGE opcode (0xe8) - Swap two arbitrary stack items (EIP-8024, Amsterdam+)
+        pub fn exchange(frame: *FrameType) FrameType.EvmError!void {
+            const evm = frame.getEvm();
+            if (!hardfork_hooks.supportsAmsterdam(evm.hardfork)) return error.InvalidOpcode;
+
+            const imm = readEip8024Immediate(frame);
+            const pair = hardfork_hooks.eip8024.decodePair(imm) orelse return error.InvalidOpcode;
+
+            try charge(frame, GasConstants.GasFastestStep);
+            if (frame.stack.items.len <= pair.m) return error.StackUnderflow;
+            const top_idx = frame.stack.items.len - 1;
+            const idx_n = top_idx - pair.n;
+            const idx_m = top_idx - pair.m;
+            const temp = frame.stack.items[idx_n];
+            frame.stack.items[idx_n] = frame.stack.items[idx_m];
+            frame.stack.items[idx_m] = temp;
+            frame.pc += 2;
         }
     };
 }

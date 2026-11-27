@@ -10,6 +10,7 @@ const AccessList = primitives.AccessList.AccessList;
 const gas_constants = primitives.GasConstants;
 const Allocator = std.mem.Allocator;
 const evm_mod = @import("evm.zig");
+const hardfork_hooks = @import("hardfork_hooks.zig");
 
 /// Context for hashing StorageKey in hash maps
 const StorageKeyContext = struct {
@@ -61,26 +62,34 @@ pub const AccessListManager = struct {
         return evm_mod.isPrecompileAddress(addr, hf);
     }
 
-    /// Access an address and return gas cost (warm=100, cold=2600)
-    /// EIP-2929: First access is cold, subsequent accesses are warm
+    /// Access an address and return gas cost (Berlin..Osaka: warm=100, cold=2600;
+    /// Amsterdam EIP-8038: warm=100, cold=3000).
     pub fn access_address(self: *AccessListManager, addr: Address) !u64 {
-        if (self.isPrecompileWarm(addr)) return gas_constants.WarmStorageReadCost;
+        const schedule = if (self.precompile_hardfork) |hf|
+            hardfork_hooks.GasSchedule.forFork(hf)
+        else
+            &hardfork_hooks.GasSchedule.prague;
+        if (self.isPrecompileWarm(addr)) return schedule.warm_access;
         const entry = try self.warm_addresses.getOrPut(addr);
         return if (entry.found_existing)
-            gas_constants.WarmStorageReadCost
+            schedule.warm_access
         else
-            gas_constants.ColdAccountAccessCost;
+            schedule.cold_account_access;
     }
 
     /// Access a storage slot and return gas cost (warm=100, cold=2100)
     /// EIP-2929: First access is cold, subsequent accesses are warm
     pub fn access_storage_slot(self: *AccessListManager, addr: Address, slot: u256) !u64 {
+        const schedule = if (self.precompile_hardfork) |hf|
+            hardfork_hooks.GasSchedule.forFork(hf)
+        else
+            &hardfork_hooks.GasSchedule.prague;
         const key = StorageKey{ .address = addr.bytes, .slot = slot };
         const entry = try self.warm_storage_slots.getOrPut(key);
         return if (entry.found_existing)
-            gas_constants.WarmStorageReadCost
+            schedule.warm_access
         else
-            gas_constants.ColdSloadCost;
+            schedule.cold_storage_access;
     }
 
     /// Pre-warm multiple addresses (marks them as already accessed)
@@ -316,4 +325,17 @@ test "AccessListManager: snapshot and restore" {
     try std.testing.expect(!manager.is_address_warm(addr2));
     try std.testing.expect(!manager.is_address_warm(addr3));
     try std.testing.expect(!manager.is_storage_slot_warm(addr2, 99));
+}
+
+test "AccessListManager: Amsterdam EIP-8038 cold account access is 3000" {
+    const allocator = std.testing.allocator;
+    var manager = AccessListManager.init(allocator);
+    defer manager.deinit();
+    manager.precompile_hardfork = .AMSTERDAM;
+
+    const addr = Address{ .bytes = [_]u8{0x42} ** 20 };
+    try std.testing.expectEqual(@as(u64, 3000), try manager.access_address(addr));
+    try std.testing.expectEqual(@as(u64, 100), try manager.access_address(addr));
+    try std.testing.expectEqual(@as(u64, 2100), try manager.access_storage_slot(addr, 1));
+    try std.testing.expectEqual(@as(u64, 100), try manager.access_storage_slot(addr, 1));
 }
