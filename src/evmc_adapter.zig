@@ -202,21 +202,60 @@ pub const EvmcHostContext = opaque {};
 /// C-ABI EVMC v11/v12 host callback table (`struct evmc_host_interface`).
 pub const EvmcHostInterface = extern struct {
     account_exists: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress) callconv(.c) bool,
-    get_storage: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress, key: *const EvmcBytes32) callconv(.c) EvmcBytes32,
-    set_storage: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress, key: *const EvmcBytes32, value: *const EvmcBytes32) callconv(.c) EvmcStorageStatus,
+    get_storage: *const fn (
+        context: ?*EvmcHostContext,
+        address: *const EvmcAddress,
+        key: *const EvmcBytes32,
+    ) callconv(.c) EvmcBytes32,
+    set_storage: *const fn (
+        context: ?*EvmcHostContext,
+        address: *const EvmcAddress,
+        key: *const EvmcBytes32,
+        value: *const EvmcBytes32,
+    ) callconv(.c) EvmcStorageStatus,
     get_balance: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress) callconv(.c) EvmcUint256be,
     get_code_size: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress) callconv(.c) usize,
     get_code_hash: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress) callconv(.c) EvmcBytes32,
-    copy_code: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress, code_offset: usize, buffer_data: ?[*]u8, buffer_size: usize) callconv(.c) usize,
-    selfdestruct: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress, beneficiary: *const EvmcAddress) callconv(.c) bool,
+    copy_code: *const fn (
+        context: ?*EvmcHostContext,
+        address: *const EvmcAddress,
+        code_offset: usize,
+        buffer_data: ?[*]u8,
+        buffer_size: usize,
+    ) callconv(.c) usize,
+    selfdestruct: *const fn (
+        context: ?*EvmcHostContext,
+        address: *const EvmcAddress,
+        beneficiary: *const EvmcAddress,
+    ) callconv(.c) bool,
     call: *const fn (context: ?*EvmcHostContext, msg: *const EvmcMessage) callconv(.c) EvmcResult,
     get_tx_context: *const fn (context: ?*EvmcHostContext) callconv(.c) EvmcTxContext,
     get_block_hash: *const fn (context: ?*EvmcHostContext, number: i64) callconv(.c) EvmcBytes32,
-    emit_log: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress, data: ?[*]const u8, data_size: usize, topics: ?[*]const EvmcBytes32, topics_count: usize) callconv(.c) void,
+    emit_log: *const fn (
+        context: ?*EvmcHostContext,
+        address: *const EvmcAddress,
+        data: ?[*]const u8,
+        data_size: usize,
+        topics: ?[*]const EvmcBytes32,
+        topics_count: usize,
+    ) callconv(.c) void,
     access_account: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress) callconv(.c) EvmcAccessStatus,
-    access_storage: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress, key: *const EvmcBytes32) callconv(.c) EvmcAccessStatus,
-    get_transient_storage: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress, key: *const EvmcBytes32) callconv(.c) EvmcBytes32,
-    set_transient_storage: *const fn (context: ?*EvmcHostContext, address: *const EvmcAddress, key: *const EvmcBytes32, value: *const EvmcBytes32) callconv(.c) void,
+    access_storage: *const fn (
+        context: ?*EvmcHostContext,
+        address: *const EvmcAddress,
+        key: *const EvmcBytes32,
+    ) callconv(.c) EvmcAccessStatus,
+    get_transient_storage: *const fn (
+        context: ?*EvmcHostContext,
+        address: *const EvmcAddress,
+        key: *const EvmcBytes32,
+    ) callconv(.c) EvmcBytes32,
+    set_transient_storage: *const fn (
+        context: ?*EvmcHostContext,
+        address: *const EvmcAddress,
+        key: *const EvmcBytes32,
+        value: *const EvmcBytes32,
+    ) callconv(.c) void,
 };
 
 comptime {
@@ -226,37 +265,51 @@ comptime {
     if (@alignOf(EvmcBytes32) != 1) @compileError("EvmcBytes32 must have alignment 1");
 }
 
+const hardfork_to_evmc_mapping = .{
+    .{ "FRONTIER", EvmcRevision.frontier },
+    .{ "HOMESTEAD", EvmcRevision.homestead },
+    .{ "DAO", EvmcRevision.homestead },
+    .{ "TANGERINE_WHISTLE", EvmcRevision.tangerine_whistle },
+    .{ "SPURIOUS_DRAGON", EvmcRevision.spurious_dragon },
+    .{ "BYZANTIUM", EvmcRevision.byzantium },
+    .{ "CONSTANTINOPLE", EvmcRevision.constantinople },
+    .{ "PETERSBURG", EvmcRevision.petersburg },
+    .{ "ISTANBUL", EvmcRevision.istanbul },
+    .{ "MUIR_GLACIER", EvmcRevision.istanbul },
+    .{ "BERLIN", EvmcRevision.berlin },
+    .{ "LONDON", EvmcRevision.london },
+    .{ "ARROW_GLACIER", EvmcRevision.london },
+    .{ "GRAY_GLACIER", EvmcRevision.london },
+    .{ "MERGE", EvmcRevision.paris },
+    .{ "SHANGHAI", EvmcRevision.shanghai },
+    .{ "CANCUN", EvmcRevision.cancun },
+    .{ "PRAGUE", EvmcRevision.prague },
+    .{ "OSAKA", EvmcRevision.osaka },
+};
+
+comptime {
+    for (@typeInfo(Hardfork).@"enum".fields) |field| {
+        const fork: Hardfork = @enumFromInt(field.value);
+        if (@intFromEnum(fork) <= @intFromEnum(Hardfork.OSAKA)) {
+            var found = false;
+            for (hardfork_to_evmc_mapping) |entry| {
+                if (std.mem.eql(u8, field.name, entry[0])) found = true;
+            }
+            if (!found) @compileError("unmapped Hardfork variant <= OSAKA: " ++ field.name);
+        }
+    }
+}
+
 /// Converts a `guillotine-mini` / `voltaire` `Hardfork` into an `EvmcRevision`.
 /// Forks newer than Osaka (e.g. Amsterdam) map to `EVMC_EXPERIMENTAL`. The
 /// mapping is written without an exhaustive switch so newer Voltaire
 /// `Hardfork` variants compile without changes here.
 pub fn fromHardfork(hardfork: Hardfork) EvmcRevision {
     if (@intFromEnum(hardfork) > @intFromEnum(Hardfork.OSAKA)) return .experimental;
-    const mapping = .{
-        .{ "FRONTIER", EvmcRevision.frontier },
-        .{ "HOMESTEAD", EvmcRevision.homestead },
-        .{ "DAO", EvmcRevision.homestead },
-        .{ "TANGERINE_WHISTLE", EvmcRevision.tangerine_whistle },
-        .{ "SPURIOUS_DRAGON", EvmcRevision.spurious_dragon },
-        .{ "BYZANTIUM", EvmcRevision.byzantium },
-        .{ "CONSTANTINOPLE", EvmcRevision.constantinople },
-        .{ "PETERSBURG", EvmcRevision.petersburg },
-        .{ "ISTANBUL", EvmcRevision.istanbul },
-        .{ "MUIR_GLACIER", EvmcRevision.istanbul },
-        .{ "BERLIN", EvmcRevision.berlin },
-        .{ "LONDON", EvmcRevision.london },
-        .{ "ARROW_GLACIER", EvmcRevision.london },
-        .{ "GRAY_GLACIER", EvmcRevision.london },
-        .{ "MERGE", EvmcRevision.paris },
-        .{ "SHANGHAI", EvmcRevision.shanghai },
-        .{ "CANCUN", EvmcRevision.cancun },
-        .{ "PRAGUE", EvmcRevision.prague },
-        .{ "OSAKA", EvmcRevision.osaka },
-    };
-    inline for (mapping) |entry| {
+    inline for (hardfork_to_evmc_mapping) |entry| {
         if (@hasField(Hardfork, entry[0]) and hardfork == @field(Hardfork, entry[0])) return entry[1];
     }
-    unreachable;
+    return .experimental;
 }
 
 /// Converts an `EvmcRevision` into a `guillotine-mini` / `voltaire` `Hardfork`.
@@ -405,7 +458,11 @@ pub const EvmcHostBridge = struct {
         return self.host.accountExists(address.toAddress());
     }
 
-    fn getStorageCb(context: ?*EvmcHostContext, address: *const EvmcAddress, key: *const EvmcBytes32) callconv(.c) EvmcBytes32 {
+    fn getStorageCb(
+        context: ?*EvmcHostContext,
+        address: *const EvmcAddress,
+        key: *const EvmcBytes32,
+    ) callconv(.c) EvmcBytes32 {
         const self = fromContext(context);
         const addr = address.toAddress();
         const slot = key.toU256();

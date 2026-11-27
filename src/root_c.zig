@@ -8,6 +8,7 @@ const PrecompileOverride = evm_config_mod.PrecompileOverride;
 const PrecompileOutput = evm_config_mod.PrecompileOutput;
 const trace = @import("trace.zig");
 const tracers = @import("tracers.zig");
+const flamegraph = @import("flamegraph.zig");
 const inspector = @import("inspector.zig");
 
 // External JavaScript callback functions (provided as WASM imports)
@@ -125,7 +126,14 @@ export fn evm_free(ptr: ?[*]u8, len: usize) void {
 // Opaque handle for EVM instance
 const EvmHandle = opaque {};
 
-const TraceKind = enum { opcode, call, access_list };
+const TraceKind = enum {
+    opcode,
+    call,
+    access_list,
+    flamegraph_svg,
+    flamegraph_folded,
+    revert_json,
+};
 
 const AccessListEntry = primitives.AccessList.AccessListEntry;
 
@@ -168,12 +176,14 @@ const ExecutionContext = struct {
     trace_config: ?primitives.TraceConfig = null,
     call_tracer_options: ?tracers.CallTracer.Options = null,
     track_access_list: bool = false,
+    flamegraph_options: ?flamegraph.FlamegraphCollector.Options = null,
     tracer: ?trace.Tracer = null,
     call_tracer: ?tracers.CallTracer = null,
     access_list_tracker: ?tracers.AccessListInspector = null,
-    inspectors: [2]inspector.Inspector = undefined,
+    flamegraph_collector: ?flamegraph.FlamegraphCollector = null,
+    inspectors: [3]inspector.Inspector = undefined,
     mux: inspector.MuxInspector = undefined,
-    trace_json: [3]?[]const u8 = @splat(null),
+    trace_json: [@typeInfo(TraceKind).@"enum".fields.len]?[]const u8 = @splat(null),
     origin_overridden: bool = false,
 
     fn clearTracing(self: *ExecutionContext) void {
@@ -182,9 +192,11 @@ const ExecutionContext = struct {
         if (self.tracer) |*tracer| tracer.deinit();
         if (self.call_tracer) |*tracer| tracer.deinit();
         if (self.access_list_tracker) |*tracker| tracker.deinit();
+        if (self.flamegraph_collector) |*collector| collector.deinit();
         self.tracer = null;
         self.call_tracer = null;
         self.access_list_tracker = null;
+        self.flamegraph_collector = null;
         for (&self.trace_json) |*cached| {
             if (cached.*) |bytes| allocator.free(bytes);
             cached.* = null;
@@ -211,14 +223,16 @@ const ExecutionContext = struct {
             self.inspectors[count] = self.access_list_tracker.?.inspector();
             count += 1;
         }
-        switch (count) {
-            0 => {},
-            1 => self.evm.setInspector(self.inspectors[0]),
-            2 => {
-                self.mux = inspector.MuxInspector.init(self.inspectors[0..count]);
-                self.evm.setInspector(self.mux.inspector());
-            },
-            else => unreachable,
+        if (self.flamegraph_options) |options| {
+            self.flamegraph_collector = flamegraph.FlamegraphCollector.init(allocator, options);
+            self.inspectors[count] = self.flamegraph_collector.?.inspector();
+            count += 1;
+        }
+        if (count == 1) {
+            self.evm.setInspector(self.inspectors[0]);
+        } else if (count > 1) {
+            self.mux = inspector.MuxInspector.init(self.inspectors[0..count]);
+            self.evm.setInspector(self.mux.inspector());
         }
     }
 
@@ -247,11 +261,104 @@ const ExecutionContext = struct {
                 const tracker = if (self.access_list_tracker) |*value| value else return &.{};
                 tracker.writeJson(&writer.writer) catch return &.{};
             },
+            .flamegraph_svg => {
+                const fg = if (self.flamegraph_collector) |*value| value else return &.{};
+                fg.writeSvg(&writer.writer, "EVM Gas Flamegraph", true) catch return &.{};
+            },
+            .flamegraph_folded => {
+                const fg = if (self.flamegraph_collector) |*value| value else return &.{};
+                fg.writeFoldedStacks(&writer.writer, true) catch return &.{};
+            },
+            .revert_json => {
+                if (result.success) return &.{};
+                writeDecodedRevertJson(&writer.writer, result) catch return &.{};
+            },
         }
         cached.* = writer.toOwnedSlice() catch return &.{};
         return cached.*.?;
     }
 };
+
+fn formatU256HexBuf(buf: *[66]u8, value: u256) []const u8 {
+    const hex = "0123456789abcdef";
+    buf[0] = '0';
+    buf[1] = 'x';
+    if (value == 0) {
+        buf[2] = '0';
+        return buf[0..3];
+    }
+    var digits: [64]u8 = undefined;
+    var count: usize = 0;
+    var v = value;
+    while (v != 0) : (v >>= 4) {
+        digits[count] = hex[@as(usize, @intCast(v & 0xf))];
+        count += 1;
+    }
+    var idx: usize = 2;
+    var i = count;
+    while (i > 0) {
+        i -= 1;
+        buf[idx] = digits[i];
+        idx += 1;
+    }
+    return buf[0..idx];
+}
+
+fn writeHexQuoted(writer: *std.Io.Writer, bytes: []const u8) !void {
+    const hex = "0123456789abcdef";
+    try writer.writeAll("\"0x");
+    for (bytes) |b| {
+        try writer.writeByte(hex[b >> 4]);
+        try writer.writeByte(hex[b & 0x0f]);
+    }
+    try writer.writeByte('"');
+}
+
+fn writeDecodedRevertJson(writer: *std.Io.Writer, result: CallResult) !void {
+    try writer.writeByte('{');
+    if (inspector.RevertDecoder.decode(result.output)) |decoded| {
+        switch (decoded) {
+            .reason => |reason| {
+                try writer.writeAll("\"kind\":\"error\",\"selector\":\"0x08c379a0\",\"reason\":");
+                try tracers.writeJsonString(writer, reason);
+            },
+            .panic => |panic| {
+                var code_buf: [66]u8 = undefined;
+                const code_hex = formatU256HexBuf(&code_buf, panic.code);
+                try writer.writeAll("\"kind\":\"panic\",\"selector\":\"0x4e487b71\",\"code\":\"");
+                try writer.writeAll(code_hex);
+                try writer.writeByte('"');
+                if (panic.description) |desc| {
+                    try writer.writeAll(",\"description\":");
+                    try tracers.writeJsonString(writer, desc);
+                    try writer.writeAll(",\"reason\":\"panic ");
+                    try writer.writeAll(code_hex);
+                    try writer.writeAll(": ");
+                    try writer.writeAll(desc);
+                    try writer.writeByte('"');
+                } else {
+                    try writer.writeAll(",\"reason\":\"panic ");
+                    try writer.writeAll(code_hex);
+                    try writer.writeByte('"');
+                }
+            },
+        }
+    } else if (result.output.len >= 4) {
+        try writer.writeAll("\"kind\":\"custom\",\"selector\":");
+        try writeHexQuoted(writer, result.output[0..4]);
+    } else if (result.output.len > 0) {
+        try writer.writeAll("\"kind\":\"raw\"");
+    } else {
+        try writer.writeAll("\"kind\":\"halt\"");
+    }
+    if (Evm.resultErrorName(result)) |err_name| {
+        try writer.writeAll(",\"error\":");
+        try tracers.writeJsonString(writer, err_name);
+    }
+    try writer.writeAll(",\"raw\":");
+    try writeHexQuoted(writer, result.output);
+    try writer.writeByte('}');
+}
 
 /// Context for an operation that mutates the handle or starts execution:
 /// null for a null handle or while the handle is executing.
@@ -337,7 +444,13 @@ fn copyBytes(bytes: []const u8, buffer: ?[*]u8, buffer_len: usize) usize {
 }
 
 /// Configure EIP-3155 opcode tracing for subsequent executions.
-export fn evm_enable_tracing(handle: ?*EvmHandle, enable_memory: bool, disable_stack: bool, disable_storage: bool, enable_return_data: bool) void {
+export fn evm_enable_tracing(
+    handle: ?*EvmHandle,
+    enable_memory: bool,
+    disable_stack: bool,
+    disable_storage: bool,
+    enable_return_data: bool,
+) void {
     const ctx = environmentContextOf(handle) orelse return;
     ctx.trace_config = primitives.TraceConfig.from();
     ctx.trace_config.?.enable_memory = enable_memory;
@@ -393,6 +506,49 @@ export fn evm_get_access_list_json_len(handle: ?*EvmHandle) usize {
 export fn evm_get_access_list_json(handle: ?*EvmHandle, buffer: ?[*]u8, buffer_len: usize) usize {
     const ctx = contextOf(handle) orelse return 0;
     return copyBytes(ctx.tracePayload(.access_list), buffer, buffer_len);
+}
+
+/// Enable gas flamegraph profiling for subsequent executions.
+pub export fn evm_enable_flamegraph(handle: ?*EvmHandle, compact_addresses: bool) bool {
+    const ctx = environmentContextOf(handle) orelse return false;
+    ctx.flamegraph_options = .{ .compact_addresses = compact_addresses };
+    return true;
+}
+
+/// Get the byte length of the last execution's interactive SVG gas flamegraph.
+pub export fn evm_get_flamegraph_svg_len(handle: ?*EvmHandle) usize {
+    const ctx = contextOf(handle) orelse return 0;
+    return ctx.tracePayload(.flamegraph_svg).len;
+}
+
+/// Copy the last execution's SVG gas flamegraph into `buffer`.
+pub export fn evm_get_flamegraph_svg(handle: ?*EvmHandle, buffer: ?[*]u8, buffer_len: usize) usize {
+    const ctx = contextOf(handle) orelse return 0;
+    return copyBytes(ctx.tracePayload(.flamegraph_svg), buffer, buffer_len);
+}
+
+/// Get the byte length of the last execution's collapsed-stack flamegraph text.
+pub export fn evm_get_flamegraph_folded_len(handle: ?*EvmHandle) usize {
+    const ctx = contextOf(handle) orelse return 0;
+    return ctx.tracePayload(.flamegraph_folded).len;
+}
+
+/// Copy the last execution's collapsed-stack flamegraph text into `buffer`.
+pub export fn evm_get_flamegraph_folded(handle: ?*EvmHandle, buffer: ?[*]u8, buffer_len: usize) usize {
+    const ctx = contextOf(handle) orelse return 0;
+    return copyBytes(ctx.tracePayload(.flamegraph_folded), buffer, buffer_len);
+}
+
+/// Get the byte length of the last failed execution's decoded revert JSON (0 on success).
+pub export fn evm_decode_revert_json_len(handle: ?*EvmHandle) usize {
+    const ctx = contextOf(handle) orelse return 0;
+    return ctx.tracePayload(.revert_json).len;
+}
+
+/// Copy the last failed execution's decoded revert JSON into `buffer`.
+pub export fn evm_decode_revert_json(handle: ?*EvmHandle, buffer: ?[*]u8, buffer_len: usize) usize {
+    const ctx = contextOf(handle) orelse return 0;
+    return copyBytes(ctx.tracePayload(.revert_json), buffer, buffer_len);
 }
 
 /// Create a new Evm instance with optional hardfork name (null/empty = default from config)
@@ -769,7 +925,11 @@ fn executeSync(ctx: *ExecutionContext) bool {
     if (ctx.gas < 0) return false;
 
     ctx.prepareExecution();
-    const access_list = buildAccessList(allocator, ctx.access_list_addresses, ctx.access_list_storage_keys) catch return false;
+    const access_list = buildAccessList(
+        allocator,
+        ctx.access_list_addresses,
+        ctx.access_list_storage_keys,
+    ) catch return false;
     defer freeAccessList(allocator, access_list);
     // The EVM only borrows the list. Drop its reference before the list is
     // freed so no later call can read a dangling pending_access_list.
@@ -1374,7 +1534,8 @@ fn testHandle() !*EvmHandle {
 
 fn testSetCall(handle: *EvmHandle, code: []const u8, gas: i64) !void {
     try testing.expect(evm_set_bytecode(handle, code.ptr, code.len));
-    try testing.expect(evm_set_execution_context(handle, gas, &test_zero_address, &test_target, &test_zero_word, null, 0));
+    const ok = evm_set_execution_context(handle, gas, &test_zero_address, &test_target, &test_zero_word, null, 0);
+    try testing.expect(ok);
 }
 
 fn testOutput(handle: *EvmHandle, buffer: []u8) []u8 {
@@ -2204,12 +2365,172 @@ test "destroy releases FFI pre-state, inspectors, and cached JSON" {
         evm_enable_tracing(handle, true, false, false, true);
         evm_enable_call_tracer(handle, false, true);
         evm_enable_access_list_tracker(handle);
+        try testing.expect(evm_enable_flamegraph(handle, true));
         for (0..2) |_| {
             try testing.expect(evm_execute(handle));
             try testing.expect(evm_get_trace_json_len(handle) > 0);
             try testing.expect(evm_get_call_trace_json_len(handle) > 0);
             try testing.expect(evm_get_access_list_json_len(handle) > 0);
+            try testing.expect(evm_get_flamegraph_svg_len(handle) > 0);
+            try testing.expect(evm_get_flamegraph_folded_len(handle) > 0);
+            try testing.expectEqual(@as(usize, 0), evm_decode_revert_json_len(handle));
         }
+    }
+    try testing.expect(!gpa.detectLeaks());
+}
+
+test "C ABI - flamegraph SVG and folded stacks export cleanly with zero leaks" {
+    try testing.expect(!evm_enable_flamegraph(null, false));
+    try testing.expectEqual(@as(usize, 0), evm_get_flamegraph_svg_len(null));
+    try testing.expectEqual(@as(usize, 0), evm_get_flamegraph_svg(null, null, 0));
+    try testing.expectEqual(@as(usize, 0), evm_get_flamegraph_folded_len(null));
+    try testing.expectEqual(@as(usize, 0), evm_get_flamegraph_folded(null, null, 0));
+
+    const handle = evm_create("osaka", "osaka".len, 0) orelse return error.OutOfMemory;
+    {
+        defer evm_destroy(handle);
+        const callee = [_]u8{0} ** 18 ++ [_]u8{ 0x02, 0x02 };
+        // Callee: SLOAD(1); POP; SSTORE(2, 7); STOP
+        const callee_code = [_]u8{ 0x60, 0x01, 0x54, 0x50, 0x60, 0x07, 0x60, 0x02, 0x55, 0x00 };
+        try testing.expect(evm_set_code(handle, &callee, &callee_code, callee_code.len));
+
+        // Caller: CALL(gas=0xffff, to=0x0202, value=0, 0, 0, 0, 0); POP; STOP
+        const caller_code = [_]u8{
+            0x5f, 0x5f, 0x5f, 0x5f, 0x5f, 0x61, 0x02, 0x02, 0x61, 0xff, 0xff, 0xf1, 0x50, 0x00,
+        };
+        try testSetCall(handle, &caller_code, 200_000);
+        evm_enable_call_tracer(handle, false, false);
+        evm_enable_access_list_tracker(handle);
+        try testing.expect(evm_enable_flamegraph(handle, true));
+        try testing.expect(evm_execute(handle));
+
+        const svg_len = evm_get_flamegraph_svg_len(handle);
+        try testing.expect(svg_len > 100);
+        const svg_buf = try testing.allocator.alloc(u8, svg_len);
+        defer testing.allocator.free(svg_buf);
+        try testing.expectEqual(svg_len, evm_get_flamegraph_svg(handle, svg_buf.ptr, svg_buf.len));
+        try testing.expect(std.mem.startsWith(u8, svg_buf, "<svg "));
+        try testing.expect(std.mem.endsWith(u8, svg_buf, "</svg>\n"));
+        try testing.expect(std.mem.indexOf(u8, svg_buf, "0x0000..0202") != null);
+        try testing.expect(std.mem.indexOf(u8, svg_buf, "SSTORE") != null);
+
+        const folded_len = evm_get_flamegraph_folded_len(handle);
+        try testing.expect(folded_len > 0);
+        const folded_buf = try testing.allocator.alloc(u8, folded_len);
+        defer testing.allocator.free(folded_buf);
+        try testing.expectEqual(folded_len, evm_get_flamegraph_folded(handle, folded_buf.ptr, folded_buf.len));
+        try testing.expect(std.mem.indexOf(u8, folded_buf, "CALL:0x0000..0200;CALL:0x0000..0202;SLOAD ") != null);
+        try testing.expect(std.mem.indexOf(u8, folded_buf, "CALL:0x0000..0200;CALL:0x0000..0202;SSTORE ") != null);
+
+        // Switching to full addresses updates subsequent runs cleanly.
+        try testing.expect(evm_enable_flamegraph(handle, false));
+        try testing.expect(evm_execute(handle));
+        const full_len = evm_get_flamegraph_folded_len(handle);
+        const full_buf = try testing.allocator.alloc(u8, full_len);
+        defer testing.allocator.free(full_buf);
+        try testing.expectEqual(full_len, evm_get_flamegraph_folded(handle, full_buf.ptr, full_buf.len));
+        try testing.expect(std.mem.indexOf(u8, full_buf, "0x0000000000000000000000000000000000000202") != null);
+    }
+    try testing.expect(!gpa.detectLeaks());
+}
+
+test "C ABI - evm_decode_revert_json decodes Error(string), Panic, custom errors, and halts with zero leaks" {
+    try testing.expectEqual(@as(usize, 0), evm_decode_revert_json_len(null));
+    try testing.expectEqual(@as(usize, 0), evm_decode_revert_json(null, null, 0));
+
+    const handle = evm_create("osaka", "osaka".len, 0) orelse return error.OutOfMemory;
+    {
+        defer evm_destroy(handle);
+
+        // Helper bytecode: CALLDATACOPY(0, 0, CALLDATASIZE); REVERT(0, CALLDATASIZE)
+        const revert_calldata = [_]u8{ 0x36, 0x5f, 0x5f, 0x37, 0x36, 0x5f, 0xfd };
+        try testing.expect(evm_set_bytecode(handle, &revert_calldata, revert_calldata.len));
+
+        // 1. Solidity Error("boom")
+        var err_payload = [_]u8{0} ** 100;
+        @memcpy(err_payload[0..4], &[_]u8{ 0x08, 0xc3, 0x79, 0xa0 });
+        err_payload[35] = 32;
+        err_payload[67] = 4;
+        @memcpy(err_payload[68..72], "boom");
+        try testing.expect(evm_set_execution_context(
+            handle,
+            100_000,
+            &test_zero_address,
+            &test_target,
+            &test_zero_word,
+            &err_payload,
+            err_payload.len,
+        ));
+        try testing.expect(!evm_execute(handle));
+        var json_buf: [512]u8 = undefined;
+        const err_len = evm_decode_revert_json_len(handle);
+        try testing.expect(err_len > 0 and err_len <= json_buf.len);
+        try testing.expectEqual(err_len, evm_decode_revert_json(handle, &json_buf, json_buf.len));
+        const parsed_err = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_buf[0..err_len], .{});
+        defer parsed_err.deinit();
+        try testing.expectEqualStrings("error", parsed_err.value.object.get("kind").?.string);
+        try testing.expectEqualStrings("0x08c379a0", parsed_err.value.object.get("selector").?.string);
+        try testing.expectEqualStrings("boom", parsed_err.value.object.get("reason").?.string);
+
+        // 2. Solidity Panic(0x11) -> arithmetic underflow or overflow
+        var panic_payload = [_]u8{0} ** 36;
+        @memcpy(panic_payload[0..4], &[_]u8{ 0x4e, 0x48, 0x7b, 0x71 });
+        panic_payload[35] = 0x11;
+        try testing.expect(evm_set_execution_context(
+            handle,
+            100_000,
+            &test_zero_address,
+            &test_target,
+            &test_zero_word,
+            &panic_payload,
+            panic_payload.len,
+        ));
+        try testing.expect(!evm_execute(handle));
+        const panic_len = evm_decode_revert_json_len(handle);
+        try testing.expectEqual(panic_len, evm_decode_revert_json(handle, &json_buf, json_buf.len));
+        const parsed_panic = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_buf[0..panic_len], .{});
+        defer parsed_panic.deinit();
+        try testing.expectEqualStrings("panic", parsed_panic.value.object.get("kind").?.string);
+        try testing.expectEqualStrings("0x11", parsed_panic.value.object.get("code").?.string);
+        try testing.expectEqualStrings(
+            "arithmetic underflow or overflow",
+            parsed_panic.value.object.get("description").?.string,
+        );
+
+        // 3. Custom 4-byte error (0xdeadbeef)
+        const custom_payload = [_]u8{ 0xde, 0xad, 0xbe, 0xef, 0x01 };
+        try testing.expect(evm_set_execution_context(
+            handle,
+            100_000,
+            &test_zero_address,
+            &test_target,
+            &test_zero_word,
+            &custom_payload,
+            custom_payload.len,
+        ));
+        try testing.expect(!evm_execute(handle));
+        const custom_len = evm_decode_revert_json_len(handle);
+        try testing.expectEqual(custom_len, evm_decode_revert_json(handle, &json_buf, json_buf.len));
+        const parsed_custom = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_buf[0..custom_len], .{});
+        defer parsed_custom.deinit();
+        try testing.expectEqualStrings("custom", parsed_custom.value.object.get("kind").?.string);
+        try testing.expectEqualStrings("0xdeadbeef", parsed_custom.value.object.get("selector").?.string);
+        try testing.expectEqualStrings("0xdeadbeef01", parsed_custom.value.object.get("raw").?.string);
+
+        // 4. Exceptional halt (INVALID)
+        try testSetCall(handle, &[_]u8{0xfe}, 50_000);
+        try testing.expect(!evm_execute(handle));
+        const halt_len = evm_decode_revert_json_len(handle);
+        try testing.expectEqual(halt_len, evm_decode_revert_json(handle, &json_buf, json_buf.len));
+        const parsed_halt = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_buf[0..halt_len], .{});
+        defer parsed_halt.deinit();
+        try testing.expectEqualStrings("halt", parsed_halt.value.object.get("kind").?.string);
+        try testing.expectEqualStrings("invalid opcode", parsed_halt.value.object.get("error").?.string);
+
+        // 5. Success returns length 0
+        try testSetCall(handle, &[_]u8{0x00}, 50_000);
+        try testing.expect(evm_execute(handle));
+        try testing.expectEqual(@as(usize, 0), evm_decode_revert_json_len(handle));
     }
     try testing.expect(!gpa.detectLeaks());
 }

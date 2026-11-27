@@ -155,13 +155,24 @@ fn wordBytes(value: u256) [32]u8 {
     return out;
 }
 
+fn formatHexLower(dst: []u8, bytes: []const u8) []const u8 {
+    const hex = "0123456789abcdef";
+    dst[0] = '0';
+    dst[1] = 'x';
+    for (bytes, 0..) |b, i| {
+        dst[2 + i * 2] = hex[b >> 4];
+        dst[3 + i * 2] = hex[b & 0x0f];
+    }
+    return dst[0 .. 2 + bytes.len * 2];
+}
+
 fn addressKey(buf: *[42]u8, address: Address) []const u8 {
-    return std.fmt.bufPrint(buf, "0x{x}", .{@as([]const u8, &address.bytes)}) catch unreachable;
+    return formatHexLower(buf, &address.bytes);
 }
 
 fn wordKey(buf: *[66]u8, value: u256) []const u8 {
     const bytes = wordBytes(value);
-    return std.fmt.bufPrint(buf, "0x{x}", .{@as([]const u8, &bytes)}) catch unreachable;
+    return formatHexLower(buf, &bytes);
 }
 
 fn addressLessThan(_: void, a: Address, b: Address) bool {
@@ -337,7 +348,12 @@ pub const CallTracer = struct {
         const topics = try self.allocator.dupe([32]u8, event.topics);
         errdefer self.allocator.free(topics);
         const data = try self.allocator.dupe(u8, event.data);
-        frame.logs.appendAssumeCapacity(.{ .address = event.address, .topics = topics, .data = data, .position = frame.calls.items.len });
+        frame.logs.appendAssumeCapacity(.{
+            .address = event.address,
+            .topics = topics,
+            .data = data,
+            .position = frame.calls.items.len,
+        });
     }
 
     fn selfDestruct(self: *CallTracer, event: insp.SelfDestructEvent) !void {
@@ -368,7 +384,12 @@ pub const CallTracer = struct {
         }
     }
 
-    fn writeGethFrame(self: *const CallTracer, writer: *std.Io.Writer, frame: *const CallFrame, ancestor_reverted: bool) !void {
+    fn writeGethFrame(
+        self: *const CallTracer,
+        writer: *std.Io.Writer,
+        frame: *const CallFrame,
+        ancestor_reverted: bool,
+    ) !void {
         const rolled_back = ancestor_reverted or frame.reverted;
         var obj = try JsonObject.begin(writer);
         try obj.string("type", callTypeUpper(frame.call_type));
@@ -431,15 +452,7 @@ pub const CallTracer = struct {
         return !frame.is_precompile;
     }
 
-    fn writeFlatFrame(self: *const CallTracer, writer: *std.Io.Writer, frame: *const CallFrame, trace_address: *std.ArrayList(usize), first: *bool) !void {
-        var subtraces: usize = 0;
-        for (frame.calls.items) |child| {
-            if (visibleInFlat(child)) subtraces += 1;
-        }
-        if (!first.*) try writer.writeByte(',');
-        first.* = false;
-        var obj = try JsonObject.begin(writer);
-        try obj.key("action");
+    fn writeFlatAction(writer: *std.Io.Writer, frame: *const CallFrame) !void {
         var action = try JsonObject.begin(writer);
         switch (frame.call_type) {
             .create, .create2 => {
@@ -469,6 +482,9 @@ pub const CallTracer = struct {
             },
         }
         try action.end();
+    }
+
+    fn writeFlatResult(obj: *JsonObject, writer: *std.Io.Writer, frame: *const CallFrame) !void {
         if (frame.call_type == .selfdestruct) {
             try obj.key("result");
             try writer.writeAll("null");
@@ -487,6 +503,25 @@ pub const CallTracer = struct {
             }
             try result.end();
         }
+    }
+
+    fn writeFlatFrame(
+        self: *const CallTracer,
+        writer: *std.Io.Writer,
+        frame: *const CallFrame,
+        trace_address: *std.ArrayList(usize),
+        first: *bool,
+    ) !void {
+        var subtraces: usize = 0;
+        for (frame.calls.items) |child| {
+            if (visibleInFlat(child)) subtraces += 1;
+        }
+        if (!first.*) try writer.writeByte(',');
+        first.* = false;
+        var obj = try JsonObject.begin(writer);
+        try obj.key("action");
+        try writeFlatAction(writer, frame);
+        try writeFlatResult(&obj, writer, frame);
         try obj.key("subtraces");
         try writer.print("{d}", .{subtraces});
         try obj.key("traceAddress");
@@ -564,7 +599,8 @@ pub const FourByteTracer = struct {
             else => return,
         }
         if (event.is_precompile or event.input.len < 4) return;
-        const entry = try self.counts.getOrPut(self.allocator, .{ .selector = event.input[0..4].*, .arg_size = event.input.len - 4 });
+        const key: Key = .{ .selector = event.input[0..4].*, .arg_size = event.input.len - 4 };
+        const entry = try self.counts.getOrPut(self.allocator, key);
         if (!entry.found_existing) entry.value_ptr.* = 0;
         entry.value_ptr.* += 1;
     }
@@ -593,7 +629,8 @@ pub const FourByteTracer = struct {
         try json.beginObject();
         for (keys) |key| {
             var buf: [48]u8 = undefined;
-            try json.objectField(try std.fmt.bufPrint(&buf, "0x{x}-{d}", .{ @as([]const u8, &key.selector), key.arg_size }));
+            const sel: []const u8 = &key.selector;
+            try json.objectField(try std.fmt.bufPrint(&buf, "0x{x}-{d}", .{ sel, key.arg_size }));
             try json.write(self.counts.get(key).?);
         }
         try json.endObject();
@@ -711,7 +748,11 @@ pub const PrestateTracer = struct {
         if (isCreate(event.call_type)) {
             try self.reserveUndo();
             const acct = try self.touch(event.to);
-            if (self.inFrame()) self.undo_log.appendAssumeCapacity(.{ .created = .{ .address = event.to, .prev = acct.created } });
+            if (self.inFrame()) {
+                self.undo_log.appendAssumeCapacity(.{
+                    .created = .{ .address = event.to, .prev = acct.created },
+                });
+            }
             acct.created = true;
             return;
         }
@@ -770,7 +811,11 @@ pub const PrestateTracer = struct {
         try self.reserveUndo();
         const acct = try self.touch(event.address);
         if (acct.pre.balance == null) acct.pre.balance = event.prev_balance;
-        if (self.inFrame()) self.undo_log.appendAssumeCapacity(.{ .balance = .{ .address = event.address, .prev = acct.post.balance } });
+        if (self.inFrame()) {
+            self.undo_log.appendAssumeCapacity(.{
+                .balance = .{ .address = event.address, .prev = acct.post.balance },
+            });
+        }
         acct.post.balance = event.new_balance;
     }
 
@@ -778,7 +823,11 @@ pub const PrestateTracer = struct {
         try self.reserveUndo();
         const acct = try self.touch(event.address);
         if (acct.pre.nonce == null) acct.pre.nonce = event.prev_nonce;
-        if (self.inFrame()) self.undo_log.appendAssumeCapacity(.{ .nonce = .{ .address = event.address, .prev = acct.post.nonce } });
+        if (self.inFrame()) {
+            self.undo_log.appendAssumeCapacity(.{
+                .nonce = .{ .address = event.address, .prev = acct.post.nonce },
+            });
+        }
         acct.post.nonce = event.new_nonce;
     }
 
@@ -789,7 +838,9 @@ pub const PrestateTracer = struct {
         }
         try self.reserveUndo();
         const acct = try self.touch(event.address);
-        if (acct.pre.code == null and acct.post.code == null) acct.pre.code = try self.allocator.dupe(u8, event.prev_code);
+        if (acct.pre.code == null and acct.post.code == null) {
+            acct.pre.code = try self.allocator.dupe(u8, event.prev_code);
+        }
         const copy = try self.allocator.dupe(u8, event.new_code);
         if (self.inFrame()) {
             self.undo_log.appendAssumeCapacity(.{ .code = .{ .address = event.address, .prev = acct.post.code } });
@@ -808,7 +859,11 @@ pub const PrestateTracer = struct {
         try self.reserveUndo();
         const post = try acct.post.storage.getOrPut(self.allocator, event.slot);
         const prev: ?u256 = if (post.found_existing) post.value_ptr.* else null;
-        if (self.inFrame()) self.undo_log.appendAssumeCapacity(.{ .storage = .{ .address = event.address, .slot = event.slot, .prev = prev } });
+        if (self.inFrame()) {
+            self.undo_log.appendAssumeCapacity(.{
+                .storage = .{ .address = event.address, .slot = event.slot, .prev = prev },
+            });
+        }
         post.value_ptr.* = event.new_value;
     }
 
@@ -816,7 +871,11 @@ pub const PrestateTracer = struct {
         _ = try self.touch(event.beneficiary);
         try self.reserveUndo();
         const acct = try self.touch(event.address);
-        if (self.inFrame()) self.undo_log.appendAssumeCapacity(.{ .selfdestructed = .{ .address = event.address, .prev = acct.selfdestructed } });
+        if (self.inFrame()) {
+            self.undo_log.appendAssumeCapacity(.{
+                .selfdestructed = .{ .address = event.address, .prev = acct.selfdestructed },
+            });
+        }
         acct.selfdestructed = true;
     }
 
@@ -943,7 +1002,8 @@ pub const PrestateTracer = struct {
                 if (self.storageChanged(acct)) {
                     var it = acct.post.storage.iterator();
                     while (it.next()) |entry| {
-                        if (entry.value_ptr.* != 0 and slotChanged(acct, entry.key_ptr.*, entry.value_ptr.*)) fields.storage = true;
+                        const val = entry.value_ptr.*;
+                        if (val != 0 and slotChanged(acct, entry.key_ptr.*, val)) fields.storage = true;
                     }
                 }
                 if (!(fields.balance or fields.nonce or fields.code or fields.storage)) return null;
@@ -952,7 +1012,13 @@ pub const PrestateTracer = struct {
         }
     }
 
-    fn writeAccount(self: *const PrestateTracer, json: *Stringify, acct: *const Account, section: Section, fields: Fields) !void {
+    fn writeAccount(
+        self: *const PrestateTracer,
+        json: *Stringify,
+        acct: *const Account,
+        section: Section,
+        fields: Fields,
+    ) !void {
         const state = if (section == .diff_post) &acct.post else &acct.pre;
         try json.beginObject();
         if (fields.balance) try writeQuantityField(json, "balance", state.balance orelse 0);
@@ -972,7 +1038,11 @@ pub const PrestateTracer = struct {
                 const value = state.storage.get(slot).?;
                 const include = switch (section) {
                     .prestate => true,
-                    .diff_pre => isDeleted(acct) or (acct.post.storage.get(slot) != null and slotChanged(acct, slot, acct.post.storage.get(slot).?)),
+                    .diff_pre => blk: {
+                        if (isDeleted(acct)) break :blk true;
+                        const post_val = acct.post.storage.get(slot) orelse break :blk false;
+                        break :blk slotChanged(acct, slot, post_val);
+                    },
                     .diff_post => value != 0 and slotChanged(acct, slot, value),
                 };
                 if (!include) continue;
@@ -1408,7 +1478,8 @@ pub const CoverageInspector = struct {
         const frame = self.current(event.frame_id) orelse return error.UnknownFrame;
         const hash = frame.code_hash;
         if (frame.last_pc) |from| {
-            const edge = try self.edges.getOrPut(self.allocator, .{ .code_hash = hash, .from_pc = from, .to_pc = event.pc });
+            const edge_key: EdgeKey = .{ .code_hash = hash, .from_pc = from, .to_pc = event.pc };
+            const edge = try self.edges.getOrPut(self.allocator, edge_key);
             if (!edge.found_existing) edge.value_ptr.* = 0;
             edge.value_ptr.* += 1;
         }
@@ -1458,6 +1529,55 @@ pub const CoverageInspector = struct {
         return a.to_pc < b.to_pc;
     }
 
+    fn writeCodeCoverage(
+        self: *const CoverageInspector,
+        json: *Stringify,
+        hash: [32]u8,
+        pcs: []const u64,
+        edges: []const EdgeKey,
+        jumpi_pcs: []const u64,
+    ) !void {
+        var hash_key: [66]u8 = undefined;
+        try json.objectField(formatHexLower(&hash_key, &hash));
+        try json.beginObject();
+        try json.objectField("pcs");
+        try json.beginObject();
+        for (pcs) |pc| {
+            var buf: [24]u8 = undefined;
+            try json.objectField(try std.fmt.bufPrint(&buf, "{d}", .{pc}));
+            try json.write(self.pcHits(hash, pc));
+        }
+        try json.endObject();
+        try json.objectField("edges");
+        try json.beginArray();
+        for (edges) |edge| {
+            try json.beginObject();
+            try json.objectField("from");
+            try json.write(edge.from_pc);
+            try json.objectField("to");
+            try json.write(edge.to_pc);
+            try json.objectField("count");
+            try json.write(self.edges.get(edge).?);
+            try json.endObject();
+        }
+        try json.endArray();
+        try json.objectField("jumpis");
+        try json.beginObject();
+        for (jumpi_pcs) |pc| {
+            const branch = self.jumpiStats(hash, pc).?;
+            var buf: [24]u8 = undefined;
+            try json.objectField(try std.fmt.bufPrint(&buf, "{d}", .{pc}));
+            try json.beginObject();
+            try json.objectField("taken");
+            try json.write(branch.taken);
+            try json.objectField("notTaken");
+            try json.write(branch.not_taken);
+            try json.endObject();
+        }
+        try json.endObject();
+        try json.endObject();
+    }
+
     /// `{codeHash: {"pcs": {pc: hits}, "edges": [{from,to,count}], "jumpis": {pc: {taken, notTaken}}}}`.
     pub fn writeJson(self: *const CoverageInspector, writer: *std.Io.Writer) !void {
         if (self.err) |e| return e;
@@ -1479,54 +1599,21 @@ pub const CoverageInspector = struct {
             jumpi_pcs.clearRetainingCapacity();
             edges.clearRetainingCapacity();
             var pc_it = self.pc_hits.keyIterator();
-            while (pc_it.next()) |key| if (std.mem.eql(u8, &key.code_hash, &hash)) try pcs.append(self.allocator, key.pc);
+            while (pc_it.next()) |key| {
+                if (std.mem.eql(u8, &key.code_hash, &hash)) try pcs.append(self.allocator, key.pc);
+            }
             var jumpi_it = self.jumpis.keyIterator();
-            while (jumpi_it.next()) |key| if (std.mem.eql(u8, &key.code_hash, &hash)) try jumpi_pcs.append(self.allocator, key.pc);
+            while (jumpi_it.next()) |key| {
+                if (std.mem.eql(u8, &key.code_hash, &hash)) try jumpi_pcs.append(self.allocator, key.pc);
+            }
             var edge_it = self.edges.keyIterator();
-            while (edge_it.next()) |key| if (std.mem.eql(u8, &key.code_hash, &hash)) try edges.append(self.allocator, key.*);
+            while (edge_it.next()) |key| {
+                if (std.mem.eql(u8, &key.code_hash, &hash)) try edges.append(self.allocator, key.*);
+            }
             std.mem.sortUnstable(u64, pcs.items, {}, u64LessThan);
             std.mem.sortUnstable(u64, jumpi_pcs.items, {}, u64LessThan);
             std.mem.sortUnstable(EdgeKey, edges.items, {}, edgeLessThan);
-
-            var hash_key: [66]u8 = undefined;
-            try json.objectField(std.fmt.bufPrint(&hash_key, "0x{x}", .{@as([]const u8, &hash)}) catch unreachable);
-            try json.beginObject();
-            try json.objectField("pcs");
-            try json.beginObject();
-            for (pcs.items) |pc| {
-                var buf: [24]u8 = undefined;
-                try json.objectField(std.fmt.bufPrint(&buf, "{d}", .{pc}) catch unreachable);
-                try json.write(self.pcHits(hash, pc));
-            }
-            try json.endObject();
-            try json.objectField("edges");
-            try json.beginArray();
-            for (edges.items) |edge| {
-                try json.beginObject();
-                try json.objectField("from");
-                try json.write(edge.from_pc);
-                try json.objectField("to");
-                try json.write(edge.to_pc);
-                try json.objectField("count");
-                try json.write(self.edges.get(edge).?);
-                try json.endObject();
-            }
-            try json.endArray();
-            try json.objectField("jumpis");
-            try json.beginObject();
-            for (jumpi_pcs.items) |pc| {
-                const branch = self.jumpiStats(hash, pc).?;
-                var buf: [24]u8 = undefined;
-                try json.objectField(std.fmt.bufPrint(&buf, "{d}", .{pc}) catch unreachable);
-                try json.beginObject();
-                try json.objectField("taken");
-                try json.write(branch.taken);
-                try json.objectField("notTaken");
-                try json.write(branch.not_taken);
-                try json.endObject();
-            }
-            try json.endObject();
-            try json.endObject();
+            try self.writeCodeCoverage(&json, hash, pcs.items, edges.items, jumpi_pcs.items);
         }
         try json.endObject();
     }

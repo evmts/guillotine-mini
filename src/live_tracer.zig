@@ -309,10 +309,33 @@ pub const SignedU256 = struct {
     }
 
     pub fn formatHexBuf(self: SignedU256, buf: *[80]u8) []const u8 {
+        const hex = "0123456789abcdef";
+        var idx: usize = 0;
         if (self.negative and self.magnitude != 0) {
-            return std.fmt.bufPrint(buf, "-0x{x}", .{self.magnitude}) catch unreachable;
+            buf[idx] = '-';
+            idx += 1;
         }
-        return std.fmt.bufPrint(buf, "0x{x}", .{self.magnitude}) catch unreachable;
+        buf[idx] = '0';
+        buf[idx + 1] = 'x';
+        idx += 2;
+        if (self.magnitude == 0) {
+            buf[idx] = '0';
+            return buf[0 .. idx + 1];
+        }
+        var digits: [64]u8 = undefined;
+        var count: usize = 0;
+        var value = self.magnitude;
+        while (value != 0) : (value >>= 4) {
+            digits[count] = hex[@as(usize, @intCast(value & 0xf))];
+            count += 1;
+        }
+        var i = count;
+        while (i > 0) {
+            i -= 1;
+            buf[idx] = digits[i];
+            idx += 1;
+        }
+        return buf[0..idx];
     }
 };
 
@@ -675,7 +698,7 @@ pub const SupplyTracer = struct {
 
     fn writeQuantity(json: *Stringify, value: u256) !void {
         var buf: [80]u8 = undefined;
-        try json.write(std.fmt.bufPrint(&buf, "0x{x}", .{value}) catch unreachable);
+        try json.write(try std.fmt.bufPrint(&buf, "0x{x}", .{value}));
     }
 
     fn writeSignedQuantity(json: *Stringify, value: SignedU256) !void {

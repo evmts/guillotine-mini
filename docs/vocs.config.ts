@@ -24,7 +24,7 @@ export default defineConfig({
 	description:
 		'A minimal, readable Ethereum Virtual Machine in Zig — Frontier through Osaka, native C ABI, and a WASI Preview 1 WebAssembly reactor with linked crypto.',
 	baseUrl: 'https://mini.tevm.sh',
-	accentColor: 'light-dark(#0588f0, #3b9eff)',
+	accentColor: 'light-dark(#0085ff, #4da6ff)',
 	colorScheme: 'light dark',
 	iconUrl: '/favicon.svg',
 	logoUrl: {
@@ -42,6 +42,7 @@ export default defineConfig({
 		{ text: 'Tutorials', link: '/getting-started', match: '/tutorials' },
 		{ text: 'Guides', link: '/guides/calls-and-creates', match: '/guides' },
 		{ text: 'Reference', link: '/reference/evm', match: '/reference' },
+		{ text: 'Playground', link: '/play', match: '/play' },
 		{ text: 'Explorer', link: '/opcode-explorer', match: '/opcode-explorer' },
 		{ text: 'Factory', link: '/factory', match: '/factory' },
 		{ text: 'Audit', link: 'https://mini.tevm.sh/audit/' },
@@ -61,6 +62,7 @@ export default defineConfig({
 				{ text: 'Overview', link: '/' },
 				{ text: 'Getting Started', link: '/getting-started' },
 				{ text: 'Architecture', link: '/architecture' },
+				{ text: 'Live WASM Playground', link: '/play' },
 				{ text: 'Opcode & Gas Explorer', link: '/opcode-explorer' },
 			],
 		},

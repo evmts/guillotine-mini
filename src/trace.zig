@@ -39,13 +39,24 @@ pub const TraceEntry = struct {
         if (self.error_msg_owned) allocator.free(self.error_msg.?);
     }
 
+    fn allocHexBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
+        const hex_out = try allocator.alloc(u8, bytes.len * 2 + 2);
+        hex_out[0] = '0';
+        hex_out[1] = 'x';
+        const alphabet = "0123456789abcdef";
+        for (bytes, 0..) |byte, i| {
+            hex_out[2 + i * 2] = alphabet[byte >> 4];
+            hex_out[3 + i * 2] = alphabet[byte & 0x0f];
+        }
+        return hex_out;
+    }
+
     pub fn toJson(self: *const TraceEntry, allocator: std.mem.Allocator) !std.json.Value {
         var obj = std.json.ObjectMap.init(allocator);
 
         try obj.put("pc", .{ .integer = @intCast(self.pc) });
         try obj.put("op", .{ .integer = @intCast(self.op) });
 
-        // Format gas as hex string
         var gas_buf: [32]u8 = undefined;
         const gas_str = try std.fmt.bufPrint(&gas_buf, "0x{x}", .{self.gas});
         try obj.put("gas", .{ .string = try allocator.dupe(u8, gas_str) });
@@ -54,22 +65,14 @@ pub const TraceEntry = struct {
         const gas_cost_str = try std.fmt.bufPrint(&gas_cost_buf, "0x{x}", .{self.gasCost});
         try obj.put("gasCost", .{ .string = try allocator.dupe(u8, gas_cost_str) });
 
-        // Memory as hex string if present
         if (self.memory) |mem| {
-            const hex_mem = try allocator.alloc(u8, mem.len * 2 + 2);
-            hex_mem[0] = '0';
-            hex_mem[1] = 'x';
-            for (mem, 0..) |byte, i| {
-                _ = try std.fmt.bufPrint(hex_mem[2 + i * 2 ..][0..2], "{x:0>2}", .{byte});
-            }
-            try obj.put("memory", .{ .string = hex_mem });
+            try obj.put("memory", .{ .string = try allocHexBytes(allocator, mem) });
         } else {
             try obj.put("memory", .null);
         }
 
         try obj.put("memSize", .{ .integer = @intCast(self.memSize) });
 
-        // Stack as array of hex strings
         var stack_arr = std.json.Array.init(allocator);
         for (self.stack) |val| {
             var val_buf: [66]u8 = undefined;
@@ -78,15 +81,8 @@ pub const TraceEntry = struct {
         }
         try obj.put("stack", .{ .array = stack_arr });
 
-        // Return data as hex string if present
         if (self.returnData) |data| {
-            const hex_data = try allocator.alloc(u8, data.len * 2 + 2);
-            hex_data[0] = '0';
-            hex_data[1] = 'x';
-            for (data, 0..) |byte, i| {
-                _ = try std.fmt.bufPrint(hex_data[2 + i * 2 ..][0..2], "{x:0>2}", .{byte});
-            }
-            try obj.put("returnData", .{ .string = hex_data });
+            try obj.put("returnData", .{ .string = try allocHexBytes(allocator, data) });
         } else {
             try obj.put("returnData", .null);
         }
@@ -126,7 +122,7 @@ pub const TraceEntry = struct {
         try json.beginArray();
         for (self.stack) |value| {
             var buf: [66]u8 = undefined;
-            try json.write(std.fmt.bufPrint(&buf, "0x{x}", .{value}) catch unreachable);
+            try json.write(try std.fmt.bufPrint(&buf, "0x{x}", .{value}));
         }
         try json.endArray();
         try json.objectField("depth");
@@ -158,7 +154,7 @@ pub const TraceEntry = struct {
             try json.beginObject();
             for (slots) |slot| {
                 var key: [66]u8 = undefined;
-                try writeQuantity(json, std.fmt.bufPrint(&key, "0x{x}", .{slot.slot}) catch unreachable, slot.value);
+                try writeQuantity(json, try std.fmt.bufPrint(&key, "0x{x}", .{slot.slot}), slot.value);
             }
             try json.endObject();
         }
@@ -169,7 +165,7 @@ pub const TraceEntry = struct {
 fn writeQuantity(json: *std.json.Stringify, field: []const u8, value: anytype) !void {
     var buf: [66]u8 = undefined;
     try json.objectField(field);
-    try json.write(std.fmt.bufPrint(&buf, "0x{x}", .{value}) catch unreachable);
+    try json.write(try std.fmt.bufPrint(&buf, "0x{x}", .{value}));
 }
 
 fn writeBytes(json: *std.json.Stringify, field: []const u8, bytes: []const u8) !void {
@@ -393,8 +389,7 @@ pub const TraceDiff = struct {
             const our = &our_trace.entries.items[i];
             const ref = &ref_trace.entries.items[i];
 
-            const field =
-                if (our.pc != ref.pc) "pc" else if (our.op != ref.op) "op" else if (our.gas != ref.gas) "gas" else if (our.gasCost != ref.gasCost) "gasCost" else if (our.depth != ref.depth) "depth" else if (our.memSize != ref.memSize) "memSize" else if (our.refund != ref.refund) "refund" else if (our.stack.len != ref.stack.len) "stack_length" else if (!std.mem.eql(u256, our.stack, ref.stack)) "stack_value" else if (!optionalBytesEqual(our.returnData, ref.returnData)) "returnData" else if (!optionalBytesEqual(our.error_msg, ref.error_msg)) "error_msg" else continue;
+            const field = firstDiffField(our, ref) orelse continue;
 
             return .{
                 .divergence_index = i,
@@ -420,6 +415,21 @@ pub const TraceDiff = struct {
             .ref_entry = null,
             .diff_field = null,
         };
+    }
+
+    fn firstDiffField(our: *const TraceEntry, ref: *const TraceEntry) ?[]const u8 {
+        if (our.pc != ref.pc) return "pc";
+        if (our.op != ref.op) return "op";
+        if (our.gas != ref.gas) return "gas";
+        if (our.gasCost != ref.gasCost) return "gasCost";
+        if (our.depth != ref.depth) return "depth";
+        if (our.memSize != ref.memSize) return "memSize";
+        if (our.refund != ref.refund) return "refund";
+        if (our.stack.len != ref.stack.len) return "stack_length";
+        if (!std.mem.eql(u256, our.stack, ref.stack)) return "stack_value";
+        if (!optionalBytesEqual(our.returnData, ref.returnData)) return "returnData";
+        if (!optionalBytesEqual(our.error_msg, ref.error_msg)) return "error_msg";
+        return null;
     }
 
     fn optionalBytesEqual(left: ?[]const u8, right: ?[]const u8) bool {

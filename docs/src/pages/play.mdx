@@ -1,0 +1,28 @@
+---
+title: Live WASM Playground & Debugger
+description: Execute Frontier–Osaka EVM bytecode directly in your browser with Guillotine Mini's WebAssembly reactor, time-travel trace scrubber, gas flamegraph, and async RPC replay.
+---
+
+import { WasmPlayground } from '../components/WasmPlayground'
+
+# Live WASM Playground & Debugger
+
+Run **real consensus EVM execution** directly in your browser using `guillotine_mini.wasm` (a WASI Preview 1 WebAssembly reactor with Voltaire's linked crypto precompiles: SHA-256, BN254, BLS12-381, KZG, and Osaka's EIP-7951 `P256VERIFY`).
+
+Pick a preset or paste custom hex bytecode and calldata, choose any hardfork from **Frontier** through **Osaka**, or switch to **RPC Tx Replay** to lazily fetch live contract state over JSON-RPC using the async `evm_call_ffi` / `evm_continue_ffi` protocol.
+
+<WasmPlayground />
+
+## What runs under the hood
+
+- **Zero-dependency browser WASI Preview 1 shim** — instantiates `guillotine_mini.wasm` client-side, initializes the reactor via `_initialize()`, and manages 16-byte aligned `evm_alloc` / `evm_free` transfer buffers.
+- **Full consensus & observability** — enables EIP-3155 opcode tracing (`evm_enable_tracing`), Geth `callTracer` (`evm_enable_call_tracer`), EIP-2930 access list tracking (`evm_enable_access_list_tracker`), SVG/folded gas flamegraphs (`evm_enable_flamegraph`), and ABI revert decoding (`evm_decode_revert_json`).
+- **Time-travel step scrubber** — step forward, step back, play/pause, or scrub directly across captured EIP-3155 frames to inspect the 256-bit stack, 32-byte memory hex dump, gas deltas, call depth, storage, and return data.
+- **Lazy RPC state injection** — in **RPC Tx Replay** mode, `evm_call_ffi` suspends on cold code, storage, balance, or nonce reads and resumes via `evm_continue_ffi` after fetching only the touched slots over JSON-RPC.
+
+## Related pages
+
+- [Opcode & Gas Explorer](/opcode-explorer) — lightweight visual stepper for learning individual opcodes without loading WebAssembly.
+- [Tutorial 4: Running in WebAssembly](/tutorials/webassembly) — embed `guillotine_mini.wasm` in Node 22+, browsers, or Cloudflare Workers.
+- [C & WASM ABI Reference](/reference/c-api) — complete reference for the exported `evm_*` functions.
+- [C FFI & Async State Injection](/guides/c-ffi) — how `evm_call_ffi` / `evm_continue_ffi` drive lazy RPC state fetching.

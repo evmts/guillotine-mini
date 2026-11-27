@@ -146,6 +146,30 @@ pub const FlamegraphCollector = struct {
         try map.put(self.allocator, owned_key, gas);
     }
 
+    fn writeU64(writer: *std.Io.Writer, value: u64) !void {
+        var buf: [20]u8 = undefined;
+        var v = value;
+        var i: usize = buf.len;
+        if (v == 0) {
+            try writer.writeByte('0');
+            return;
+        }
+        while (v != 0) : (v /= 10) {
+            i -= 1;
+            buf[i] = @as(u8, @intCast(v % 10)) + '0';
+        }
+        try writer.writeAll(buf[i..]);
+    }
+
+    fn appendHexBytes(allocator: Allocator, out: *std.ArrayList(u8), bytes: []const u8) !void {
+        const hex = "0123456789abcdef";
+        try out.ensureUnusedCapacity(allocator, bytes.len * 2);
+        for (bytes) |b| {
+            out.appendAssumeCapacity(hex[b >> 4]);
+            out.appendAssumeCapacity(hex[b & 0x0f]);
+        }
+    }
+
     fn formatFrameLabel(self: *const FlamegraphCollector, event: insp.FrameEnterEvent, out: *std.ArrayList(u8)) !void {
         const prefix = if (event.is_precompile) "PRECOMPILE" else callTypeUpper(event.call_type);
         try out.appendSlice(self.allocator, prefix);
@@ -175,17 +199,13 @@ pub const FlamegraphCollector = struct {
             return;
         }
 
+        try out.appendSlice(self.allocator, "0x");
         if (self.options.compact_addresses) {
-            var buf: [16]u8 = undefined;
-            const formatted = std.fmt.bufPrint(&buf, "0x{x}..{x}", .{
-                @as([]const u8, event.to.bytes[0..2]),
-                @as([]const u8, event.to.bytes[18..20]),
-            }) catch unreachable;
-            try out.appendSlice(self.allocator, formatted);
+            try appendHexBytes(self.allocator, out, event.to.bytes[0..2]);
+            try out.appendSlice(self.allocator, "..");
+            try appendHexBytes(self.allocator, out, event.to.bytes[18..20]);
         } else {
-            var buf: [42]u8 = undefined;
-            const formatted = std.fmt.bufPrint(&buf, "0x{x}", .{@as([]const u8, &event.to.bytes)}) catch unreachable;
-            try out.appendSlice(self.allocator, formatted);
+            try appendHexBytes(self.allocator, out, &event.to.bytes);
         }
     }
 
@@ -289,6 +309,21 @@ pub const FlamegraphCollector = struct {
         return std.mem.order(u8, a.path, b.path) == .lt;
     }
 
+    fn sortSamplesShell(items: []SampleEntry) void {
+        var gap = items.len / 2;
+        while (gap > 0) : (gap /= 2) {
+            var i = gap;
+            while (i < items.len) : (i += 1) {
+                const cur = items[i];
+                var j = i;
+                while (j >= gap and sampleLessThan({}, cur, items[j - gap])) : (j -= gap) {
+                    items[j] = items[j - gap];
+                }
+                items[j] = cur;
+            }
+        }
+    }
+
     fn sortedSamples(self: *const FlamegraphCollector, allocator: Allocator, include_opcodes: bool) ![]SampleEntry {
         const map = if (include_opcodes) &self.opcode_samples else &self.frame_samples;
         var list: std.ArrayList(SampleEntry) = .{};
@@ -299,7 +334,7 @@ pub const FlamegraphCollector = struct {
             if (entry.value_ptr.* == 0) continue;
             list.appendAssumeCapacity(.{ .path = entry.key_ptr.*, .gas = entry.value_ptr.* });
         }
-        std.mem.sort(SampleEntry, list.items, {}, sampleLessThan);
+        sortSamplesShell(list.items);
         return list.toOwnedSlice(allocator);
     }
 
@@ -310,7 +345,10 @@ pub const FlamegraphCollector = struct {
         const samples = try self.sortedSamples(self.allocator, include_opcodes);
         defer self.allocator.free(samples);
         for (samples) |entry| {
-            try writer.print("{s} {d}\n", .{ entry.path, entry.gas });
+            try writer.writeAll(entry.path);
+            try writer.writeByte(' ');
+            try writeU64(writer, entry.gas);
+            try writer.writeByte('\n');
         }
     }
 
@@ -338,38 +376,13 @@ pub const FlamegraphCollector = struct {
         }
     };
 
-    /// Writes a self-contained interactive SVG flamegraph with proportional
-    /// frame bars, `<title>` hover tooltips, category coloring, and XML escaping.
-    pub fn writeSvg(self: *const FlamegraphCollector, writer: *std.Io.Writer, title: []const u8, include_opcodes: bool) !void {
-        if (self.err) |e| return e;
-
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        const samples = try self.sortedSamples(alloc, include_opcodes);
-
-        const svg_width: f64 = 1200.0;
-        const pad_x: f64 = 12.0;
-        const header_h: f64 = 52.0;
-        const row_h: f64 = 20.0;
-        const footer_h: f64 = 16.0;
-        const chart_w: f64 = svg_width - (2.0 * pad_x);
-
-        if (samples.len == 0) {
-            const empty_h: f64 = header_h + row_h + footer_h;
-            try writeSvgHeader(writer, svg_width, empty_h, title, 0);
-            try writer.print(
-                "<text x=\"{d:.1}\" y=\"{d:.1}\" class=\"empty\">No gas samples recorded</text>\n</svg>\n",
-                .{ svg_width / 2.0, header_h + 14.0 },
-            );
-            return;
-        }
-
+    fn buildSvgTree(
+        alloc: Allocator,
+        samples: []const SampleEntry,
+        max_depth: *usize,
+    ) !*TreeNode {
         const root = try alloc.create(TreeNode);
         root.* = .{ .name = "all", .full_path = "all" };
-
-        var max_depth: usize = 0;
         for (samples) |entry| {
             root.total_gas +|= entry.gas;
             var cur = root;
@@ -383,28 +396,94 @@ pub const FlamegraphCollector = struct {
                     depth += 1;
                     cur = try cur.getOrCreateChild(alloc, seg, full_prefix);
                     cur.total_gas +|= entry.gas;
-                    if (depth > max_depth) max_depth = depth;
+                    if (depth > max_depth.*) max_depth.* = depth;
                 }
                 if (sep == entry.path.len) break;
                 start = sep + 1;
             }
         }
+        return root;
+    }
 
-        const svg_height: f64 = header_h + (@as(f64, @floatFromInt(max_depth + 1)) * row_h) + footer_h;
+    /// Writes a self-contained interactive SVG flamegraph with proportional
+    /// frame bars, `<title>` hover tooltips, category coloring, and XML escaping.
+    pub fn writeSvg(
+        self: *const FlamegraphCollector,
+        writer: *std.Io.Writer,
+        title: []const u8,
+        include_opcodes: bool,
+    ) !void {
+        if (self.err) |e| return e;
+
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        const samples = try self.sortedSamples(alloc, include_opcodes);
+
+        const svg_width: u64 = 1200;
+        const pad_x: f64 = 12.0;
+        const header_h: u64 = 52;
+        const row_h: u64 = 20;
+        const footer_h: u64 = 16;
+        const chart_w: f64 = @as(f64, @floatFromInt(svg_width)) - (2.0 * pad_x);
+
+        if (samples.len == 0) {
+            const empty_h = header_h + row_h + footer_h;
+            try writeSvgHeader(writer, svg_width, empty_h, title, 0);
+            try writer.writeAll("<text x=\"");
+            try writeU64(writer, svg_width / 2);
+            try writer.writeAll(".0\" y=\"");
+            try writeU64(writer, header_h + 14);
+            try writer.writeAll(".0\" class=\"empty\">No gas samples recorded</text>\n</svg>\n");
+            return;
+        }
+
+        var max_depth: usize = 0;
+        const root = try buildSvgTree(alloc, samples, &max_depth);
+
+        const svg_height = header_h + (@as(u64, @intCast(max_depth + 1)) * row_h) + footer_h;
         try writeSvgHeader(writer, svg_width, svg_height, title, root.total_gas);
 
-        try writeSvgNode(writer, root, 0, max_depth, pad_x, chart_w, root.total_gas, header_h, row_h);
+        try writeSvgNode(
+            writer,
+            root,
+            0,
+            max_depth,
+            pad_x,
+            chart_w,
+            root.total_gas,
+            @floatFromInt(header_h),
+            @floatFromInt(row_h),
+        );
         try writer.writeAll("</svg>\n");
     }
 
-    fn writeSvgHeader(writer: *std.Io.Writer, width: f64, height: f64, title: []const u8, total_gas: u64) !void {
-        try writer.print(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"{d:.0}\" height=\"{d:.0}\" viewBox=\"0 0 {d:.0} {d:.0}\">\n",
-            .{ width, height, width, height },
-        );
+    /// Formats a non-negative float with two decimal places using integer math
+    /// so WASM builds avoid pulling in `std.fmt.float` formatting tables.
+    fn writeFixed2(writer: *std.Io.Writer, value: f64) !void {
+        const scaled: u64 = if (value <= 0.0) 0 else @intFromFloat(@round(value * 100.0));
+        try writeU64(writer, scaled / 100);
+        try writer.writeByte('.');
+        const frac = scaled % 100;
+        try writer.writeByte(@as(u8, @intCast(frac / 10)) + '0');
+        try writer.writeByte(@as(u8, @intCast(frac % 10)) + '0');
+    }
+
+    fn writeSvgHeader(writer: *std.Io.Writer, width: u64, height: u64, title: []const u8, total_gas: u64) !void {
+        try writer.writeAll("<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" width=\"");
+        try writeU64(writer, width);
+        try writer.writeAll("\" height=\"");
+        try writeU64(writer, height);
+        try writer.writeAll("\" viewBox=\"0 0 ");
+        try writeU64(writer, width);
+        try writer.writeByte(' ');
+        try writeU64(writer, height);
+        try writer.writeAll("\">\n");
         try writer.writeAll(
             "<style>\n" ++
-                "  text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; fill: #1a1a1a; pointer-events: none; }\n" ++
+                "  text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; " ++
+                "font-size: 11px; fill: #1a1a1a; pointer-events: none; }\n" ++
                 "  text.title { font-size: 16px; font-weight: 700; text-anchor: middle; fill: #111827; }\n" ++
                 "  text.subtitle { font-size: 11px; text-anchor: middle; fill: #4b5563; }\n" ++
                 "  text.empty { font-size: 12px; text-anchor: middle; fill: #6b7280; }\n" ++
@@ -412,11 +491,19 @@ pub const FlamegraphCollector = struct {
                 "  g.frame:hover rect { stroke: #111827; stroke-width: 1.2; opacity: 0.9; }\n" ++
                 "</style>\n",
         );
-        try writer.print("<rect x=\"0\" y=\"0\" width=\"{d:.0}\" height=\"{d:.0}\" fill=\"#fafafa\"/>\n", .{ width, height });
-        try writer.print("<text x=\"{d:.1}\" y=\"22\" class=\"title\">", .{width / 2.0});
+        try writer.writeAll("<rect x=\"0\" y=\"0\" width=\"");
+        try writeU64(writer, width);
+        try writer.writeAll("\" height=\"");
+        try writeU64(writer, height);
+        try writer.writeAll("\" fill=\"#fafafa\"/>\n<text x=\"");
+        try writeU64(writer, width / 2);
+        try writer.writeAll(".0\" y=\"22\" class=\"title\">");
         try writeXmlEscaped(writer, title);
+        try writer.writeAll("</text>\n<text x=\"");
+        try writeU64(writer, width / 2);
+        try writer.writeAll(".0\" y=\"40\" class=\"subtitle\">Total gas: ");
+        try writeU64(writer, total_gas);
         try writer.writeAll("</text>\n");
-        try writer.print("<text x=\"{d:.1}\" y=\"40\" class=\"subtitle\">Total gas: {d}</text>\n", .{ width / 2.0, total_gas });
     }
 
     fn writeSvgNode(
@@ -438,16 +525,30 @@ pub const FlamegraphCollector = struct {
 
         try writer.writeAll("<g class=\"frame\"><title>");
         try writeXmlEscaped(writer, node.full_path);
-        try writer.print(" ({d} gas, {d:.2}%)</title>", .{ node.total_gas, pct });
-        try writer.print(
-            "<rect x=\"{d:.2}\" y=\"{d:.2}\" width=\"{d:.2}\" height=\"{d:.2}\" rx=\"2\" fill=\"{s}\"/>",
-            .{ x, y, width, row_h - 1.0, fill },
-        );
+        try writer.writeAll(" (");
+        try writeU64(writer, node.total_gas);
+        try writer.writeAll(" gas, ");
+        try writeFixed2(writer, pct);
+        try writer.writeAll("%)</title><rect x=\"");
+        try writeFixed2(writer, x);
+        try writer.writeAll("\" y=\"");
+        try writeFixed2(writer, y);
+        try writer.writeAll("\" width=\"");
+        try writeFixed2(writer, width);
+        try writer.writeAll("\" height=\"");
+        try writeFixed2(writer, row_h - 1.0);
+        try writer.writeAll("\" rx=\"2\" fill=\"");
+        try writer.writeAll(fill);
+        try writer.writeAll("\"/>");
 
         // Render text label if the bar is wide enough to hold at least ~3 characters.
         const max_chars: usize = if (width > 24.0) @intFromFloat((width - 8.0) / 6.6) else 0;
         if (max_chars >= 3) {
-            try writer.print("<text x=\"{d:.2}\" y=\"{d:.2}\">", .{ x + 4.0, y + row_h - 6.0 });
+            try writer.writeAll("<text x=\"");
+            try writeFixed2(writer, x + 4.0);
+            try writer.writeAll("\" y=\"");
+            try writeFixed2(writer, y + row_h - 6.0);
+            try writer.writeAll("\">");
             if (node.name.len <= max_chars) {
                 try writeXmlEscaped(writer, node.name);
             } else {
@@ -460,8 +561,9 @@ pub const FlamegraphCollector = struct {
         try writer.writeAll("</g>\n");
 
         var child_x = x;
+        const node_gas_f: f64 = @floatFromInt(node.total_gas);
         for (node.children.items) |child| {
-            const child_w = width * (@as(f64, @floatFromInt(child.total_gas)) / @as(f64, @floatFromInt(node.total_gas)));
+            const child_w = width * (@as(f64, @floatFromInt(child.total_gas)) / node_gas_f);
             try writeSvgNode(writer, child, depth + 1, max_depth, child_x, child_w, total_gas, header_h, row_h);
             child_x += child_w;
         }
