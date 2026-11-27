@@ -606,9 +606,261 @@ pub fn displayResults(writer: anytype, allocator: std.mem.Allocator, results: []
     try std.fmt.format(writer, "{s}─────────────────────────────────────────{s}\n", .{ Color.dim, Color.reset });
 }
 
+const FilterNfa = struct {
+    const max_states: usize = 512;
+    const max_depth: usize = 16;
+
+    const State = union(enum) {
+        literal: struct { byte: u8, next: u16 },
+        any: struct { next: u16 },
+        neg_class: struct { start: u16, end: u16, next: u16 },
+        jump: u16,
+        split: struct { a: u16, b: u16 },
+        accept,
+    };
+
+    const Fragment = struct {
+        start: u16,
+        end: u16,
+    };
+
+    const StateSet = std.StaticBitSet(max_states);
+
+    pattern: []const u8,
+    states: [max_states]State = undefined,
+    len: u16 = 0,
+
+    fn addState(self: *FilterNfa, state: State) error{PatternTooComplex}!u16 {
+        if (self.len >= max_states) return error.PatternTooComplex;
+        const idx = self.len;
+        self.states[idx] = state;
+        self.len += 1;
+        return idx;
+    }
+
+    fn compile(pattern: []const u8) error{PatternTooComplex}!struct { nfa: FilterNfa, start: u16 } {
+        var nfa = FilterNfa{ .pattern = pattern };
+        var pos: usize = 0;
+        const frag = try nfa.parseAlternation(&pos, 0, false);
+        return .{ .nfa = nfa, .start = frag.start };
+    }
+
+    fn parseAlternation(self: *FilterNfa, pos: *usize, depth: usize, in_group: bool) error{PatternTooComplex}!Fragment {
+        var branch = try self.parseConcat(pos, depth, in_group);
+        while (pos.* < self.pattern.len and self.pattern[pos.*] == '|') {
+            pos.* += 1;
+            const rhs = try self.parseConcat(pos, depth, in_group);
+            const end = try self.addState(.accept);
+            self.states[branch.end] = .{ .jump = end };
+            self.states[rhs.end] = .{ .jump = end };
+            const start = try self.addState(.{ .split = .{ .a = branch.start, .b = rhs.start } });
+            branch = .{ .start = start, .end = end };
+        }
+        return branch;
+    }
+
+    fn parseConcat(self: *FilterNfa, pos: *usize, depth: usize, in_group: bool) error{PatternTooComplex}!Fragment {
+        var current: ?Fragment = null;
+        while (pos.* < self.pattern.len) {
+            const c = self.pattern[pos.*];
+            if (c == '|') break;
+            if (in_group and c == ')') break;
+
+            const frag = try self.parseAtom(pos, depth);
+            if (current) |prev| {
+                self.states[prev.end] = .{ .jump = frag.start };
+                current = .{ .start = prev.start, .end = frag.end };
+            } else {
+                current = frag;
+            }
+        }
+        if (current) |frag| return frag;
+        const empty = try self.addState(.accept);
+        return .{ .start = empty, .end = empty };
+    }
+
+    fn parseAtom(self: *FilterNfa, pos: *usize, depth: usize) error{PatternTooComplex}!Fragment {
+        const c = self.pattern[pos.*];
+        if (c == '.' and pos.* + 1 < self.pattern.len and self.pattern[pos.* + 1] == '*') {
+            pos.* += 2;
+            const end = try self.addState(.accept);
+            const split = try self.addState(.{ .split = .{ .a = 0, .b = end } });
+            const any = try self.addState(.{ .any = .{ .next = split } });
+            self.states[split].split.a = any;
+            return .{ .start = split, .end = end };
+        }
+        if (c == '(' and hasMatchingCloseParen(self.pattern, pos.*)) {
+            if (depth >= max_depth) return error.PatternTooComplex;
+            pos.* += 1;
+            const inner = try self.parseAlternation(pos, depth + 1, true);
+            if (pos.* < self.pattern.len and self.pattern[pos.*] == ')') pos.* += 1;
+            return inner;
+        }
+        if (c == '[' and pos.* + 2 < self.pattern.len and self.pattern[pos.* + 1] == '^') {
+            if (std.mem.indexOfScalarPos(u8, self.pattern, pos.* + 2, ']')) |close| {
+                if (close > pos.* + 2) {
+                    if (close > std.math.maxInt(u16)) return error.PatternTooComplex;
+                    const class_start: u16 = @intCast(pos.* + 2);
+                    const class_end: u16 = @intCast(close);
+                    pos.* = close + 1;
+                    const end = try self.addState(.accept);
+                    const start = try self.addState(.{ .neg_class = .{
+                        .start = class_start,
+                        .end = class_end,
+                        .next = end,
+                    } });
+                    return .{ .start = start, .end = end };
+                }
+            }
+        }
+        if (c == '\\' and pos.* + 1 < self.pattern.len) {
+            const escaped = self.pattern[pos.* + 1];
+            pos.* += 2;
+            const end = try self.addState(.accept);
+            const start = try self.addState(.{ .literal = .{ .byte = escaped, .next = end } });
+            return .{ .start = start, .end = end };
+        }
+        pos.* += 1;
+        const end = try self.addState(.accept);
+        const start = try self.addState(.{ .literal = .{ .byte = c, .next = end } });
+        return .{ .start = start, .end = end };
+    }
+
+    fn addEpsilonClosure(self: *const FilterNfa, set: *StateSet, start_state: u16) bool {
+        var stack: [max_states]u16 = undefined;
+        var top: usize = 0;
+        if (!set.isSet(start_state)) {
+            set.set(start_state);
+            stack[top] = start_state;
+            top += 1;
+        }
+        var accepted = false;
+        while (top > 0) {
+            top -= 1;
+            const s = stack[top];
+            switch (self.states[s]) {
+                .accept => accepted = true,
+                .jump => |next| {
+                    if (!set.isSet(next)) {
+                        set.set(next);
+                        stack[top] = next;
+                        top += 1;
+                    }
+                },
+                .split => |sp| {
+                    if (!set.isSet(sp.a)) {
+                        set.set(sp.a);
+                        stack[top] = sp.a;
+                        top += 1;
+                    }
+                    if (!set.isSet(sp.b)) {
+                        set.set(sp.b);
+                        stack[top] = sp.b;
+                        top += 1;
+                    }
+                },
+                .literal, .any, .neg_class => {},
+            }
+        }
+        return accepted;
+    }
+
+    fn matches(self: *const FilterNfa, start: u16, text: []const u8) bool {
+        var current = StateSet.initEmpty();
+        if (self.addEpsilonClosure(&current, start)) return true;
+
+        for (text) |byte| {
+            var next = StateSet.initEmpty();
+            var it = current.iterator(.{});
+            while (it.next()) |idx| {
+                switch (self.states[idx]) {
+                    .literal => |lit| {
+                        if (byte == lit.byte and self.addEpsilonClosure(&next, lit.next)) return true;
+                    },
+                    .any => |a| {
+                        if (self.addEpsilonClosure(&next, a.next)) return true;
+                    },
+                    .neg_class => |nc| {
+                        if (negClassMatches(self.pattern[nc.start..nc.end], byte) and self.addEpsilonClosure(&next, nc.next)) {
+                            return true;
+                        }
+                    },
+                    .jump, .split, .accept => {},
+                }
+            }
+            if (self.addEpsilonClosure(&next, start)) return true;
+            current = next;
+        }
+        return false;
+    }
+};
+
+fn hasMatchingCloseParen(pattern: []const u8, open_pos: usize) bool {
+    var depth: usize = 0;
+    var i: usize = open_pos;
+    while (i < pattern.len) {
+        if (pattern[i] == '\\' and i + 1 < pattern.len) {
+            i += 2;
+            continue;
+        }
+        if (pattern[i] == '[' and i + 2 < pattern.len and pattern[i + 1] == '^') {
+            if (std.mem.indexOfScalarPos(u8, pattern, i + 2, ']')) |close| {
+                if (close > i + 2) {
+                    i = close + 1;
+                    continue;
+                }
+            }
+        }
+        if (pattern[i] == '(') {
+            depth += 1;
+        } else if (pattern[i] == ')') {
+            depth -= 1;
+            if (depth == 0) return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+fn negClassMatches(spec: []const u8, byte: u8) bool {
+    var i: usize = 0;
+    while (i < spec.len) {
+        if (i + 2 < spec.len and spec[i + 1] == '-' and spec[i] <= spec[i + 2]) {
+            if (byte >= spec[i] and byte <= spec[i + 2]) return false;
+            i += 3;
+        } else {
+            if (byte == spec[i]) return false;
+            i += 1;
+        }
+    }
+    return true;
+}
+
+fn hasPatternSyntax(filter: []const u8) bool {
+    for (filter, 0..) |c, i| {
+        switch (c) {
+            '(', '|', '\\' => return true,
+            '.' => if (i + 1 < filter.len and filter[i + 1] == '*') return true,
+            '[' => if (i + 1 < filter.len and filter[i + 1] == '^') return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+/// Unanchored bounded pattern match supporting literal substrings, `.*` wildcards,
+/// `(a|b|c)` / `a|b` alternation, `[^...]` negated character classes, and `\` escapes.
+/// Positive `[...]` brackets are treated literally so pytest IDs like `[fork_Osaka-state_test]`
+/// match without escaping.
 pub fn matchesFilter(test_name: []const u8, filter: []const u8) bool {
     if (filter.len == 0) return true;
-    return std.mem.indexOf(u8, test_name, filter) != null;
+    if (!hasPatternSyntax(filter)) {
+        return std.mem.indexOf(u8, test_name, filter) != null;
+    }
+    const compiled = FilterNfa.compile(filter) catch {
+        return std.mem.indexOf(u8, test_name, filter) != null;
+    };
+    return compiled.nfa.matches(compiled.start, test_name);
 }
 
 pub const OutputFormat = enum {
@@ -1089,6 +1341,418 @@ test "extractSuiteName and extractTestName handle short names" {
     try std.testing.expectEqualStrings("", extractTestName(""));
     try std.testing.expectEqualStrings("mod", extractSuiteName("mod.test.name"));
     try std.testing.expectEqualStrings("name", extractTestName("mod.test.name"));
+}
+
+test "matchesFilter handles literals, wildcards, alternation, negated classes, and edge cases" {
+    // Empty & literals
+    try std.testing.expect(matchesFilter("anything", ""));
+    try std.testing.expect(matchesFilter("abc_def_ghi", "def"));
+    try std.testing.expect(!matchesFilter("abc_def_ghi", "xyz"));
+    // Bare dot is literal; pytest bracket IDs stay literal.
+    try std.testing.expect(matchesFilter("test_push.py::test_x[fork_Osaka-state_test]", "test_push.py"));
+    try std.testing.expect(!matchesFilter("test_push_py::test_x", "test_push.py"));
+    try std.testing.expect(matchesFilter(
+        "tests/osaka/test_clz.py::test_clz[fork_Osaka-state_test-zero]",
+        "test_clz[fork_Osaka-state_test-zero]",
+    ));
+
+    // .* wildcards
+    try std.testing.expect(matchesFilter("frontier_call", "frontier.*call"));
+    try std.testing.expect(matchesFilter("frontiercall", "frontier.*call"));
+    try std.testing.expect(!matchesFilter("call_frontier", "frontier.*call"));
+
+    // Alternation (grouped, nested, top-level, empty)
+    try std.testing.expect(matchesFilter("foo_g1add_bar", "(g1add|g1mul|g1msm)"));
+    try std.testing.expect(matchesFilter("foo_g1mul_bar", "(g1add|g1mul|g1msm)"));
+    try std.testing.expect(matchesFilter("foo_g1msm_bar", "(g1add|g1mul|g1msm)"));
+    try std.testing.expect(!matchesFilter("foo_g2add_bar", "(g1add|g1mul|g1msm)"));
+    try std.testing.expect(matchesFilter("alpha_two", "alpha_(one|(two|three))"));
+    try std.testing.expect(matchesFilter("beta", "alpha|beta"));
+    try std.testing.expect(matchesFilter("ac", "a(|b)c"));
+    try std.testing.expect(matchesFilter("abc", "a(|b)c"));
+
+    // Negated character classes
+    try std.testing.expect(matchesFilter("set_code_txs.test", "set_code_txs[^_2]"));
+    try std.testing.expect(!matchesFilter("set_code_txs_2.test", "set_code_txs[^_2]"));
+    try std.testing.expect(!matchesFilter("set_code_txs2.test", "set_code_txs[^_2]"));
+    try std.testing.expect(!matchesFilter("set_code_txs", "set_code_txs[^_2]"));
+    try std.testing.expect(matchesFilter("val_a", "val_[^0-9]"));
+    try std.testing.expect(!matchesFilter("val_5", "val_[^0-9]"));
+    try std.testing.expect(matchesFilter("x_b", "x_[^-a]"));
+    try std.testing.expect(!matchesFilter("x_-", "x_[^-a]"));
+    try std.testing.expect(matchesFilter("x_b", "x_[^a-]"));
+    try std.testing.expect(!matchesFilter("x_-", "x_[^a-]"));
+
+    // Escapes
+    try std.testing.expect(matchesFilter("a(b|c)", "a\\(b\\|c\\)"));
+    try std.testing.expect(!matchesFilter("ab", "a\\(b\\|c\\)"));
+
+    // Malformed patterns do not crash or hang
+    try std.testing.expect(matchesFilter("foo(bar", "foo(bar"));
+    try std.testing.expect(matchesFilter("foo[^bar", "foo[^bar"));
+    try std.testing.expect(matchesFilter("foo[^]bar", "foo[^]bar"));
+    try std.testing.expect(matchesFilter("foo)bar", "foo)bar"));
+
+    // Bounded execution against catastrophic-backtracking patterns
+    const long_b = "b" ** 4096;
+    try std.testing.expect(!matchesFilter(long_b, ".*.*.*.*.*.*.*.*(a|aa|aaa)"));
+}
+
+test "matchesFilter covers every build.zig spec sub-target filter" {
+    const Case = struct {
+        filter: []const u8,
+        positive: []const u8,
+        negative: []const u8,
+    };
+
+    const cases = [_]Case{
+        // Berlin
+        .{
+            .filter = "berlin.*acl.*account_storage_warm_cold_state",
+            .positive = "generated.berlin.eip2930_access_list.acl.test.account_storage_warm_cold_state",
+            .negative = "generated.berlin.eip2930_access_list.acl.test.transaction_intrinsic_gas_cost",
+        },
+        .{
+            .filter = "berlin.*acl.*transaction_intrinsic_gas_cost",
+            .positive = "generated.berlin.eip2930_access_list.acl.test.transaction_intrinsic_gas_cost",
+            .negative = "generated.cancun.acl.test.transaction_intrinsic_gas_cost",
+        },
+        .{
+            .filter = "berlin.*tx_intrinsic_gas.*tx_type_0",
+            .positive = "generated.berlin.eip2930.tx_intrinsic_gas.test.tx_type_0_access_list",
+            .negative = "generated.berlin.eip2930.tx_intrinsic_gas.test.tx_type_1_access_list",
+        },
+        .{
+            .filter = "berlin.*tx_intrinsic_gas.*tx_type_1",
+            .positive = "generated.berlin.eip2930.tx_intrinsic_gas.test.tx_type_1_access_list",
+            .negative = "generated.berlin.eip2930.tx_intrinsic_gas.test.tx_type_0_access_list",
+        },
+        // Frontier
+        .{
+            .filter = "frontier.*precompile",
+            .positive = "generated.frontier.precompiles.test.ecrecover",
+            .negative = "generated.byzantium.precompiles.test.modexp",
+        },
+        .{
+            .filter = "frontier.*identity",
+            .positive = "generated.frontier.identity_precompile.test.identity",
+            .negative = "generated.frontier.create.test.create",
+        },
+        .{
+            .filter = "frontier.*create",
+            .positive = "generated.frontier.create.test.create_contract",
+            .negative = "generated.frontier.opcodes.test.dup",
+        },
+        .{
+            .filter = "frontier.*call",
+            .positive = "generated.frontier.opcodes.call.test.call_value",
+            .negative = "generated.frontier.opcodes.dup.test.dup1",
+        },
+        .{
+            .filter = "frontier.*calldata",
+            .positive = "generated.frontier.opcodes.calldata.test.calldataload",
+            .negative = "generated.frontier.opcodes.call.test.call_value",
+        },
+        .{
+            .filter = "frontier.*dup",
+            .positive = "generated.frontier.opcodes.dup.test.dup16",
+            .negative = "generated.frontier.opcodes.push.test.push1",
+        },
+        .{
+            .filter = "frontier.*push",
+            .positive = "generated.frontier.opcodes.push.test.push32",
+            .negative = "generated.frontier.opcodes.dup.test.dup1",
+        },
+        .{
+            .filter = "frontier.*stack_overflow",
+            .positive = "generated.frontier.opcodes.push.stack_overflow.test.push10",
+            .negative = "generated.frontier.opcodes.push.push.test.push10",
+        },
+        .{
+            .filter = "frontier.*opcodes.*all_opcodes",
+            .positive = "generated.frontier.opcodes.all_opcodes.test.all_opcodes",
+            .negative = "generated.frontier.opcodes.push.test.push1",
+        },
+        // Cancun
+        .{
+            .filter = "eip1153_tstore_test_tstorage_py",
+            .positive = "generated.cancun.eip1153_tstore.test.eip1153_tstore_test_tstorage_py__basic",
+            .negative = "generated.cancun.eip1153_tstore.test.eip1153_tstore_test_tstore_reentrancy",
+        },
+        .{
+            .filter = "eip1153_tstore_test_tstore_reentrancy",
+            .positive = "generated.cancun.eip1153_tstore.test.eip1153_tstore_test_tstore_reentrancy",
+            .negative = "generated.cancun.eip1153_tstore.test.eip1153_tstore_test_tstorage_py",
+        },
+        .{
+            .filter = "tstorage_execution_contexts",
+            .positive = "generated.cancun.eip1153.test.tstorage_execution_contexts_call",
+            .negative = "generated.cancun.eip1153.test.tstorage_create_contexts",
+        },
+        .{
+            .filter = "tload_reentrancy",
+            .positive = "generated.cancun.eip1153.test.tload_reentrancy_static",
+            .negative = "generated.cancun.eip1153.test.tstorage_clear_after_tx",
+        },
+        .{
+            .filter = "tstorage_reentrancy_contexts",
+            .positive = "generated.cancun.eip1153.test.tstorage_reentrancy_contexts_0",
+            .negative = "generated.cancun.eip1153.test.tstorage_selfdestruct",
+        },
+        .{
+            .filter = "tstorage_create_contexts",
+            .positive = "generated.cancun.eip1153.test.tstorage_create_contexts_0",
+            .negative = "generated.cancun.eip1153.test.tstorage_selfdestruct",
+        },
+        .{
+            .filter = "tstorage_selfdestruct",
+            .positive = "generated.cancun.eip1153.test.tstorage_selfdestruct_0",
+            .negative = "generated.cancun.eip1153.test.tstorage_clear_after_tx",
+        },
+        .{
+            .filter = "tstorage_clear_after_tx",
+            .positive = "generated.cancun.eip1153.test.tstorage_clear_after_tx_0",
+            .negative = "generated.cancun.eip1153.test.tstorage_selfdestruct",
+        },
+        .{
+            .filter = "eip5656_mcopy",
+            .positive = "generated.cancun.eip5656_mcopy.test.mcopy_overlap",
+            .negative = "generated.cancun.eip7516_blobgasfee.test.blobbasefee",
+        },
+        .{
+            .filter = "test_selfdestruct_py",
+            .positive = "generated.cancun.eip6780.test.test_selfdestruct_py__basic",
+            .negative = "generated.cancun.eip6780.test.test_selfdestruct_revert_py__basic",
+        },
+        .{
+            .filter = "dynamic_create2_selfdestruct_collision",
+            .positive = "generated.cancun.eip6780.test.dynamic_create2_selfdestruct_collision",
+            .negative = "generated.cancun.eip6780.test.reentrancy_selfdestruct_revert",
+        },
+        .{
+            .filter = "reentrancy_selfdestruct_revert",
+            .positive = "generated.cancun.eip6780.test.reentrancy_selfdestruct_revert",
+            .negative = "generated.cancun.eip6780.test.test_selfdestruct_py",
+        },
+        .{
+            .filter = "test_selfdestruct_revert_py",
+            .positive = "generated.cancun.eip6780.test.test_selfdestruct_revert_py__case",
+            .negative = "generated.cancun.eip6780.test.test_selfdestruct_py__case",
+        },
+        .{
+            .filter = "eip7516_blobgasfee",
+            .positive = "generated.cancun.eip7516_blobgasfee.test.blobbasefee",
+            .negative = "generated.cancun.eip5656_mcopy.test.mcopy",
+        },
+        .{
+            .filter = "test_point_evaluation_precompile_py",
+            .positive = "generated.cancun.eip4844.test.test_point_evaluation_precompile_py__ok",
+            .negative = "generated.cancun.eip4844.test.test_point_evaluation_precompile_gas_py__ok",
+        },
+        .{
+            .filter = "test_point_evaluation_precompile_gas_py",
+            .positive = "generated.cancun.eip4844.test.test_point_evaluation_precompile_gas_py__ok",
+            .negative = "generated.cancun.eip4844.test.test_point_evaluation_precompile_py__ok",
+        },
+        .{
+            .filter = "test_blobhash_opcode_py__test_blobhash_",
+            .positive = "generated.cancun.eip4844.test.test_blobhash_opcode_py__test_blobhash_index",
+            .negative = "generated.cancun.eip4844.test.blobhash_opcode_contexts",
+        },
+        .{
+            .filter = "blobhash_opcode_contexts",
+            .positive = "generated.cancun.eip4844.test.blobhash_opcode_contexts_call",
+            .negative = "generated.cancun.eip4844.test.blob_tx_attribute",
+        },
+        .{
+            .filter = "blob_tx_attribute",
+            .positive = "generated.cancun.eip4844.test.blob_tx_attribute_value",
+            .negative = "generated.cancun.eip4844.test.blob_gas_subtraction_tx",
+        },
+        .{
+            .filter = "blob_gas_subtraction_tx",
+            .positive = "generated.cancun.eip4844.test.blob_gas_subtraction_tx",
+            .negative = "generated.cancun.eip4844.test.insufficient_balance_blob_tx",
+        },
+        .{
+            .filter = "insufficient_balance_blob_tx",
+            .positive = "generated.cancun.eip4844.test.insufficient_balance_blob_tx",
+            .negative = "generated.cancun.eip4844.test.sufficient_balance_blob_tx",
+        },
+        .{
+            .filter = "sufficient_balance_blob_tx",
+            .positive = "generated.cancun.eip4844.test.sufficient_balance_blob_tx",
+            .negative = "generated.cancun.eip4844.test.valid_blob_tx_combinations",
+        },
+        .{
+            .filter = "valid_blob_tx_combinations",
+            .positive = "generated.cancun.eip4844.test.valid_blob_tx_combinations",
+            .negative = "generated.cancun.eip4844.test.blob_tx_attribute",
+        },
+        // Prague
+        .{
+            .filter = "prague.*eip7623.*type_0",
+            .positive = "generated.prague.eip7623_increase_calldata_cost.test.transaction_validity_type_0",
+            .negative = "generated.prague.eip7623_increase_calldata_cost.test.transaction_validity_type_3",
+        },
+        .{
+            .filter = "prague.*eip7623.*type_1_type_2",
+            .positive = "generated.prague.eip7623_increase_calldata_cost.test.transaction_validity_type_1_type_2",
+            .negative = "generated.prague.eip7623_increase_calldata_cost.test.transaction_validity_type_4",
+        },
+        .{
+            .filter = "prague.*eip7623.*type_3",
+            .positive = "generated.prague.eip7623_increase_calldata_cost.test.transaction_validity_type_3",
+            .negative = "generated.prague.eip7623_increase_calldata_cost.test.transaction_validity_type_0",
+        },
+        .{
+            .filter = "prague.*eip7623.*type_4",
+            .positive = "generated.prague.eip7623_increase_calldata_cost.test.transaction_validity_type_4",
+            .negative = "generated.prague.eip7623_increase_calldata_cost.test.transaction_validity_type_3",
+        },
+        .{
+            .filter = "prague.*eip7623.*(refunds|execution_gas)",
+            .positive = "generated.prague.eip7623_increase_calldata_cost.test.test_refunds",
+            .negative = "generated.prague.eip7623_increase_calldata_cost.test.transaction_validity_type_0",
+        },
+        .{
+            .filter = "prague.*eip7623.*(refunds|execution_gas)",
+            .positive = "generated.prague.eip7623_increase_calldata_cost.test.test_execution_gas",
+            .negative = "generated.cancun.eip7623.test.test_execution_gas",
+        },
+        .{
+            .filter = "prague.*bls12.*(g1add|g1mul|g1msm)",
+            .positive = "generated.prague.eip2537_bls_12_381_precompiles.bls12_g1msm.test.g1msm",
+            .negative = "generated.prague.eip2537_bls_12_381_precompiles.bls12_g2add.test.g2add",
+        },
+        .{
+            .filter = "prague.*bls12.*(g2add|g2mul|g2msm)",
+            .positive = "generated.prague.eip2537_bls_12_381_precompiles.bls12_g2mul.test.g2mul",
+            .negative = "generated.prague.eip2537_bls_12_381_precompiles.bls12_g1add.test.g1add",
+        },
+        .{
+            .filter = "prague.*bls12.*pairing",
+            .positive = "generated.prague.eip2537_bls_12_381_precompiles.bls12_pairing.test.valid",
+            .negative = "generated.prague.eip2537_bls_12_381_precompiles.bls12_map_fp_to_g1.test.valid",
+        },
+        .{
+            .filter = "prague.*bls12.*map",
+            .positive = "generated.prague.eip2537_bls_12_381_precompiles.bls12_map_fp2_to_g2.test.valid",
+            .negative = "generated.prague.eip2537_bls_12_381_precompiles.bls12_pairing.test.valid",
+        },
+        .{
+            .filter = "prague.*bls12.*(variable_length|before_fork)",
+            .positive = "generated.prague.eip2537_bls_12_381_precompiles.bls12_precompiles_before_fork.test.g1add",
+            .negative = "generated.prague.eip2537_bls_12_381_precompiles.bls12_g1add.test.valid",
+        },
+        .{
+            .filter = "prague.*eip7702.*calls",
+            .positive = "generated.prague.eip7702_set_code_tx.calls.test.delegate_call",
+            .negative = "generated.prague.eip7702_set_code_tx.gas.test.gas_cost",
+        },
+        .{
+            .filter = "prague.*eip7702.*gas",
+            .positive = "generated.prague.eip7702_set_code_tx.gas.test.gas_cost",
+            .negative = "generated.prague.eip7702_set_code_tx.calls.test.delegate_call",
+        },
+        .{
+            .filter = "prague.*eip7702.*set_code_txs[^_2]",
+            .positive = "generated.prague.eip7702_set_code_tx.set_code_txs.test.test_set_code_txs_py__ok",
+            .negative = "generated.prague.eip7702_set_code_tx.set_code_txs_2.test.test_set_code_txs_2_py__ok",
+        },
+        .{
+            .filter = "prague.*eip7702.*set_code_txs_2",
+            .positive = "generated.prague.eip7702_set_code_tx.set_code_txs_2.test.test_set_code_txs_2_py__ok",
+            .negative = "generated.prague.eip7702_set_code_tx.set_code_txs.test.test_set_code_txs_py__ok",
+        },
+        // Osaka
+        .{
+            .filter = "osaka.*modexp_variable_gas_cost",
+            .positive = "generated.osaka.eip7883_modexp_gas_increase.modexp_variable_gas_cost.test.case_0",
+            .negative = "generated.osaka.eip7883_modexp_gas_increase.vectors_from_eip.test.case_0",
+        },
+        .{
+            .filter = "osaka.*vectors_from_eip",
+            .positive = "generated.osaka.eip7883_modexp_gas_increase.vectors_from_eip.test.case_0",
+            .negative = "generated.osaka.eip7883_modexp_gas_increase.vectors_from_legacy.test.case_0",
+        },
+        .{
+            .filter = "osaka.*vectors_from_legacy",
+            .positive = "generated.osaka.eip7883_modexp_gas_increase.vectors_from_legacy.test.case_0",
+            .negative = "generated.osaka.eip7883_modexp_gas_increase.vectors_from_eip.test.case_0",
+        },
+        .{
+            .filter = "osaka.*modexp.*(call_operations|gas_usage|invalid|entry_points|exceed)",
+            .positive = "generated.osaka.eip7883_modexp_gas_increase.test.entry_points_check",
+            .negative = "generated.osaka.eip7883_modexp_gas_increase.test.vectors_from_eip",
+        },
+        .{
+            .filter = "osaka.*(eip7823|eip7825)",
+            .positive = "generated.osaka.eip7825_transaction_gas_limit_cap.test.tx_gas_cap",
+            .negative = "generated.osaka.eip7939_count_leading_zeros.test.clz",
+        },
+        .{
+            .filter = "osaka.*(eip7823|eip7825)",
+            .positive = "generated.osaka.eip7823_modexp_upper_bounds.test.bound_1024",
+            .negative = "generated.prague.eip7825.test.tx_gas_cap",
+        },
+        // Shanghai, Byzantium, Constantinople, Istanbul
+        .{
+            .filter = "eip3855_push0",
+            .positive = "generated.shanghai.eip3855_push0.test.push0_key_sstore",
+            .negative = "generated.shanghai.eip3651_warm_coinbase.test.warm",
+        },
+        .{
+            .filter = "eip3651_warm_coinbase",
+            .positive = "generated.shanghai.eip3651_warm_coinbase.test.warm",
+            .negative = "generated.shanghai.eip3855_push0.test.push0",
+        },
+        .{
+            .filter = "test_initcode_py",
+            .positive = "generated.shanghai.eip3860.test.test_initcode_py__max",
+            .negative = "generated.shanghai.eip3860.test.with_eof",
+        },
+        .{
+            .filter = "with_eof",
+            .positive = "generated.shanghai.eip3860.test.test_initcode_with_eof",
+            .negative = "generated.shanghai.eip3860.test.test_initcode_py",
+        },
+        .{
+            .filter = "eip4895_withdrawals",
+            .positive = "generated.shanghai.eip4895_withdrawals.test.withdrawals",
+            .negative = "generated.shanghai.eip3855_push0.test.push0",
+        },
+        .{
+            .filter = "eip198_modexp",
+            .positive = "generated.byzantium.eip198_modexp.test.modexp",
+            .negative = "generated.istanbul.eip152_blake2.test.blake2",
+        },
+        .{
+            .filter = "eip145_bitwise_shift",
+            .positive = "generated.constantinople.eip145_bitwise_shift.test.shl",
+            .negative = "generated.constantinople.eip1014_create2.test.create2",
+        },
+        .{
+            .filter = "eip1014_create2",
+            .positive = "generated.constantinople.eip1014_create2.test.create2",
+            .negative = "generated.constantinople.eip145_bitwise_shift.test.shr",
+        },
+        .{
+            .filter = "eip152_blake2",
+            .positive = "generated.istanbul.eip152_blake2.test.blake2f",
+            .negative = "generated.istanbul.eip1344_chainid.test.chainid",
+        },
+        .{
+            .filter = "eip1344_chainid",
+            .positive = "generated.istanbul.eip1344_chainid.test.chainid",
+            .negative = "generated.istanbul.eip152_blake2.test.blake2f",
+        },
+    };
+
+    for (cases) |c| {
+        try std.testing.expect(matchesFilter(c.positive, c.filter));
+        try std.testing.expect(!matchesFilter(c.negative, c.filter));
+    }
 }
 
 // Exercised by `zig test test/utils.zig --test-runner test_runner.zig`:

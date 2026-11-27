@@ -182,6 +182,14 @@ fn taylorExponential(factor: u256, numerator: u256, denominator: u256) u256 {
     return output / denominator;
 }
 
+/// Initialize Voltaire's embedded KZG trusted setup (idempotent and thread-safe).
+/// Required before executing the EIP-4844 point evaluation precompile (0x0a).
+pub fn initKzgTrustedSetup() !void {
+    if (!primitives.crypto.kzg_setup.isInitialized()) {
+        try primitives.crypto.kzg_setup.init();
+    }
+}
+
 /// EIP-4844 (Cancun) and EIP-7691 (Prague, Osaka) blob base fee update fraction.
 fn blobBaseFeeUpdateFraction(hf: ?Hardfork) u256 {
     const fork = hf orelse return 3_338_477;
@@ -191,6 +199,29 @@ fn blobBaseFeeUpdateFraction(hf: ?Hardfork) u256 {
 /// Blob base fee for `excess_blob_gas` under `hf` (MIN_BASE_FEE_PER_BLOB_GAS = 1).
 fn blobBaseFee(hf: ?Hardfork, excess_blob_gas: u64) u256 {
     return taylorExponential(1, excess_blob_gas, blobBaseFeeUpdateFraction(hf));
+}
+
+/// Blob base fee honoring a fixture's `config.blobSchedule.<fork>.baseFeeUpdateFraction`
+/// when provided, otherwise falling back to the fork's canonical fraction.
+fn fixtureBlobBaseFee(test_case: std.json.Value, hf: ?Hardfork, excess_blob_gas: u64) !u256 {
+    if (test_case.object.get("config")) |config| {
+        if (config == .object) {
+            if (config.object.get("blobSchedule")) |schedule| {
+                if (schedule == .object) {
+                    const fork_name = hardforkToString(hf orelse .CANCUN);
+                    if (schedule.object.get(fork_name)) |fork_cfg| {
+                        if (fork_cfg == .object) {
+                            if (fork_cfg.object.get("baseFeeUpdateFraction")) |frac| {
+                                const denom = try parseU256FromJson(frac);
+                                if (denom > 0) return taylorExponential(1, excess_blob_gas, denom);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return blobBaseFee(hf, excess_blob_gas);
 }
 
 /// Gas settlement for one transaction, following EELS `process_transaction`.
@@ -226,14 +257,22 @@ const TxRejection = enum {
     intrinsic_gas,
     insufficient_funds,
     insufficient_max_fee,
+    insufficient_max_fee_per_blob_gas,
     priority_fee_above_max_fee,
     nonce_too_high,
     nonce_too_low,
     nonce_is_max,
     invalid_chain_id,
+    invalid_signature,
+    sender_not_eoa,
     initcode_size,
     gas_limit_cap,
+    gas_allowance_exceeded,
+    tx_type_1_pre_fork,
+    tx_type_2_pre_fork,
+    tx_type_3_pre_fork,
     blob_contract_creation,
+    blob_zero,
     blob_count,
     blob_versioned_hash,
     set_code_invalid,
@@ -245,15 +284,23 @@ const TxRejection = enum {
             .intrinsic_gas => &.{ "INTRINSIC_GAS_TOO_LOW", "INTRINSIC_GAS_BELOW_FLOOR_GAS_COST", "TR_IntrinsicGas" },
             .insufficient_funds => &.{ "INSUFFICIENT_ACCOUNT_FUNDS", "TR_NoFunds" },
             .insufficient_max_fee => &.{ "INSUFFICIENT_MAX_FEE_PER_GAS", "TR_FeeCapLessThanBlocks" },
+            .insufficient_max_fee_per_blob_gas => &.{"INSUFFICIENT_MAX_FEE_PER_BLOB_GAS"},
             .priority_fee_above_max_fee => &.{ "PRIORITY_GREATER_THAN_MAX_FEE_PER_GAS", "TR_TipGtFeeCap" },
             .nonce_too_high => &.{ "NONCE_MISMATCH_TOO_HIGH", "TR_NonceTooHigh" },
             .nonce_too_low => &.{ "NONCE_MISMATCH_TOO_LOW", "TR_NonceTooLow" },
             .nonce_is_max => &.{ "NONCE_IS_MAX", "TR_NonceHasMaxValue" },
             .invalid_chain_id => &.{ "INVALID_CHAINID", "TR_ChainId" },
+            .invalid_signature => &.{ "INVALID_SIGNATURE_VRS", "TR_InvalidSignature" },
+            .sender_not_eoa => &.{ "SENDER_NOT_EOA", "TR_SenderNotEOA" },
             .initcode_size => &.{ "INITCODE_SIZE_EXCEEDED", "TR_InitCodeLimitExceeded" },
             .gas_limit_cap => &.{"GAS_LIMIT_EXCEEDS_MAXIMUM"},
+            .gas_allowance_exceeded => &.{ "GAS_ALLOWANCE_EXCEEDED", "TR_GasLimitReached" },
+            .tx_type_1_pre_fork => &.{"TYPE_1_TX_PRE_FORK"},
+            .tx_type_2_pre_fork => &.{"TYPE_2_TX_PRE_FORK"},
+            .tx_type_3_pre_fork => &.{"TYPE_3_TX_PRE_FORK"},
             .blob_contract_creation => &.{"TYPE_3_TX_CONTRACT_CREATION"},
-            .blob_count => &.{"TYPE_3_TX_BLOB_COUNT_EXCEEDED"},
+            .blob_zero => &.{"TYPE_3_TX_ZERO_BLOBS"},
+            .blob_count => &.{ "TYPE_3_TX_BLOB_COUNT_EXCEEDED", "TYPE_3_TX_MAX_BLOB_GAS_ALLOWANCE_EXCEEDED" },
             .blob_versioned_hash => &.{"TYPE_3_TX_INVALID_BLOB_VERSIONED_HASH"},
             .set_code_invalid => &.{ "TYPE_4_TX_CONTRACT_CREATION", "TYPE_4_EMPTY_AUTHORIZATION_LIST", "TYPE_4_TX_PRE_FORK" },
         };
@@ -783,6 +830,11 @@ test "reference trace parser preserves stack, return data and faults" {
 fn generateTraceDiffOnFailure(allocator: std.mem.Allocator, test_case: std.json.Value, opt_test_file_path: ?[]const u8, opt_test_name: ?[]const u8) !void {
     _ = opt_test_name; // Currently unused parameter
 
+    // Avoid redundant traced re-runs and concurrent `trace_ref.jsonl` races
+    // when the optional Python reference runner is absent or explicitly disabled.
+    if (std.posix.getenv("SPEC_NO_TRACE_DIFF") != null) return;
+    std.fs.cwd().access("execution-specs/.venv/bin/ethereum-spec-evm", .{}) catch return;
+
     // Re-run with trace capture
     var tracer = trace.Tracer.init(allocator);
     defer tracer.deinit();
@@ -997,6 +1049,13 @@ const Variant = struct {
         return if (exception == .string) exception.string else null;
     }
 
+    fn txBytesHex(self: Variant) ?[]const u8 {
+        const entry = self.post_entry orelse return null;
+        if (entry != .object) return null;
+        const raw = entry.object.get("txbytes") orelse return null;
+        return if (raw == .string) raw.string else null;
+    }
+
     /// True when this case expects `rejection`.
     fn expects(self: Variant, rejection: TxRejection) bool {
         const expected = self.expectedException() orelse return false;
@@ -1042,7 +1101,7 @@ fn extractHardfork(test_case: std.json.Value) ?Hardfork {
         if (post == .object) {
             // Try common hardfork names (in reverse chronological order, preferring older forks for multi-fork tests)
             // Include common aliases
-            inline for (&[_][]const u8{ "Osaka", "Prague", "Cancun", "Shanghai", "Paris", "Merge", "London", "Berlin", "Istanbul", "ConstantinopleFix", "Constantinople", "Byzantium", "Homestead" }) |fork_name| {
+            inline for (&[_][]const u8{ "Amsterdam", "Osaka", "Prague", "Cancun", "Shanghai", "Paris", "Merge", "London", "Berlin", "Istanbul", "ConstantinopleFix", "Petersburg", "Constantinople", "Byzantium", "SpuriousDragon", "TangerineWhistle", "Homestead", "Frontier" }) |fork_name| {
                 if (post.object.get(fork_name)) |_| {
                     if (Hardfork.fromString(fork_name)) |hf| {
                         return hf;
@@ -1427,6 +1486,83 @@ fn recoverTxSender(hf: Hardfork, hash: [32]u8, y_parity: u256, r: u256, s: u256)
     if (hf.isAtLeast(.HOMESTEAD) and s > SECP256K1N / 2) return null;
     const signature = primitives.crypto.Crypto.Signature{ .r = r, .s = s, .v = @intCast(y_parity) };
     return primitives.crypto.Crypto.unaudited_recoverAddress(hash, signature) catch null;
+}
+
+/// Validates a state-test post entry's raw signed transaction envelope (`txbytes`):
+/// active transaction type for `hf`, EIP-155 / typed chain ID, and secp256k1
+/// signature recovery (including EIP-2 low-s from Homestead).
+fn validateTxBytesEnvelope(
+    allocator: std.mem.Allocator,
+    hf: Hardfork,
+    block_chain_id: u256,
+    raw_hex: []const u8,
+) !?TxRejection {
+    const raw = primitives.Hex.hexToBytes(allocator, raw_hex) catch return .invalid_signature;
+    defer allocator.free(raw);
+    if (raw.len == 0) return .invalid_signature;
+
+    const tx_type: u8 = if (raw[0] < 0x80) raw[0] else 0;
+    switch (tx_type) {
+        0 => {},
+        1 => if (hf.isBefore(.BERLIN)) return .tx_type_1_pre_fork,
+        2 => if (hf.isBefore(.LONDON)) return .tx_type_2_pre_fork,
+        3 => if (hf.isBefore(.CANCUN)) return .tx_type_3_pre_fork,
+        4 => if (hf.isBefore(.PRAGUE)) return .set_code_invalid,
+        else => return .invalid_signature,
+    }
+
+    const body = if (tx_type == 0) raw else raw[1..];
+    const outer = rlpItem(body) catch return .invalid_signature;
+    if (!outer.is_list or outer.encoded_len != body.len) return .invalid_signature;
+    const fields = rlpListItems(allocator, outer.payload) catch return .invalid_signature;
+    defer allocator.free(fields);
+
+    const expected_fields: usize = switch (tx_type) {
+        0 => 9,
+        1 => 11,
+        2 => 12,
+        3 => 14,
+        4 => 13,
+        else => return .invalid_signature,
+    };
+    if (fields.len != expected_fields) return .invalid_signature;
+
+    const v = rlpUint(u256, fields[fields.len - 3]) catch return .invalid_signature;
+    const r = rlpUint(u256, fields[fields.len - 2]) catch return .invalid_signature;
+    const s = rlpUint(u256, fields[fields.len - 1]) catch return .invalid_signature;
+
+    var y_parity: u256 = undefined;
+    var signing_hash: [32]u8 = undefined;
+    if (tx_type == 0) {
+        if (v == 27 or v == 28) {
+            y_parity = v - 27;
+            signing_hash = try hashRlpList(allocator, &.{}, fields[0..6]);
+        } else if (v >= 35 and hf.isAtLeast(.SPURIOUS_DRAGON)) {
+            const tx_chain_id = (v - 35) / 2;
+            if (tx_chain_id != block_chain_id) return .invalid_chain_id;
+            y_parity = (v - 35) % 2;
+            var chain_fields: std.ArrayList(u8) = .{};
+            defer chain_fields.deinit(allocator);
+            try rlpAppendUint(&chain_fields, allocator, tx_chain_id);
+            const chain_id_len = chain_fields.items.len;
+            try chain_fields.appendSlice(allocator, &.{ 0x80, 0x80 });
+            const items = [_][]const u8{
+                fields[0],                           fields[1],                                            fields[2],                               fields[3], fields[4], fields[5],
+                chain_fields.items[0..chain_id_len], chain_fields.items[chain_id_len .. chain_id_len + 1], chain_fields.items[chain_id_len + 1 ..],
+            };
+            signing_hash = try hashRlpList(allocator, &.{}, &items);
+        } else {
+            return .invalid_signature;
+        }
+    } else {
+        const tx_chain_id = rlpUint(u256, fields[0]) catch return .invalid_chain_id;
+        if (tx_chain_id != block_chain_id) return .invalid_chain_id;
+        y_parity = v;
+        signing_hash = try hashRlpList(allocator, &.{tx_type}, fields[0 .. fields.len - 3]);
+    }
+
+    if (recoverTxSender(hf, signing_hash, y_parity, r, s) == null) return .invalid_signature;
+    return null;
 }
 
 /// A decoded, signature-checked raw transaction (legacy, EIP-2930 or EIP-1559).
@@ -1925,17 +2061,37 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
     // Extract hardfork from test JSON (or use forced hardfork for multi-fork tests)
     const hardfork = if (forced_hardfork) |hf| hf else extractHardfork(test_case);
 
+    // Ensure Voltaire's embedded KZG trusted setup is initialized for EIP-4844+ forks.
+    if (hardfork) |hf| {
+        if (hf.isAtLeast(.CANCUN)) try initKzgTrustedSetup();
+    }
+
+    // Synthetic state-test ancestor hashes: per t8n/EEST state test convention,
+    // BLOCKHASH(n) for n in [currentNumber - 256, currentNumber - 1] is keccak256(str(n)).
+    var state_block_hashes: [256][32]u8 = undefined;
+    var state_block_hashes_len: usize = 0;
+
     // Build block context from env section or engine payload
     const block_ctx: ?evm_mod.BlockContext = if (test_case.object.get("env")) |env| blk: {
+        const bn = if (env.object.get("currentNumber")) |num|
+            try parseIntFromJson(num)
+        else
+            0;
+        const hash_count: usize = @intCast(@min(bn, 256));
+        const start_bn: u64 = bn - hash_count;
+        for (0..hash_count) |i| {
+            var num_buf: [32]u8 = undefined;
+            const dec = std.fmt.bufPrint(&num_buf, "{d}", .{start_bn + i}) catch "";
+            std.crypto.hash.sha3.Keccak256.hash(dec, &state_block_hashes[i], .{});
+        }
+        state_block_hashes_len = hash_count;
+
         break :blk .{
             .chain_id = if (env.object.get("currentChainId")) |cid|
                 try parseU256FromJson(cid)
             else
-                1,
-            .block_number = if (env.object.get("currentNumber")) |num|
-                try parseIntFromJson(num)
-            else
-                0,
+                try fixtureChainId(test_case),
+            .block_number = bn,
             .block_timestamp = if (env.object.get("currentTimestamp")) |ts|
                 try parseIntFromJson(ts)
             else
@@ -1958,9 +2114,10 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
             else
                 0,
             .blob_base_fee = if (env.object.get("currentExcessBlobGas")) |excess|
-                blobBaseFee(hardfork, try parseIntFromJson(excess))
+                try fixtureBlobBaseFee(test_case, hardfork, try parseIntFromJson(excess))
             else
                 0,
+            .block_hashes = state_block_hashes[0..state_block_hashes_len],
         };
     } else if (has_engine_for_coinbase) blk: {
         // Build block context from engine payload if no env
@@ -2248,6 +2405,17 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
             evm_instance.origin = sender;
             evm_instance.gas_price = effective_gas_price;
 
+            // Validate raw signed transaction envelope (type activation, chain ID, signature)
+            // when provided by EEST state-test post entries.
+            if (block == null) {
+                if (variant.txBytesHex()) |raw_tx_hex| {
+                    if (try validateTxBytesEnvelope(allocator, evm_instance.hardfork, evm_instance.block_context.chain_id, raw_tx_hex)) |reason| {
+                        rejection = rejection orelse reason;
+                        continue;
+                    }
+                }
+            }
+
             // Parse to address
             const to = if (tx.object.get("to")) |to_val| blk: {
                 const to_str = to_val.string;
@@ -2271,12 +2439,16 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
             // Parse maxFeePerBlobGas for EIP-4844 transactions
             var max_fee_per_blob_gas: u256 = 0;
             if (tx.object.get("maxFeePerBlobGas")) |max_blob_fee| {
-                max_fee_per_blob_gas = try parseIntFromJson(max_blob_fee);
+                max_fee_per_blob_gas = try parseU256FromJson(max_blob_fee);
             }
 
-            // Parse blob versioned hashes if present (EIP-4844)
+            // Parse blob versioned hashes if present (EIP-4844 / EIP-7594)
             var blob_hashes_storage: ?[]const [32]u8 = null;
             if (tx.object.get("blobVersionedHashes")) |blob_hashes_json| {
+                if (evm_instance.hardfork.isBefore(.CANCUN)) {
+                    rejection = rejection orelse .tx_type_3_pre_fork;
+                    continue;
+                }
                 // EIP-4844: Blob transactions cannot be used for contract creation
                 // Check if this is a contract creation (to is null or empty)
                 if (to == null) {
@@ -2290,9 +2462,13 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                 }
 
                 const blob_count = blob_hashes_json.array.items.len;
+                if (blob_count == 0) {
+                    rejection = rejection orelse .blob_zero;
+                    continue;
+                }
 
                 // Get max blob count from config for the current hardfork
-                var max_blobs: usize = 6; // Default for Cancun
+                var max_blobs: usize = if (evm_instance.hardfork.isAtLeast(.PRAGUE)) 9 else 6;
                 if (test_case.object.get("config")) |config| {
                     if (config.object.get("blobSchedule")) |schedule| {
                         const fork_name = hardforkToString(hardfork orelse .CANCUN);
@@ -2304,9 +2480,11 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                         }
                     }
                 }
+                // EIP-7594 (Osaka): per-transaction blob cap is 6 even when block max > 6.
+                const max_blobs_per_tx: usize = if (evm_instance.hardfork.isAtLeast(.OSAKA)) @min(max_blobs, 6) else max_blobs;
 
                 // Check if blob count exceeds maximum
-                if (blob_count > max_blobs) {
+                if (blob_count > max_blobs_per_tx) {
                     // Transaction should be rejected - check if test expects this
                     if (expectsRejection(expected_exception, .blob_count)) {
                         rejection = rejection orelse .blob_count;
@@ -2490,6 +2668,12 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                 }
             }
 
+            // Transaction gas limit cannot exceed the block gas limit.
+            if (gas_limit > evm_instance.block_context.block_gas_limit) {
+                rejection = rejection orelse .gas_allowance_exceeded;
+                continue;
+            }
+
             // Calculate execution gas (gas available after intrinsic cost)
             const execution_gas = gas_limit - intrinsic_gas;
 
@@ -2504,6 +2688,12 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                 // Use blob_base_fee from block context for actual deduction
                 const blob_gas_price = evm_instance.block_context.blob_base_fee;
 
+                // EIP-4844: transaction's maxFeePerBlobGas must cover current blob_base_fee.
+                if (max_fee_per_blob_gas < blob_gas_price) {
+                    rejection = rejection orelse .insufficient_max_fee_per_blob_gas;
+                    continue;
+                }
+
                 // Each blob uses 131072 (2^17) gas
                 const blob_gas_per_blob: u256 = 131072;
                 const total_blob_gas = @as(u256, @intCast(blob_count)) * blob_gas_per_blob;
@@ -2516,7 +2706,7 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
             }
 
             // EELS `check_transaction`: fee caps against the base fee (London+),
-            // then the sender nonce, then the balance.
+            // EIP-3607 sender code check, sender nonce, then balance.
             if (evm_instance.hardfork.isAtLeast(.LONDON)) {
                 if (tx.object.get("maxFeePerGas") != null) {
                     const max_priority_fee: u256 = if (tx.object.get("maxPriorityFeePerGas")) |mpf| try parseU256FromJson(mpf) else 0;
@@ -2529,6 +2719,13 @@ fn runVariant(allocator: std.mem.Allocator, test_case: std.json.Value, tracer: ?
                     rejection = rejection orelse .insufficient_max_fee;
                     continue;
                 }
+            }
+            // EIP-3607 (and EIP-7702 in Prague+): reject transactions from accounts with
+            // non-empty code unless Prague+ and the code is a valid delegation designator.
+            const sender_code = test_host.code.get(sender) orelse &[_]u8{};
+            if (sender_code.len != 0 and !(evm_instance.hardfork.isAtLeast(.PRAGUE) and isDelegationDesignator(sender_code))) {
+                rejection = rejection orelse .sender_not_eoa;
+                continue;
             }
             if (tx.object.get("nonce")) |nonce_json| {
                 const tx_nonce = try parseU256FromJson(nonce_json);
@@ -3986,4 +4183,113 @@ test "failing access-list allocations never free uninitialized entries" {
             freeAccessList(allocator, entries);
         }
     }.run, .{parsed.value.array.items});
+}
+
+test "state-test BLOCKHASH computes keccak256(str(block_number)) within 256-block window" {
+    // Contract: PUSH1 0 BLOCKHASH PUSH1 0 SSTORE (0x600040600055).
+    // At currentNumber=1, BLOCKHASH(0) == keccak256("0") == 0x044852b2a670ade5407e78fb2863c51de9fcb96542a07186fe3aeda6bb8a116d.
+    const json = "{" ++ fixture_env ++
+        \\,"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x", "storage": {}},
+        \\  "0x1000000000000000000000000000000000000000": {"balance": "0x00", "nonce": "0x01", "code": "0x600040600055", "storage": {}}},
+        \\"transaction": {"data": ["0x"], "gasLimit": ["0x0186a0"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"]},
+        \\"post": {"Frontier": [{"state": {
+        \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"nonce": "0x01"},
+        \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {},
+        \\  "0x1000000000000000000000000000000000000000": {"nonce": "0x01", "storage": {"0x00": "0x044852b2a670ade5407e78fb2863c51de9fcb96542a07186fe3aeda6bb8a116d"}}}}]}}
+    ;
+    try runFixtureForTest(json);
+}
+
+test "EIP-3607 rejects contract senders while Prague allows EIP-7702 delegated senders" {
+    const contract_sender = "{" ++ fixture_env ++
+        \\,"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00", "code": "0x00", "storage": {}}},
+        \\"transaction": {"data": ["0x"], "gasLimit": ["0x5208"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"]},
+        \\"post": {"Prague": [{"expectException": "TransactionException.SENDER_NOT_EOA"}]}}
+    ;
+    try runFixtureForTest(contract_sender);
+
+    const delegated_sender = "{" ++ fixture_env ++
+        \\,"pre": {"0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a7640000", "nonce": "0x00",
+        \\  "code": "0xef0100cccccccccccccccccccccccccccccccccccccccc", "storage": {}}},
+        \\"transaction": {"data": ["0x"], "gasLimit": ["0x5208"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"]},
+        \\"post": {"Prague": [{"state": {
+        \\  "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b": {"balance": "0x0de0b6b3a760cbb0", "nonce": "0x01", "code": "0xef0100cccccccccccccccccccccccccccccccccccccccc"},
+        \\  "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba": {"balance": "0x033450"}}}]}}
+    ;
+    try runFixtureForTest(delegated_sender);
+}
+
+test "block gas limit rejects transactions with GAS_ALLOWANCE_EXCEEDED" {
+    try runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x05f5e101"]
+    ,
+        \\{"expectException": "TransactionException.GAS_ALLOWANCE_EXCEEDED"}
+    ));
+}
+
+test "EIP-4844 and EIP-7594 blob admission checks reject invalid blob transactions" {
+    // Zero blobs on Cancun
+    try runFixtureForTest(transferFixture(
+        \\"gasLimit": ["0x5208"], "maxFeePerBlobGas": "0x01", "blobVersionedHashes": []
+    ,
+        \\{"expectException": "TransactionException.TYPE_3_TX_ZERO_BLOBS"}
+    ));
+
+    // Insufficient maxFeePerBlobGas when excessBlobGas produces blob_base_fee > 1
+    const low_blob_fee =
+        \\{"env": {"currentCoinbase": "0x2adc25665018aa1fe0e6bc666dac8fc2697ff9ba", "currentGasLimit": "0x05f5e100",
+        \\  "currentNumber": "0x01", "currentTimestamp": "0x03e8", "currentDifficulty": "0x00", "currentBaseFee": "0x00",
+        \\  "currentExcessBlobGas": "0x240000"},
+    ++ fixture_pre_sender ++
+        \\,"transaction": {"data": ["0x"], "gasLimit": ["0x5208"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"],
+        \\  "maxFeePerBlobGas": "0x01", "blobVersionedHashes": ["0x0100000000000000000000000000000000000000000000000000000000000000"]},
+        \\"post": {"Cancun": [{"expectException": "TransactionException.INSUFFICIENT_MAX_FEE_PER_BLOB_GAS"}]}}
+    ;
+    try runFixtureForTest(low_blob_fee);
+
+    // EIP-7594 Osaka: 7 blobs exceeds per-tx cap of 6 even when block max is 9
+    const osaka_7_blobs = "{" ++ fixture_env ++ "," ++ fixture_pre_sender ++
+        \\,"config": {"blobSchedule": {"Osaka": {"target": "0x06", "max": "0x09", "baseFeeUpdateFraction": "0x4c6964"}}},
+        \\"transaction": {"data": ["0x"], "gasLimit": ["0x5208"], "gasPrice": "0x0a", "nonce": "0x00",
+        \\  "sender": "0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b", "to": "0x1000000000000000000000000000000000000000", "value": ["0x00"],
+        \\  "maxFeePerBlobGas": "0x01", "blobVersionedHashes": [
+        \\    "0x0100000000000000000000000000000000000000000000000000000000000000",
+        \\    "0x0100000000000000000000000000000000000000000000000000000000000001",
+        \\    "0x0100000000000000000000000000000000000000000000000000000000000002",
+        \\    "0x0100000000000000000000000000000000000000000000000000000000000003",
+        \\    "0x0100000000000000000000000000000000000000000000000000000000000004",
+        \\    "0x0100000000000000000000000000000000000000000000000000000000000005",
+        \\    "0x0100000000000000000000000000000000000000000000000000000000000006"]},
+        \\"post": {"Osaka": [{"expectException": "TransactionException.TYPE_3_TX_BLOB_COUNT_EXCEEDED"}]}}
+    ;
+    try runFixtureForTest(osaka_7_blobs);
+}
+
+test "validateTxBytesEnvelope checks type activation, chain ID, and signatures" {
+    const allocator = testing.allocator;
+    var key: [32]u8 = undefined;
+    std.mem.writeInt(u256, &key, 0x45a915e4d060149eb4365960e6a7a45f334393093061116b197e3240065ff2d8, .big);
+
+    const valid_hex = try signedLegacyTxHex(allocator, key, 21_000, testAddress(0x01), 0);
+    defer allocator.free(valid_hex);
+
+    // Valid EIP-155 chain 1 legacy tx passes on SpuriousDragon+ for chain 1,
+    // rejects for chain 2, and rejects on pre-EIP-155 Frontier.
+    try testing.expectEqual(@as(?TxRejection, null), try validateTxBytesEnvelope(allocator, .SPURIOUS_DRAGON, 1, valid_hex));
+    try testing.expectEqual(@as(?TxRejection, .invalid_chain_id), try validateTxBytesEnvelope(allocator, .SPURIOUS_DRAGON, 2, valid_hex));
+    try testing.expectEqual(@as(?TxRejection, .invalid_signature), try validateTxBytesEnvelope(allocator, .FRONTIER, 1, valid_hex));
+
+    // Pre-fork typed transaction prefixes reject with the exact pre-fork type error.
+    try testing.expectEqual(@as(?TxRejection, .tx_type_1_pre_fork), try validateTxBytesEnvelope(allocator, .ISTANBUL, 1, "0x01c0"));
+    try testing.expectEqual(@as(?TxRejection, .tx_type_2_pre_fork), try validateTxBytesEnvelope(allocator, .BERLIN, 1, "0x02c0"));
+    try testing.expectEqual(@as(?TxRejection, .tx_type_3_pre_fork), try validateTxBytesEnvelope(allocator, .SHANGHAI, 1, "0x03c0"));
+    try testing.expectEqual(@as(?TxRejection, .set_code_invalid), try validateTxBytesEnvelope(allocator, .CANCUN, 1, "0x04c0"));
+
+    // Unrecoverable legacy signature (r=5, s=1, v=27).
+    const unrecoverable = "0xe1800a8407270e0094f89a03b42ea1412874da2cf1ae48956f73d0603901801b0501";
+    try testing.expectEqual(@as(?TxRejection, .invalid_signature), try validateTxBytesEnvelope(allocator, .FRONTIER, 1, unrecoverable));
 }
