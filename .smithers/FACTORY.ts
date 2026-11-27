@@ -43,7 +43,7 @@ export const prTriage = S.Flow({
 export const ciFlow = S.Flow({
   flow: "ci",
   featured: true,
-  summary: "Run Smithers Cloud CI gates: trust tests, wiki integrity, TypeScript client suites, and Lighthouse audit.",
+  summary: "Run Smithers Cloud CI gates: trust tests, wiki integrity, TypeScript SDK suites, and Lighthouse audit.",
 })
 
 export const uphillFlow = S.Flow({

@@ -188,8 +188,8 @@
     },
     {
       "id": "ci",
-      "description": "Run Smithers Cloud CI gates: factory trust tests, wiki integrity, TypeScript client suites, and Lighthouse audit.",
-      "summary": "Run Smithers Cloud CI gates: trust tests, wiki integrity, TypeScript client suites, and Lighthouse audit.",
+      "description": "Run Smithers Cloud CI gates: factory trust tests, wiki integrity, TypeScript SDK suites, and Lighthouse audit.",
+      "summary": "Run Smithers Cloud CI gates: trust tests, wiki integrity, TypeScript SDK suites, and Lighthouse audit.",
       "featured": true,
       "kind": "ts",
       "path": ".smithers/flows/ci/flow.ts",
