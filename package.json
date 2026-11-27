@@ -1,14 +1,69 @@
 {
-  "name": "guillotine-mini",
-  "version": "0.1.0",
-  "description": "Minimal, correct, and well-tested Ethereum Virtual Machine (EVM) implementation in Zig",
+  "name": "@tevm/guillotine-mini",
+  "version": "0.2.0",
+  "description": "Minimal, formally verified Ethereum Virtual Machine (EVM) in Zig with universal zero-dependency TypeScript/WASM SDK",
   "type": "module",
+  "main": "./ts/index.ts",
+  "types": "./ts/index.ts",
+  "exports": {
+    ".": {
+      "types": "./ts/index.ts",
+      "import": "./ts/index.ts",
+      "default": "./ts/index.ts"
+    },
+    "./evm": {
+      "types": "./ts/evm.ts",
+      "import": "./ts/evm.ts",
+      "default": "./ts/evm.ts"
+    },
+    "./abi": {
+      "types": "./ts/abi.ts",
+      "import": "./ts/abi.ts",
+      "default": "./ts/abi.ts"
+    },
+    "./wasi-shim": {
+      "types": "./ts/wasi-shim.ts",
+      "import": "./ts/wasi-shim.ts",
+      "default": "./ts/wasi-shim.ts"
+    },
+    "./precompiles": {
+      "types": "./ts/precompiles.ts",
+      "import": "./ts/precompiles.ts",
+      "default": "./ts/precompiles.ts"
+    },
+    "./fork": {
+      "types": "./ts/fork.ts",
+      "import": "./ts/fork.ts",
+      "default": "./ts/fork.ts"
+    },
+    "./wasm": "./zig-out/bin/guillotine_mini.wasm",
+    "./wasm/core": "./zig-out/bin/guillotine_mini_core.wasm",
+    "./wasm/precompiles.mjs": "./wasm/precompiles.mjs",
+    "./wasm/*": "./zig-out/bin/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "ts/*.ts",
+    "!ts/*.test.ts",
+    "!ts/PACKAGE.ts",
+    "wasm/precompiles.mjs",
+    "include/guillotine_mini.h",
+    "zig-out/bin/*.wasm",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "genesis": "bun scripts/genesis.ts",
     "test:isolate": "bun scripts/isolate-test.ts",
     "test:subset": "bun scripts/test-subset.ts",
     "fix:specs": "bun scripts/fix-specs.ts",
-    "test": "bun --cwd client-ts run test",
+    "test": "bun test ./ts/",
+    "bench:wasm": "node bench/wasm-compare.mjs",
     "smithers:ci": "bun .smithers/scripts/run-trusted-ci.ts ci '//...'",
     "smithers:ci:untrusted": "bun .smithers/scripts/run-trusted-ci.ts --untrusted ci '//...'",
     "smithers:audit": "bun .smithers/scripts/generate-audit-report.ts",
@@ -20,9 +75,14 @@
   "keywords": [
     "ethereum",
     "evm",
+    "wasm",
+    "wasi",
+    "evmc",
     "virtual-machine",
     "blockchain",
-    "zig"
+    "cloudflare-workers",
+    "zig",
+    "tevm"
   ],
   "author": "William Cory",
   "license": "MIT",
@@ -30,7 +90,7 @@
     "type": "git",
     "url": "https://github.com/evmts/guillotine-mini.git"
   },
-  "homepage": "https://github.com/evmts/guillotine-mini#readme",
+  "homepage": "https://mini.tevm.sh",
   "bugs": {
     "url": "https://github.com/evmts/guillotine-mini/issues"
   },

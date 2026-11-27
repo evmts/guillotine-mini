@@ -1,3 +1,20 @@
+name = "guillotine-mini-evm"
+main = "evm-worker.ts"
+compatibility_date = "2026-11-01"
+
+[vars]
+HARDFORK = "osaka"
+CHAIN_ID = "1"
+ALLOW_CUSTOM_RPC = "false"
+# Set UPSTREAM_RPC_URL via `wrangler secret put UPSTREAM_RPC_URL` or override locally in `.dev.vars`
+
+[wasm_modules]
+EVM_WASM = "../zig-out/bin/guillotine_mini_core.wasm"
+PRECOMPILE_01 = "../zig-out/bin/precompile-01.wasm"
+PRECOMPILE_02 = "../zig-out/bin/precompile-02.wasm"
+PRECOMPILE_04 = "../zig-out/bin/precompile-04.wasm"
+PRECOMPILE_100 = "../zig-out/bin/precompile-100.wasm"
+
+[env.genesis]
 name = "guillotine-genesis"
 main = "genesis-worker.ts"
-compatibility_date = "2026-11-01"
