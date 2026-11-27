@@ -1,4 +1,5 @@
 {
+  "apiVersion": 1,
   "summary": "Spec-first Zig EVM with C/WASM ABI, Lean 4 oracle, shared Smithers Cloud cache, and Lighthouse backpressure.",
   "flows": [
     {
@@ -619,5 +620,14 @@
       "to": "verified",
       "actor": "person"
     }
-  ]
+  ],
+  "contributes": {
+    "triggers": [
+      {
+        "on": "manual",
+        "flow": "uphill",
+        "title": "Run Uphill audit"
+      }
+    ]
+  }
 }
