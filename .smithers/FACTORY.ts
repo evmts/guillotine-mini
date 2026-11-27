@@ -9,6 +9,8 @@
  * //.smithers:home-check.
  */
 import { Smithers as S } from "@smthrs/targets"
+import { On, Trigger } from "@smthrs/triggers"
+import Uphill from "./flows/uphill/flow.ts"
 
 export const review = S.Flow({
   flow: "checks/review",
@@ -77,6 +79,7 @@ export const releaseFlow = S.Flow({
 })
 
 export const factory = S.Factory({
+  triggers: { uphill: Trigger.bind({ flow: Uphill, on: On.manual(), title: "Run Uphill audit" }) },
   summary: "Spec-first Zig EVM with C/WASM ABI, Lean 4 oracle, shared Smithers Cloud cache, and Lighthouse backpressure.",
   flows: [
     review,

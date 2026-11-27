@@ -4,11 +4,7 @@ import { CiJob } from "@smthrs/sandbox"
 import { Schema } from "effect"
 
 const uphill = CiJob.make("uphill", {
-  steps: [
-    { name: "uphill-check", run: "uphill check" },
-    { name: "uphill-compact", run: "uphill --compact" },
-    { name: "lighthouse-audit", run: "bun .smithers/scripts/generate-audit-report.ts" },
-  ],
+  steps: [{ name: "uphill-audit", run: "sh .smithers/scripts/hosted-uphill.sh" }],
 })
 
 export default Flow.make("uphill", {
