@@ -222,12 +222,7 @@ jobs:
       - name: Install devDependencies for typechecking
         run: bun install
       - name: Type-check TypeScript SDK (strict)
-        run: >-
-          bun x tsc --ignoreConfig --noEmit --strict --allowImportingTsExtensions
-          --target ES2022 --lib ES2022,ESNext.Disposable,DOM
-          --module ESNext --moduleResolution Bundler --skipLibCheck
-          ts/index.ts ts/wasi-shim.ts ts/abi.ts ts/precompiles.ts ts/fork.ts ts/evm.ts
-          ts/exex/manager.ts ts/exex/types.ts cloudflare/evm-worker.ts
+        run: bun x tsc -p ts/tsconfig.json
       - name: Run TypeScript SDK & ExEx tests
         run: bun test ./ts/
 

@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "ESNext.Disposable", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "files": [
+    "index.ts",
+    "wasi-shim.ts",
+    "abi.ts",
+    "precompiles.ts",
+    "fork.ts",
+    "evm.ts",
+    "exex/types.ts",
+    "exex/manager.ts",
+    "../cloudflare/evm-worker.ts"
+  ]
+}
